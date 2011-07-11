@@ -1,5 +1,5 @@
 {-# LANGUAGE EmptyDataDecls #-}
-module Abstract where
+module Prototype where
 
 import Data.Map (Map)
 import Data.Vector (Vector)
@@ -37,14 +37,10 @@ type Reg = LLVM.Ident
 --
 -- [Call Statements]
 --    If call statements remain in the IR, then the symbolic simulator will need to remember
---    which instruction was being executing when returnning from a method call.  If they are
---    eliminated and replaced with invoke, then extra basic blocks will need to be created,
---    but we can always assume that we will resume with the next branch.
+--    which instruction was being executing when returnning from a method call.  To simplify the
+--    simulator, we will normalize IR by introducing extra basic blocks, so that call statements
+--    are always immediately followed by an unconditional branch.
 --  
---    N.B. invoke statements have exception handlers, which we may not want to have to introduce.
---    One possibility would be to keep call statements in, but require that they are the last
---    statement in a basic block, and are followed by an unconditional branch.
---
 -- [Phi Statements]
 --   The value of a Phi statement in LLVM depends on which previous block was executed.  To deal
 --   with these statements, we can either explicitly track the previous block, or perform a
@@ -60,8 +56,11 @@ type Reg = LLVM.Ident
 -- * http://llvm.org/docs/LangRef.html
 -- * http://llvm.org/docs/ExceptionHandling.html
 
--- Symbolic State {{{1
--- The Symbolic state along a single path of execution contains values in the 
+-- Symbolic execution paths {{{1
+
+-- The Symbolic execution paths represent the symbolic state along a particular control
+-- flow path.  Due to indeterminate conditional branches, the symbolic simulator needs to
+-- consider multiple distinct branches for a given execution path.
 
 -- | Frame in program
 data Frame val = Frame {
@@ -70,16 +69,15 @@ data Frame val = Frame {
   , frameRegisters :: Map Reg val
   }
 
--- | Symbolic state with path constraints.
-data SState val =
-  SState {
-    frames :: [Frame val]
-  -- | Contains pointer to exception structure or Nothing if not handling
-  -- an exception
+-- | The symbolic execution path identifies a particular execution Symbolic
+-- state with path constraints.
+data SymbolicExecutionPath val = SymbolicExecutionPath {
+     frames :: [Frame val]
+  -- | Contains pointer to exception structure or Nothing if not handling an
+  -- exception
   , exception :: Maybe val
   -- | Constaints on paths.
-  , pathConstraints :: val
-  }
+  , pathConstraints :: val }
 
 -- Merge frames {{{1
 -- 
@@ -148,16 +146,16 @@ data SState val =
 --   * TODO: Handle switch, indirectbr, invoke, unwind, and unreachable.
  
 -- | Symbolic state and return value (if any).
-type SReturnState sym = (SState sym, Maybe sym)
+type SReturnState val = (SymbolicExecutionPath val, Maybe val)
         
-data MergeFrame sym
+data MergeFrame val
   -- | Intra-procedural intermediate merge point including label to merge at
   -- and symbolic state if any.
   = PostDominatorFrame {
-        -- | Label to merge state for.
+        -- | Label to merge state for (this is not needed if we use a semi-compilation approach).
         _mergeLabel :: BlockID 
         -- | For intermediate merge points.
-      , _mergedState :: Maybe (SState sym)
+      , _mergedState :: Maybe (SymbolicExecutionPath val)
       }
   -- | Return frame (exception handlers are only added at function invocation points).
   | ReturnFrame {
@@ -168,15 +166,81 @@ data MergeFrame sym
         -- | Label for exception path.
       , _exceptLabel :: Maybe BlockID
         -- | Merged potential state and possible return value after function call.
-      , _normalState :: Maybe (SReturnState sym)
+      , _normalState :: Maybe (SReturnState val)
         -- | Merged exception state after function call.
-      , _exceptionState :: Maybe (SState sym)
+      , _exceptionState :: Maybe (SymbolicExecutionPath val)
       }
   -- | Frame at program exit with symbolic value for exit code.
-  | ExitFrame (Maybe (SReturnState sym))
+  | ExitFrame (Maybe (SReturnState val))
 
 
 -- | A control stack consists of merge frames along with next states to execute beneath that frame.
-type ControlStack val = [(MergeFrame val,[SState val])]
+type ControlStack val = [(MergeFrame val,[SymbolicExecutionPath val])]
 
--- CProgram {{{1
+-- | Uniquely identifies a block in the program by function and block identifier.
+type BlockLocation = (FuncID,BlockID)
+
+-- | Represents a value in the symbolic simulator.
+--TODO: Figure out if LLVM.Value if sufficient or we need something else.
+type SymValue = LLVM.Value
+
+-- | Predicates in symbolic simulator context.
+data SymCond
+  -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.
+  = HasConstValue SymValue Integer
+  -- | @IsPrevBlock l@ holds if 
+  | IsPrevBlock BlockLocation
+
+type Typed v = LLVM.Typed v
+
+
+-- | Expression in Symbolic instruction set.
+-- | TODO: Make this data-type strict.
+data SymExpr
+  -- | Statement for arithmetic operation.
+  = Arith LLVM.ArithOp (Typed SymValue) SymValue
+  -- | Statement for bit operation.
+  | Bit LLVM.BitOp (Typed SymValue) SymValue
+  -- | Statement for conversion operation.
+  -- TODO: See if type information is needed.
+  | Conv LLVM.ConvOp (Typed SymValue) LLVM.Type
+  | Alloca LLVM.Type (Maybe (Typed SymValue)) (Maybe Int) 
+  | Load (Typed SymValue)
+  | ICmp LLVM.ICmpOp (Typed SymValue) SymValue
+  | FCmp LLVM.FCmpOp (Typed SymValue) SymValue
+  | Phi [(SymValue, BlockID)]
+  -- | GetElementPointer instruction.
+  | GEP (Typed SymValue) [Typed SymValue]
+  | Select (Typed SymValue) (Typed SymValue) SymValue
+
+-- | Instruction in symbolic level.
+data SymStmt
+  -- | @PushPostDominatorFrame@ pushes a new frame to the merge frame stack for a post-dominator
+  -- at the given block.  This instruction is used when we jump into a block that has a different
+  -- immediate post-dominator than its parent.
+  = PushPostDominatorFrame BlockLocation
+  -- | @PushInvokeFrame (n,v) e@ pushes a invoke frame to the merge frame stack that has the 
+  -- normal return basic block @n@, normal return value to assign @v@, and exception path @e@.
+  | PushInvokeFrame (BlockLocation, Maybe SymValue) BlockLocation
+  -- | @PushCallFrame n@ pushes a invoke frame to the merge frame stack that has the 
+  -- return location @n@ (exceptions are not caught by calls).
+  | PushCallFrame (BlockLocation, Maybe SymValue)
+  -- | Sets the block to the given location.
+  | SetCurrentBlock BlockLocation
+  -- | Clear current execution path.
+  | ClearCurrentPath
+  -- | Merge current state to post-dominator return path.
+  | MergePostDominator BlockLocation
+  -- | @MergeReturnAndClear@ merges current path with return and clears current path.
+  | MergeReturnAndClear (Maybe SymValue)
+  -- | Merge current path with exception unwinding and clear current path.
+  | MergeUnwindAndClear
+  -- | Conditional execution.
+  | IfThenElse SymCond SymBlock SymBlock
+  -- | Assign result of instruction to register.
+  | Assign Reg SymExpr
+  -- | @Store addr v@ stores value @v@ in @addr@.
+  | Store (Typed SymValue) (Typed SymValue)
+  
+
+type SymBlock = [SymStmt]
