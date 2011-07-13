@@ -3,13 +3,12 @@
 -- the LLVM lifting operating.
 module SymAST 
   ( FuncID
-  , BlockID 
+  , SymBlockID 
   , Reg
-  , BlockLocation
   , SymValue
-  , SymExpr
+  , SymExpr(..)
   , SymCond
-  , SymStmt
+  , SymStmt(..)
   , SymBlock
   , SymDefine
   ) where
@@ -21,15 +20,12 @@ import qualified Text.LLVM.AST as LLVM
 type FuncID = LLVM.Symbol
 
 -- | Identifier for a basic block.
-type BlockID = LLVM.Ident
+type SymBlockID = Integer
 
 -- | Identies a named value in a function.
 -- TODO: Figure out if LLVM.Ident is the right type and if this can be
 -- changed to an integer (for efficiency purposes).
 type Reg = LLVM.Ident
-
--- | Uniquely identifies a block in the program by function and block identifier.
-type BlockLocation = (FuncID,BlockID)
 
 -- | Represents a value in the symbolic simulator.
 --TODO: Figure out if LLVM.Value if sufficient or we need something else.
@@ -51,7 +47,7 @@ data SymExpr
   | Load (Typed SymValue)
   | ICmp LLVM.ICmpOp (Typed SymValue) SymValue
   | FCmp LLVM.FCmpOp (Typed SymValue) SymValue
-  | Phi [(SymValue, BlockID)]
+  | Phi LLVM.Type [(SymValue, SymBlockID)]
   -- | GetElementPointer instruction.
   | GEP (Typed SymValue) [Typed SymValue]
   | Select (Typed SymValue) (Typed SymValue) SymValue
@@ -62,33 +58,36 @@ data SymCond
   = HasConstValue SymValue Integer
   -- | @IsPrevBlock b@ holds if @b@ was the previous block executed along the current exection
   -- path.
-  | IsPrevBlock BlockID
+  | IsPrevBlock SymBlockID
 
 -- | Instruction in symbolic level.
 data SymStmt
   -- | Clear current execution path.
   = ClearCurrentExecution
-  -- | @PushCallFrame n@ pushes a invoke frame to the merge frame stack that has the 
-  -- return location @n@ (exceptions are not caught by calls).
-  | PushCallFrame (BlockLocation, Maybe Reg)
+  -- | @PushCallFrame n@:
+  -- 1. Pushes a call merge frame to the merge frame stack that has the return location @n@
+  -- (exceptions are not caught by calls).
+  -- 2. Pushes a call frame to the current execution path's stack with the given aguments.
+  | PushCallFrame SymBlockID (Maybe Reg) LLVM.Type SymValue [Typed SymValue]
   -- | @PushInvokeFrame (n,v) e@ pushes a invoke frame to the merge frame stack that has the 
   -- normal return basic block @n@, normal return value to assign @v@, and exception path @e@.
-  | PushInvokeFrame (BlockLocation, Maybe Reg) BlockLocation
+  | PushInvokeFrame SymBlockID (Maybe Reg) SymBlockID LLVM.Type SymValue [Typed SymValue]
   -- | @PushPostDominatorFrame@ pushes a new frame to the merge frame stack for a post-dominator
   -- at the given block.  This instruction is used when we jump into a block that has a different
   -- immediate post-dominator than its parent.
-  | PushPostDominatorFrame BlockID
+  | PushPostDominatorFrame SymBlockID
   -- | Merge current state to post-dominator return path.
   -- N.B. The current state must be unchanged.  However, the current block of the merged
   -- state must be the post-dominator block.
-  | MergePostDominator BlockID
-  -- | @MergeVoidReturnAndClear@ merges current path and clears current path.
+  | MergePostDominator SymBlockID
+  -- | @MergeReturnVoidAndClear@ pops top call frame from path, merges current path
+  -- with call frame, and clears current path.
   | MergeReturnVoidAndClear
-  -- | @MergeReturnAndClear@ merges current path and return value with state,
-  -- and clears current path.
-  | MergeReturnAndClear SymValue
+  -- | @MergeReturnAndClear@ pops top call frame from path, merges (current path return value)
+  -- with call frame, and clears current path.
+  | MergeReturnAndClear (Typed SymValue)
   -- | Sets the block to the given location.
-  | SetCurrentBlock BlockID
+  | SetCurrentBlock SymBlockID
   -- | Assign result of instruction to register.
   | Assign Reg SymExpr
   -- | @Store addr v@ stores value @v@ in @addr@.
@@ -103,5 +102,5 @@ type SymBlock = [SymStmt]
 data SymDefine = SymDefine {
     sdName :: LLVM.Symbol
   , sdArgs :: [Typed LLVM.Ident]
-  , sdBody :: Map BlockID SymBlock
+  , sdBody :: Map SymBlockID SymBlock
   }
