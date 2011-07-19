@@ -1,20 +1,31 @@
 -- | This module defines the main data types for the AST used directly by the symbolic
 -- simulator.  This AST data type is the interface between the symbolic execution and
 -- the LLVM lifting operating.
+--
+-- The Symbolic IR is similar to the LLVM IR, but includes several differences:
+--
+-- * The Symbolic IR includes explicit instructions for pushing and popping frames from
+--   the merge frame stack.  
+-- * It allows IfThenElse instructions to appear directly within blocks.
+-- * 
 module SymAST 
   ( FuncID
   , SymBlockID 
   , Reg
-  , SymValue
+  , LLVM.Typed(..)
+  , SymValue(..)
   , SymExpr(..)
-  , SymCond
+  , SymCond(..)
   , SymStmt(..)
-  , SymBlock
-  , SymDefine
+  , SymBlock(..)
+  , SymDefine(..)
+  , ppSymDefine
   ) where
 
 import Data.Map (Map)
+import Data.Vector (Vector)
 import qualified Text.LLVM.AST as LLVM
+import Text.PrettyPrint.HughesPJ
 
 -- | Identifier for a function.
 type FuncID = LLVM.Symbol
@@ -27,11 +38,11 @@ type SymBlockID = Integer
 -- changed to an integer (for efficiency purposes).
 type Reg = LLVM.Ident
 
+type Typed v = LLVM.Typed v
+
 -- | Represents a value in the symbolic simulator.
 --TODO: Figure out if LLVM.Value if sufficient or we need something else.
 type SymValue = LLVM.Value
-
-type Typed v = LLVM.Typed v
 
 -- | Expression in Symbolic instruction set.
 -- | TODO: Make this data-type strict.
@@ -47,7 +58,8 @@ data SymExpr
   | Load (Typed SymValue)
   | ICmp LLVM.ICmpOp (Typed SymValue) SymValue
   | FCmp LLVM.FCmpOp (Typed SymValue) SymValue
-  | Phi LLVM.Type [(SymValue, SymBlockID)]
+  -- | A copy of a value.
+  | Val (Typed SymValue)
   -- | GetElementPointer instruction.
   | GEP (Typed SymValue) [Typed SymValue]
   | Select (Typed SymValue) (Typed SymValue) SymValue
@@ -56,19 +68,19 @@ data SymExpr
 data SymCond
   -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.
   = HasConstValue SymValue Integer
-  -- | @IsPrevBlock b@ holds if @b@ was the previous block executed along the current exection
-  -- path.
-  | IsPrevBlock SymBlockID
+  | Not SymCond
+  | TrueSymCond
 
 -- | Instruction in symbolic level.
 data SymStmt
   -- | Clear current execution path.
   = ClearCurrentExecution
-  -- | @PushCallFrame n@:
+  -- | @PushCallFrame mr @:
   -- 1. Pushes a call merge frame to the merge frame stack that has the return location @n@
   -- (exceptions are not caught by calls).
   -- 2. Pushes a call frame to the current execution path's stack with the given aguments.
-  | PushCallFrame SymBlockID (Maybe Reg) LLVM.Type SymValue [Typed SymValue]
+  -- 3. When the frame is popped the return value is stored in @mr@ if @mr@ is defined.
+  | PushCallFrame (Maybe Reg) LLVM.Type SymValue [Typed SymValue]
   -- | @PushInvokeFrame (n,v) e@ pushes a invoke frame to the merge frame stack that has the 
   -- normal return basic block @n@, normal return value to assign @v@, and exception path @e@.
   | PushInvokeFrame SymBlockID (Maybe Reg) SymBlockID LLVM.Type SymValue [Typed SymValue]
@@ -76,31 +88,49 @@ data SymStmt
   -- at the given block.  This instruction is used when we jump into a block that has a different
   -- immediate post-dominator than its parent.
   | PushPostDominatorFrame SymBlockID
-  -- | Merge current state to post-dominator return path.
+  -- | Merge current state to post-dominator return path under the given condition.
   -- N.B. The current state must be unchanged.  However, the current block of the merged
   -- state must be the post-dominator block.
-  | MergePostDominator SymBlockID
+  | MergePostDominator SymBlockID SymCond
   -- | @MergeReturnVoidAndClear@ pops top call frame from path, merges current path
   -- with call frame, and clears current path.
   | MergeReturnVoidAndClear
+  -- | @PushPendingExecution c@ make the current state a pending execution in the top-most
+  -- merge frame with the additional path constraint c.
+  | PushPendingExecution SymCond
   -- | @MergeReturnAndClear@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
   | MergeReturnAndClear (Typed SymValue)
   -- | Sets the block to the given location.
   | SetCurrentBlock SymBlockID
+  -- | Add an additional constraint to the current execution path.
+  | AddPathConstraint SymCond
   -- | Assign result of instruction to register.
   | Assign Reg SymExpr
   -- | @Store addr v@ stores value @v@ in @addr@.
   | Store (Typed SymValue) (Typed SymValue)
   -- | Conditional execution.
-  | IfThenElse SymCond SymBlock SymBlock
-  -- TODO: Support exception handling and unwind and unreachable.
+  | IfThenElse SymCond [SymStmt] [SymStmt]
+  -- | Print out an error message if we reach an unreachable.
+  | Unreachable 
+  -- | Unwind exception path.
+  | Unwind
+  -- TODO: Support all exception handling.
 
-type SymBlock = [SymStmt]
+data SymBlock = SymBlock {
+         sbId :: SymBlockID -- ^ Identifier for block (unique within definition).
+       , sbPrettyName :: String -- ^ Name of block for pretty-printing purposes 
+                                -- (not necessarily unique).
+       , sbStmts :: [SymStmt]
+       }
 
 -- | Symbolically lifted version of a LLVM definition.
 data SymDefine = SymDefine {
-    sdName :: LLVM.Symbol
-  , sdArgs :: [Typed LLVM.Ident]
-  , sdBody :: Map SymBlockID SymBlock
-  }
+         sdName :: LLVM.Symbol
+       , sdArgs :: [Typed Reg]
+       , sdReturn :: LLVM.Type
+       , sdBody :: Vector SymBlock
+       }
+
+ppSymDefine :: SymDefine -> Doc
+ppSymDefine _ = error "ppSymDefine undefined"

@@ -22,22 +22,6 @@ import SymAST
 --   * unwind
 --   * unreachable
 --
--- In addition, it has call and phi non-terminal instructions which may require special support.
--- N.B. call and invoke can be given pointers to functions to support indirect calls.
---
--- [Call Statements]
---    If call statements remain in the IR, then the symbolic simulator will need to remember
---    which instruction was being executing when returnning from a method call.  To simplify the
---    simulator, we will normalize IR by introducing extra basic blocks, so that call statements
---    are always immediately followed by an unconditional branch.
---  
--- [Phi Statements]
---   The value of a Phi statement in LLVM depends on which previous block was executed.  To deal
---   with these statements, we can either explicitly track the previous block, or perform a
---   SSA destruction step to replace the phi instructions with explicitly reads and writes to
---   registers.  Tracking the previous block is quite simple.  However, we may want to replace
---   the SSA values with registers for efficiency purposes anyways.
-
 -- Intrinsic support {{{2
 -- 
 -- LLVM includes many intrinsic functions with semantics different from simple calls.  Support
@@ -120,6 +104,7 @@ data SymbolicExecutionPath val = SymbolicExecutionPath {
 --       * The top of the merge frame stack must be a post-dominator frame.
 --       * Merge state with post-dominator merge state.
 --       * Discard current state.
+--     * Otherwise:
 --   * If block terminiator is an indeterminate conditional branch:
 --     * At least one branch target must not be the post-dominator.
 --     * If one of the branch targets is the post-dominator block:
@@ -162,7 +147,6 @@ data MergeFrame val
       }
   -- | Frame at program exit with symbolic value for exit code.
   | ExitFrame (Maybe (SReturnState val))
-
 
 -- | A control stack consists of merge frames along with next states to execute beneath that frame.
 type ControlStack val = [(MergeFrame val,[SymbolicExecutionPath val])]
