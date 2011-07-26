@@ -11,6 +11,9 @@
 module SymAST 
   ( FuncID
   , SymBlockID 
+  , initSymBlockID
+  , symBlockID
+  , ppSymBlockID
   , Reg
   , LLVM.Typed(..)
   , SymValue(..)
@@ -31,7 +34,33 @@ import Text.PrettyPrint.HughesPJ
 type FuncID = LLVM.Symbol
 
 -- | Identifier for a basic block.
-type SymBlockID = Integer
+data SymBlockID
+  -- | Identifier for initial block that sets up initial
+  -- post-dominator frames.
+  = InitBlock
+  -- | Identifier for blocks derived from LLVM blocks.
+  | NamedBlock !(LLVM.Ident) !Int
+  -- | Identifier for blocks derived from LLVM blocks.
+  | UnnamedBlock !Int
+  deriving (Eq, Ord, Show)
+
+-- | Return init symbolic block id.
+initSymBlockID :: SymBlockID
+initSymBlockID = InitBlock
+
+-- | Create new block id for block with given name and unique integer.
+-- The first block is for the entry point to the LLVM block.
+symBlockID :: Maybe LLVM.Ident -> Int -> SymBlockID
+symBlockID (Just id) = NamedBlock id
+symBlockID Nothing = UnnamedBlock
+
+-- | Pretty print SymBlockID
+ppSymBlockID :: SymBlockID -> Doc
+ppSymBlockID InitBlock = text "init"
+ppSymBlockID (NamedBlock id n) =
+  text "%N" <> LLVM.ppIdent id <> char '.' <> int n
+ppSymBlockID (UnnamedBlock n) =
+  text "%U." <> int n
 
 -- | Identies a named value in a function.
 -- TODO: Figure out if LLVM.Ident is the right type and if this can be
@@ -119,8 +148,6 @@ data SymStmt
 
 data SymBlock = SymBlock {
          sbId :: SymBlockID -- ^ Identifier for block (unique within definition).
-       , sbPrettyName :: String -- ^ Name of block for pretty-printing purposes 
-                                -- (not necessarily unique).
        , sbStmts :: [SymStmt]
        }
 
@@ -129,7 +156,7 @@ data SymDefine = SymDefine {
          sdName :: LLVM.Symbol
        , sdArgs :: [Typed Reg]
        , sdReturn :: LLVM.Type
-       , sdBody :: Vector SymBlock
+       , sdBody :: Map SymBlockID SymBlock
        }
 
 ppSymDefine :: SymDefine -> Doc
