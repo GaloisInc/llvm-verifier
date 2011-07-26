@@ -56,9 +56,7 @@ data LLVMTranslationInfo = LTI {
 liftError :: Doc -> a
 liftError d = error (render d)
 
-data BGState = BGS 
-  { lsBlocks :: !(Map SymBlockID SymBlock)
-  }
+data BGState = BGS { lsBlocks :: !(Map SymBlockID SymBlock) }
 
 newtype BlockGenerator a = BG (State BGState a)
   deriving (Functor, Monad)
@@ -81,12 +79,9 @@ runBlockGenerator nm args res (BG bg) =
    in SymDefine {
           sdName = nm
         , sdArgs = args
-        , sdReturn = res
+        , sdRetType = res
         , sdBody = lsBlocks finalState
         }
-
-type BBId = Maybe LLVM.Ident
-
 
 type PhiInstr = (LLVM.Ident, LLVM.Type, Map (Maybe LLVM.Ident) LLVM.Value)
 
@@ -147,15 +142,16 @@ liftBB lti phiFn bb = do
       -- * Define previous block to end with pushing call frame.
       -- * Process rest of instructions.
       impl (Result reg (LLVM.Call _b tp v tpvl):r) idx il = do
+        let res = Typed { typedType = tp, typedValue = reg }
         defineBlock (blockName idx) $ reverse il ++ 
           [ SetCurrentBlock (blockName (idx+1))
-          , PushCallFrame (Just reg) tp v tpvl ]
+          , PushCallFrame v tpvl (Just res)]
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
       impl (Effect (LLVM.Call _b tp v tpvl):r) idx il = do
         defineBlock (blockName idx) $ reverse il ++ 
           [ SetCurrentBlock (blockName (idx+1))
-          , PushCallFrame Nothing tp v tpvl ]
+          , PushCallFrame v tpvl Nothing ]
         impl r (idx+1) []
       impl [Effect (LLVM.Jump tgt)] idx il = do
         defineBlock (blockName idx) $
@@ -201,6 +197,8 @@ liftBB lti phiFn bb = do
                    Result id (LLVM.FCmp op tpv1 v2)    -> Assign id (FCmp op tpv1 v2)
                    Result id (LLVM.GEP tp tpvl)        -> Assign id (GEP tp tpvl)
                    Result id (LLVM.Select tpc tpv1 v2) -> Assign id (Select tpc tpv1 v2)
+                   Result id (LLVM.ExtractValue tpv i) -> Assign id (ExtractValue tpv i)
+                   Result id (LLVM.InsertValue tpv tpa i) -> Assign id (InsertValue tpv tpa i)
                    _ | null r -> liftError $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt
                    _ -> liftError $ 
                           text "Terminal instruction found before end of block: "
