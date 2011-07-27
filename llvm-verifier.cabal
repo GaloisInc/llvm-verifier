@@ -22,8 +22,14 @@ Flag build-tests
   default: False
 
 library
+  if !flag(build-library)
+    buildable: False
+
   if flag(abc-backend)
     cpp-options: -DUseABC
+    build-depends: abcBridge
+  else 
+    build-depends: Aiger
 
   build-depends:
       base >= 4
@@ -41,9 +47,6 @@ library
     Data.LLVM.Symbolic.Translation
 
   other-modules:
-
-  if !flag(build-library)
-    buildable: False
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
