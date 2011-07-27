@@ -8,7 +8,7 @@
 --   the merge frame stack.  
 -- * It allows IfThenElse instructions to appear directly within blocks.
 -- * 
-module SymAST 
+module Data.LLVM.Symbolic.AST 
   ( FuncID
   , SymBlockID 
   , initSymBlockID
@@ -16,7 +16,7 @@ module SymAST
   , ppSymBlockID
   , Reg
   , LLVM.Typed(..)
-  , SymValue(..)
+  , SymValue
   , SymExpr(..)
   , SymCond(..)
   , SymStmt(..)
@@ -29,7 +29,6 @@ import Data.Int (Int32)
 import Data.List (intersperse)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Vector (Vector)
 import qualified Text.LLVM.AST as LLVM
 import Text.PrettyPrint.HughesPJ
 
@@ -58,14 +57,14 @@ initSymBlockID = InitBlock
 -- | Create new block id for block with given name and unique integer.
 -- The first block is for the entry point to the LLVM block.
 symBlockID :: Maybe LLVM.Ident -> Int -> SymBlockID
-symBlockID (Just id) = NamedBlock id
+symBlockID (Just i) = NamedBlock i
 symBlockID Nothing = UnnamedBlock
 
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc
 ppSymBlockID InitBlock = text "init"
-ppSymBlockID (NamedBlock id n) =
-  text "%N" <> LLVM.ppIdent id <> char '.' <> int n
+ppSymBlockID (NamedBlock i n) =
+  text "%N" <> LLVM.ppIdent i <> char '.' <> int n
 ppSymBlockID (UnnamedBlock n) =
   text "%U." <> int n
 
@@ -126,9 +125,11 @@ ppSymExpr (GEP ptr ixs) = text "getelementptr" <+> commas (map (ppTypedValue) (p
 ppSymExpr (Select c t f) = text "select" <+> ppTypedValue c
                          <> comma <+> ppTypedValue t
                          <> comma <+> LLVM.ppType (LLVM.typedType t) <+> ppSymValue f
-ppSymExpr (ExtractValue v i) = text "extractvalue" <+> ppTypedValue v <> comma <+> integer (toInteger i)
-ppSymExpr (InsertValue a v i) = text "insertvalue" <+> ppTypedValue a <> comma <+> ppTypedValue v
-
+ppSymExpr (ExtractValue v i) = text "extractvalue" <+> ppTypedValue v
+                             <> comma <+> integer (toInteger i)
+ppSymExpr (InsertValue a v i) = text "insertvalue" <+> ppTypedValue a
+                              <> comma <+> ppTypedValue v 
+                              <> comma <+> integer (toInteger i)
 -- | Predicates in symbolic simulator context.
 data SymCond
   -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.

@@ -19,20 +19,16 @@
 --   a SSA destruction step to replace the phi instructions with explicitly reads and writes to
 --   registers.  Tracking the previous block is quite simple.  However, we may want to replace
 --   the SSA values with registers for efficiency purposes anyways.
-module SymTranslation 
-  ( LLVMTranslationInfo(..)
-  , liftDefine
-  ) where
+module Data.LLVM.Symbolic.Translation (LLVMTranslationInfo(..), liftDefine) where
 
 import Control.Monad.State.Strict
 import Data.Map (Map)
 import qualified Data.Map as Map
-import qualified Data.Vector as V
 import qualified Text.LLVM.AST as LLVM
 import Text.LLVM.AST (Stmt(..))
 import Text.PrettyPrint.HughesPJ
 
-import SymAST
+import Data.LLVM.Symbolic.AST
 
 -- | Information about basic block and control-flow graph used during
 -- code generation.
@@ -63,9 +59,9 @@ newtype BlockGenerator a = BG (State BGState a)
 
 -- | Define block with given identifier.
 defineBlock :: SymBlockID -> [SymStmt] -> BlockGenerator ()
-defineBlock id stmts = 
-  let b = SymBlock { sbId = id, sbStmts = stmts }
-   in BG $ modify $ \s -> s { lsBlocks = Map.insert id b (lsBlocks s) }
+defineBlock sbid stmts = 
+  let b = SymBlock { sbId = sbid, sbStmts = stmts }
+   in BG $ modify $ \s -> s { lsBlocks = Map.insert sbid b (lsBlocks s) }
 
 -- | Run block generator.
 runBlockGenerator :: LLVM.Symbol
@@ -148,7 +144,7 @@ liftBB lti phiFn bb = do
           , PushCallFrame v tpvl (Just res)]
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
-      impl (Effect (LLVM.Call _b tp v tpvl):r) idx il = do
+      impl (Effect (LLVM.Call _b _tp v tpvl):r) idx il = do
         defineBlock (blockName idx) $ reverse il ++ 
           [ SetCurrentBlock (blockName (idx+1))
           , PushCallFrame v tpvl Nothing ]
@@ -185,25 +181,25 @@ liftBB lti phiFn bb = do
       -- | Phi statements are handled by initial blocks.
       impl (Result _id (LLVM.Phi _ _):r) idx il = impl r idx il
       impl (Effect (LLVM.Comment _):r) idx il = impl r idx il
-      impl (stmt:r) idx il =
+      impl (stmt:rest) idx il =
         let s' = case stmt of
-                   Result id (LLVM.Arith op tpv1 v2)   -> Assign id (Arith op tpv1 v2)
-                   Result id (LLVM.Bit   op tpv1 v2)   -> Assign id (Bit   op tpv1 v2)
-                   Result id (LLVM.Conv  op tpv tp)    -> Assign id (Conv  op tpv tp)
-                   Result id (LLVM.Alloca tp mtpv mi)  -> Assign id (Alloca tp mtpv mi)
-                   Result id (LLVM.Load tpv)           -> Assign id (Load tpv)
-                   Effect    (LLVM.Store a v)          -> Store a v
-                   Result id (LLVM.ICmp op tpv1 v2)    -> Assign id (ICmp op tpv1 v2)
-                   Result id (LLVM.FCmp op tpv1 v2)    -> Assign id (FCmp op tpv1 v2)
-                   Result id (LLVM.GEP tp tpvl)        -> Assign id (GEP tp tpvl)
-                   Result id (LLVM.Select tpc tpv1 v2) -> Assign id (Select tpc tpv1 v2)
-                   Result id (LLVM.ExtractValue tpv i) -> Assign id (ExtractValue tpv i)
-                   Result id (LLVM.InsertValue tpv tpa i) -> Assign id (InsertValue tpv tpa i)
-                   _ | null r -> liftError $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt
+                   Result r (LLVM.Arith op tpv1 v2)   -> Assign r (Arith op tpv1 v2)
+                   Result r (LLVM.Bit   op tpv1 v2)   -> Assign r (Bit   op tpv1 v2)
+                   Result r (LLVM.Conv  op tpv tp)    -> Assign r (Conv  op tpv tp)
+                   Result r (LLVM.Alloca tp mtpv mi)  -> Assign r (Alloca tp mtpv mi)
+                   Result r (LLVM.Load tpv)           -> Assign r (Load tpv)
+                   Effect   (LLVM.Store a v)          -> Store a v
+                   Result r (LLVM.ICmp op tpv1 v2)    -> Assign r (ICmp op tpv1 v2)
+                   Result r (LLVM.FCmp op tpv1 v2)    -> Assign r (FCmp op tpv1 v2)
+                   Result r (LLVM.GEP tp tpvl)        -> Assign r (GEP tp tpvl)
+                   Result r (LLVM.Select tpc tpv1 v2) -> Assign r (Select tpc tpv1 v2)
+                   Result r (LLVM.ExtractValue tpv i) -> Assign r (ExtractValue tpv i)
+                   Result r (LLVM.InsertValue tpv tpa i) -> Assign r (InsertValue tpv tpa i)
+                   _ | null rest -> liftError $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt
                    _ -> liftError $ 
                           text "Terminal instruction found before end of block: "
                             <+> LLVM.ppStmt stmt
-         in impl r idx (s' : il)
+         in impl rest idx (s' : il)
    in impl (LLVM.bbStmts bb) 0 []
 
 liftDefine :: LLVMTranslationInfo
@@ -216,13 +212,13 @@ liftDefine lti d =
     -- Define init block that pushes post dominator frames then jumps to first
     -- block.
     defineBlock initSymBlockID $
-       (map (\d -> PushPostDominatorFrame (symBlockID (Just d) 0))
+       (map (\dom -> PushPostDominatorFrame (symBlockID (Just dom) 0))
             (ltiPostDominators lti initBlockLabel))
          ++ [SetCurrentBlock (symBlockID initBlockLabel 0)]
     let parsePhiStmts :: [Stmt] -> [PhiInstr] 
         parsePhiStmts sl =
-          [ (id, tp, valMap)
-          | LLVM.Result id (LLVM.Phi tp vals) <- sl
+          [ (r, tp, valMap)
+          | LLVM.Result r (LLVM.Phi tp vals) <- sl
           , let valMap = Map.fromList [(Just b, v) | (v,b) <- vals]]
     let blockMap :: Map LLVM.Ident [PhiInstr]
         blockMap = Map.fromList 
