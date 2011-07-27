@@ -8,13 +8,13 @@ directory.
 To use the ABC backend (recommended):
 
 1. Check out the abcBridge repo.
-2. $ cabal-dev install . ../Verinf <abcBridge location>
+2. $ cabal-dev install . ../Verinf <abcBridge location> <llvm-pretty location>
 
 --------------------------------------------------------------------------------
 To DISABLE the ABC backend (uses the Aiger package):
 
 1. Check out the Aiger repo.
-2. $ cabal-dev install . ../Verinf <Aiger location> --flags=-abc-backend
+2. $ cabal-dev install . ../Verinf <Aiger location> <llvm-pretty location> --flags=-abc-backend
 
 []
 
