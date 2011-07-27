@@ -1,0 +1,48 @@
+Name:           llvm-verifier
+Version:        0.1.0
+Author:         Galois Inc.
+Maintainer:     jhendrix@galois.com, jstanley@galois.com
+Build-type:     Simple
+Cabal-version: >= 1.8
+
+Flag abc-backend
+  Description: Use the ABC backend for generating AIGs
+  Default: True
+
+Flag build-library
+  description: Build the LLVM-verifier library.
+  default: True
+
+Flag build-examples
+  description: Build the example executables
+  default: False
+
+Flag build-tests
+  description: Build the test executables
+  default: False
+
+library
+  if flag(abc-backend)
+    cpp-options: -DUseABC
+
+  build-depends:
+      base >= 4
+    , containers
+    , llvm-pretty
+    , mtl
+    , pretty
+    , vector
+    , Verinf
+
+  hs-source-dirs: src
+
+  exposed-modules:
+    Data.LLVM.Symbolic.AST
+    Data.LLVM.Symbolic.Translation
+
+  other-modules:
+
+  if !flag(build-library)
+    buildable: False
+
+  GHC-options: -O2 -Wall -fno-ignore-asserts
