@@ -1,134 +1,55 @@
 Name:           llvm-verifier
+<<<<<<< HEAD
 Version:        0.1
 Author:         Galois Inc.
 Maintainer:     jstanley@galois.com
+=======
+Version:        0.1.0
+Author:         Galois Inc.
+Maintainer:     jhendrix@galois.com, jstanley@galois.com
+>>>>>>> jhx-wip
 Build-type:     Simple
 Cabal-version: >= 1.8
 
 Flag abc-backend
-  Description: Use the ABC backend for generating AIGs.
+  Description: Use the ABC backend for generating AIGs
   Default: True
 
 Flag build-library
-  description: Build the llvm-verifier library.
-  default: True
-
-Flag build-lss
-  description: Build the LSS executable.
+  description: Build the LLVM-verifier library.
   default: True
 
 Flag build-examples
-  description: Build the example executables.
+  description: Build the example executables
   default: False
 
 Flag build-tests
-  description: Build the test executables.
+  description: Build the test executables
   default: False
 
 library
   if flag(abc-backend)
     cpp-options: -DUseABC
 
---   build-depends:
---       array
---     , base >= 4
---     , binary
---     , bytestring
---     , containers
---     , data-binary-ieee754
---     , directory
---     , executable-path
---     , fingertree
---     , filepath
---     , mtl == 2.0.*
---     , pretty
---     , vector >= 0.7
---     , zlib
---     , Verinf
--- 
---   hs-source-dirs: src
--- 
---   exposed-modules:
---     Analysis.CFG
---     Execution
---     JarReader
---     JavaParser
---     JavaParser.Common
---     MethodSpec
---     ProofUtils
---     SBVModel.SBV
---     SBVParser
---     Simulation
---     Utils
---     Utils.Simulation
--- 
---   other-modules:
---     Execution.Codebase
---     Execution.JavaSemantics
---     Execution.Stepper
--- 
---   if !flag(build-library)
---     buildable: False
--- 
---   GHC-options: -O2 -Wall -fno-ignore-asserts
--- 
-executable lss
-  if !flag(build-lss)
+  build-depends:
+      base >= 4
+    , containers
+    , llvm-pretty
+    , mtl
+    , pretty
+    , vector
+    , Verinf
+
+  hs-source-dirs: src
+
+  exposed-modules:
+    Data.LLVM.Symbolic.AST
+    Data.LLVM.Symbolic.Translation
+
+  other-modules:
+
+  if !flag(build-library)
     buildable: False
-  if flag(abc-backend)
-    cpp-options: -DUseABC
 
---   build-depends:
---       array
---     , base >= 4
---     , binary
---     , bytestring
---     , cmdargs >= 0.6.1
---     , containers
---     , data-binary-ieee754
---     , directory
---     , executable-path
---     , filepath
---     , fingertree
---     , mtl == 2.0.*
---     , parsec >= 2.1.0.1
---     , pretty
---     , vector >= 0.7
---     , zlib
---     , Verinf
---     
---   hs-source-dirs   : src
---   main-is          : Main_jss.hs
---   ghc-options      : -O2 -Wall -fno-ignore-asserts
---   ghc-prof-options : -prof -auto-all
+  GHC-options: -O2 -Wall -fno-ignore-asserts
 
--- executable Tests
---   if !flag(build-tests)
---     buildable: False
---   if flag(abc-backend)
---     cpp-options: -DUseABC
-
---   build-depends: 
---       array
---     , base >= 4
---     , binary
---     , bytestring
---     , containers
---     , data-binary-ieee754
---     , directory
---     , executable-path
---     , filepath
---     , fingertree
---     , mtl == 2.0.*
---     , pretty
---     , process
---     , random
---     , vector >= 0.7
---     , zlib
---     , QuickCheck >= 2.1.2
---     , Verinf
--- 
---   main-is          : Tests.hs
---   hs-source-dirs   : src test/src
---   ghc-options      : -O2 -Wall -fno-ignore-asserts
---   ghc-prof-options : -prof -auto-all
