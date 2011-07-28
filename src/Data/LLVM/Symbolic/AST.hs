@@ -60,8 +60,7 @@ symBlockID i = NamedBlock i
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc
 ppSymBlockID InitBlock = text "init"
-ppSymBlockID (NamedBlock i n) =
-  text "%N" <> LLVM.ppIdent i <> char '.' <> int n
+ppSymBlockID (NamedBlock i n) = LLVM.ppIdent i <> char '.' <> int n
 
 -- | Identies a named value in a function.
 -- TODO: Figure out if LLVM.Ident is the right type and if this can be
