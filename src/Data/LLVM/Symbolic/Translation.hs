@@ -1,8 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 -- | This module defines the translation from LLVM IR to Symbolic IR.
--- 
+--
 -- In addition, to the LLVM IR, translation into symbolic IR requires post-dominator information
--- about the LLVM IR.  This information during translation to add 
+-- about the LLVM IR.  This information during translation to add
 --
 -- In addition, it has call and phi non-terminal instructions which may require special support.
 -- N.B. call and invoke can be given pointers to functions to support indirect calls.
@@ -12,7 +12,7 @@
 --    which instruction was being executing when returning from a method call.  To simplify the
 --    simulator, the symbolic representation splits blocks with calls into multiple basic
 --    blocks with each basic block except the last terminated with the call.
---  
+--
 -- [Phi Statements]
 --   The value of a Phi statement in LLVM depends on which previous block was executed.  To
 --   deal with these statements, we can either explicitly track the previous block, or perform
@@ -59,7 +59,7 @@ newtype BlockGenerator a = BG (State BGState a)
 
 -- | Define block with given identifier.
 defineBlock :: SymBlockID -> [SymStmt] -> BlockGenerator ()
-defineBlock sbid stmts = 
+defineBlock sbid stmts =
   let b = SymBlock { sbId = sbid, sbStmts = stmts }
    in BG $ modify $ \s -> s { lsBlocks = Map.insert sbid b (lsBlocks s) }
 
@@ -69,7 +69,7 @@ runBlockGenerator :: LLVM.Symbol
                   -> LLVM.Type
                   -> BlockGenerator ()
                   -> SymDefine
-runBlockGenerator nm args res (BG bg) = 
+runBlockGenerator nm args res (BG bg) =
   let initState = BGS { lsBlocks = Map.empty }
       finalState = execState bg initState
    in SymDefine {
@@ -84,7 +84,7 @@ type PhiInstr = (LLVM.Ident, LLVM.Type, Map (Maybe LLVM.Ident) LLVM.Value)
 -- Generates symbolic procedures for a LLVM basic block.
 --
 -- Invariants assumed by block:
--- * When jumping from the current block to a new block, 
+-- * When jumping from the current block to a new block,
 --   * The current block must ensure that the correct post-dominator merge frames are added.
 --   * The current block must set the phi value registers.
 liftBB :: LLVMTranslationInfo -- ^ Translation information from analysis
@@ -98,7 +98,7 @@ liftBB lti phiFn bb = do
       -- | Returns set block instructions for jumping to a particular target.
       -- This includes setting the current block and executing any phi instructions.
       phiInstrs :: LLVM.Ident -> [SymStmt]
-      phiInstrs tgt = 
+      phiInstrs tgt =
           [ Assign r (Val Typed { typedType = tp, typedValue = valMap Map.! llvmId })
             | (r, tp, valMap) <- phiFn tgt ]
       -- @brSymInstrs tgt@ returns the code for jumping to the target block.
@@ -121,7 +121,7 @@ liftBB lti phiFn bb = do
           (if ltiIsImmediatePostDominator lti llvmId tgt
              then [ MergePostDominator (symBlockID (Just tgt) 0) TrueSymCond
                   , ClearCurrentExecution ]
-             else map (\d -> PushPostDominatorFrame (symBlockID (Just d) 0))  
+             else map (\d -> PushPostDominatorFrame (symBlockID (Just d) 0))
                       (ltiNewPostDominators lti llvmId tgt))
       -- | Sequentially process statements.
       impl :: [LLVM.Stmt] -- ^ Remaining statements
@@ -129,7 +129,7 @@ liftBB lti phiFn bb = do
            -> [SymStmt] -- ^ Statements for previous nonterminals in reverse order.
            -> BlockGenerator ()
       impl [] _ _ = liftError $ text "Missing terminal instruction."
-      impl [Effect (LLVM.Ret tpv)] idx il = 
+      impl [Effect (LLVM.Ret tpv)] idx il =
         defineBlock (blockName idx) (reverse il ++ [MergeReturnAndClear tpv])
       impl [Effect LLVM.RetVoid] idx il =
         defineBlock (blockName idx) (reverse il ++ [MergeReturnVoidAndClear])
@@ -139,13 +139,13 @@ liftBB lti phiFn bb = do
       -- * Process rest of instructions.
       impl (Result reg (LLVM.Call _b tp v tpvl):r) idx il = do
         let res = Typed { typedType = tp, typedValue = reg }
-        defineBlock (blockName idx) $ reverse il ++ 
+        defineBlock (blockName idx) $ reverse il ++
           [ SetCurrentBlock (blockName (idx+1))
           , PushCallFrame v tpvl (Just res)]
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
       impl (Effect (LLVM.Call _b _tp v tpvl):r) idx il = do
-        defineBlock (blockName idx) $ reverse il ++ 
+        defineBlock (blockName idx) $ reverse il ++
           [ SetCurrentBlock (blockName (idx+1))
           , PushCallFrame v tpvl Nothing ]
         impl r (idx+1) []
@@ -156,10 +156,10 @@ liftBB lti phiFn bb = do
         let suspendSymBlockID = blockName (idx + 1)
         -- Define end of current block:
         --   If c is true:
-        --     Treat as unconditional branch to tgt1.   
+        --     Treat as unconditional branch to tgt1.
         --   Else if c if false:
         --     Treat as unconditional branch to tgt2.
-        --   Else 
+        --   Else
         --     Add pending execution for false branch, and keep executing true branch.
         --   Else
         defineBlock (blockName idx) $ reverse il ++
@@ -196,16 +196,20 @@ liftBB lti phiFn bb = do
                    Result r (LLVM.ExtractValue tpv i) -> Assign r (ExtractValue tpv i)
                    Result r (LLVM.InsertValue tpv tpa i) -> Assign r (InsertValue tpv tpa i)
                    _ | null rest -> liftError $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt
-                   _ -> liftError $ 
+                   _ -> liftError $
                           text "Terminal instruction found before end of block: "
                             <+> LLVM.ppStmt stmt
          in impl rest idx (s' : il)
    in impl (LLVM.bbStmts bb) 0 []
 
-liftDefine :: LLVMTranslationInfo
-           -> LLVM.Define
-           -> SymDefine
-liftDefine lti d =
+
+liftDefine :: LLVM.Define -> SymDefine
+liftDefine d = liftDefine' (mkLTI d) d
+
+liftDefine' :: LLVMTranslationInfo
+            -> LLVM.Define
+            -> SymDefine
+liftDefine' lti d =
   runBlockGenerator (LLVM.defName d) (LLVM.defArgs d) (LLVM.defRetType d) $ do
     let blocks@(initBlock:_) = LLVM.defBody d
     let initBlockLabel = LLVM.bbLabel initBlock
@@ -215,15 +219,19 @@ liftDefine lti d =
        (map (\dom -> PushPostDominatorFrame (symBlockID (Just dom) 0))
             (ltiPostDominators lti initBlockLabel))
          ++ [SetCurrentBlock (symBlockID initBlockLabel 0)]
-    let parsePhiStmts :: [Stmt] -> [PhiInstr] 
+    let parsePhiStmts :: [Stmt] -> [PhiInstr]
         parsePhiStmts sl =
           [ (r, tp, valMap)
           | LLVM.Result r (LLVM.Phi tp vals) <- sl
           , let valMap = Map.fromList [(Just b, v) | (v,b) <- vals]]
     let blockMap :: Map LLVM.Ident [PhiInstr]
-        blockMap = Map.fromList 
-                    [ (l, parsePhiStmts sl) 
+        blockMap = Map.fromList
+                    [ (l, parsePhiStmts sl)
                     | LLVM.BasicBlock { LLVM.bbLabel = Just l, LLVM.bbStmts = sl } <- blocks ]
-    let phiFn :: LLVM.Ident -> [PhiInstr] 
+    let phiFn :: LLVM.Ident -> [PhiInstr]
         phiFn i = blockMap Map.! i
     mapM_ (\bb -> liftBB lti phiFn bb) blocks
+
+-- STUB TODO
+mkLTI :: LLVM.Define -> LLVMTranslationInfo
+mkLTI _def = LTI (\_ -> []) (\_ _ -> False) (\_ _ -> [])
