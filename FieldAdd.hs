@@ -36,7 +36,7 @@ usub_with_overflow w = do
 fieldModule = snd $ runLLVM $ do
   uadd384 <- uadd_with_overflow 384
   usub384 <- usub_with_overflow 384
-  
+
   let extractPair p = do
         x <- extractValue p 0
         y <- extractValue p 1
@@ -48,15 +48,11 @@ fieldModule = snd $ runLLVM $ do
     c <- c1 `bor` c2
     r <- select c sum2 sum1
     ret r
-   
+
 -- let negP = (2 ^ 128 + 2 ^ 96 - 2 ^ 32 + 1)
 
 test = do
   putStrLn $ render $ ppModule fieldModule
   let [fAdd] = modDefines fieldModule
   let cfg = LLVM.buildCFG (defBody fAdd)
-  let lti = LTI { ltiPostDominators = \_ -> []
-                , ltiIsImmediatePostDominator = \_ _ -> False
-                , ltiNewPostDominators = \_ _ -> []
-                }
-  putStrLn $ render $ ppSymDefine $ liftDefine lti fAdd
+  putStrLn $ render $ ppSymDefine $ liftDefine fAdd

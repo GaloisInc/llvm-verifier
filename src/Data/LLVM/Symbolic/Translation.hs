@@ -23,6 +23,7 @@ module Data.LLVM.Symbolic.Translation (LLVMTranslationInfo(..), liftDefine) wher
 
 import Control.Monad.State.Strict
 import Data.Map (Map)
+import qualified Data.LLVM.CFG as CFG
 import qualified Data.Map as Map
 import qualified Text.LLVM.AST as LLVM
 import Text.LLVM.AST (Stmt(..))
@@ -234,4 +235,6 @@ liftDefine' lti d =
 
 -- STUB TODO
 mkLTI :: LLVM.Define -> LLVMTranslationInfo
-mkLTI _def = LTI (\_ -> []) (\_ _ -> False) (\_ _ -> [])
+mkLTI def = LTI (\_ -> []) (\_ _ -> False) (\_ _ -> [])
+  where _cfg = CFG.buildCFG (LLVM.defBody def)
+
