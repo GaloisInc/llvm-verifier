@@ -11,9 +11,6 @@
 module Data.LLVM.Symbolic.AST
   ( FuncID
   , SymBlockID
-  , initSymBlockID
-  , symBlockID
-  , ppSymBlockID
   , Reg
   , LLVM.Typed(..)
   , SymValue
@@ -22,7 +19,12 @@ module Data.LLVM.Symbolic.AST
   , SymStmt(..)
   , SymBlock(..)
   , SymDefine(..)
+  , initSymBlockID
+  , lookupSymBlock
+  , ppSymBlock
+  , ppSymBlockID
   , ppSymDefine
+  , symBlockID
   ) where
 
 import Data.Int (Int32)
@@ -226,6 +228,12 @@ data SymDefine = SymDefine {
        , sdRetType :: LLVM.Type
        , sdBody :: Map SymBlockID SymBlock
        }
+
+lookupSymBlock :: SymDefine -> SymBlockID -> SymBlock
+lookupSymBlock sd sid =
+  case Map.lookup sid (sdBody sd) of
+    Nothing  -> error $ "Failed to locate symblock " ++ show (ppSymBlockID sid)
+    Just blk -> blk
 
 ppSymDefine :: SymDefine -> Doc
 ppSymDefine d = text "define"

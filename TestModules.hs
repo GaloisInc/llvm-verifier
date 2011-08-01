@@ -8,6 +8,9 @@ module TestModules
   , exh
   , multiexit
   , testTranslate
+  , simple
+  , trivial0
+  , trivial1
   )
 
 where
@@ -15,6 +18,43 @@ where
 import FieldAdd
 import Text.LLVM
 import Data.LLVM.Symbolic.Translation
+
+trivial0 :: Module
+trivial0 = snd $ runLLVM $ do
+  define emptyFunAttrs (iT 32) "int32_add" (iT 32, iT 32) $ \x y ->
+    ret =<< add x y
+
+trivial1 :: Module
+trivial1 = snd $ runLLVM $ do
+  define emptyFunAttrs (iT 32) "int32_add" (iT 32, iT 32) $ \x y -> do
+    "entry"
+    r0 <- alloca (iT 32) Nothing (Just 4)
+    r1 <- alloca (iT 32) Nothing (Just 4)
+    store x r0
+    store y r1
+    r2 <- load r0
+    r3 <- load r1
+    r4 <- add r2 r3
+    ret r4
+
+simple :: Module
+simple = snd $ runLLVM $ do
+  define emptyFunAttrs (iT 32) "simple" (iT 1, iT 32) $ \c0 x -> do
+    "init"
+    br c0 "then" "else"
+
+    "then"
+    r1 <- add x (int 42)
+    jump "exit"
+
+    "else"
+    r2 <- add x (int 99)
+    jump "exit"
+
+    "exit"
+    r3 <- phi (iT 32) [r1 `from` "then", r2 `from` "else"]
+    ret r3
+
 
 factorial :: Module
 factorial = snd $ runLLVM $ do
