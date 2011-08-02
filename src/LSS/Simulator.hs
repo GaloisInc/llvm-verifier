@@ -12,6 +12,8 @@ Point-of-contact : jstanley
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE TypeSynonymInstances       #-}
+{-# LANGUAGE ViewPatterns               #-}
+{-# OPTIONS_GHC -fno-warn-orphans       #-}
 
 module LSS.Simulator
   ( module LSS.Execution.Codebase
@@ -23,22 +25,25 @@ module LSS.Simulator
 where
 
 import           Control.Applicative
+import           Control.Arrow             hiding ((<+>))
+import           Control.Monad
 import           Control.Monad.State       hiding (State)
 import           Data.Int
+import           Data.Maybe
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Semantics
 import           LSS.SBEInterface
 import           Text.PrettyPrint.HughesPJ
+import           Text.PrettyPrint.Pretty
 
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as LLVM
 import qualified Text.PrettyPrint.HughesPJ as PP
 
-type MergeFrame term = MergeFrame' (Path term) term
-type CSEntry term    = CSEnt' (Path term) term
 type CtrlStk term    = CtrlStk' (Path term) term
+type MergeFrame term = MergeFrame' (Path term) term
 
 -- | Atomic values for simulation, parameterized over types used by the symbolic
 -- simulator to represent primitive types.
@@ -90,7 +95,7 @@ runSimulator cb sbe m =
   where
     setup = do
       -- Push the merge frame corresponding to program exit
-      modifyCS =<< pushMF . ExitFrame <$> emptyPath
+      modifyCS =<< pushMF . emptyExitFrame <$> emptyPath
 
 newSimState :: Codebase -> sbe -> State sbe term
 newSimState cb sbe = State cb sbe emptyCtrlStk
@@ -108,13 +113,12 @@ callDefine callee retTy args = do
           <$> emptyPath
   modifyCS $ pushPendingPath path . pushMF emptyReturnFrame
 
+  liftIO $ putStrLn $ show $ ppSymDefine def
+
   cs <- gets ctrlStk
-  liftIO $ putStrLn $ show $ ppCS cs
+  liftIO $ putStrLn $ show $ pp cs
 
-  fail "early term"
-
-  run_
-  return undefined
+  run
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
@@ -143,13 +147,65 @@ type Term = Int
 -----------------------------------------------------------------------------------------
 -- The Semantics instance & related functions
 
-instance MonadIO m => Semantics (Simulator sbe Term m) Term Term where
+instance
+  (Functor m, MonadIO m)
+  => Semantics (Simulator sbe Term m) Term Term where
   iAdd x y = return $ x + y
-  doStep   = undefined
-  run      = undefined
+  run      = do
+    mpath <- getCurrentPath
+    case mpath of
+      Nothing -> liftIO $ putStrLn $ "run terminating: no path to execute (ok)"
+      Just p  -> runPath p
+    where
+      runPath (pathCB -> Nothing)    = error "runPath: no current block"
+      runPath p@(pathCB -> Just pcb) = withActiveFrame p $ \frm -> do
+        def <- lookupDefine (frmFuncSym frm) <$> gets codebase
+        let blk = lookupSymBlock def pcb
+
+        liftIO $ putStrLn $ replicate 80 '-'
+        liftIO $ putStrLn $ show $ ppSymBlock blk
+        liftIO $ putStrLn $ replicate 80 '-'
+
+        mapM_ step (sbStmts blk)
+        run
+      runPath _ = error "unreachable"
+
+-- TODO: Pull this out into its own module
+step :: (Functor m, MonadIO m) => SymStmt -> Simulator sbe term m ()
+step ClearCurrentExecution                = error "ClearCurrentExecution nyi"
+step (PushCallFrame _fn _args _mres)      = error "PushCallFrame nyi"
+step (PushInvokeFrame _fn _args _mres _e) = error "PushInvokeFrame nyi"
+step (PushPostDominatorFrame _pdid)       = error "PushPostDominatorFrame nyi"
+step (MergePostDominator _pdid _cond)     = error "MergePostDominator nyi"
+step MergeReturnVoidAndClear              = error "MergeReturnVoidAndClear nyi"
+step (MergeReturnAndClear _resx)          = error "MergeReturnAndClear nyi"
+step (PushPendingExecution _cond)         = error "PushPendingExecution nyi"
+step (SetCurrentBlock bid)               = do
+  liftIO $ putStrLn $ "SetCurrentBlock: setting current block in current path to " ++ show (ppSymBlockID bid)
+  modifyCurrentPath $ \p -> p{ pathCB = Just bid }
+
+step (AddPathConstraint _cond)            = error "AddPathConstraint nyi"
+step (Assign _reg _expr)                  = error "Assign nyi"
+step (Store _addr _val)                   = error "Store nyi"
+step (IfThenElse _c _thenStms _elseStms)  = error "IfThenElse nyi"
+step Unreachable                          = error "Unreachable nyi"
+step Unwind                               = error "Unwind nyi"
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+withActiveFrame :: Path term -> (Frame term -> a) -> a
+withActiveFrame (pathFrames -> pfs) f
+  | null pfs  = error "withActiveFrame: empty frame list"
+  | otherwise = f (head pfs)
+
+-- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
+-- that the control stack is empty or the top entry of the control stack has no
+-- pending paths recorded.
+getCurrentPath ::
+  (Functor m, Monad m)
+  => Simulator sbe term m (Maybe (Path term))
+getCurrentPath = topPendingPath <$> gets ctrlStk
 
 emptyPath :: Sim sbe term m i r => Simulator sbe term m (Path term)
 emptyPath = Path [] Nothing Nothing Nothing . falseTerm <$> gets symBE
@@ -157,61 +213,38 @@ emptyPath = Path [] Nothing Nothing Nothing . falseTerm <$> gets symBE
 setCurrentBlock :: SymBlockID -> Path term -> Path term
 setCurrentBlock blk p = p{ pathCB = Just blk }
 
+-- | @pushFrame f p@ pushes frame f onto path p's frame stack
 pushFrame :: Frame term -> Path term -> Path term
 pushFrame f p@Path{ pathFrames = frms } = p{ pathFrames = f : frms}
 
-modifyCS ::
-  Sim sbe term m i r
-  => (CtrlStk term -> CtrlStk term)
-  -> Simulator sbe term m ()
+-- | Manipulate the control stack
+modifyCS :: Monad m => (CtrlStk term -> CtrlStk term) -> Simulator sbe term m ()
 modifyCS f = modify $ \s -> s{ ctrlStk = f (ctrlStk s) }
 
+-- | Manipulate the current path (i.e., the first pending path in topmost
+-- control stack entry)
+modifyCurrentPath ::
+  (Functor m , MonadIO m)
+  => (Path term -> Path term) -> Simulator sbe term m ()
+modifyCurrentPath f = modifyCS $ \cs ->
+  let (p, cs') = popPendingPath cs in pushPendingPath (f p) cs'
+
 --------------------------------------------------------------------------------
--- Misc pretty-printing
+-- Pretty printing
 
-ppRegMap :: Show a => M.Map Reg a -> Doc
-ppRegMap mp =
-  vcat [ text (show r ++ " => " ++ show v) | (r,v) <- M.toList mp]
+instance Show a => Pretty (M.Map Reg a) where
+  pp mp = vcat [ text (show r ++ " => " ++ show v) | (r,v) <- M.toList mp]
 
-ppFrame :: Show term => Frame term -> Doc
-ppFrame (Frame sym regMap) =
-  text "Frm" <> parens (LLVM.ppSymbol sym) <> colon $+$ nest 2 (ppRegMap regMap)
+instance Show term => Pretty (Frame term) where
+  pp (Frame sym regMap) =
+    text "Frm" <> parens (LLVM.ppSymbol sym) <> colon $+$ nest 2 (pp regMap)
 
-ppPath :: Show term => Path term -> Doc
-ppPath (Path frms _mexc _mrv mcb pc) =
-  text "Path"
-  <>  brackets (maybe (text "none") ppSymBlockID mcb)
-  <>  colon <> text (show pc)
-  $+$ nest 2 (vcat $ map ppFrame frms)
-
-ppMF :: Show term => MergeFrame term -> Doc
-ppMF (ExitFrame p)                    = text "MF(Exit):" $+$ nest 2 (ppPath p)
-ppMF (PostdomFrame p)                 = text "MF(Pdom):" $+$ nest 2 (ppPath p)
-ppMF (ReturnFrame _mr nl mns mel mes) = text "MF(Retn):" $+$ nest 2 rest
-  where
-    mpath str = nest 2 . maybe (parens $ text str) ppPath
-    rest      = text "Normal@" <> ppSymBlockID nl <> colon
-                $+$ mpath "no normal path set" mns
-                $+$ maybe PP.empty
-                      ( \el ->
-                          text "Exc@" <> ppSymBlockID el
-                          $+$ mpath "no exception path set" mes
-                      )
-                      mel
-
-ppCSE :: Show term => CSEntry term -> Doc
-ppCSE (CSEnt mf pps) =
-  hang (text "CSE" <+> lbrace) 2
-    ( ppMF mf
-      $+$ text "Pending paths:"
-      $+$ nest 2 (if null pps then text "(none)" else vcat (map ppPath pps))
-    )
-  $+$ rbrace
-
-ppCS :: Show term => CtrlStk term -> Doc
-ppCS (CtrlStk cses) =
-  hang (text "CS" <+> lbrace) 2 (vcat (map ppCSE cses))
-  $+$ rbrace
+instance Show term => Pretty (Path term) where
+  pp (Path frms _mexc _mrv mcb pc) =
+    text "Path"
+    <>  brackets (maybe (text "none") ppSymBlockID mcb)
+    <>  colon <> text (show pc)
+    $+$ nest 2 (vcat $ map pp frms)
 
 --------------------------------------------------------------------------------
 -- Typeclass goop

@@ -27,11 +27,6 @@ class (MonadIO m)
   --------------------------------------------------------------------------------
   -- Execution and control-flow operations
 
-  -- | Single-steps the current program
-  doStep :: m ()
+  -- | Executes until the program terminates
+  run :: m ()
 
-  -- | Executes the doStep operation until the program terminates
-  run :: m rslt
-
-run_ :: Semantics m i r => m ()
-run_ = run >> return ()
