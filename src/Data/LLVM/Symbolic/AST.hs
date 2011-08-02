@@ -24,6 +24,8 @@ module Data.LLVM.Symbolic.AST
   , ppSymBlock
   , ppSymBlockID
   , ppSymDefine
+  , ppSymStmt
+  , ppSymExpr
   , symBlockID
   ) where
 

@@ -7,20 +7,18 @@ Point-of-contact : jstanley
 
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE TypeFamilies           #-}
 
 module LSS.SBEInterface where
 
-class SupportedSBE sbe term | sbe -> term where
-  falseTerm :: sbe -> term
+data SBE m term = SBE
+  { falseTerm :: m term
+  }
 
 --------------------------------------------------------------------------------
 -- SBE implementations
 
-newtype SBEStub = SBEStub ()
-sbeStub :: SBEStub
-sbeStub = SBEStub ()
-
-instance SupportedSBE SBEStub Int where
-  falseTerm SBEStub{} = 0
-
-
+sbeStub :: SBE IO Int
+sbeStub = SBE
+  { falseTerm = return 0
+  }
