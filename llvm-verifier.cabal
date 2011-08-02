@@ -1,8 +1,8 @@
-Name:           llvm-verifier
-Version:        0.1.0
-Author:         Galois Inc.
-Maintainer:     jhendrix@galois.com, jstanley@galois.com
-Build-type:     Simple
+Name:          llvm-verifier
+Version:       0.1.0
+Author:        Galois Inc.
+Maintainer:    jhendrix@galois.com, jstanley@galois.com
+Build-type:    Simple
 Cabal-version: >= 1.8
 
 Flag abc-backend
@@ -22,8 +22,14 @@ Flag build-tests
   default: False
 
 library
+  if !flag(build-library)
+    buildable: False
+
   if flag(abc-backend)
     cpp-options: -DUseABC
+    build-depends: abcBridge
+  else 
+    build-depends: Aiger
 
   build-depends:
       base >= 4
@@ -42,7 +48,5 @@ library
 
   other-modules:
 
-  if !flag(build-library)
-    buildable: False
-
   GHC-options: -O2 -Wall -fno-ignore-asserts
+
