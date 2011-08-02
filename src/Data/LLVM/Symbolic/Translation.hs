@@ -1,27 +1,27 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ViewPatterns               #-}
-
 -- | This module defines the translation from LLVM IR to Symbolic IR.
 --
--- In addition, to the LLVM IR, translation into symbolic IR requires post-dominator information
--- about the LLVM IR.  This information during translation to add
+-- Translation into symbolic IR requires post-dominator information about the
+-- LLVM IR.  This information is analyzed and generated during translation.
 --
--- In addition, it has call and phi non-terminal instructions which may require special support.
--- N.B. call and invoke can be given pointers to functions to support indirect calls.
+-- In addition to branches, call and phi non-terminal instructions require
+-- special support:
 --
 -- [Call Statements]
---    If call statements remain in the IR, then the symbolic simulator will need to remember
---    which instruction was being executing when returning from a method call.  To simplify the
---    simulator, the symbolic representation splits blocks with calls into multiple basic
---    blocks with each basic block except the last terminated with the call.
+--    To simplify the simulator, the symbolic representation splits blocks with
+--    calls into multiple basic blocks with each basic block except the last
+--    terminated with the call.
 --
 -- [Phi Statements]
---   The value of a Phi statement in LLVM depends on which previous block was executed.  To
---   deal with these statements, we can either explicitly track the previous block, or perform
---   a SSA destruction step to replace the phi instructions with explicitly reads and writes to
---   registers.  Tracking the previous block is quite simple.  However, we may want to replace
---   the SSA values with registers for efficiency purposes anyways.
-module Data.LLVM.Symbolic.Translation (LLVMTranslationInfo(..), liftDefine, testTranslate) where
+--   The value of a Phi statement in LLVM depends on which previous block was
+--   executed.  Since phi statements must appear at the top of the block, we can
+--   move phi statements to execute during the transition from the previous
+--   block to the new block.
+module Data.LLVM.Symbolic.Translation 
+  ( liftDefine
+  , testTranslate
+  ) where
 
 import Control.Monad.State.Strict
 import Data.Map (Map)
@@ -34,77 +34,98 @@ import Text.PrettyPrint.HughesPJ
 
 import Data.LLVM.Symbolic.AST
 
--- | Information about basic block and control-flow graph used during
--- code generation.
-data LLVMTranslationInfo = LTI {
-    -- | @ltiPostDominators bb@ returns the post dominators obtained by
-    -- jumping to @bb@.  Entries are stored so that post-dominators visited
-    -- later are earlier in the list (e.g., the last entry is the immediate
-    -- post-dominator).
-    ltiPostDominators :: LLVM.Ident -> [LLVM.Ident]
-    -- | @ltiIsImmediatePostDominator bb n@ returns true if @n@ is the immediate
-    -- post-dominator of @bb@.
-  , ltiIsImmediatePostDominator :: LLVM.Ident -> LLVM.Ident -> Bool
-    -- | @ltiNewPostDominators bb n@ returns the new post dominators obtained by
-    -- jumping from @bb@ to @n@.  Entries are stored so that post-dominators
-    -- visited later are earlier in the list (e.g., the last entry is the
-    -- immediate post-dominator).
-  , ltiNewPostDominators :: LLVM.Ident -> LLVM.Ident -> [LLVM.Ident]
-  }
+-- Utility {{{1
 
 -- | This function is called whenever lifting fails due to an internal error.
 liftError :: Doc -> a
 liftError d = error (render d)
 
-data BGState = BGS { lsBlocks :: !(Map SymBlockID SymBlock) }
+-- LLVMTranslationInfo {{{1
+-- | Information about basic block and control-flow graph used during
+-- code generation.
+newtype LLVMTranslationInfo = LTI CFG.CFG
 
-newtype BlockGenerator a = BG (State BGState a)
-  deriving (Functor, Monad)
+-- | Build the translation info using the given CFG's dominator analysis
+mkLTI :: CFG.CFG -> LLVMTranslationInfo
+mkLTI = LTI
+
+-- | @ltiPostDominators lti bb@ returns the post dominators obtained by
+-- jumping to @bb@.  Entries are stored so that post-dominators visited
+-- later are earlier in the list (e.g., the last entry is the immediate
+-- post-dominator).
+ltiPostDominators :: LLVMTranslationInfo -> LLVM.Ident -> [LLVM.Ident]
+ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) = 
+  case lookup aid (CFG.pdoms cfg) of
+    Nothing   -> []
+    Just apds -> map (CFG.asName cfg) apds
+
+-- | @ltiIsImmediatePostDominator lti bb n@ returns true if @n@ is the immediate
+-- post-dominator of @bb@.
+ltiIsImmediatePostDominator :: LLVMTranslationInfo -> LLVM.Ident -> LLVM.Ident -> Bool
+ltiIsImmediatePostDominator (LTI cfg) (CFG.asId cfg -> aid) (CFG.asId cfg -> bid) =
+  case CFG.ipdom cfg aid of
+    Nothing    -> False
+    Just apdId -> apdId == bid
+
+-- | @ltiNewPostDominators lti bb n@ returns the new post dominators obtained by
+-- jumping from @bb@ to @n@.  Entries are stored so that post-dominators
+-- visited later are earlier in the list (e.g., the last entry is the
+-- immediate post-dominator).
+ltiNewPostDominators :: LLVMTranslationInfo -> LLVM.Ident -> LLVM.Ident -> [LLVM.Ident]
+ltiNewPostDominators lti a b = ltiPostDominators lti b L.\\ ltiPostDominators lti a
+
+-- Block generator Monad {{{1
+type BlockGenerator a = State [SymBlock] a
+
+mkSymBlock :: SymBlockID -> [SymStmt] -> SymBlock
+mkSymBlock sbid stmts = SymBlock { sbId = sbid, sbStmts = stmts }
 
 -- | Define block with given identifier.
 defineBlock :: SymBlockID -> [SymStmt] -> BlockGenerator ()
-defineBlock sbid stmts =
-  let b = SymBlock { sbId = sbid, sbStmts = stmts }
-   in BG $ modify $ \s -> s { lsBlocks = Map.insert sbid b (lsBlocks s) }
+defineBlock sbid stmts = modify (mkSymBlock sbid stmts:)
 
--- | Run block generator.
-runBlockGenerator :: LLVM.Symbol
-                  -> [Typed Reg]
-                  -> LLVM.Type
-                  -> BlockGenerator ()
-                  -> SymDefine
-runBlockGenerator nm args res (BG bg) =
-  let initState = BGS { lsBlocks = Map.empty }
-      finalState = execState bg initState
-   in SymDefine {
-          sdName = nm
-        , sdArgs = args
-        , sdRetType = res
-        , sdBody = lsBlocks finalState
-        }
+-- Phi instruction parsing {{{1
 
 type PhiInstr = (LLVM.Ident, LLVM.Type, Map LLVM.Ident LLVM.Value)
 
--- Generates symbolic procedures for a LLVM basic block.
+-- Define init block that pushes post dominator frames then jumps to first
+-- block.
+parsePhiStmts :: [Stmt] -> [PhiInstr]
+parsePhiStmts sl =
+  [ (r, tp, valMap)
+  | LLVM.Result r (LLVM.Phi tp vals) <- sl
+  , let valMap = Map.fromList [(b, v) | (v,b) <- vals]]
+
+-- | Maps LLVM Blocks to associated phi instructions.
+blockPhiMap :: [CFG.BB] -> Map LLVM.Ident [PhiInstr]
+blockPhiMap blocks =
+  Map.fromList
+    [ (l, parsePhiStmts sl)
+    | LLVM.BasicBlock { LLVM.bbLabel = (_bbid, l), LLVM.bbStmts = sl } <- blocks ]
+
+
+-- Lift LLVM basic block to symbolic block {{{1
 --
 -- Invariants assumed by block:
 -- * When jumping from the current block to a new block,
 --   * The current block must ensure that the correct post-dominator merge frames are added.
 --   * The current block must set the phi value registers.
 liftBB :: LLVMTranslationInfo -- ^ Translation information from analysis
-       -> (LLVM.Ident -> [PhiInstr]) -- ^ Returns phi instructions in block with given id.
+       -> Map LLVM.Ident [PhiInstr] -- ^ Maps block identifiers to phi instructions for block.
        -> CFG.BB -- ^ Basic block to generate.
        -> BlockGenerator ()
-liftBB lti phiFn bb = do
+liftBB lti phiMap bb = do
   let llvmId = CFG.blockName bb
       blockName :: Int -> SymBlockID
       blockName = symBlockID llvmId
       -- | Returns set block instructions for jumping to a particular target.
-      -- This includes setting the current block and executing any phi instructions.
+      -- This includes setting the current block and executing any phi
+      -- instructions.
       phiInstrs :: LLVM.Ident -> [SymStmt]
       phiInstrs tgt =
-          [ Assign r (Val Typed { typedType = tp, typedValue = valMap Map.! llvmId })
-            | (r, tp, valMap) <- phiFn tgt ]
+          [ Assign r (Val Typed { typedType = tp, typedValue = val })
+            | (r, tp, valMap) <- phiMap Map.! tgt
+            , let val = valMap Map.! llvmId ]
       -- @brSymInstrs tgt@ returns the code for jumping to the target block.
       -- Observations:
       --  * A post-dominator of a post-dominator of the current block is itself
@@ -130,7 +151,7 @@ liftBB lti phiFn bb = do
       -- | Sequentially process statements.
       impl :: [LLVM.Stmt] -- ^ Remaining statements
            -> Int -- ^ Index of symbolic block that we are defining.
-           -> [SymStmt] -- ^ Statements for previous nonterminals in reverse order.
+           -> [SymStmt] -- ^ Previously generated statements in reverse order.
            -> BlockGenerator ()
       impl [] _ _ = liftError $ text "Missing terminal instruction."
       impl [Effect (LLVM.Ret tpv)] idx il =
@@ -164,7 +185,7 @@ liftBB lti phiFn bb = do
         --   Else if c if false:
         --     Treat as unconditional branch to tgt2.
         --   Else
-        --     Add pending execution for false branch, and keep executing true branch.
+        --     Add pending execution for false branch, and execute true branch.
         --   Else
         defineBlock (blockName idx) $ reverse il ++
           [ IfThenElse (HasConstValue c 1)
@@ -206,51 +227,29 @@ liftBB lti phiFn bb = do
          in impl rest idx (s' : il)
    in impl (LLVM.bbStmts bb) 0 []
 
+-- Lift LLVM definitino to symbolic definition {{{1
 liftDefine :: LLVM.Define -> SymDefine
 liftDefine d =
-  runBlockGenerator (LLVM.defName d) (LLVM.defArgs d) (LLVM.defRetType d) $ do
-    let cfg            = CFG.buildCFG (LLVM.defBody d)
-        blocks         = CFG.allBBs cfg
-        initBlock      = CFG.bbById cfg (CFG.entryId cfg)
-        initBlockLabel = CFG.blockName initBlock
-        lti            = mkLTI cfg
-    -- Define init block that pushes post dominator frames then jumps to first
-    -- block.
-    defineBlock initSymBlockID $
-       (map (\dom -> PushPostDominatorFrame (symBlockID dom 0))
-            (ltiPostDominators lti initBlockLabel))
-         ++ [SetCurrentBlock (symBlockID initBlockLabel 0)]
-    let parsePhiStmts :: [Stmt] -> [PhiInstr]
-        parsePhiStmts sl =
-          [ (r, tp, valMap)
-          | LLVM.Result r (LLVM.Phi tp vals) <- sl
-          , let valMap = Map.fromList [(b, v) | (v,b) <- vals]]
-    let blockMap :: Map LLVM.Ident [PhiInstr]
-        blockMap = Map.fromList
-                    [ (l, parsePhiStmts sl)
-                    | LLVM.BasicBlock { LLVM.bbLabel = (_bbid, l), LLVM.bbStmts = sl } <- blocks ]
-    let phiFn :: LLVM.Ident -> [PhiInstr]
-        phiFn i = blockMap Map.! i
-    mapM_ (\bb -> liftBB lti phiFn bb) blocks
+  let cfg            = CFG.buildCFG (LLVM.defBody d)
+      lti            = mkLTI cfg
+      blocks         = CFG.allBBs cfg
+      initBlock      = CFG.bbById cfg (CFG.entryId cfg)
+      initBlockLabel = CFG.blockName initBlock
+      initSymBlock = 
+        mkSymBlock initSymBlockID
+                   ([ PushPostDominatorFrame (symBlockID dom 0) 
+                        | dom <- ltiPostDominators lti initBlockLabel]
+                    ++ [SetCurrentBlock (symBlockID initBlockLabel 0)])
+      phiMap = blockPhiMap blocks
+      symBlocks = initSymBlock : execState (mapM_ (liftBB lti phiMap) blocks) []
+   in SymDefine {
+          sdName = LLVM.defName d 
+        , sdArgs = LLVM.defArgs d
+        , sdRetType = LLVM.defRetType d
+        , sdBody = Map.fromList [ (sbId b,b) | b <- symBlocks ]
+        }
 
--- | Build the translation info using the given CFG's dominator analysis
-mkLTI :: CFG.CFG -> LLVMTranslationInfo
-mkLTI cfg = LTI pds ipd npds
-  where
-    pds :: LLVM.Ident -> [LLVM.Ident]
-    pds (CFG.asId cfg -> aid) = case lookup aid (CFG.pdoms cfg) of
-      Nothing   -> []
-      Just apds -> map (CFG.asName cfg) apds
-
-    ipd :: LLVM.Ident -> LLVM.Ident -> Bool
-    ipd (CFG.asId cfg -> aid) (CFG.asId cfg -> bid) =
-      case CFG.ipdom cfg aid of
-        Nothing    -> False
-        Just apdId -> apdId == bid
-
-    npds :: LLVM.Ident -> LLVM.Ident -> [LLVM.Ident]
-    npds a b = pds b L.\\ pds a
-
+-- Test code {{{1
 -- | Translate the given module
 testTranslate :: LLVM.Module -> IO ()
 testTranslate mdl = do
@@ -259,5 +258,3 @@ testTranslate mdl = do
   forM_ (LLVM.modDefines mdl) $ \def -> do
     putStrLn $ render $ ppSymDefine $ liftDefine def
     putStrLn ""
-
-
