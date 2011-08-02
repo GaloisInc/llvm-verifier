@@ -5,15 +5,12 @@
 -- The Symbolic IR is similar to the LLVM IR, but includes several differences:
 --
 -- * The Symbolic IR includes explicit instructions for pushing and popping frames from
---   the merge frame stack.  
+--   the merge frame stack.
 -- * It allows IfThenElse instructions to appear directly within blocks.
--- * 
-module Data.LLVM.Symbolic.AST 
+-- *
+module Data.LLVM.Symbolic.AST
   ( FuncID
-  , SymBlockID 
-  , initSymBlockID
-  , symBlockID
-  , ppSymBlockID
+  , SymBlockID
   , Reg
   , LLVM.Typed(..)
   , SymValue
@@ -22,7 +19,12 @@ module Data.LLVM.Symbolic.AST
   , SymStmt(..)
   , SymBlock(..)
   , SymDefine(..)
+  , initSymBlockID
+  , lookupSymBlock
+  , ppSymBlock
+  , ppSymBlockID
   , ppSymDefine
+  , symBlockID
   ) where
 
 import Data.Int (Int32)
@@ -46,8 +48,6 @@ data SymBlockID
   = InitBlock
   -- | Identifier for blocks derived from LLVM blocks.
   | NamedBlock !(LLVM.Ident) !Int
-  -- | Identifier for blocks derived from LLVM blocks.
-  | UnnamedBlock !Int
   deriving (Eq, Ord, Show)
 
 -- | Return init symbolic block id.
@@ -56,17 +56,13 @@ initSymBlockID = InitBlock
 
 -- | Create new block id for block with given name and unique integer.
 -- The first block is for the entry point to the LLVM block.
-symBlockID :: Maybe LLVM.Ident -> Int -> SymBlockID
-symBlockID (Just i) = NamedBlock i
-symBlockID Nothing = UnnamedBlock
+symBlockID :: LLVM.Ident -> Int -> SymBlockID
+symBlockID i = NamedBlock i
 
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc
 ppSymBlockID InitBlock = text "init"
-ppSymBlockID (NamedBlock i n) =
-  text "%N" <> LLVM.ppIdent i <> char '.' <> int n
-ppSymBlockID (UnnamedBlock n) =
-  text "%U." <> int n
+ppSymBlockID (NamedBlock i n) = LLVM.ppIdent i <> char '.' <> int n
 
 -- | Identies a named value in a function.
 -- TODO: Figure out if LLVM.Ident is the right type and if this can be
@@ -98,7 +94,7 @@ data SymExpr
   -- | Statement for conversion operation.
   -- TODO: See if type information is needed.
   | Conv LLVM.ConvOp (Typed SymValue) LLVM.Type
-  | Alloca LLVM.Type (Maybe (Typed SymValue)) (Maybe Int) 
+  | Alloca LLVM.Type (Maybe (Typed SymValue)) (Maybe Int)
   | Load (Typed SymValue)
   | ICmp LLVM.ICmpOp (Typed SymValue) SymValue
   | FCmp LLVM.FCmpOp (Typed SymValue) SymValue
@@ -109,7 +105,7 @@ data SymExpr
   | Select (Typed SymValue) (Typed SymValue) SymValue
   | ExtractValue (Typed SymValue) Int32
   | InsertValue (Typed SymValue) (Typed SymValue) Int32
-  
+
 
 -- | Pretty print symbolic expression.
 ppSymExpr :: SymExpr -> Doc
@@ -128,7 +124,7 @@ ppSymExpr (Select c t f) = text "select" <+> ppTypedValue c
 ppSymExpr (ExtractValue v i) = text "extractvalue" <+> ppTypedValue v
                              <> comma <+> integer (toInteger i)
 ppSymExpr (InsertValue a v i) = text "insertvalue" <+> ppTypedValue a
-                              <> comma <+> ppTypedValue v 
+                              <> comma <+> ppTypedValue v
                               <> comma <+> integer (toInteger i)
 -- | Predicates in symbolic simulator context.
 data SymCond
@@ -153,7 +149,7 @@ data SymStmt
   -- that will call @fn@ with @args@.
   -- If the function returns normally, then the result, if any, will be stored in @res@.
   -- If the function throws an exception, then the current block will be set to @e@.
-  | PushInvokeFrame SymValue [Typed SymValue] (Maybe (Typed Reg)) SymBlockID 
+  | PushInvokeFrame SymValue [Typed SymValue] (Maybe (Typed Reg)) SymBlockID
   -- | @PushPostDominatorFrame@ pushes a new frame to the merge frame stack for
   -- a post-dominator at the given block.  This instruction is used when we
   -- jump into a block that has a different immediate post-dominator than its
@@ -183,11 +179,11 @@ data SymStmt
   -- | Conditional execution.
   | IfThenElse SymCond [SymStmt] [SymStmt]
   -- | Print out an error message if we reach an unreachable.
-  | Unreachable 
+  | Unreachable
   -- | Unwind exception path.
   | Unwind
   -- TODO: Support all exception handling.
-                 
+
 ppSymStmt :: SymStmt -> Doc
 ppSymStmt ClearCurrentExecution = text "clearCurrentExecution"
 ppSymStmt (PushCallFrame fn args res)
@@ -205,7 +201,7 @@ ppSymStmt MergeReturnVoidAndClear = text "mergeReturnVoidAndClear"
 ppSymStmt (MergeReturnAndClear v) = text "mergeReturnAndClear" <+> ppTypedValue v
 ppSymStmt (PushPendingExecution c) = text "pushPendingExecution" <+> ppSymCond c
 ppSymStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
-ppSymStmt (AddPathConstraint c) = text "addPathConstraint" <+> ppSymCond c 
+ppSymStmt (AddPathConstraint c) = text "addPathConstraint" <+> ppSymCond c
 ppSymStmt (Assign v e) = ppReg v <+> char '=' <+> ppSymExpr e
 ppSymStmt (Store addr v) = text "store" <+> ppTypedValue addr <> comma <+> ppTypedValue v
 ppSymStmt (IfThenElse c t f) =
@@ -232,6 +228,12 @@ data SymDefine = SymDefine {
        , sdRetType :: LLVM.Type
        , sdBody :: Map SymBlockID SymBlock
        }
+
+lookupSymBlock :: SymDefine -> SymBlockID -> SymBlock
+lookupSymBlock sd sid =
+  case Map.lookup sid (sdBody sd) of
+    Nothing  -> error $ "Failed to locate symblock " ++ show (ppSymBlockID sid)
+    Just blk -> blk
 
 ppSymDefine :: SymDefine -> Doc
 ppSymDefine d = text "define"
