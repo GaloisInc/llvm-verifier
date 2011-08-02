@@ -20,6 +20,7 @@ module LSS.Simulator
   ( module LSS.Execution.Codebase
   , AtomicValue(..)
   , Simulator(..)
+  , LiftSBE
   , Value'(..)
   , callDefine
   , runSimulator
@@ -45,18 +46,17 @@ import qualified Data.Map                  as M
 import qualified Text.LLVM                 as LLVM
 import qualified Text.PrettyPrint.HughesPJ as PP
 
-type CtrlStk term    = CtrlStk' (Path term) term
-type MergeFrame term = MergeFrame' (Path term) term
-
-type Value' term = AtomicValue term
-type LiftSBE sym m = forall a. sym a -> m a
+type CtrlStk term       = CtrlStk' (Path term) term
+type MergeFrame term    = MergeFrame' (Path term) term
+type Value' term        = AtomicValue term
+type LiftSBE term sym m = forall a. sym a -> Simulator term sym m a
 
 -- | Symbolic simulator state
 data State sbe term sym m = State
-  { codebase :: Codebase              -- ^ LLVM code, post-transformation to sym ast
-  , symBE    :: sbe                   -- ^ Symbolic backend interface
-  , liftSBE  :: LiftSBE sym m         -- ^ Lift SBE operations into the Simulator base monad
-  , ctrlStk  :: CtrlStk term          -- ^ Control stack for tracking merge points
+  { codebase  :: Codebase              -- ^ LLVM code, post-transformation to sym ast
+  , symBE     :: sbe                   -- ^ Symbolic backend interface
+  , liftSymBE :: LiftSBE term sym m    -- ^ Lift SBE operations into the Simulator monad
+  , ctrlStk   :: CtrlStk term          -- ^ Control stack for tracking merge points
   }
 
 -- | Captures all symbolic execution state for a unique control-flow path (as
@@ -90,11 +90,14 @@ newtype Simulator term sym m a = SM { runSM :: StateT (State (SBE sym term) term
            , MonadState (State (SBE sym term) term sym m)
            )
 
+liftSBE :: Monad m => sym a -> Simulator term sym m a
+liftSBE sa = gets liftSymBE >>= \liftSBE -> liftSBE sa
+
 runSimulator ::
-  (Sim term sym m i)
+  ( Functor m, MonadIO m)
   => Codebase                 -- ^ Post-transform LLVM code
-  -> SBE sym term             -- ^ symbolic backend
-  -> LiftSBE sym m            -- ^ lift op from symbolic backend
+  -> SBE sym term             -- ^ A symbolic backend
+  -> LiftSBE term sym m       -- ^ Lift from symbolic backend to base monad
   -> Simulator term sym m a   -- ^ Simulator action to perform
   -> m a
 runSimulator cb sbe liftSBE' m =
@@ -107,12 +110,16 @@ runSimulator cb sbe liftSBE' m =
 newSimState ::
      Codebase
   -> SBE sym term
-  -> LiftSBE sym m
+  -> LiftSBE term sym m
   -> State (SBE sym term) term sym m
 newSimState cb sbe liftSBE' = State cb sbe liftSBE' emptyCtrlStk
 
 callDefine ::
-  Sim term sym m i
+  ( MonadIO m
+  , Functor m
+  , Show term
+  , Semantics (Simulator term sym m) int
+  )
   => LLVM.Symbol           -- ^ Callee symbol
   -> LLVM.Type             -- ^ Callee return type
   -> [Typed (Value' term)] -- ^ Calee arguments
@@ -206,11 +213,11 @@ step (PushPendingExecution _cond)         = error "PushPendingExecution nyi"
 step (SetCurrentBlock bid)                = do
   liftIO $ putStrLn $ "SetCurrentBlock: setting current block in current path to " ++ show (ppSymBlockID bid)
   modifyCurrentPath $ \p -> p{ pathCB = Just bid }
-  error "early term"
 
 step (AddPathConstraint _cond)            = error "AddPathConstraint nyi"
 
 step stmt@(Assign reg expr)               = do
+-- HERE: switch to type families first
   return undefined
 --   liftIO $ putStrLn $ "Doing: " ++ show (ppSymStmt stmt)
 --   -- v <- evalSymExpr frm expr
@@ -255,16 +262,12 @@ evalSymExpr frm expr = do
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
--- FIXME
-
--- liftSBE :: Monad m => m a -> Simulator term sym m a
--- liftSBE = SM . lift
-
-emptyPath :: Sim term sym m i => Simulator term sym m (Path term)
-emptyPath = undefined
--- emptyPath = gets symBE >>= \sbe ->
---   Path [] Nothing Nothing Nothing <$> liftSBE (falseTerm sbe)
-
+emptyPath ::
+  (Functor m, Monad m)
+  => Simulator term sym m (Path term)
+emptyPath = do
+  sbe <- gets symBE
+  Path [] Nothing Nothing Nothing <$> liftSBE (falseTerm sbe)
 
 setCurrentBlock' :: SymBlockID -> Path term -> Path term
 setCurrentBlock' blk p = p{ pathCB = Just blk }
@@ -341,18 +344,3 @@ instance Show term => Pretty (Path term) where
     <>  brackets (maybe (text "none") ppSymBlockID mcb)
     <>  colon <> text (show pc)
     $+$ nest 2 (vcat $ map pp frms)
-
---------------------------------------------------------------------------------
--- Typeclass goop
-
-instance Sim Term IO IO Term
-
--- Hacky context aliasing
-class
-  ( Functor m
-  , MonadIO m
-  , MonadState (State (SBE sym term) term sym m) (Simulator term sym m)
-  , Semantics (Simulator term sym m) i
-  , Show term
-  )
-  => Sim term sym m i | m -> term i
