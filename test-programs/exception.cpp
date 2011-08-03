@@ -1,3 +1,6 @@
+/**
+ * Contain test code for throwing and catching exceptions.
+ */
 #include <exception>
 #include <string>
 
