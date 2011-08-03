@@ -13,7 +13,9 @@ Point-of-contact : jstanley
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE TypeSynonymInstances       #-}
+{-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
+{-# LANGUAGE UndecidableInstances       #-}
 {-# OPTIONS_GHC -fno-warn-orphans       #-}
 
 module LSS.Simulator
@@ -21,7 +23,6 @@ module LSS.Simulator
   , AtomicValue(..)
   , Simulator(..)
   , LiftSBE
-  , Value'(..)
   , callDefine
   , runSimulator
   )
@@ -48,15 +49,14 @@ import qualified Text.PrettyPrint.HughesPJ as PP
 
 type CtrlStk term       = CtrlStk' (Path term) term
 type MergeFrame term    = MergeFrame' (Path term) term
-type Value' term        = AtomicValue term
-type LiftSBE term sym m = forall a. sym a -> Simulator term sym m a
+type LiftSBE sbe m      = forall a. sbe a -> Simulator sbe m a
 
 -- | Symbolic simulator state
-data State sbe term sym m = State
+data State sbe m = State
   { codebase  :: Codebase              -- ^ LLVM code, post-transformation to sym ast
-  , symBE     :: sbe                   -- ^ Symbolic backend interface
-  , liftSymBE :: LiftSBE term sym m    -- ^ Lift SBE operations into the Simulator monad
-  , ctrlStk   :: CtrlStk term          -- ^ Control stack for tracking merge points
+  , symBE     :: SBE sbe               -- ^ Symbolic backend interface
+  , liftSymBE :: LiftSBE sbe m         -- ^ Lift SBE operations into the Simulator monad
+  , ctrlStk   :: CtrlStk (SBETerm sbe) -- ^ Control stack for tracking merge points
   }
 
 -- | Captures all symbolic execution state for a unique control-flow path (as
@@ -79,26 +79,26 @@ data Path term = Path
 -- | A frame (activation record) in the program being simulated
 data Frame term = Frame
   { frmFuncSym :: LLVM.Symbol
-  , frmRegs    :: M.Map Reg (Value' term)
+  , frmRegs    :: M.Map Reg (AtomicValue term)
   }
   deriving Show
 
-newtype Simulator term sym m a = SM { runSM :: StateT (State (SBE sym term) term sym m) m a }
+newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
   deriving ( Functor
            , Monad
            , MonadIO
-           , MonadState (State (SBE sym term) term sym m)
+           , MonadState (State sbe m)
            )
 
-liftSBE :: Monad m => sym a -> Simulator term sym m a
+liftSBE :: Monad m => sbe a -> Simulator sbe m a
 liftSBE sa = gets liftSymBE >>= \liftSBE -> liftSBE sa
 
 runSimulator ::
   ( Functor m, MonadIO m)
-  => Codebase                 -- ^ Post-transform LLVM code
-  -> SBE sym term             -- ^ A symbolic backend
-  -> LiftSBE term sym m       -- ^ Lift from symbolic backend to base monad
-  -> Simulator term sym m a   -- ^ Simulator action to perform
+  => Codebase              -- ^ Post-transform LLVM code
+  -> SBE sbe               -- ^ A symbolic backend
+  -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
+  -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
 runSimulator cb sbe liftSBE' m =
   evalStateT (runSM (setup >> m)) (newSimState cb sbe liftSBE')
@@ -109,21 +109,21 @@ runSimulator cb sbe liftSBE' m =
 
 newSimState ::
      Codebase
-  -> SBE sym term
-  -> LiftSBE term sym m
-  -> State (SBE sym term) term sym m
+  -> SBE sbe
+  -> LiftSBE sbe m
+  -> State sbe m
 newSimState cb sbe liftSBE' = State cb sbe liftSBE' emptyCtrlStk
 
 callDefine ::
   ( MonadIO m
   , Functor m
-  , Show term
-  , Semantics (Simulator term sym m) int
+  , Semantics sbe (Simulator sbe m)
+  , Show (SBETerm sbe)
   )
-  => LLVM.Symbol           -- ^ Callee symbol
-  -> LLVM.Type             -- ^ Callee return type
-  -> [Typed (Value' term)] -- ^ Calee arguments
-  -> Simulator term sym m ()
+  => LLVM.Symbol                         -- ^ Callee symbol
+  -> LLVM.Type                           -- ^ Callee return type
+  -> [Typed (AtomicValue (SBETerm sbe))] -- ^ Calee arguments
+  -> Simulator sbe m ()
 callDefine callee retTy args = do
   def  <- lookupDefine callee <$> gets codebase
   path <- pushFrame (Frame callee (bindArgs (sdArgs def) args))
@@ -140,7 +140,7 @@ callDefine callee retTy args = do
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
-    bindArgs :: [Typed Reg] -> [Typed (Value' term)] -> M.Map Reg (Value' term)
+--    bindArgs :: [Typed Reg] -> [Typed (AtomicValue term)] -> M.Map Reg (AtomicValue term)
     bindArgs formals actuals
       | length formals /= length actuals =
           err $ text "incorrect number of actual parameters"
@@ -159,16 +159,13 @@ callDefine callee retTy args = do
           $ text "formal/actual type mismatch:"
             <+> LLVM.ppType ft <+> text "vs." <+> LLVM.ppType at
 
--- TODO abstract over term type as specified by SBE record-of-fns
-type Term = Int
-
 -----------------------------------------------------------------------------------------
 -- The Semantics instance & related functions
 
-instance
-  (Functor m, MonadIO m)
-  => Semantics (Simulator Term sym m) Term where
-  iAdd x y = return $ x + y
+instance (Functor m, MonadIO m) => Semantics sbe (Simulator sbe m) where
+  type IntTy sbe = SBETerm sbe
+
+  iAdd x y = undefined -- return $ x + y
 
   setCurrentBlock = undefined
 
@@ -193,7 +190,7 @@ instance
 
 -- TODO: Pull this out into its own module
 -- step :: Semantics m int => SymStmt -> m ()
-step :: (Functor m, MonadIO m, Show term) => SymStmt -> Simulator term sym m ()
+step :: (Functor m, MonadIO m) => SymStmt -> Simulator sbe m ()
 step ClearCurrentExecution                = error "ClearCurrentExecution nyi"
 
 step (PushCallFrame _fn _args _mres)      = error "PushCallFrame nyi"
@@ -218,7 +215,7 @@ step (AddPathConstraint _cond)            = error "AddPathConstraint nyi"
 
 step stmt@(Assign reg expr)               = do
 -- HERE: switch to type families first
-  return undefined
+  error "Assign nyi"
 --   liftIO $ putStrLn $ "Doing: " ++ show (ppSymStmt stmt)
 --   -- v <- evalSymExpr frm expr
 --   v <- undefined
@@ -238,7 +235,7 @@ step Unwind                               = error "Unwind nyi"
 {-
 evalSymExpr ::
   (Show term, Functor m, MonadIO m)
-  => Frame term -> SymExpr -> Simulator sbe term m (Value' term)
+  => Frame term -> SymExpr -> Simulator sbe term m (AtomicValue term)
 evalSymExpr frm expr = do
   case expr of
     Arith op (LLVM.Typed t1 v1) v2 -> case op of
@@ -262,9 +259,7 @@ evalSymExpr frm expr = do
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
-emptyPath ::
-  (Functor m, Monad m)
-  => Simulator term sym m (Path term)
+emptyPath :: (Functor m, Monad m) => Simulator sbe m (Path (SBETerm sbe))
 emptyPath = do
   sbe <- gets symBE
   Path [] Nothing Nothing Nothing <$> liftSBE (falseTerm sbe)
@@ -283,7 +278,7 @@ popFrame Path{ pathFrames = [] }       = error "popFrame: empty frame stack"
 popFrame p@Path{ pathFrames = (f:fs) } = (f, p{ pathFrames = fs })
 
 -- | Manipulate the control stack
-modifyCS :: Monad m => (CtrlStk term -> CtrlStk term) -> Simulator term sym m ()
+modifyCS :: Monad m => (CtrlStk (SBETerm sbe) -> CtrlStk (SBETerm sbe)) -> Simulator sbe m ()
 modifyCS f = modify $ \s -> s{ ctrlStk = f (ctrlStk s) }
 
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
@@ -291,14 +286,14 @@ modifyCS f = modify $ \s -> s{ ctrlStk = f (ctrlStk s) }
 -- pending paths recorded.
 getCurrentPath ::
   (Functor m, Monad m)
-  => Simulator term sym m (Maybe (Path term))
+  => Simulator sbe m (Maybe (Path (SBETerm sbe)))
 getCurrentPath = topPendingPath <$> gets ctrlStk
 
 -- | Obtain the top frame from the frame stack of the current path; runtime
 -- error if the control stack is empty or if there is no current path.
 getCurrentFrame ::
   (Functor m, Monad m)
-  => Simulator term sym m (Frame term)
+  => Simulator sbe m (Frame (SBETerm sbe))
 getCurrentFrame = do
   mpath <- getCurrentPath
   case mpath of
@@ -311,7 +306,7 @@ getCurrentFrame = do
 -- control stack entry)
 modifyCurrentPath ::
   (Functor m , Monad m)
-  => (Path term -> Path term) -> Simulator term sym m ()
+  => (Path (SBETerm sbe) -> Path (SBETerm sbe)) -> Simulator sbe m ()
 modifyCurrentPath f = modifyCS $ \cs ->
   let (p, cs') = popPendingPath cs in pushPendingPath (f p) cs'
 
@@ -324,7 +319,7 @@ withCurrentFrame (pathFrames -> pfs) f
 -- current path)
 modifyCurrentFrame ::
   (Functor m, Monad m)
-  => (Frame term -> Frame term) -> Simulator term sym m ()
+  => (Frame (SBETerm sbe) -> Frame (SBETerm sbe)) -> Simulator sbe m ()
 modifyCurrentFrame f = modifyCurrentPath $ \p ->
   let (frm, p') = popFrame p in pushFrame (f frm) p'
 

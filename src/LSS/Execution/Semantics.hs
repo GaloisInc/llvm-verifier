@@ -6,7 +6,8 @@ Point-of-contact : jstanley
 -}
 
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module LSS.Execution.Semantics where
 
@@ -19,15 +20,16 @@ data AtomicValue int
   deriving (Show)
 
 -- | This typeclass defines the underlying execution semantics for the
--- LLVM-Symbolic instruction set.  The typeclass is parameterized over the
--- primitive types in use by a given simulator.
-class (MonadIO m)
-  => Semantics m int | m -> int where
+-- LLVM-Symbolic instruction set.
+class (MonadIO m) => Semantics sbe m | sbe -> m where
+  type IntTy (sbe :: * -> *)
+
   -----------------------------------------------------------------------------------------
   -- Integer operations
 
   -- | Returns the sum of two inputs
-  iAdd :: int -> int -> m int
+--  iAdd :: int -> int -> m int
+  iAdd :: IntTy sbe -> IntTy sbe -> m (IntTy sbe)
 
   -----------------------------------------------------------------------------------------
   -- LLVM-Sym operations
