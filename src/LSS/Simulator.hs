@@ -39,12 +39,15 @@ import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Semantics
+import           LSS.Execution.Stepper
+import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Text.PrettyPrint.HughesPJ
 import           Text.PrettyPrint.Pretty
 
+import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
-import qualified Text.LLVM                 as LLVM
+import qualified Text.LLVM                 as L
 import qualified Text.PrettyPrint.HughesPJ as PP
 
 type CtrlStk term       = CtrlStk' (Path term) term
@@ -78,7 +81,7 @@ data Path term = Path
 
 -- | A frame (activation record) in the program being simulated
 data Frame term = Frame
-  { frmFuncSym :: LLVM.Symbol
+  { frmFuncSym :: L.Symbol
   , frmRegs    :: M.Map Reg (AtomicValue term)
   }
   deriving Show
@@ -91,7 +94,10 @@ newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
            )
 
 liftSBE :: Monad m => sbe a -> Simulator sbe m a
-liftSBE sa = gets liftSymBE >>= \liftSBE -> liftSBE sa
+liftSBE sa = gets liftSymBE >>= \f -> f sa
+
+withSBE :: (Functor m, Monad m) => (SBE sbe -> sbe a) -> Simulator sbe m a
+withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 
 runSimulator ::
   ( Functor m, MonadIO m)
@@ -100,18 +106,14 @@ runSimulator ::
   -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
   -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
-runSimulator cb sbe liftSBE' m =
-  evalStateT (runSM (setup >> m)) (newSimState cb sbe liftSBE')
+runSimulator cb sbe lifter m =
+  evalStateT (runSM (setup >> m)) (newSimState cb sbe lifter)
   where
     setup = do
       -- Push the merge frame corresponding to program exit
       modifyCS =<< pushMF . emptyExitFrame <$> emptyPath
 
-newSimState ::
-     Codebase
-  -> SBE sbe
-  -> LiftSBE sbe m
-  -> State sbe m
+newSimState :: Codebase -> SBE sbe -> LiftSBE sbe m -> State sbe m
 newSimState cb sbe liftSBE' = State cb sbe liftSBE' emptyCtrlStk
 
 callDefine ::
@@ -120,9 +122,9 @@ callDefine ::
   , Semantics sbe (Simulator sbe m)
   , Show (SBETerm sbe)
   )
-  => LLVM.Symbol                         -- ^ Callee symbol
-  -> LLVM.Type                           -- ^ Callee return type
-  -> [Typed (AtomicValue (SBETerm sbe))] -- ^ Calee arguments
+  => L.Symbol                            -- ^ Callee symbol
+  -> L.Type                              -- ^ Callee return type
+  -> [Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
   -> Simulator sbe m ()
 callDefine callee retTy args = do
   def  <- lookupDefine callee <$> gets codebase
@@ -131,16 +133,13 @@ callDefine callee retTy args = do
           <$> emptyPath
   modifyCS $ pushPendingPath path . pushMF emptyReturnFrame
 
-  liftIO $ putStrLn $ show $ ppSymDefine def
-
-  cs <- gets ctrlStk
-  liftIO $ putStrLn $ show $ pp cs
+  dbugM $ show $ ppSymDefine def
+  dumpCtrlStk
 
   run
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
---    bindArgs :: [Typed Reg] -> [Typed (AtomicValue term)] -> M.Map Reg (AtomicValue term)
     bindArgs formals actuals
       | length formals /= length actuals =
           err $ text "incorrect number of actual parameters"
@@ -151,118 +150,103 @@ callDefine callee retTy args = do
       | ft == at =
           case val of
             v@(IValue w _) -> case ft of
-              LLVM.PrimType (LLVM.Integer w')
+              L.PrimType (L.Integer w')
                 | w == w'   -> M.insert reg v mp
                 | otherwise -> err $ text "int width mismatch"
-              ty -> err $ text "unsupported type:" <+> LLVM.ppType ty
+              ty -> err $ text "unsupported type:" <+> L.ppType ty
       | otherwise = err
           $ text "formal/actual type mismatch:"
-            <+> LLVM.ppType ft <+> text "vs." <+> LLVM.ppType at
+            <+> L.ppType ft <+> text "vs." <+> L.ppType at
 
 -----------------------------------------------------------------------------------------
 -- The Semantics instance & related functions
 
-instance (Functor m, MonadIO m) => Semantics sbe (Simulator sbe m) where
-  type IntTy sbe = SBETerm sbe
+-- | Looks up the given identifier in the register map of the current frame.
+-- Assumes the identifier is present in the map and that the current path and
+-- current frame exist.  Runtime errors otherwise.
+lkupIdent ::
+  (Functor m, Monad m)
+  => L.Ident -> Simulator sbe m (AtomicValue (SBETerm sbe))
+lkupIdent i = flip (M.!) i . frmRegs <$> getCurrentFrame
 
-  iAdd x y = undefined -- return $ x + y
+-- data Value
+--   = ValInteger Integer
+--   | ValFloat Float
+--   | ValDouble Double
+--   | ValIdent Ident
+--   | ValSymbol Symbol
+--   | ValNull
+--   | ValArray Type [Value]
+--   | ValStruct [Typed Value]
+--   | ValPackedStruct [Typed Value]
+--   | ValString String
+--     deriving (Show)
 
-  setCurrentBlock = undefined
+getTerm ::
+  (Functor m, Monad m)
+  => Maybe Int32 -> L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
+getTerm (Just w) (L.ValInteger x) = IValue w <$> withSBE (\sbe -> termInteger sbe x)
+getTerm (Just w) (L.ValIdent i)   = lkupIdent i
+getTerm _ v = error $ "getTerm: unsupported value: " ++ show (L.ppValue v)
 
-  run      = do
+instance
+  ( Functor m
+  , MonadIO m
+  , Show (SBETerm sbe)
+  )
+  => Semantics sbe (Simulator sbe m)
+  where
+
+  type IntTerm sbe = SBETerm sbe
+
+  iAdd x y = withSBE $ \sbe -> applyAdd sbe x y
+
+  assign reg v = do
+    modifyCurrentFrame $ \frm ->
+      frm{ frmRegs = M.insert reg v (frmRegs frm) }
+
+  setCurrentBlock bid = modifyCurrentPath (setCurrentBlock' bid)
+
+  eval (Arith op (L.Typed (L.PrimType (L.Integer w)) v1) v2) = do
+    IValue _ x <- getTerm (Just w) v1
+    IValue _ y <- getTerm (Just w) v2
+    IValue w <$> case op of
+                   L.Add -> iAdd x y
+                   _     -> error "Unsupported integer arith op"
+
+  eval s@Arith{} = error $ "Unsupported arith expr: " ++ show (ppSymExpr s)
+
+  eval (Bit _op _tv1 _v2       ) = error "eval Bit nyi"
+  eval (Conv _op _tv1 _t       ) = error "eval Conv nyi"
+  eval (Alloca _t _mtv _malign ) = error "eval Alloca nyi"
+  eval (Load _tv               ) = error "eval Load nyi"
+  eval (ICmp _op _tv1 _v2      ) = error "eval ICmp nyi"
+  eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
+  eval (Val _tv                ) = error "eval Val nyi"
+  eval (GEP _tv _idxs          ) = error "eval GEP nyi"
+  eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
+  eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
+  eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
+
+  run = do
     mpath <- getCurrentPath
     case mpath of
-      Nothing -> liftIO $ putStrLn $ "run terminating: no path to execute (ok)"
+      Nothing -> dbugM $ "run terminating: no path to execute (ok)"
       Just p  -> runPath p
     where
       runPath (pathCB -> Nothing)    = error "runPath: no current block"
       runPath p@(pathCB -> Just pcb) = withCurrentFrame p $ \frm -> do
         def <- lookupDefine (frmFuncSym frm) <$> gets codebase
         let blk = lookupSymBlock def pcb
-
-        liftIO $ putStrLn $ replicate 80 '-'
-        liftIO $ putStrLn $ show $ ppSymBlock blk
-        liftIO $ putStrLn $ replicate 80 '-'
-
-        mapM_ step (sbStmts blk)
+        mapM_ dbugStep (sbStmts blk)
         run
       runPath _ = error "unreachable"
-
--- TODO: Pull this out into its own module
--- step :: Semantics m int => SymStmt -> m ()
-step :: (Functor m, MonadIO m) => SymStmt -> Simulator sbe m ()
-step ClearCurrentExecution                = error "ClearCurrentExecution nyi"
-
-step (PushCallFrame _fn _args _mres)      = error "PushCallFrame nyi"
-
-step (PushInvokeFrame _fn _args _mres _e) = error "PushInvokeFrame nyi"
-
-step (PushPostDominatorFrame _pdid)       = error "PushPostDominatorFrame nyi"
-
-step (MergePostDominator _pdid _cond)     = error "MergePostDominator nyi"
-
-step MergeReturnVoidAndClear              = error "MergeReturnVoidAndClear nyi"
-
-step (MergeReturnAndClear _resx)          = error "MergeReturnAndClear nyi"
-
-step (PushPendingExecution _cond)         = error "PushPendingExecution nyi"
-
-step (SetCurrentBlock bid)                = do
-  liftIO $ putStrLn $ "SetCurrentBlock: setting current block in current path to " ++ show (ppSymBlockID bid)
-  modifyCurrentPath $ \p -> p{ pathCB = Just bid }
-
-step (AddPathConstraint _cond)            = error "AddPathConstraint nyi"
-
-step stmt@(Assign reg expr)               = do
--- HERE: switch to type families first
-  error "Assign nyi"
---   liftIO $ putStrLn $ "Doing: " ++ show (ppSymStmt stmt)
---   -- v <- evalSymExpr frm expr
---   v <- undefined
---   assign r v
-
---   modifyCurrentFrame $ \frm@Frame{ frmRegs = regMap } ->
---     frm{ frmRegs = M.insert reg v regMap }
-
-step (Store _addr _val)                   = error "Store nyi"
-
-step (IfThenElse _c _thenStms _elseStms)  = error "IfThenElse nyi"
-
-step Unreachable                          = error "step: Encountered 'unreachable' instruction"
-
-step Unwind                               = error "Unwind nyi"
-
-{-
-evalSymExpr ::
-  (Show term, Functor m, MonadIO m)
-  => Frame term -> SymExpr -> Simulator sbe term m (AtomicValue term)
-evalSymExpr frm expr = do
-  case expr of
-    Arith op (LLVM.Typed t1 v1) v2 -> case op of
-      LLVM.Add -> case t1 of
-        LLVM.PrimType LLVM.Integer{} -> undefined
-        _ -> error "evalSymExpr: type-specific Add nyi"
-      _   -> error $ "evalsymexpr: arith/" ++ show op ++ " nyi"
-    Bit op tv1 v2       -> error "evalSymExpr Bit nyi"
-    Conv op tv1 t       -> error "evalSymExpr Conv nyi"
-    Alloca t mtv malign -> error "evalSymExpr Alloca nyi"
-    Load tv             -> error "evalSymExpr Load nyi"
-    ICmp op tv1 v2      -> error "evalSymExpr ICmp nyi"
-    FCmp op tv1 v2      -> error "evalSymExpr FCmp nyi"
-    Val tv              -> error "evalSymExpr Val nyi"
-    GEP tv idxs         -> error "evalSymExpr GEP nyi"
-    Select tc tv1 v2    -> error "evalSymExpr Select nyi"
-    ExtractValue tv i   -> error "evalSymExpr ExtractValue nyi"
-    InsertValue tv ta i -> error "evalSymExpr InsertValue nyi"
--}
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
 emptyPath :: (Functor m, Monad m) => Simulator sbe m (Path (SBETerm sbe))
-emptyPath = do
-  sbe <- gets symBE
-  Path [] Nothing Nothing Nothing <$> liftSBE (falseTerm sbe)
+emptyPath = Path [] Nothing Nothing Nothing <$> withSBE falseTerm
 
 setCurrentBlock' :: SymBlockID -> Path term -> Path term
 setCurrentBlock' blk p = p{ pathCB = Just blk }
@@ -289,11 +273,9 @@ getCurrentPath ::
   => Simulator sbe m (Maybe (Path (SBETerm sbe)))
 getCurrentPath = topPendingPath <$> gets ctrlStk
 
--- | Obtain the top frame from the frame stack of the current path; runtime
--- error if the control stack is empty or if there is no current path.
-getCurrentFrame ::
-  (Functor m, Monad m)
-  => Simulator sbe m (Frame (SBETerm sbe))
+-- | Obtain the active frame in the current path; runtime error if the control
+-- stack is empty or if there is no current path.
+getCurrentFrame :: (Functor m, Monad m) => Simulator sbe m (Frame (SBETerm sbe))
 getCurrentFrame = do
   mpath <- getCurrentPath
   case mpath of
@@ -331,7 +313,7 @@ instance Show a => Pretty (M.Map Reg a) where
 
 instance Show term => Pretty (Frame term) where
   pp (Frame sym regMap) =
-    text "Frm" <> parens (LLVM.ppSymbol sym) <> colon $+$ nest 2 (pp regMap)
+    text "Frm" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (pp regMap)
 
 instance Show term => Pretty (Path term) where
   pp (Path frms _mexc _mrv mcb pc) =
@@ -339,3 +321,21 @@ instance Show term => Pretty (Path term) where
     <>  brackets (maybe (text "none") ppSymBlockID mcb)
     <>  colon <> text (show pc)
     $+$ nest 2 (vcat $ map pp frms)
+
+-----------------------------------------------------------------------------------------
+-- Debugging
+
+dbugStep :: (MonadIO m, Show (SBETerm sbe), Functor m) => SymStmt -> Simulator sbe m ()
+dbugStep stmt = do
+  dbugM ("Executing: " ++ show (ppSymStmt stmt))
+  step stmt
+  dumpCtrlStk
+
+dumpCtrlStk :: (MonadIO m, Show (SBETerm sbe)) => Simulator sbe m ()
+dumpCtrlStk = gets ctrlStk >>= \cs -> banners (show $ pp cs)
+
+banners :: MonadIO m => String -> m ()
+banners msg = do
+  dbugM $ replicate 80 '-'
+  dbugM msg
+  dbugM $ replicate 80 '-'

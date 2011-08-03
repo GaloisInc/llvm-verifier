@@ -21,25 +21,28 @@ data AtomicValue int
 
 -- | This typeclass defines the underlying execution semantics for the
 -- LLVM-Symbolic instruction set.
-class (MonadIO m) => Semantics sbe m | sbe -> m where
-  type IntTy (sbe :: * -> *)
+class (MonadIO m) => Semantics sbe m | m -> sbe where
+  type IntTerm (sbe :: * -> *)
+  -- type FrameTy (m   :: * -> *)
 
   -----------------------------------------------------------------------------------------
   -- Integer operations
 
   -- | Returns the sum of two inputs
 --  iAdd :: int -> int -> m int
-  iAdd :: IntTy sbe -> IntTy sbe -> m (IntTy sbe)
+  iAdd :: IntTerm sbe -> IntTerm sbe -> m (IntTerm sbe)
 
   -----------------------------------------------------------------------------------------
   -- LLVM-Sym operations
 
---  assign          :: Reg -> HERE: need ~AtomicValue-like
+  assign          :: Reg -> AtomicValue (IntTerm sbe) -> m ()
   setCurrentBlock :: SymBlockID -> m ()
+
+  -- | @eval expr@ evaluates @expr@ via the symbolic backend
+  eval :: SymExpr -> m (AtomicValue (IntTerm sbe))
 
   --------------------------------------------------------------------------------
   -- Execution and control-flow operations
 
   -- | Executes until the program terminates
   run :: m ()
-

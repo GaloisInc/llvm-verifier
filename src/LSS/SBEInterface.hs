@@ -19,8 +19,9 @@ type family SBEMonad sbe :: * -> *
 type instance SBEMonad (SBE m) = m
 
 data SBE m = SBE
-  { falseTerm :: m (SBETerm m)
-  , termAdd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  { falseTerm   :: m (SBETerm m)
+  , termInteger :: Integer -> m (SBETerm m)
+  , applyAdd    :: SBETerm m -> SBETerm m -> m (SBETerm m)
   }
 
 --------------------------------------------------------------------------------
@@ -31,8 +32,9 @@ type instance SBETerm SBEStub = Int
 
 sbeStub :: SBE SBEStub
 sbeStub = SBE
-  { falseTerm = SBEStub 0
-  , termAdd   = \x y -> SBEStub (x + y)
+  { falseTerm   = SBEStub 0
+  , termInteger = SBEStub . fromIntegral
+  , applyAdd    = \x y -> SBEStub (x + y)
   }
 
 liftStubToIO :: SBEStub a -> IO a
@@ -43,8 +45,9 @@ type instance SBETerm SBEStubTwo = Integer
 
 sbeStubTwo :: SBE SBEStubTwo
 sbeStubTwo = SBE
-  { falseTerm = SBEStubTwo 0
-  , termAdd   = \x y -> SBEStubTwo (x + y)
+  { falseTerm   = SBEStubTwo 0
+  , termInteger = SBEStubTwo . fromIntegral
+  , applyAdd    = \x y -> SBEStubTwo (x + y)
   }
 
 liftStubTwoToIO :: SBEStubTwo a -> IO a

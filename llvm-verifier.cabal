@@ -45,6 +45,7 @@ library
   exposed-modules:
     Data.LLVM.Symbolic.AST
     Data.LLVM.Symbolic.Translation
+    LSS.Simulator
 
   other-modules:
 
