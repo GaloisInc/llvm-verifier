@@ -15,3 +15,9 @@ headf (x:xs) f = f x : xs
 
 dbugM :: MonadIO m => String -> m ()
 dbugM = liftIO . putStrLn
+
+banners :: MonadIO m => String -> m ()
+banners msg = do
+  dbugM $ replicate 80 '-'
+  dbugM msg
+  dbugM $ replicate 80 '-'

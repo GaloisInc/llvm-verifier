@@ -13,11 +13,6 @@ module LSS.SBEInterface where
 -- a particular SBE interface implementation
 type family SBETerm (sbe :: * -> *)
 
--- | SBEMonad is a function over types that yields the base monad type
--- associated with a particular SBE interface implementation
-type family SBEMonad sbe :: * -> *
-type instance SBEMonad (SBE m) = m
-
 data SBE m = SBE
   { falseTerm   :: m (SBETerm m)
   , termInteger :: Integer -> m (SBETerm m)
