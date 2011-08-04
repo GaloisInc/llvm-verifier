@@ -161,14 +161,6 @@ callDefine callee retTy args = do
 -----------------------------------------------------------------------------------------
 -- The Semantics instance & related functions
 
--- | Looks up the given identifier in the register map of the current frame.
--- Assumes the identifier is present in the map and that the current path and
--- current frame exist.  Runtime errors otherwise.
-lkupIdent ::
-  (Functor m, Monad m)
-  => L.Ident -> Simulator sbe m (AtomicValue (SBETerm sbe))
-lkupIdent i = flip (M.!) i . frmRegs <$> getCurrentFrame
-
 -- data Value
 --   = ValInteger Integer
 --   | ValFloat Float
@@ -182,13 +174,6 @@ lkupIdent i = flip (M.!) i . frmRegs <$> getCurrentFrame
 --   | ValString String
 --     deriving (Show)
 
-getTerm ::
-  (Functor m, Monad m)
-  => Maybe Int32 -> L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
-getTerm (Just w) (L.ValInteger x) = IValue w <$> withSBE (\sbe -> termInteger sbe x)
-getTerm (Just w) (L.ValIdent i)   = lkupIdent i
-getTerm _ v = error $ "getTerm: unsupported value: " ++ show (L.ppValue v)
-
 instance
   ( Functor m
   , MonadIO m
@@ -197,7 +182,9 @@ instance
   => Semantics sbe (Simulator sbe m)
   where
 
-  type IntTerm sbe = SBETerm sbe
+  type IntTerm sbe      = SBETerm sbe
+  type FrameTy sbe      = Frame (SBETerm sbe)
+  type MergeFrameTy sbe = MergeFrame (SBETerm sbe)
 
   iAdd x y = withSBE $ \sbe -> applyAdd sbe x y
 
@@ -228,6 +215,28 @@ instance
   eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
   eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 
+  popFrame = do
+    mp <- getCurrentPath
+    case mp of
+      Nothing -> error "popFrame: no current path"
+      Just p  -> do
+        let (frm, p') = popFrame' p
+        modifyCurrentPath $ const p'
+        return frm
+
+  popMergeFrame = do
+    s <- get
+    let (mf, cs) = popMF (ctrlStk s)
+    modifyCS $ const cs
+    return mf
+
+  mergeReturn frm mf (Just (L.Typed t rslt)) = do
+    dbugM $ "MergeReturnAndClear: \npopped frame is:\n" ++ show (pp frm)
+    dbugM $ "return value is: " ++ show (L.ppValue rslt)
+    dumpCtrlStk
+    dbugM $ "popped mf is: " ++ show (pp mf)
+    error "mergeReturn early term"
+
   run = do
     mpath <- getCurrentPath
     case mpath of
@@ -242,6 +251,24 @@ instance
         run
       runPath _ = error "unreachable"
 
+  dumpCtrlStk = banners . show . pp =<< gets ctrlStk
+
+
+-- | Looks up the given identifier in the register map of the current frame.
+-- Assumes the identifier is present in the map and that the current path and
+-- current frame exist.  Runtime errors otherwise.
+lkupIdent ::
+  (Functor m, Monad m)
+  => L.Ident -> Simulator sbe m (AtomicValue (SBETerm sbe))
+lkupIdent i = flip (M.!) i . frmRegs <$> getCurrentFrame
+
+getTerm ::
+  (Functor m, Monad m)
+  => Maybe Int32 -> L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
+getTerm (Just w) (L.ValInteger x) = IValue w <$> withSBE (\sbe -> termInteger sbe x)
+getTerm _       (L.ValIdent i)   = lkupIdent i
+getTerm _ v = error $ "getTerm: unsupported value: " ++ show (L.ppValue v)
+
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
@@ -255,11 +282,11 @@ setCurrentBlock' blk p = p{ pathCB = Just blk }
 pushFrame :: Frame term -> Path term -> Path term
 pushFrame f p@Path{ pathFrames = frms } = p{ pathFrames = f : frms}
 
--- | @popFrame p@ pops the top frame of path p's frame stack; runtime error if
+-- | @popFrame' p@ pops the top frame of path p's frame stack; runtime error if
 -- the frame stack is empty
-popFrame :: Path term -> (Frame term, Path term)
-popFrame Path{ pathFrames = [] }       = error "popFrame: empty frame stack"
-popFrame p@Path{ pathFrames = (f:fs) } = (f, p{ pathFrames = fs })
+popFrame' :: Path term -> (Frame term, Path term)
+popFrame' Path{ pathFrames = [] }       = error "popFrame': empty frame stack"
+popFrame' p@Path{ pathFrames = (f:fs) } = (f, p{ pathFrames = fs })
 
 -- | Manipulate the control stack
 modifyCS :: Monad m => (CtrlStk (SBETerm sbe) -> CtrlStk (SBETerm sbe)) -> Simulator sbe m ()
@@ -303,7 +330,7 @@ modifyCurrentFrame ::
   (Functor m, Monad m)
   => (Frame (SBETerm sbe) -> Frame (SBETerm sbe)) -> Simulator sbe m ()
 modifyCurrentFrame f = modifyCurrentPath $ \p ->
-  let (frm, p') = popFrame p in pushFrame (f frm) p'
+  let (frm, p') = popFrame' p in pushFrame (f frm) p'
 
 --------------------------------------------------------------------------------
 -- Pretty printing
@@ -330,9 +357,6 @@ dbugStep stmt = do
   dbugM ("Executing: " ++ show (ppSymStmt stmt))
   step stmt
   dumpCtrlStk
-
-dumpCtrlStk :: (MonadIO m, Show (SBETerm sbe)) => Simulator sbe m ()
-dumpCtrlStk = gets ctrlStk >>= \cs -> banners (show $ pp cs)
 
 banners :: MonadIO m => String -> m ()
 banners msg = do

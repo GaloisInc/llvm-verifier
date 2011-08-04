@@ -5,6 +5,8 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
+{-# LANGUAGE FlexibleContexts #-}
+
 module LSS.Execution.Stepper (step) where
 
 import Control.Monad
@@ -13,10 +15,18 @@ import Control.Monad.Trans
 import LSS.Execution.Codebase
 import LSS.Execution.Semantics
 import LSS.Execution.Utils
+import Text.PrettyPrint.Pretty
 import Data.LLVM.Symbolic.AST
 
+import qualified Text.LLVM as L
+
 -- | Execute a single instruction
-step :: Semantics sbe m => SymStmt -> m ()
+step ::
+  ( Pretty (FrameTy sbe)
+  , Pretty (MergeFrameTy sbe)
+  , Semantics sbe m
+  )
+  => SymStmt -> m ()
 
 step ClearCurrentExecution =
   error "ClearCurrentExecution nyi"
@@ -36,7 +46,11 @@ step (MergePostDominator _pdid _cond) =
 step MergeReturnVoidAndClear =
   error "MergeReturnVoidAndClear nyi"
 
-step (MergeReturnAndClear _resx) =
+step (MergeReturnAndClear rslt) = do
+  frm <- popFrame
+  mf  <- popMergeFrame
+  mergeReturn frm mf (Just rslt)
+  -- TODO: clearCurrentExecution
   error "MergeReturnAndClear nyi"
 
 step (PushPendingExecution _cond) =

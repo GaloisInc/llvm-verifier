@@ -16,6 +16,7 @@ module LSS.Execution.MergeFrame
   , emptyReturnFrame
 
   , pushMF
+  , popMF
   , topMF
 
   , pushPendingPath
@@ -44,6 +45,12 @@ emptyCtrlStk = CtrlStk []
 
 pushMF :: MergeFrame' p t -> CtrlStk' p t -> CtrlStk' p t
 pushMF mf (CtrlStk mfs) = CtrlStk (mf:mfs)
+
+-- | Pops the merge frame from the top of the control stack; runtime error if
+-- the control stack is empty.
+popMF :: CtrlStk' p t -> (MergeFrame' p t, CtrlStk' p t)
+popMF (CtrlStk [])       = error "popMF: empty control stack"
+popMF (CtrlStk (mf:mfs)) = (mf, CtrlStk mfs)
 
 -- | Obtains the merge frame at the top of the control stack; yields Nothing
 -- when the control stack is empty
