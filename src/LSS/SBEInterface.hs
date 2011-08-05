@@ -55,7 +55,7 @@ data SBE m = SBE
   , memStore :: SBEMemory m
              -> LLVM.Typed (SBETerm m)
              -> SBETerm m
-             -> IO (SBEMemory m)
+             -> m (SBEMemory m)
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
     -- identifiers @blocks@ to the memory @mem@ and returns a pointer to
     -- the definition, and updated memory.
@@ -69,7 +69,7 @@ data SBE m = SBE
     -- Lookup may fail if the pointer does not point to a symbol, or if
     -- the pointer is a symbolic vlaue without a clear meaning. 
     -- TODO: Consider moving this function to the symbolic simulator.
-  , memLookupDefine :: SBETerm m -> m (PartialResult LLVM.Symbol)
+  , memLookupDefine :: SBEMemory m -> SBETerm m -> m (PartialResult LLVM.Symbol)
     -- | @memBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , memBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
@@ -81,11 +81,21 @@ data SBE m = SBE
 newtype SBEStub a = SBEStub { runStub :: a }
 type instance SBETerm SBEStub = Int
 
+data SBEStubMemoryOne = UndefinedMemoryOne
+type instance SBEMemory SBEStub = SBEStubMemoryOne
+
 sbeStub :: SBE SBEStub
 sbeStub = SBE
   { falseTerm   = SBEStub 0
   , termInteger = SBEStub . fromIntegral
   , applyAdd    = \x y -> SBEStub (x + y)
+  , memInitMemory = SBEStub undefined
+  , memAlloca = \_mem _eltType _len _a -> SBEStub undefined
+  , memLoad = \_mem _ptr -> SBEStub undefined
+  , memStore = \_mem _val _ptr -> SBEStub undefined
+  , memAddDefine = \_mem _sym _id -> SBEStub (undefined, undefined)
+  , memLookupDefine = \_mem _t -> SBEStub undefined
+  , memBlockAddress = \_mem _s _b -> SBEStub undefined
   }
 
 liftStubToIO :: SBEStub a -> IO a
@@ -94,11 +104,22 @@ liftStubToIO = return . runStub
 newtype SBEStubTwo a = SBEStubTwo { runStubTwo :: a }
 type instance SBETerm SBEStubTwo = Integer
 
+data SBEStubMemoryTwo = UndefinedMemoryTwo
+
+type instance SBEMemory SBEStubTwo = SBEStubMemoryTwo
+
 sbeStubTwo :: SBE SBEStubTwo
 sbeStubTwo = SBE
   { falseTerm   = SBEStubTwo 0
   , termInteger = SBEStubTwo . fromIntegral
   , applyAdd    = \x y -> SBEStubTwo (x + y)
+  , memInitMemory = SBEStubTwo undefined
+  , memAlloca = \_mem _eltType _len _a -> SBEStubTwo undefined
+  , memLoad = \_mem _ptr -> SBEStubTwo undefined
+  , memStore = \_mem _val _ptr -> SBEStubTwo undefined
+  , memAddDefine = \_mem _sym _id -> SBEStubTwo (undefined, undefined)
+  , memLookupDefine = \_mem _t -> SBEStubTwo undefined
+  , memBlockAddress = \_mem _s _b -> SBEStubTwo undefined
   }
 
 liftStubTwoToIO :: SBEStubTwo a -> IO a
