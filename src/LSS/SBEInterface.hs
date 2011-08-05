@@ -32,8 +32,12 @@ data PartialResult r
   | Invalid -- ^ The operation failed.
 
 data SBE m = SBE
-  { falseTerm   :: m (SBETerm m)
-  , termInteger :: Integer -> m (SBETerm m)
+  { -- Constant terms
+    termInt  :: Int -> Integer -> m (SBETerm m)
+  --, termWord :: Int -> Integer -> m (SBETerm m)
+  , termBool :: Bool   -> m (SBETerm m)
+    -- Common operators
+  , applyEq     :: SBETerm m -> SBETerm m -> m (SBETerm m)
   , applyAdd    :: SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @memInitMemory@ returns an initial heap with no values defined.
   , memInitMemory :: m (SBEMemory m)
@@ -86,8 +90,9 @@ type instance SBEMemory SBEStub = SBEStubMemoryOne
 
 sbeStub :: SBE SBEStub
 sbeStub = SBE
-  { falseTerm   = SBEStub 0
-  , termInteger = SBEStub . fromIntegral
+  { termInt     = const (SBEStub . fromIntegral)
+  , termBool    = SBEStub . fromIntegral . fromEnum
+  , applyEq     = \x y -> SBEStub . fromIntegral . fromEnum $ x == y
   , applyAdd    = \x y -> SBEStub (x + y)
   , memInitMemory = SBEStub undefined
   , memAlloca = \_mem _eltType _len _a -> SBEStub undefined
@@ -110,8 +115,9 @@ type instance SBEMemory SBEStubTwo = SBEStubMemoryTwo
 
 sbeStubTwo :: SBE SBEStubTwo
 sbeStubTwo = SBE
-  { falseTerm   = SBEStubTwo 0
-  , termInteger = SBEStubTwo . fromIntegral
+  { termInt     = const (SBEStubTwo . fromIntegral)
+  , termBool    = SBEStubTwo . fromIntegral . fromEnum
+  , applyEq     = \x y -> SBEStubTwo . fromIntegral . fromEnum $ x == y
   , applyAdd    = \x y -> SBEStubTwo (x + y)
   , memInitMemory = SBEStubTwo undefined
   , memAlloca = \_mem _eltType _len _a -> SBEStubTwo undefined
