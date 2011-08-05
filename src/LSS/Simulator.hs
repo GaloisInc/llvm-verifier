@@ -6,92 +6,34 @@ Point-of-contact : jstanley
 -}
 
 {-# LANGUAGE RankNTypes                 #-}
-{-# LANGUAGE EmptyDataDecls             #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE FunctionalDependencies     #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 {-# LANGUAGE UndecidableInstances       #-}
-{-# OPTIONS_GHC -fno-warn-orphans       #-}
 
 module LSS.Simulator
   ( module LSS.Execution.Codebase
-  , AtomicValue(..)
-  , Simulator(..)
-  , LiftSBE
   , callDefine
   , runSimulator
   )
-
 where
 
 import           Control.Applicative
-import           Control.Arrow             hiding ((<+>))
-import           Control.Monad
 import           Control.Monad.State       hiding (State)
 import           Data.Int
-import           Data.Maybe
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
+import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
-import           LSS.Execution.Semantics
-import           LSS.Execution.Stepper
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Text.PrettyPrint.HughesPJ
 import           Text.PrettyPrint.Pretty
 
-import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
-import qualified Text.PrettyPrint.HughesPJ as PP
-
-type CtrlStk term       = CtrlStk' (Path term) term
-type MergeFrame term    = MergeFrame' (Path term) term
-type LiftSBE sbe m      = forall a. sbe a -> Simulator sbe m a
-
--- | Symbolic simulator state
-data State sbe m = State
-  { codebase  :: Codebase              -- ^ LLVM code, post-transformation to sym ast
-  , symBE     :: SBE sbe               -- ^ Symbolic backend interface
-  , liftSymBE :: LiftSBE sbe m         -- ^ Lift SBE operations into the Simulator monad
-  , ctrlStk   :: CtrlStk (SBETerm sbe) -- ^ Control stack for tracking merge points
-  }
-
--- | Captures all symbolic execution state for a unique control-flow path (as
--- specified by the recorded path constraints)
-data Path term = Path
-  { pathFrames      :: [Frame term]       -- ^ The dynamic call stack for this
-                                          -- path
-  , pathException   :: Maybe term         -- ^ When handling an exception along
-                                          -- this path, a pointer to the
-                                          -- exception structure; Nothing
-                                          -- otherwise
-  , pathReturnValue :: Maybe term         -- ^ The return value along this path,
-                                          -- if any.
-  , pathCB          :: Maybe SymBlockID   -- ^ The currently-executing basic
-                                          -- block along this path, if any.
-  , pathConstraints :: term               -- ^ The constraints necessary for
-                                          -- execution of this path
-  }
-
--- | A frame (activation record) in the program being simulated
-data Frame term = Frame
-  { frmFuncSym :: L.Symbol
-  , frmRegs    :: M.Map Reg (AtomicValue term)
-  }
-  deriving Show
-
-newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
-  deriving ( Functor
-           , Monad
-           , MonadIO
-           , MonadState (State sbe m)
-           )
 
 liftSBE :: Monad m => sbe a -> Simulator sbe m a
 liftSBE sa = gets liftSymBE >>= \f -> f sa
@@ -99,8 +41,7 @@ liftSBE sa = gets liftSymBE >>= \f -> f sa
 withSBE :: (Functor m, Monad m) => (SBE sbe -> sbe a) -> Simulator sbe m a
 withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 
-runSimulator ::
-  ( Functor m, MonadIO m)
+runSimulator :: (Functor m, MonadIO m)
   => Codebase              -- ^ Post-transform LLVM code
   -> SBE sbe               -- ^ A symbolic backend
   -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
@@ -116,19 +57,14 @@ runSimulator cb sbe lifter m =
 newSimState :: Codebase -> SBE sbe -> LiftSBE sbe m -> State sbe m
 newSimState cb sbe liftSBE' = State cb sbe liftSBE' emptyCtrlStk
 
-callDefine ::
-  ( MonadIO m
-  , Functor m
-  , Semantics sbe (Simulator sbe m)
-  , Show (SBETerm sbe)
-  )
+callDefine ::(MonadIO m, Functor m, Show (SBETerm sbe))
   => L.Symbol                            -- ^ Callee symbol
   -> L.Type                              -- ^ Callee return type
   -> [Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
   -> Simulator sbe m ()
 callDefine callee retTy args = do
   def  <- lookupDefine callee <$> gets codebase
-  path <- pushFrame (Frame callee (bindArgs (sdArgs def) args))
+  path <- pushCallFrame (CallFrame callee (bindArgs (sdArgs def) args))
           <$> setCurrentBlock' initSymBlockID
           <$> emptyPath
   modifyCS $ pushPendingPath path . pushMF emptyReturnFrame
@@ -161,86 +97,159 @@ callDefine callee retTy args = do
 -----------------------------------------------------------------------------------------
 -- The Semantics instance & related functions
 
+run :: (Functor m, MonadIO m, Show (SBETerm sbe)) => Simulator sbe m ()
+run = do
+  mpath <- getPath
+  case mpath of
+    Nothing -> dbugM $ "run terminating: no path to execute (ok)"
+    Just p  -> runPath p
+  where
+    runPath (pathCB -> Nothing)    = error "runPath: no current block"
+    runPath p@(pathCB -> Just pcb) = withCallFrame p $ \frm -> do
+      def <- lookupDefine (frmFuncSym frm) <$> gets codebase
+      let blk = lookupSymBlock def pcb
+      mapM_ dbugStep (sbStmts blk)
+      run
+    runPath _ = error "unreachable"
+
+--------------------------------------------------------------------------------
+-- LLVM-Sym operations
+
+-- | @popCallFrame@ removes the top entry of the call frame stack in the current
+-- path; assumes that the call frame stack is nonempty and that there is a
+-- current path defined.
+popCallFrame :: (Functor m, Monad m) => Simulator sbe m (CallFrame (SBETerm sbe))
+popCallFrame = do
+  mp <- getPath
+  case mp of
+    Nothing -> error "popCallFrame: no current path"
+    Just p  -> do
+      let (frm, p') = popCallFrame' p
+      modifyPath $ const p'
+      return frm
+
+-- | @popMergeFrame@ removes the top entry of the merge frame stack; assumes
+-- that the control stack is nonempty.
+popMergeFrame :: Monad m => Simulator sbe m (MergeFrame (SBETerm sbe))
+popMergeFrame = do
+  s <- get
+  let (mf, cs) = popMF (ctrlStk s)
+  modifyCS $ const cs
+  return mf
+
+assign :: (Functor m, Monad m)
+  => Reg -> AtomicValue (SBETerm sbe) -> Simulator sbe m ()
+assign reg v = modifyCallFrame $ \frm ->
+  frm{ frmRegs = M.insert reg v (frmRegs frm) }
+
+setCurrentBlock :: (Functor m, Monad m) => SymBlockID -> Simulator sbe m ()
+setCurrentBlock bid = modifyPath (setCurrentBlock' bid)
+
+mergeReturn :: (MonadIO m, Show (SBETerm sbe))
+  => CallFrame (SBETerm sbe)
+  -> MergeFrame (SBETerm sbe)
+  -> Maybe (L.Typed SymValue)
+  -> Simulator sbe m ()
+mergeReturn frm mf (Just (L.Typed t rslt)) = do
+  dbugM $ "MergeReturnAndClear: \npopped frame is:\n" ++ show (pp frm)
+  dbugM $ "return value is: " ++ show (L.ppValue rslt)
+  dumpCtrlStk
+  dbugM $ "popped mf is: " ++ show (pp mf)
+  error "mergeReturn early term"
+
 -- | Looks up the given identifier in the register map of the current frame.
 -- Assumes the identifier is present in the map and that the current path and
--- current frame exist.  Runtime errors otherwise.
-lkupIdent ::
-  (Functor m, Monad m)
+-- current frame exist.  Raises runtime errors otherwise.
+lkupIdent :: (Functor m, Monad m)
   => L.Ident -> Simulator sbe m (AtomicValue (SBETerm sbe))
-lkupIdent i = flip (M.!) i . frmRegs <$> getCurrentFrame
+lkupIdent i = flip (M.!) i . frmRegs <$> getCallFrame
 
--- data Value
---   = ValInteger Integer
---   | ValFloat Float
---   | ValDouble Double
---   | ValIdent Ident
---   | ValSymbol Symbol
---   | ValNull
---   | ValArray Type [Value]
---   | ValStruct [Typed Value]
---   | ValPackedStruct [Typed Value]
---   | ValString String
---     deriving (Show)
-
-getTerm ::
-  (Functor m, Monad m)
+getTerm :: (Functor m, Monad m)
   => Maybe Int32 -> L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
 getTerm (Just w) (L.ValInteger x) = IValue w <$> withSBE (\sbe -> termInteger sbe x)
-getTerm (Just w) (L.ValIdent i)   = lkupIdent i
+getTerm _       (L.ValIdent i)   = lkupIdent i
 getTerm _ v = error $ "getTerm: unsupported value: " ++ show (L.ppValue v)
 
-instance
-  ( Functor m
-  , MonadIO m
-  , Show (SBETerm sbe)
-  )
-  => Semantics sbe (Simulator sbe m)
-  where
+--------------------------------------------------------------------------------
+-- Instruction stepper
 
-  type IntTerm sbe = SBETerm sbe
+-- | Execute a single LLVM-Sym AST instruction
+step :: (MonadIO m, Functor m, Monad m, Show (SBETerm sbe))
+  => SymStmt -> Simulator sbe m ()
 
-  iAdd x y = withSBE $ \sbe -> applyAdd sbe x y
+step ClearCurrentExecution =
+  error "ClearCurrentExecution nyi"
 
-  assign reg v = do
-    modifyCurrentFrame $ \frm ->
-      frm{ frmRegs = M.insert reg v (frmRegs frm) }
+step (PushCallFrame _fn _args _mres) =
+  error "PushCallFrame nyi"
 
-  setCurrentBlock bid = modifyCurrentPath (setCurrentBlock' bid)
+step (PushInvokeFrame _fn _args _mres _e) =
+  error "PushInvokeFrame nyi"
 
-  eval (Arith op (L.Typed (L.PrimType (L.Integer w)) v1) v2) = do
-    IValue _ x <- getTerm (Just w) v1
-    IValue _ y <- getTerm (Just w) v2
-    IValue w <$> case op of
-                   L.Add -> iAdd x y
-                   _     -> error "Unsupported integer arith op"
+step (PushPostDominatorFrame _pdid) =
+  error "PushPostDominatorFrame nyi"
 
-  eval s@Arith{} = error $ "Unsupported arith expr: " ++ show (ppSymExpr s)
+step (MergePostDominator _pdid _cond) =
+  error "MergePostDominator nyi"
 
-  eval (Bit _op _tv1 _v2       ) = error "eval Bit nyi"
-  eval (Conv _op _tv1 _t       ) = error "eval Conv nyi"
-  eval (Alloca _t _mtv _malign ) = error "eval Alloca nyi"
-  eval (Load _tv               ) = error "eval Load nyi"
-  eval (ICmp _op _tv1 _v2      ) = error "eval ICmp nyi"
-  eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
-  eval (Val _tv                ) = error "eval Val nyi"
-  eval (GEP _tv _idxs          ) = error "eval GEP nyi"
-  eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
-  eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
-  eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
+step MergeReturnVoidAndClear =
+  error "MergeReturnVoidAndClear nyi"
 
-  run = do
-    mpath <- getCurrentPath
-    case mpath of
-      Nothing -> dbugM $ "run terminating: no path to execute (ok)"
-      Just p  -> runPath p
-    where
-      runPath (pathCB -> Nothing)    = error "runPath: no current block"
-      runPath p@(pathCB -> Just pcb) = withCurrentFrame p $ \frm -> do
-        def <- lookupDefine (frmFuncSym frm) <$> gets codebase
-        let blk = lookupSymBlock def pcb
-        mapM_ dbugStep (sbStmts blk)
-        run
-      runPath _ = error "unreachable"
+step (MergeReturnAndClear rslt) = do
+  frm <- popCallFrame
+  mf  <- popMergeFrame
+  mergeReturn frm mf (Just rslt)
+  -- TODO: clearCurrentExecution
+  error "MergeReturnAndClear nyi"
+
+step (PushPendingExecution _cond) =
+  error "PushPendingExecution nyi"
+
+step (SetCurrentBlock bid) = setCurrentBlock bid
+
+step (AddPathConstraint _cond) =
+  error "AddPathConstraint nyi"
+
+step (Assign reg expr) = assign reg =<< eval expr
+
+step (Store _addr _val) =
+  error "Store nyi"
+
+step (IfThenElse _c _thenStms _elseStms)
+  = error "IfThenElse nyi"
+
+step Unreachable
+  = error "step: Encountered 'unreachable' instruction"
+
+step Unwind
+  = error "Unwind nyi"
+
+--------------------------------------------------------------------------------
+-- Symbolic expression evaluation
+
+-- | @eval expr@ evaluates @expr@ via the symbolic backend
+eval :: (Functor m, MonadIO m, Show (SBETerm sbe))
+  => SymExpr -> Simulator sbe m (AtomicValue (SBETerm sbe))
+eval (Arith op (L.Typed (L.PrimType (L.Integer w)) v1) v2) = do
+  IValue _ x <- getTerm (Just w) v1
+  IValue _ y <- getTerm (Just w) v2
+  IValue w <$> case op of
+                 L.Add -> withSBE $ \sbe -> applyAdd sbe x y
+                 _     -> error "Unsupported integer arith op"
+
+eval s@Arith{} = error $ "Unsupported arith expr: " ++ show (ppSymExpr s)
+
+eval (Bit _op _tv1 _v2       ) = error "eval Bit nyi"
+eval (Conv _op _tv1 _t       ) = error "eval Conv nyi"
+eval (Alloca _t _mtv _malign ) = error "eval Alloca nyi"
+eval (Load _tv               ) = error "eval Load nyi"
+eval (ICmp _op _tv1 _v2      ) = error "eval ICmp nyi"
+eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
+eval (Val _tv                ) = error "eval Val nyi"
+eval (GEP _tv _idxs          ) = error "eval GEP nyi"
+eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
+eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
+eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
@@ -251,91 +260,61 @@ emptyPath = Path [] Nothing Nothing Nothing <$> withSBE falseTerm
 setCurrentBlock' :: SymBlockID -> Path term -> Path term
 setCurrentBlock' blk p = p{ pathCB = Just blk }
 
--- | @pushFrame f p@ pushes frame f onto path p's frame stack
-pushFrame :: Frame term -> Path term -> Path term
-pushFrame f p@Path{ pathFrames = frms } = p{ pathFrames = f : frms}
+-- | @pushCallFrame f p@ pushes frame f onto path p's frame stack
+pushCallFrame :: CallFrame term -> Path term -> Path term
+pushCallFrame f p@Path{ pathCallFrames = frms } = p{ pathCallFrames = f : frms}
 
--- | @popFrame p@ pops the top frame of path p's frame stack; runtime error if
+-- | @popCallFrame' p@ pops the top frame of path p's frame stack; runtime error if
 -- the frame stack is empty
-popFrame :: Path term -> (Frame term, Path term)
-popFrame Path{ pathFrames = [] }       = error "popFrame: empty frame stack"
-popFrame p@Path{ pathFrames = (f:fs) } = (f, p{ pathFrames = fs })
+popCallFrame' :: Path term -> (CallFrame term, Path term)
+popCallFrame' Path{ pathCallFrames = [] }       = error "popCallFrame': empty frame stack"
+popCallFrame' p@Path{ pathCallFrames = (f:fs) } = (f, p{ pathCallFrames = fs })
 
 -- | Manipulate the control stack
-modifyCS :: Monad m => (CtrlStk (SBETerm sbe) -> CtrlStk (SBETerm sbe)) -> Simulator sbe m ()
+modifyCS :: Monad m
+  => (CtrlStk (SBETerm sbe) -> CtrlStk (SBETerm sbe)) -> Simulator sbe m ()
 modifyCS f = modify $ \s -> s{ ctrlStk = f (ctrlStk s) }
 
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
 -- that the control stack is empty or the top entry of the control stack has no
 -- pending paths recorded.
-getCurrentPath ::
-  (Functor m, Monad m)
+getPath :: (Functor m, Monad m)
   => Simulator sbe m (Maybe (Path (SBETerm sbe)))
-getCurrentPath = topPendingPath <$> gets ctrlStk
+getPath = topPendingPath <$> gets ctrlStk
 
 -- | Obtain the active frame in the current path; runtime error if the control
 -- stack is empty or if there is no current path.
-getCurrentFrame :: (Functor m, Monad m) => Simulator sbe m (Frame (SBETerm sbe))
-getCurrentFrame = do
-  mpath <- getCurrentPath
+getCallFrame :: (Functor m, Monad m) => Simulator sbe m (CallFrame (SBETerm sbe))
+getCallFrame = do
+  mpath <- getPath
   case mpath of
-    Nothing                      -> error "getCurrentFrame: no current path"
-    Just (pathFrames -> [])      -> error "getCurrentFrame: frame stack is empty"
-    Just (pathFrames -> (frm:_)) -> return frm
-    _                            -> error "unreachable"
+    Nothing                          -> error "getCallFrame: no current path"
+    Just (pathCallFrames -> [])      -> error "getCallFrame: call frame stack is empty"
+    Just (pathCallFrames -> (frm:_)) -> return frm
+    _                                -> error "unreachable"
 
 -- | Manipulate the current path (i.e., the first pending path in topmost
 -- control stack entry)
-modifyCurrentPath ::
-  (Functor m , Monad m)
+modifyPath :: (Functor m , Monad m)
   => (Path (SBETerm sbe) -> Path (SBETerm sbe)) -> Simulator sbe m ()
-modifyCurrentPath f = modifyCS $ \cs ->
+modifyPath f = modifyCS $ \cs ->
   let (p, cs') = popPendingPath cs in pushPendingPath (f p) cs'
 
-withCurrentFrame :: Path term -> (Frame term -> a) -> a
-withCurrentFrame (pathFrames -> pfs) f
-  | null pfs  = error "withCurrentFrame: empty frame list"
+withCallFrame :: Path term -> (CallFrame term -> a) -> a
+withCallFrame (pathCallFrames -> pfs) f
+  | null pfs  = error "withCallFrame: empty frame list"
   | otherwise = f (head pfs)
 
 -- | Manipulate the current frame (i.e., the top frame stack entry of the
 -- current path)
-modifyCurrentFrame ::
-  (Functor m, Monad m)
-  => (Frame (SBETerm sbe) -> Frame (SBETerm sbe)) -> Simulator sbe m ()
-modifyCurrentFrame f = modifyCurrentPath $ \p ->
-  let (frm, p') = popFrame p in pushFrame (f frm) p'
+modifyCallFrame :: (Functor m, Monad m)
+  => (CallFrame (SBETerm sbe) -> CallFrame (SBETerm sbe)) -> Simulator sbe m ()
+modifyCallFrame f = modifyPath $ \p ->
+  let (frm, p') = popCallFrame' p in pushCallFrame (f frm) p'
 
---------------------------------------------------------------------------------
--- Pretty printing
-
-instance Show a => Pretty (M.Map Reg a) where
-  pp mp = vcat [ text (show r ++ " => " ++ show v) | (r,v) <- M.toList mp]
-
-instance Show term => Pretty (Frame term) where
-  pp (Frame sym regMap) =
-    text "Frm" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (pp regMap)
-
-instance Show term => Pretty (Path term) where
-  pp (Path frms _mexc _mrv mcb pc) =
-    text "Path"
-    <>  brackets (maybe (text "none") ppSymBlockID mcb)
-    <>  colon <> text (show pc)
-    $+$ nest 2 (vcat $ map pp frms)
-
------------------------------------------------------------------------------------------
--- Debugging
-
-dbugStep :: (MonadIO m, Show (SBETerm sbe), Functor m) => SymStmt -> Simulator sbe m ()
+dbugStep :: (MonadIO m, Show (SBETerm sbe), Functor m)
+  => SymStmt -> Simulator sbe m ()
 dbugStep stmt = do
   dbugM ("Executing: " ++ show (ppSymStmt stmt))
   step stmt
   dumpCtrlStk
-
-dumpCtrlStk :: (MonadIO m, Show (SBETerm sbe)) => Simulator sbe m ()
-dumpCtrlStk = gets ctrlStk >>= \cs -> banners (show $ pp cs)
-
-banners :: MonadIO m => String -> m ()
-banners msg = do
-  dbugM $ replicate 80 '-'
-  dbugM msg
-  dbugM $ replicate 80 '-'
