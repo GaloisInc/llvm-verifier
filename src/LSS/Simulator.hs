@@ -234,9 +234,7 @@ eval :: (Functor m, MonadIO m, Show (SBETerm sbe))
 eval (Arith op (L.Typed (L.PrimType (L.Integer w)) v1) v2) = do
   IValue _ x <- getTerm (Just w) v1
   IValue _ y <- getTerm (Just w) v2
-  IValue w <$> case op of
-                 L.Add -> withSBE $ \sbe -> applyAdd sbe x y
-                 _     -> error "Unsupported integer arith op"
+  IValue w <$> (withSBE $ \sbe -> applyArith sbe op x y)
 
 eval s@Arith{} = error $ "Unsupported arith expr: " ++ show (ppSymExpr s)
 

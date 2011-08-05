@@ -9,6 +9,7 @@ Point-of-contact : atomb
 
 module LSS.SBESymbolic where
 
+import qualified Text.LLVM.AST as LLVM
 import qualified Verinf.Symbolic as S
 import LSS.SBEInterface
 
@@ -24,15 +25,19 @@ sbeSymbolic = SBE
   , termBool = return . S.mkCInt (S.Wx 1) . fromIntegral . fromEnum
   , applyIte = S.applyIte
   , applyEq = S.applyEq
-  , applyAdd = S.applyAdd
-  , applyMul = S.applyMul
-  , applySub = S.applySub
   , applyINot = S.applyINot
   , applyIAnd = S.applyIAnd
   , applyIOr = S.applyIOr
   , applyIXor = S.applyIXor
   , applyShl = S.applyShl
   , applyShr = S.applyShr
+  , applyArith = \op -> case op of
+                          LLVM.Add -> S.applyAdd
+                          LLVM.Mul -> S.applyMul
+                          LLVM.Sub -> S.applySub
+                          _ -> error $
+                               "unsupported arithmetic op: " ++
+                               show op
   , memInitMemory = return undefined
   , memAlloca = \_mem _eltType _len _a -> return undefined
   , memLoad = \_mem _ptr -> return undefined

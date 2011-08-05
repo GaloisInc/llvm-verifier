@@ -9,6 +9,7 @@ Point-of-contact : atomb
 module LSS.SBEConcrete where
 
 import Data.Bits
+import qualified Text.LLVM.AST as LLVM
 
 import LSS.SBEInterface
 
@@ -39,9 +40,13 @@ sbeConcrete = SBE
   , applyIXor = \a b -> SBEConcrete $ a `xor` b
   , applyShl = \a b -> SBEConcrete $ a `shiftL` fromIntegral b
   , applyShr = \a b -> SBEConcrete $ a `shiftR` fromIntegral b
-  , applyAdd = \a b -> SBEConcrete $ a + b
-  , applyMul = \a b -> SBEConcrete $ a * b
-  , applySub = \a b -> SBEConcrete $ a - b
+  , applyArith = \op a b -> case op of
+                              LLVM.Add -> SBEConcrete $ a + b
+                              LLVM.Mul -> SBEConcrete $ a * b
+                              LLVM.Sub -> SBEConcrete $ a - b
+                              _ -> error $
+                                   "unsupported arithmetic op: " ++
+                                   show op
   , memInitMemory = SBEConcrete undefined
   , memAlloca = \_mem _eltType _len _a -> SBEConcrete undefined
   , memLoad = \_mem _ptr -> SBEConcrete undefined

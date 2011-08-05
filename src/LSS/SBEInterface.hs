@@ -44,9 +44,8 @@ data SBE m = SBE
   , applyIXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
   , applyShl    :: SBETerm m -> SBETerm m -> m (SBETerm m)
   , applyShr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  , applyAdd    :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  , applyMul    :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  , applySub    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
+  , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @memInitMemory@ returns an initial heap with no values defined.
   , memInitMemory :: m (SBEMemory m)
     -- | @memAlloca h tp i align@ allocates memory on the stack for the given
