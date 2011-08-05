@@ -51,5 +51,5 @@ sbeConcrete = SBE
   , memBlockAddress = \_mem _s _b -> SBEConcrete undefined
   }
 
-liftConcrete :: SBEConcrete a -> IO a
-liftConcrete = return . runConcrete
+liftSBEConcrete :: SBEConcrete a -> IO a
+liftSBEConcrete = return . runConcrete

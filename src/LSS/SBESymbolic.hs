@@ -42,5 +42,5 @@ sbeSymbolic = SBE
   , memBlockAddress = \_mem _s _b -> return undefined
   }
 
-liftSymbolic :: S.SymbolicMonad a -> IO a
-liftSymbolic = S.runSymbolic
+liftSBESymbolic :: S.SymbolicMonad a -> IO a
+liftSBESymbolic = S.runSymbolic
