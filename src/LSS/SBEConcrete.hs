@@ -49,6 +49,7 @@ sbeConcrete = SBE
   , memAddDefine = \_mem _sym _id -> SBEConcrete (undefined, undefined)
   , memLookupDefine = \_mem _t -> SBEConcrete undefined
   , memBlockAddress = \_mem _s _b -> SBEConcrete undefined
+  , memSelect = \_t _mem _mem' -> SBEConcrete undefined
   }
 
 liftSBEConcrete :: SBEConcrete a -> IO a

@@ -40,6 +40,7 @@ sbeSymbolic = SBE
   , memAddDefine = \_mem _sym _id -> return (undefined, undefined)
   , memLookupDefine = \_mem _t -> return undefined
   , memBlockAddress = \_mem _s _b -> return undefined
+  , memSelect = \_t _mem _mem' -> return undefined
   }
 
 liftSBESymbolic :: S.SymbolicMonad a -> IO a

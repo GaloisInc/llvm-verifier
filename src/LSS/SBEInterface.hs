@@ -85,4 +85,8 @@ data SBE m = SBE
     -- | @memBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , memBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
+    -- | @memSelect c t f@ returns a memory that corresponds to @t@ if @c@ is
+    -- true and @f@ otherwise.  This function is useful in merging.
+  , memSelect :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
   }
+
