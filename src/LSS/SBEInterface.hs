@@ -73,6 +73,9 @@ data SBE m = SBE
     -- | @memBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , memBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
+    -- | @memSelect c t f@ returns a memory that corresponds to @t@ if @c@ is
+    -- true and @f@ otherwise.  This function is useful in merging.
+  , memSelect :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
   }
 
 --------------------------------------------------------------------------------
@@ -96,6 +99,7 @@ sbeStub = SBE
   , memAddDefine = \_mem _sym _id -> SBEStub (undefined, undefined)
   , memLookupDefine = \_mem _t -> SBEStub undefined
   , memBlockAddress = \_mem _s _b -> SBEStub undefined
+  , memSelect = \_c _t _f -> SBEStub undefined
   }
 
 liftStubToIO :: SBEStub a -> IO a
@@ -120,6 +124,7 @@ sbeStubTwo = SBE
   , memAddDefine = \_mem _sym _id -> SBEStubTwo (undefined, undefined)
   , memLookupDefine = \_mem _t -> SBEStubTwo undefined
   , memBlockAddress = \_mem _s _b -> SBEStubTwo undefined
+  , memSelect = \_c _t _f -> SBEStubTwo undefined
   }
 
 liftStubTwoToIO :: SBEStubTwo a -> IO a
