@@ -16,6 +16,7 @@ Point-of-contact : jstanley
 module LSS.Simulator
   ( module LSS.Execution.Codebase
   , callDefine
+  , withSBE -- Exported so we can construct argument values.
   , runSimulator
   )
 where
@@ -166,7 +167,7 @@ lkupIdent i = flip (M.!) i . frmRegs <$> getCallFrame
 
 getTerm :: (Functor m, Monad m)
   => Maybe Int32 -> L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
-getTerm (Just w) (L.ValInteger x) = IValue w <$> withSBE (\sbe -> termInteger sbe x)
+getTerm (Just w) (L.ValInteger x) = IValue w <$> withSBE (\sbe -> termInt sbe 32 x)
 getTerm _       (L.ValIdent i)   = lkupIdent i
 getTerm _ v = error $ "getTerm: unsupported value: " ++ show (L.ppValue v)
 
@@ -233,9 +234,7 @@ eval :: (Functor m, MonadIO m, Show (SBETerm sbe))
 eval (Arith op (L.Typed (L.PrimType (L.Integer w)) v1) v2) = do
   IValue _ x <- getTerm (Just w) v1
   IValue _ y <- getTerm (Just w) v2
-  IValue w <$> case op of
-                 L.Add -> withSBE $ \sbe -> applyAdd sbe x y
-                 _     -> error "Unsupported integer arith op"
+  IValue w <$> (withSBE $ \sbe -> applyArith sbe op x y)
 
 eval s@Arith{} = error $ "Unsupported arith expr: " ++ show (ppSymExpr s)
 
@@ -255,7 +254,7 @@ eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 -- Misc utility functions
 
 emptyPath :: (Functor m, Monad m) => Simulator sbe m (Path (SBETerm sbe))
-emptyPath = Path [] Nothing Nothing Nothing <$> withSBE falseTerm
+emptyPath = Path [] Nothing Nothing Nothing <$> withSBE (flip termBool False)
 
 setCurrentBlock' :: SymBlockID -> Path term -> Path term
 setCurrentBlock' blk p = p{ pathCB = Just blk }

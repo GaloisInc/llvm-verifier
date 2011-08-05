@@ -51,3 +51,20 @@ library
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
+executable llss
+  hs-source-dirs: src
+
+  main-is:
+    Driver.hs
+
+  if os(darwin)
+    GHC-options: -optl-Wl,-dead_strip
+
+  build-depends:
+      base >= 4
+    , containers
+    , llvm-pretty
+    , mtl
+    , pretty
+    , vector
+    , Verinf

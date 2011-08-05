@@ -27,9 +27,25 @@ data PartialResult r
   | Invalid -- ^ The operation failed.
 
 data SBE m = SBE
-  { falseTerm   :: m (SBETerm m)
-  , termInteger :: Integer -> m (SBETerm m)
-  , applyAdd    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  { -- Constant terms
+    termInt  :: Int -> Integer -> m (SBETerm m)
+  --, termWord :: Int -> Integer -> m (SBETerm m)
+  , termBool :: Bool   -> m (SBETerm m)
+    -- Common operators
+  , applyEq     :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIte    :: SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBNot   :: SBETerm m -> m (SBETerm m)
+  --, applyBAnd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBOr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyINot   :: SBETerm m -> m (SBETerm m)
+  , applyIAnd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIOr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyShl    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyShr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
+  , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @memInitMemory@ returns an initial heap with no values defined.
   , memInitMemory :: m (SBEMemory m)
     -- | @memAlloca h tp i align@ allocates memory on the stack for the given
@@ -68,54 +84,8 @@ data SBE m = SBE
     -- | @memBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , memBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
+    -- | @memSelect c t f@ returns a memory that corresponds to @t@ if @c@ is
+    -- true and @f@ otherwise.  This function is useful in merging.
+  , memSelect :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
   }
 
---------------------------------------------------------------------------------
--- SBE implementations
-
-newtype SBEStub a = SBEStub { runStub :: a }
-type instance SBETerm SBEStub = Int
-
-data SBEStubMemoryOne = UndefinedMemoryOne
-type instance SBEMemory SBEStub = SBEStubMemoryOne
-
-sbeStub :: SBE SBEStub
-sbeStub = SBE
-  { falseTerm   = SBEStub 0
-  , termInteger = SBEStub . fromIntegral
-  , applyAdd    = \x y -> SBEStub (x + y)
-  , memInitMemory = SBEStub undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEStub undefined
-  , memLoad = \_mem _ptr -> SBEStub undefined
-  , memStore = \_mem _val _ptr -> SBEStub undefined
-  , memAddDefine = \_mem _sym _id -> SBEStub (undefined, undefined)
-  , memLookupDefine = \_mem _t -> SBEStub undefined
-  , memBlockAddress = \_mem _s _b -> SBEStub undefined
-  }
-
-liftStubToIO :: SBEStub a -> IO a
-liftStubToIO = return . runStub
-
-newtype SBEStubTwo a = SBEStubTwo { runStubTwo :: a }
-type instance SBETerm SBEStubTwo = Integer
-
-data SBEStubMemoryTwo = UndefinedMemoryTwo
-
-type instance SBEMemory SBEStubTwo = SBEStubMemoryTwo
-
-sbeStubTwo :: SBE SBEStubTwo
-sbeStubTwo = SBE
-  { falseTerm   = SBEStubTwo 0
-  , termInteger = SBEStubTwo . fromIntegral
-  , applyAdd    = \x y -> SBEStubTwo (x + y)
-  , memInitMemory = SBEStubTwo undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEStubTwo undefined
-  , memLoad = \_mem _ptr -> SBEStubTwo undefined
-  , memStore = \_mem _val _ptr -> SBEStubTwo undefined
-  , memAddDefine = \_mem _sym _id -> SBEStubTwo (undefined, undefined)
-  , memLookupDefine = \_mem _t -> SBEStubTwo undefined
-  , memBlockAddress = \_mem _s _b -> SBEStubTwo undefined
-  }
-
-liftStubTwoToIO :: SBEStubTwo a -> IO a
-liftStubTwoToIO = return . runStubTwo
