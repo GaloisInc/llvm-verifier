@@ -11,8 +11,8 @@ module LSS.SBEInterface where
 
 import qualified Text.LLVM.AST as LLVM
 
--- | SBETerm is a function over types that yields the term type associated with
--- a particular SBE interface implementation
+-- | SBETerm yields the type used to represent terms in particular SBE interface
+-- implementation.
 type family SBETerm (sbe :: * -> *)
 
 -- | SBEMemory yields the type used to represent the memory in a particular SBE
