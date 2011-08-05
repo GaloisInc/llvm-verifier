@@ -132,8 +132,24 @@ module Memory where
 -- [1] http://llvm.org/docs/LangRef.html
 
 {-
-data SymMemory a = SymMemory a {
-    smLoad :: LLVM.Type -> SymValue -> IO SymValue
-  , smStore :: SymValue -> IO SymValue -> 
+data PartialResult r
+  = Result r -- ^ The result of the operation.
+  | Indeterminate -- ^ The value of the operation could not be determined.
+  | Invalid -- ^ The operation failed.
+
+type family SBEHeap m
+type family SBETerm m
+
+data SymMemory m = SymMemory m {
+    smAlloca :: SBEHeap m -> LLVM.Type -> m (SBETerm m, SBEHeap m)
+    -- | @smLoad tp valuw@ loads 
+  , smLoad :: SBEHeap m -> LLVM.Type -> SBETerm m -> m (SBETerm m)
+    -- | @smStore value pointer@ stores value in address denoted by pointer.
+  , smStore :: v -> v -> IO ()
+    -- | @smLookupDefine addr@ returns symbolic definition associated with
+    -- address.  Lookup may fail if the 
+  , smLookupDefine :: v -> IO (PartialResult SymDefine)
+    -- | @smBlockAddress d l@ returns address of basic block with label @l@ in
+    -- definition @d@.
+  , smBlockAddress :: LLVM.Symbol -> LLVM.Ident -> IO v 
   }
-}
