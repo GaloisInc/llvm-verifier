@@ -19,11 +19,6 @@ type family SBETerm (sbe :: * -> *)
 -- interface implementation.
 type family SBEMemory (sbe :: * -> *)
 
--- | SBEMonad is a function over types that yields the base monad type
--- associated with a particular SBE interface implementation
-type family SBEMonad sbe :: * -> *
-type instance SBEMonad (SBE m) = m
-
 -- | Represents a partial result of trying to obtain a concrete value from
 -- a symbolic term.
 data PartialResult r

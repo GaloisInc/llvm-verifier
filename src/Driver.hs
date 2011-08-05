@@ -1,11 +1,8 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
-
-import Text.LLVM
-import LSS.SBEInterface
-import LSS.Simulator
-import LSS.SBEInterface
-
 import Control.Monad.Trans
+import LSS.SBEInterface
+import LSS.Execution.Common
+import LSS.Simulator
+import Text.LLVM
 
 main :: IO ()
 main = do
