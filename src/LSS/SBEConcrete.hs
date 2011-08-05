@@ -8,6 +8,8 @@ Point-of-contact : atomb
 {-# LANGUAGE TypeFamilies #-}
 module LSS.SBEConcrete where
 
+import Data.Bits
+
 import LSS.SBEInterface
 
 --------------------------------------------------------------------------------
@@ -15,7 +17,7 @@ import LSS.SBEInterface
 
 newtype SBEConcrete a = SBEConcrete { runConcrete :: a }
 type instance SBETerm SBEConcrete = Integer
-type instance SBEMemory SBEConcrete = ...
+type instance SBEMemory SBEConcrete = () -- TODO
 
 concBool :: Bool -> SBEConcrete Integer
 concBool = SBEConcrete . fromIntegral . fromEnum
@@ -26,7 +28,20 @@ sbeConcrete = SBE
   --, termWord = const (SBEConcrete . fromIntegral)
   , termBool = concBool
   , applyEq  = \a b -> concBool $ a == b
+  , applyIte = \a b c -> SBEConcrete $ if a == 0 then b else c
+  --, applyBNot = \a ->
+  --, applyBAnd = \a b ->
+  --, applyBOr = \a b ->
+  --, applyBXor = \a b ->
+  , applyINot = SBEConcrete . complement
+  , applyIAnd = \a b -> SBEConcrete $ a .&. b
+  , applyIOr = \a b -> SBEConcrete $ a .|. b
+  , applyIXor = \a b -> SBEConcrete $ a `xor` b
+  , applyShl = \a b -> SBEConcrete $ a `shiftL` fromIntegral b
+  , applyShr = \a b -> SBEConcrete $ a `shiftR` fromIntegral b
   , applyAdd = \a b -> SBEConcrete $ a + b
+  , applyMul = \a b -> SBEConcrete $ a * b
+  , applySub = \a b -> SBEConcrete $ a - b
   , memInitMemory = SBEConcrete undefined
   , memAlloca = \_mem _eltType _len _a -> SBEConcrete undefined
   , memLoad = \_mem _ptr -> SBEConcrete undefined
@@ -36,3 +51,5 @@ sbeConcrete = SBE
   , memBlockAddress = \_mem _s _b -> SBEConcrete undefined
   }
 
+liftConcrete :: SBEConcrete a -> IO a
+liftConcrete = return . runConcrete

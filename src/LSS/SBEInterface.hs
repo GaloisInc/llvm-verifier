@@ -38,7 +38,20 @@ data SBE m = SBE
   , termBool :: Bool   -> m (SBETerm m)
     -- Common operators
   , applyEq     :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIte    :: SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBNot   :: SBETerm m -> m (SBETerm m)
+  --, applyBAnd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBOr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyINot   :: SBETerm m -> m (SBETerm m)
+  , applyIAnd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIOr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyShl    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyShr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
   , applyAdd    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyMul    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applySub    :: SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @memInitMemory@ returns an initial heap with no values defined.
   , memInitMemory :: m (SBEMemory m)
     -- | @memAlloca h tp i align@ allocates memory on the stack for the given
@@ -78,55 +91,3 @@ data SBE m = SBE
     -- label @l@ in definition @d@.
   , memBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
   }
-
---------------------------------------------------------------------------------
--- SBE implementations
-
-newtype SBEStub a = SBEStub { runStub :: a }
-type instance SBETerm SBEStub = Int
-
-data SBEStubMemoryOne = UndefinedMemoryOne
-type instance SBEMemory SBEStub = SBEStubMemoryOne
-
-sbeStub :: SBE SBEStub
-sbeStub = SBE
-  { termInt     = const (SBEStub . fromIntegral)
-  , termBool    = SBEStub . fromIntegral . fromEnum
-  , applyEq     = \x y -> SBEStub . fromIntegral . fromEnum $ x == y
-  , applyAdd    = \x y -> SBEStub (x + y)
-  , memInitMemory = SBEStub undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEStub undefined
-  , memLoad = \_mem _ptr -> SBEStub undefined
-  , memStore = \_mem _val _ptr -> SBEStub undefined
-  , memAddDefine = \_mem _sym _id -> SBEStub (undefined, undefined)
-  , memLookupDefine = \_mem _t -> SBEStub undefined
-  , memBlockAddress = \_mem _s _b -> SBEStub undefined
-  }
-
-liftStubToIO :: SBEStub a -> IO a
-liftStubToIO = return . runStub
-
-newtype SBEStubTwo a = SBEStubTwo { runStubTwo :: a }
-type instance SBETerm SBEStubTwo = Integer
-
-data SBEStubMemoryTwo = UndefinedMemoryTwo
-
-type instance SBEMemory SBEStubTwo = SBEStubMemoryTwo
-
-sbeStubTwo :: SBE SBEStubTwo
-sbeStubTwo = SBE
-  { termInt     = const (SBEStubTwo . fromIntegral)
-  , termBool    = SBEStubTwo . fromIntegral . fromEnum
-  , applyEq     = \x y -> SBEStubTwo . fromIntegral . fromEnum $ x == y
-  , applyAdd    = \x y -> SBEStubTwo (x + y)
-  , memInitMemory = SBEStubTwo undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEStubTwo undefined
-  , memLoad = \_mem _ptr -> SBEStubTwo undefined
-  , memStore = \_mem _val _ptr -> SBEStubTwo undefined
-  , memAddDefine = \_mem _sym _id -> SBEStubTwo (undefined, undefined)
-  , memLookupDefine = \_mem _t -> SBEStubTwo undefined
-  , memBlockAddress = \_mem _s _b -> SBEStubTwo undefined
-  }
-
-liftStubTwoToIO :: SBEStubTwo a -> IO a
-liftStubTwoToIO = return . runStubTwo

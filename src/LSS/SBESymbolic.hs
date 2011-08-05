@@ -13,7 +13,7 @@ import qualified Verinf.Symbolic as S
 import LSS.SBEInterface
 
 --------------------------------------------------------------------------------
--- Symbolic backend (currently with only concrete operations)
+-- Symbolic backend
 
 type instance SBETerm S.SymbolicMonad = S.SymbolicTerm
 type instance SBEMemory S.SymbolicMonad = S.SymbolicTerm
@@ -22,8 +22,17 @@ sbeSymbolic :: SBE S.SymbolicMonad
 sbeSymbolic = SBE
   { termInt  = \w v -> return . S.mkCInt (S.Wx w) . fromIntegral $ v
   , termBool = return . S.mkCInt (S.Wx 1) . fromIntegral . fromEnum
-  , applyEq  = S.applyEq
+  , applyIte = S.applyIte
+  , applyEq = S.applyEq
   , applyAdd = S.applyAdd
+  , applyMul = S.applyMul
+  , applySub = S.applySub
+  , applyINot = S.applyINot
+  , applyIAnd = S.applyIAnd
+  , applyIOr = S.applyIOr
+  , applyIXor = S.applyIXor
+  , applyShl = S.applyShl
+  , applyShr = S.applyShr
   , memInitMemory = return undefined
   , memAlloca = \_mem _eltType _len _a -> return undefined
   , memLoad = \_mem _ptr -> return undefined
@@ -32,3 +41,6 @@ sbeSymbolic = SBE
   , memLookupDefine = \_mem _t -> return undefined
   , memBlockAddress = \_mem _s _b -> return undefined
   }
+
+liftSymbolic :: S.SymbolicMonad a -> IO a
+liftSymbolic = S.runSymbolic
