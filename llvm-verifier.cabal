@@ -51,7 +51,7 @@ library
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
-executable llss
+executable lss
   hs-source-dirs: src
 
   main-is:
