@@ -16,7 +16,6 @@ Point-of-contact : jstanley
 module LSS.Execution.Common where
 
 import           Control.Monad.State      hiding (State)
-import           Data.Int
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.SBEInterface
@@ -90,8 +89,11 @@ data CallFrame term = CallFrame
   }
   deriving Show
 
+entryCallFrame :: CallFrame term
+entryCallFrame = CallFrame (L.Symbol "_galois_lss_entry") M.empty
+
 data AtomicValue intTerm
-  = IValue { _w :: Int32, unIValue :: intTerm }
+  = IValue { _w :: Int, unIValue :: intTerm }
 
 instance PrettyTerm intTerm => Show (AtomicValue intTerm) where
   show (IValue w term) = "IValue {_w = " ++ show w ++ ", unIValue = " ++ prettyTerm term ++ "}"
@@ -141,7 +143,7 @@ instance (PrettyTerm term) => Pretty (Path term) where
   pp (Path frms _mexc _mrv mcb pathConstraint) =
     text "Path"
     <>  brackets (maybe (text "none") ppSymBlockID mcb)
-    <>  colon <+> text (prettyTerm pathConstraint)
+    <>  colon <+> (parens $ text "Constraint:" <+> text (prettyTerm pathConstraint) )
     $+$ nest 2 (vcat $ map pp frms)
 
 -----------------------------------------------------------------------------------------

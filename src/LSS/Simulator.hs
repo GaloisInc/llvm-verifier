@@ -64,9 +64,18 @@ callDefine ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
   -> L.Type                              -- ^ Callee return type
   -> [Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
   -> Simulator sbe m ()
-callDefine callee retTy args = do
+callDefine = callDefine' True
+
+callDefine' ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
+  => Bool                                -- ^ Toplevel invocation?
+  -> L.Symbol                            -- ^ Callee symbol
+  -> L.Type                              -- ^ Callee return type
+  -> [Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
+  -> Simulator sbe m ()
+callDefine' isTopLevel callee retTy args = do
   def  <- lookupDefine callee <$> gets codebase
   path <- pushCallFrame (CallFrame callee (bindArgs (sdArgs def) args))
+          <$> (if isTopLevel then pushCallFrame entryCallFrame else id)
           <$> setCurrentBlock' initSymBlockID
           <$> emptyPath
   modifyCS $ pushPendingPath path . pushMF emptyReturnFrame
@@ -89,8 +98,8 @@ callDefine callee retTy args = do
           case val of
             v@(IValue w _) -> case ft of
               L.PrimType (L.Integer w')
-                | w == w'   -> M.insert reg v mp
-                | otherwise -> err $ text "int width mismatch"
+                | fromIntegral w == w' -> M.insert reg v mp
+                | otherwise            -> err $ text "int width mismatch"
               ty -> err $ text "unsupported type:" <+> L.ppType ty
       | otherwise = err
           $ text "formal/actual type mismatch:"
@@ -167,9 +176,9 @@ lkupIdent :: (Functor m, Monad m)
 lkupIdent i = flip (M.!) i . frmRegs <$> getCallFrame
 
 getTerm :: (Functor m, Monad m)
-  => Maybe Int32 -> L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
-getTerm (Just w) (L.ValInteger x) = IValue w <$> withSBE (\sbe -> termInt sbe 32 x)
-getTerm _       (L.ValIdent i)   = lkupIdent i
+  => Maybe Int -> L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
+getTerm (Just w) (L.ValInteger x) = IValue w <$> withSBE (\sbe -> termInt sbe w x)
+getTerm _       (L.ValIdent i)    = lkupIdent i
 getTerm _ v = error $ "getTerm: unsupported value: " ++ show (L.ppValue v)
 
 --------------------------------------------------------------------------------
@@ -232,10 +241,10 @@ step Unwind
 -- | @eval expr@ evaluates @expr@ via the symbolic backend
 eval :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
   => SymExpr -> Simulator sbe m (AtomicValue (SBETerm sbe))
-eval (Arith op (L.Typed (L.PrimType (L.Integer w)) v1) v2) = do
+eval (Arith op (L.Typed (L.PrimType (L.Integer (fromIntegral -> w))) v1) v2) = do
   IValue _ x <- getTerm (Just w) v1
   IValue _ y <- getTerm (Just w) v2
-  IValue w <$> (withSBE $ \sbe -> applyArith sbe op x y)
+  IValue w <$> withSBE (\sbe -> applyArith sbe op x y)
 
 eval s@Arith{} = error $ "Unsupported arith expr: " ++ show (ppSymExpr s)
 
@@ -255,7 +264,7 @@ eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 -- Misc utility functions
 
 emptyPath :: (Functor m, Monad m) => Simulator sbe m (Path (SBETerm sbe))
-emptyPath = Path [] Nothing Nothing Nothing <$> withSBE (flip termBool False)
+emptyPath = Path [] Nothing Nothing Nothing <$> withSBE (`termBool` True)
 
 setCurrentBlock' :: SymBlockID -> Path term -> Path term
 setCurrentBlock' blk p = p{ pathCB = Just blk }

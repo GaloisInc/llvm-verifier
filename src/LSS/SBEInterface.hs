@@ -28,6 +28,7 @@ data PartialResult r
 
 data SBE m = SBE
   { -- Constant terms
+    -- | @termInt w v@ creates a w-bit integer with value v
     termInt  :: Int -> Integer -> m (SBETerm m)
   --, termWord :: Int -> Integer -> m (SBETerm m)
   , termBool :: Bool   -> m (SBETerm m)
