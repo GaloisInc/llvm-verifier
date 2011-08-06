@@ -32,6 +32,7 @@ import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Text.PrettyPrint.HughesPJ
 import           Text.PrettyPrint.Pretty
+import           Verinf.Symbolic.Common (PrettyTerm(..))
 
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
@@ -58,7 +59,7 @@ runSimulator cb sbe lifter m =
 newSimState :: Codebase -> SBE sbe -> LiftSBE sbe m -> State sbe m
 newSimState cb sbe liftSBE' = State cb sbe liftSBE' emptyCtrlStk
 
-callDefine ::(MonadIO m, Functor m, Show (SBETerm sbe))
+callDefine ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
   => L.Symbol                            -- ^ Callee symbol
   -> L.Type                              -- ^ Callee return type
   -> [Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
@@ -98,7 +99,7 @@ callDefine callee retTy args = do
 -----------------------------------------------------------------------------------------
 -- The Semantics instance & related functions
 
-run :: (Functor m, MonadIO m, Show (SBETerm sbe)) => Simulator sbe m ()
+run :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
 run = do
   mpath <- getPath
   case mpath of
@@ -146,7 +147,7 @@ assign reg v = modifyCallFrame $ \frm ->
 setCurrentBlock :: (Functor m, Monad m) => SymBlockID -> Simulator sbe m ()
 setCurrentBlock bid = modifyPath (setCurrentBlock' bid)
 
-mergeReturn :: (MonadIO m, Show (SBETerm sbe))
+mergeReturn :: (MonadIO m, PrettyTerm (SBETerm sbe))
   => CallFrame (SBETerm sbe)
   -> MergeFrame (SBETerm sbe)
   -> Maybe (L.Typed SymValue)
@@ -175,7 +176,7 @@ getTerm _ v = error $ "getTerm: unsupported value: " ++ show (L.ppValue v)
 -- Instruction stepper
 
 -- | Execute a single LLVM-Sym AST instruction
-step :: (MonadIO m, Functor m, Monad m, Show (SBETerm sbe))
+step :: (MonadIO m, Functor m, Monad m, PrettyTerm (SBETerm sbe))
   => SymStmt -> Simulator sbe m ()
 
 step ClearCurrentExecution =
@@ -229,7 +230,7 @@ step Unwind
 -- Symbolic expression evaluation
 
 -- | @eval expr@ evaluates @expr@ via the symbolic backend
-eval :: (Functor m, MonadIO m, Show (SBETerm sbe))
+eval :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
   => SymExpr -> Simulator sbe m (AtomicValue (SBETerm sbe))
 eval (Arith op (L.Typed (L.PrimType (L.Integer w)) v1) v2) = do
   IValue _ x <- getTerm (Just w) v1
@@ -311,7 +312,7 @@ modifyCallFrame :: (Functor m, Monad m)
 modifyCallFrame f = modifyPath $ \p ->
   let (frm, p') = popCallFrame' p in pushCallFrame (f frm) p'
 
-dbugStep :: (MonadIO m, Show (SBETerm sbe), Functor m)
+dbugStep :: (MonadIO m, PrettyTerm (SBETerm sbe), Functor m)
   => SymStmt -> Simulator sbe m ()
 dbugStep stmt = do
   dbugM ("Executing: " ++ show (ppSymStmt stmt))

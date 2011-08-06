@@ -9,6 +9,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
+{-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
 {-# OPTIONS_GHC -fno-warn-orphans       #-}
 
@@ -22,7 +23,7 @@ import           LSS.SBEInterface
 import           LSS.Execution.Utils
 import           Text.PrettyPrint.HughesPJ
 import           Text.PrettyPrint.Pretty
-
+import           Verinf.Symbolic.Common
 import qualified Data.Map                 as M
 import qualified Text.LLVM                as L
 import qualified Text.PrettyPrint.HughesPJ as PP
@@ -80,16 +81,20 @@ data Path term = Path
                                           -- execution of this path
   }
 
+type RegMap term = M.Map Reg (AtomicValue term)
+
 -- | A frame (activation record) in the program being simulated
 data CallFrame term = CallFrame
   { frmFuncSym :: L.Symbol
-  , frmRegs    :: M.Map Reg (AtomicValue term)
+  , frmRegs    :: RegMap term
   }
   deriving Show
 
-data AtomicValue int
-  = IValue { _w :: Int32, unIValue :: int }
-  deriving (Show)
+data AtomicValue intTerm
+  = IValue { _w :: Int32, unIValue :: intTerm }
+
+instance PrettyTerm intTerm => Show (AtomicValue intTerm) where
+  show (IValue w term) = "IValue {_w = " ++ show w ++ ", unIValue = " ++ prettyTerm term ++ "}"
 
 -----------------------------------------------------------------------------------------
 -- Pretty printing
@@ -125,23 +130,23 @@ instance Pretty (Path term) => Pretty (CtrlStk term) where
 --------------------------------------------------------------------------------
 -- Pretty printing
 
-instance Show a => Pretty (M.Map Reg a) where
+instance PrettyTerm term => Pretty (RegMap term) where
   pp mp = vcat [ text (show r ++ " => " ++ show v) | (r,v) <- M.toList mp]
 
-instance Show term => Pretty (CallFrame term) where
+instance PrettyTerm term => Pretty (CallFrame term) where
   pp (CallFrame sym regMap) =
     text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (pp regMap)
 
-instance Show term => Pretty (Path term) where
-  pp (Path frms _mexc _mrv mcb pc) =
+instance (PrettyTerm term) => Pretty (Path term) where
+  pp (Path frms _mexc _mrv mcb pathConstraint) =
     text "Path"
     <>  brackets (maybe (text "none") ppSymBlockID mcb)
-    <>  colon <> text (show pc)
+    <>  colon <+> text (prettyTerm pathConstraint)
     $+$ nest 2 (vcat $ map pp frms)
 
 -----------------------------------------------------------------------------------------
 -- Debugging
 
-dumpCtrlStk :: (MonadIO m, Show (SBETerm sbe)) => Simulator sbe m ()
+dumpCtrlStk :: (MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
 dumpCtrlStk = banners . show . pp =<< gets ctrlStk
 
