@@ -11,8 +11,8 @@ module LSS.SBEInterface where
 
 import qualified Text.LLVM.AST as LLVM
 
--- | SBETerm is a function over types that yields the term type associated with
--- a particular SBE interface implementation
+-- | SBETerm yields the type used to represent terms in particular SBE interface
+-- implementation.
 type family SBETerm (sbe :: * -> *)
 
 -- | SBEMemory yields the type used to represent the memory in a particular SBE
@@ -27,17 +27,33 @@ data PartialResult r
   | Invalid -- ^ The operation failed.
 
 data SBE m = SBE
-  { falseTerm   :: m (SBETerm m)
-  , termInteger :: Integer -> m (SBETerm m)
-  , applyAdd    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  { -- Constant terms
+    termInt  :: Int -> Integer -> m (SBETerm m)
+  --, termWord :: Int -> Integer -> m (SBETerm m)
+  , termBool :: Bool   -> m (SBETerm m)
+    -- Common operators
+  , applyEq     :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIte    :: SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBNot   :: SBETerm m -> m (SBETerm m)
+  --, applyBAnd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBOr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  --, applyBXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyINot   :: SBETerm m -> m (SBETerm m)
+  , applyIAnd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIOr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyShl    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyShr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
+  , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @memInitMemory@ returns an initial heap with no values defined.
   , memInitMemory :: m (SBEMemory m)
     -- | @memAlloca h tp i align@ allocates memory on the stack for the given
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
     -- TODO: Add support for malloc, new, etc.
-  , memAlloca :: SBEMemory m 
-              -> LLVM.Type 
+  , memAlloca :: SBEMemory m
+              -> LLVM.Type
               -> LLVM.Typed (SBETerm m)
               -> Int
               -> m (SBETerm m, SBEMemory m)
@@ -62,7 +78,7 @@ data SBE m = SBE
                  -> m (SBETerm m, SBEMemory m)
     -- | @memLookupDefine ptr@ returns the symbol at the given address.
     -- Lookup may fail if the pointer does not point to a symbol, or if
-    -- the pointer is a symbolic vlaue without a clear meaning. 
+    -- the pointer is a symbolic vlaue without a clear meaning.
     -- TODO: Consider moving this function to the symbolic simulator.
   , memLookupDefine :: SBEMemory m -> SBETerm m -> m (PartialResult LLVM.Symbol)
     -- | @memBlockAddress mem d l@ returns the address of basic block with
@@ -73,54 +89,3 @@ data SBE m = SBE
   , memSelect :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
   }
 
---------------------------------------------------------------------------------
--- SBE implementations
-
-newtype SBEStub a = SBEStub { runStub :: a }
-type instance SBETerm SBEStub = Int
-
-data SBEStubMemoryOne = UndefinedMemoryOne
-type instance SBEMemory SBEStub = SBEStubMemoryOne
-
-sbeStub :: SBE SBEStub
-sbeStub = SBE
-  { falseTerm   = SBEStub 0
-  , termInteger = SBEStub . fromIntegral
-  , applyAdd    = \x y -> SBEStub (x + y)
-  , memInitMemory = SBEStub undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEStub undefined
-  , memLoad = \_mem _ptr -> SBEStub undefined
-  , memStore = \_mem _val _ptr -> SBEStub undefined
-  , memAddDefine = \_mem _sym _id -> SBEStub (undefined, undefined)
-  , memLookupDefine = \_mem _t -> SBEStub undefined
-  , memBlockAddress = \_mem _s _b -> SBEStub undefined
-  , memSelect = \_c _t _f -> SBEStub undefined
-  }
-
-liftStubToIO :: SBEStub a -> IO a
-liftStubToIO = return . runStub
-
-newtype SBEStubTwo a = SBEStubTwo { runStubTwo :: a }
-type instance SBETerm SBEStubTwo = Integer
-
-data SBEStubMemoryTwo = UndefinedMemoryTwo
-
-type instance SBEMemory SBEStubTwo = SBEStubMemoryTwo
-
-sbeStubTwo :: SBE SBEStubTwo
-sbeStubTwo = SBE
-  { falseTerm   = SBEStubTwo 0
-  , termInteger = SBEStubTwo . fromIntegral
-  , applyAdd    = \x y -> SBEStubTwo (x + y)
-  , memInitMemory = SBEStubTwo undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEStubTwo undefined
-  , memLoad = \_mem _ptr -> SBEStubTwo undefined
-  , memStore = \_mem _val _ptr -> SBEStubTwo undefined
-  , memAddDefine = \_mem _sym _id -> SBEStubTwo (undefined, undefined)
-  , memLookupDefine = \_mem _t -> SBEStubTwo undefined
-  , memBlockAddress = \_mem _s _b -> SBEStubTwo undefined
-  , memSelect = \_c _t _f -> SBEStubTwo undefined
-  }
-
-liftStubTwoToIO :: SBEStubTwo a -> IO a
-liftStubTwoToIO = return . runStubTwo
