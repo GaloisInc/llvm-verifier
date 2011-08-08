@@ -27,23 +27,18 @@ data PartialResult r
   | Invalid -- ^ The operation failed.
 
 data SBE m = SBE
-  { -- Constant terms
+  { -- | @termInt w n@ creates a term representing the constant @w@-bit
+    -- value @n@
     termInt  :: Int -> Integer -> m (SBETerm m)
-  --, termWord :: Int -> Integer -> m (SBETerm m)
+    -- | @termBool b@ creates a term representing the constant boolean
+    -- (1-bit) value @b@
   , termBool :: Bool   -> m (SBETerm m)
-    -- Common operators
-  , applyEq     :: SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @applyIte a b c@ creates an if-then-else term
   , applyIte    :: SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
-  --, applyBNot   :: SBETerm m -> m (SBETerm m)
-  --, applyBAnd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  --, applyBOr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  --, applyBXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  , applyINot   :: SBETerm m -> m (SBETerm m)
-  , applyIAnd   :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  , applyIOr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  , applyIXor   :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  , applyShl    :: SBETerm m -> SBETerm m -> m (SBETerm m)
-  , applyShr    :: SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @applyICmp op a b@ performs LLVM integer comparison @op@
+  , applyICmp   :: LLVM.ICmpOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @applyBitwise op a b@ performs LLVM bitwise operation @op@
+  , applyBitwise :: LLVM.BitOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
   , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @memInitMemory@ returns an initial heap with no values defined.
