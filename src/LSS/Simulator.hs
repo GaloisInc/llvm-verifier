@@ -16,13 +16,13 @@ Point-of-contact : jstanley
 module LSS.Simulator
   ( module LSS.Execution.Codebase
   , callDefine
+  , getProgramReturnValue
   , runSimulator
   , withSBE -- Exported so we can construct argument values.
   )
 where
 
 import           Control.Applicative
-import           Control.Arrow             hiding ((<+>))
 import           Control.Monad.State       hiding (State)
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
@@ -32,7 +32,6 @@ import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Text.LLVM                 ((=:))
 import           Text.PrettyPrint.HughesPJ
-import           Text.PrettyPrint.Pretty
 import           Verinf.Symbolic.Common    (PrettyTerm(..))
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
@@ -79,12 +78,8 @@ callDefine' ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
   -> [L.Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
   -> Simulator sbe m ()
 callDefine' normalRetID calleeSym mreg args = do
-  mcp  <- getPath
   def  <- lookupDefine calleeSym <$> gets codebase
-  path <- pushCallFrame (CallFrame calleeSym (bindArgs (sdArgs def) args))
-          <$> setCurrentBlock initSymBlockID
-          <$> newPath
-
+  path <- newPath $ CallFrame calleeSym $ bindArgs (sdArgs def) args
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
@@ -127,7 +122,8 @@ run = do
     Nothing  -> error "run: empty control stack"
     Just top
       | isExitFrame top -> do
-          -- Set the exit frame return value (if any) and clear merged state.
+          -- Set the exit merge frame return value (if any) and clear merged
+          -- state.
           modifyCS $ \(popMF -> (_, cs)) -> pushMF (finalizeExit top) cs
           dbugM $ "run terminating normally: found valid exit frame"
           dumpCtrlStk
@@ -146,52 +142,29 @@ run = do
 --------------------------------------------------------------------------------
 -- LLVM-Sym operations
 
--- | @popCallFrameM@ removes the top entry of the call frame stack in the current
--- path; assumes that the call frame stack is nonempty and that there is a
--- current path defined.
-popCallFrameM :: (Functor m, Monad m) => Simulator sbe m (CallFrame (SBETerm sbe))
-popCallFrameM = do
-  mp <- getPath
-  case mp of
-    Nothing -> error "popCallFrameM: no current path"
-    Just p  -> do
-      let (frm, p') = popCallFrame p
-      modifyPath $ const p'
-      return frm
-
--- | @pushCallFrameM frm@ pushes @frm@ to the top of the call frame stack in the
--- current path.  Assumes that there is a current path defined.
-pushCallFrameM :: (Functor m, Monad m)
-  => CallFrame (SBETerm sbe) -> Simulator sbe m ()
-pushCallFrameM frm = do
-  mp <- getPath
-  case mp of
-    Nothing -> error "pushCallFrameM: no current path"
-    Just p  -> modifyPath $ pushCallFrame frm
-
 -- | @popMergeFrame@ removes the top entry of the control stack; assumes
 -- that the control stack is nonempty.
-popMergeFrameM :: Monad m => Simulator sbe m (MergeFrame (SBETerm sbe))
-popMergeFrameM = do
+popMergeFrame :: Monad m => Simulator sbe m (MergeFrame (SBETerm sbe))
+popMergeFrame = do
   s <- get
   let (mf, cs) = popMF (ctrlStk s)
   modifyCS $ const cs
   return mf
 
 -- | @pushMergeFrame mf@ pushes mf to the control stack
-pushMergeFrameM :: Monad m => MergeFrame (SBETerm sbe) -> Simulator sbe m ()
-pushMergeFrameM = modifyCS . pushMF
+pushMergeFrame :: Monad m => MergeFrame (SBETerm sbe) -> Simulator sbe m ()
+pushMergeFrame = modifyCS . pushMF
 
 assign :: (Functor m, Monad m)
   => Reg -> AtomicValue (SBETerm sbe) -> Simulator sbe m ()
-assign reg v = modifyCallFrame $ \frm ->
+assign reg v = modifyCallFrameM $ \frm ->
   frm{ frmRegs = M.insert reg v (frmRegs frm) }
 
 setCurrentBlockM :: (Functor m, Monad m) => SymBlockID -> Simulator sbe m ()
 setCurrentBlockM bid = modifyPath (setCurrentBlock bid)
 
-getCurrentBlock :: (Functor m, Monad m) => Simulator sbe m SymBlockID
-getCurrentBlock = do
+getCurrentBlockM :: (Functor m, Monad m) => Simulator sbe m SymBlockID
+getCurrentBlockM = do
   mp <- getPath
   case mp of
     Nothing -> error "getCurrentBlock: no current path"
@@ -210,8 +183,8 @@ mergeReturn (Just tv) = do
 
   -- Set the return value in the current path
   callFrm <- getCallFrame
-  rslt    <- fromAV <$> getTermAV' callFrm tv
-  modifyPath $ setReturnValue (Just rslt)
+  rv      <- fromAV <$> getTermAV' callFrm tv
+  modifyPath $ setReturnValue (Just rv)
 
   -- Merge the current path into the merged state for the current merge frame.
   Just p <- getPath
@@ -227,15 +200,15 @@ clearCurrentExecution ::
   (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
   => Simulator sbe m ()
 clearCurrentExecution = do
-  top <- popMergeFrameM
+  top <- popMergeFrame
   if (1 == length (pendingPaths top))
     then do
       -- We just executed the last remaining path, so merge the current merge
       -- frame into the caller's merge frame.
-      pushMergeFrameM =<< mergeMFs top =<< popMergeFrameM
+      pushMergeFrame =<< mergeMFs top =<< popMergeFrame
     else do
       -- We still have pending paths, so only remove the current path.
-      pushMergeFrameM $ snd $ popPending top
+      pushMergeFrame $ snd $ popPending top
   dbugM $ "After clearCurrentExecution:"
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
@@ -256,8 +229,8 @@ mergeMFs src@ReturnFrame{} dst = do
           return $ modifyMergedState f dst
       | isReturnFrame dst -> do
           -- Extract the return value from src's merged state and associate it
-          -- with src's return register name in the top call frame of dst's
-          -- current path.
+          -- with src's return register name in the call frame of dst's current
+          -- path.
           case rfRetReg src of
             Nothing   -> error "mergeMFs: src return frame has RV but no return register"
             Just rreg -> do
@@ -266,9 +239,8 @@ mergeMFs src@ReturnFrame{} dst = do
               return $ (`modifyPending` dst) $ \dstPath ->
                 let rvAsAV                = toAV $ typedAs rreg rv
                     reg                   = L.typedValue rreg
-                    (callerCF, dstPath') = popCallFrame dstPath
                 in
-                  pushCallFrame (setReg reg rvAsAV callerCF) dstPath'
+                  modifyCallFrame (setReg reg rvAsAV) dstPath
       | otherwise -> do
           error "mergeMFs: postdom dst frame nyi"
 
@@ -282,13 +254,6 @@ mergePaths :: Path term -> Maybe (Path term) -> Maybe (Path term)
 -- precondition violation explanation datatype in JSS, for example.
 mergePaths _p1 (Just _p2) = error "real path merging nyi"
 mergePaths p1 Nothing     = Just p1
-
--- | Looks up the given identifier in the register map of the current frame.
--- Assumes the identifier is present in the map and that the current path and
--- current frame exist.  Raises runtime errors otherwise.
-lkupIdent :: (Functor m, Monad m)
-  => L.Ident -> Simulator sbe m (AtomicValue (SBETerm sbe))
-lkupIdent i = lkupIdent' i <$> getCallFrame
 
 lkupIdent' :: L.Ident -> CallFrame term -> AtomicValue term
 lkupIdent' i = flip (M.!) i . frmRegs
@@ -323,7 +288,7 @@ step ClearCurrentExecution =
 
 -- PushCallFrame SymValue [Typed SymValue] (Maybe (Typed Reg))
 step (PushCallFrame (L.ValSymbol calleeSym) args mres) = do
-  cb <- getCurrentBlock
+  cb <- getCurrentBlockM
   callDefine' cb calleeSym mres
     =<< mapM (\tv -> typedAs tv <$> getTermAV tv) args
 
@@ -406,13 +371,9 @@ setReg r v frm@(CallFrame _ regMap) = frm{ frmRegs = M.insert r v regMap }
 entryRsltReg :: Reg
 entryRsltReg = L.Ident "__galois_final_rslt"
 
-newPath :: (Functor m, Monad m) => Simulator sbe m (Path (SBETerm sbe))
-newPath = Path [] Nothing Nothing Nothing <$> withSBE (`termBool` True)
-
--- | Manipulate the control stack
-modifyCS :: Monad m
-  => (CtrlStk (SBETerm sbe) -> CtrlStk (SBETerm sbe)) -> Simulator sbe m ()
-modifyCS f = modify $ \s -> s{ ctrlStk = f (ctrlStk s) }
+newPath :: (Functor m, Monad m)
+  => CallFrame (SBETerm sbe) -> Simulator sbe m (Path (SBETerm sbe))
+newPath cf = Path cf Nothing Nothing (Just initSymBlockID) <$> withSBE (`termBool` True)
 
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
 -- that the control stack is empty or the top entry of the control stack has no
@@ -421,16 +382,28 @@ getPath :: (Functor m, Monad m)
   => Simulator sbe m (Maybe (Path (SBETerm sbe)))
 getPath = topPendingPath <$> gets ctrlStk
 
--- | Obtain the active frame in the current path; runtime error if the control
+-- | Obtain the call frame of the current path; runtime error if the control
 -- stack is empty or if there is no current path.
 getCallFrame :: (Functor m, Monad m) => Simulator sbe m (CallFrame (SBETerm sbe))
 getCallFrame = do
-  mpath <- getPath
-  case mpath of
-    Nothing                          -> error "getCallFrame: no current path"
-    Just (pathCallFrames -> [])      -> error "getCallFrame: call frame stack is empty"
-    Just (pathCallFrames -> (frm:_)) -> return frm
-    _                                -> error "unreachable"
+  mp <- getPath
+  case mp of
+    Nothing -> error "getCallFrame: no current path"
+    Just p  -> return $ pathCallFrame p
+
+withCallFrame :: Path term -> (CallFrame term -> a) -> a
+withCallFrame (pathCallFrame -> cf) f = f cf
+
+-- | Manipulate the control stack
+modifyCS :: Monad m
+  => (CtrlStk (SBETerm sbe) -> CtrlStk (SBETerm sbe)) -> Simulator sbe m ()
+modifyCS f = modify $ \s -> s{ ctrlStk = f (ctrlStk s) }
+
+-- | Manipulate the current merge frame (i.e., the top control stack entry)
+modifyMF :: (Monad m)
+  => (MergeFrame (SBETerm sbe) -> MergeFrame (SBETerm sbe))
+  -> Simulator sbe m ()
+modifyMF f = modifyCS $ \cs -> let (mf, cs') = popMF cs in pushMF (f mf) cs'
 
 -- | Manipulate the current path (i.e., the first pending path in topmost
 -- control stack entry)
@@ -439,23 +412,9 @@ modifyPath :: (Functor m , Monad m)
 modifyPath f = modifyCS $ \cs ->
   let (p, cs') = popPendingPath cs in pushPendingPath (f p) cs'
 
-withCallFrame :: Path term -> (CallFrame term -> a) -> a
-withCallFrame (pathCallFrames -> pfs) f
-  | null pfs  = error "withCallFrame: empty frame list"
-  | otherwise = f (head pfs)
-
--- | Manipulate the current frame (i.e., the top frame stack entry of the
--- current path)
-modifyCallFrame :: (Functor m, Monad m)
+modifyCallFrameM :: (Functor m, Monad m)
   => (CallFrame (SBETerm sbe) -> CallFrame (SBETerm sbe)) -> Simulator sbe m ()
-modifyCallFrame f = modifyPath $ \p ->
-  let (frm, p') = popCallFrame p in pushCallFrame (f frm) p'
-
--- | Manipulate the current merge frame (i.e., the top call stack entry)
-modifyMF :: (Monad m)
-  => (MergeFrame (SBETerm sbe) -> MergeFrame (SBETerm sbe))
-  -> Simulator sbe m ()
-modifyMF f = modifyCS $ \cs -> let (mf, cs') = popMF cs in pushMF (f mf) cs'
+modifyCallFrameM = modifyPath . modifyCallFrame
 
 dbugStep :: (MonadIO m, PrettyTerm (SBETerm sbe), Functor m)
   => SymStmt -> Simulator sbe m ()
@@ -472,24 +431,27 @@ dbugStep stmt = do
 --------------------------------------------------------------------------------
 -- Testing
 
+__nowarn :: forall a. a
+__nowarn = undefined main
+
 main :: IO ()
 main = do
   let i32 = L.iT 32
   cb <- loadCodebase "foo.bc"
 
---   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
---     i1 <- withSBE $ \sbe -> termInt sbe 32 2
---     i2 <- withSBE $ \sbe -> termInt sbe 32 3
---     callDefine (L.Symbol "int32_add") i32
---       [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
---     mrv <- getProgramReturnValue
---     dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
+  runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
+    i1 <- withSBE $ \sbe -> termInt sbe 32 2
+    i2 <- withSBE $ \sbe -> termInt sbe 32 3
+    callDefine (L.Symbol "int32_add") i32
+      [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
+    mrv <- getProgramReturnValue
+    dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
 
---   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
---     i1 <- withSBE $ \sbe -> termInt sbe 32 2
---     callDefine (L.Symbol "int32_square") i32 [ i32 =: IValue 32 i1 ]
---     mrv <- getProgramReturnValue
---     dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
+  runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
+    i1 <- withSBE $ \sbe -> termInt sbe 32 2
+    callDefine (L.Symbol "int32_square") i32 [ i32 =: IValue 32 i1 ]
+    mrv <- getProgramReturnValue
+    dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
 
   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
     i1 <- withSBE $ \sbe -> termInt sbe 32 2

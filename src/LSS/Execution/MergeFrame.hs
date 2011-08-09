@@ -16,20 +16,16 @@ module LSS.Execution.MergeFrame
   , pushMF
   , popMF
   , topMF
-
-  -- ** Top merge frame manipulation/query
   , pushPendingPath
   , popPendingPath
   , topPendingPath
 
   -- * Merge frame manipulation/query
   , modifyPending
-  , replacePending
   , pushPending
   , popPending
   , topPending
   , pendingPaths
-  , clearPendingPaths
   , getMergedState
   , setMergedState
   , modifyMergedState
@@ -40,8 +36,7 @@ module LSS.Execution.MergeFrame
   , finalizeExit
 
   -- * Path manipulation/query
-  , pushCallFrame
-  , popCallFrame
+  , modifyCallFrame
   , setCurrentBlock
   , setReturnValue
 
@@ -57,6 +52,7 @@ import Control.Monad
 import Data.LLVM.Symbolic.AST
 import LSS.Execution.Common
 import LSS.Execution.Utils
+import qualified Data.Map as M
 import qualified Text.LLVM as L
 
 fromAV :: AtomicValue term -> term
@@ -105,10 +101,6 @@ topPendingPath = topMF >=> topPending
 -- | Modify the current pending path in the given merge frame
 modifyPending :: (Path term -> Path term) -> MergeFrame term -> MergeFrame term
 modifyPending f mf = let (p, mf') = popPending mf in pushPending (f p) mf'
-
--- | Replace the current pending path in the given merge frame.
-replacePending :: Path term -> MergeFrame term -> MergeFrame term
-replacePending p mf = let (_, mf') = popPending mf in pushPending p mf'
 
 -- | Push a pending path to the given non-exit merge frame
 pushPending :: Path term -> MergeFrame term -> MergeFrame term
@@ -188,23 +180,14 @@ pendingPaths ExitFrame{}                = error "pendingPaths not supported for 
 pendingPaths (PostdomFrame _ ps)        = ps
 pendingPaths (ReturnFrame _ _ _ _ _ ps) = ps
 
-clearPendingPaths :: MergeFrame term -> MergeFrame term
-clearPendingPaths ExitFrame{}                    = error "clearPendingPaths not supported for exit merge frames"
-clearPendingPaths (PostdomFrame ms _)            = PostdomFrame ms []
-clearPendingPaths (ReturnFrame rr nl ns el es _) = ReturnFrame rr nl ns el es []
-
 setCurrentBlock :: SymBlockID -> Path term -> Path term
 setCurrentBlock blk p = p{ pathCB = Just blk }
 
--- | @pushCallFrame f p@ pushes frame f onto path p's frame stack
-pushCallFrame :: CallFrame term -> Path term -> Path term
-pushCallFrame f p@Path{ pathCallFrames = frms } = p{ pathCallFrames = f : frms}
+setCallFrame :: CallFrame term -> Path term -> Path term
+setCallFrame cf p = p{ pathCallFrame = cf }
 
--- | @popCallFrame' p@ pops the top frame of path p's frame stack; runtime error if
--- the frame stack is empty
-popCallFrame :: Path term -> (CallFrame term, Path term)
-popCallFrame Path{ pathCallFrames = [] }       = error "popCallFrame': empty frame stack"
-popCallFrame p@Path{ pathCallFrames = (f:fs) } = (f, p{ pathCallFrames = fs })
+modifyCallFrame :: (CallFrame term -> CallFrame term) -> Path term -> Path term
+modifyCallFrame f p = setCallFrame (f $ pathCallFrame p) p
 
 emptyReturnFrame :: MergeFrame term
 emptyReturnFrame = ReturnFrame Nothing initSymBlockID Nothing Nothing Nothing []
@@ -217,4 +200,3 @@ finalizeExit (ExitFrame _ Just{})      = error "finalizeExitFrame: frame already
 finalizeExit ef@(ExitFrame Nothing _)  = ef
 finalizeExit (ExitFrame (Just mrgd) _) = ExitFrame Nothing $ pathRetVal mrgd
 finalizeExit _                         = error "finalizeExitFrame: non-exit frame"
-

@@ -72,8 +72,8 @@ data MergeFrame term
 -- | Captures all symbolic execution state for a unique control-flow path (as
 -- specified by the recorded path constraints)
 data Path term = Path
-  { pathCallFrames  :: [CallFrame term]   -- ^ The dynamic call stack for this
-                                          -- path
+  { pathCallFrame   :: CallFrame term     -- ^ The top call frame of the dynamic
+                                          -- call stack along this path
   , pathRetVal      :: Maybe term         -- ^ The return value along this path
                                           -- after normal function call return,
                                           -- if any.
@@ -151,14 +151,14 @@ instance PrettyTerm term => Pretty (CallFrame term) where
     text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (pp regMap)
 
 instance (PrettyTerm term) => Pretty (Path term) where
-  pp (Path frms mrv _mexc mcb pathConstraint) =
+  pp (Path cf mrv _mexc mcb pathConstraint) =
     text "Path"
     <>  brackets (maybe (text "none") ppSymBlockID mcb)
     <>  colon <+> (parens $ text "Constraint:" <+> text (prettyTerm pathConstraint) )
     $+$ nest 2 ( text "Return value:"
                  <+> maybe (parens . text $ "not set") (text . prettyTerm) mrv
                )
-    $+$ nest 2 (vcat $ map pp frms)
+    $+$ nest 2 (pp cf)
 
 -----------------------------------------------------------------------------------------
 -- Debugging
