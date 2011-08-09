@@ -188,28 +188,10 @@ mergeReturn (Just tv) = do
 
   -- Merge the current path into the merged state for the current merge frame.
   Just p <- getPath
-  modifyMF $ \mf -> setMergedState (mergePaths p $ getMergedState mf) mf
+  modifyMF $ modifyMergedState $ mergePaths p
 
   dbugM $ "After mergeReturn, but before clearCurrentExecution:"
   dumpCtrlStk
-
--- | @clearCurrentExecution@ clears the current pending path from the top merge
--- frame; then, if no pending paths remain, it merges the top merge frame with
--- the merge frame beneath it on the control stack.
-clearCurrentExecution ::
-  (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
-  => Simulator sbe m ()
-clearCurrentExecution = do
-  top <- popMergeFrame
-  if (1 == length (pendingPaths top))
-    then do
-      -- We just executed the last remaining path, so merge the current merge
-      -- frame into the caller's merge frame.
-      pushMergeFrame =<< mergeMFs top =<< popMergeFrame
-    else do
-      -- We still have pending paths, so only remove the current path.
-      pushMergeFrame $ snd $ popPending top
-  dbugM $ "After clearCurrentExecution:"
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
 mergeMFs :: (MonadIO m, PrettyTerm (SBETerm sbe))
@@ -243,7 +225,6 @@ mergeMFs src@ReturnFrame{} dst = do
                   modifyCallFrame (setReg reg rvAsAV) dstPath
       | otherwise -> do
           error "mergeMFs: postdom dst frame nyi"
-
 mergeMFs _ _ = error "mergeMFs: non-retrun src frame nyi"
 
 -- | @mergePaths p1 p2@ merges path p1 into path p2, which may be empty; when p2
@@ -254,6 +235,24 @@ mergePaths :: Path term -> Maybe (Path term) -> Maybe (Path term)
 -- precondition violation explanation datatype in JSS, for example.
 mergePaths _p1 (Just _p2) = error "real path merging nyi"
 mergePaths p1 Nothing     = Just p1
+
+-- | @clearCurrentExecution@ clears the current pending path from the top merge
+-- frame; then, if no pending paths remain, it merges the top merge frame with
+-- the merge frame beneath it on the control stack.
+clearCurrentExecution ::
+  (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
+  => Simulator sbe m ()
+clearCurrentExecution = do
+  top <- popMergeFrame
+  if (1 == length (pendingPaths top))
+    then do
+      -- We just executed the last remaining path, so merge the current merge
+      -- frame into the caller's merge frame.
+      pushMergeFrame =<< mergeMFs top =<< popMergeFrame
+    else do
+      -- We still have pending paths, so only remove the current path.
+      pushMergeFrame $ snd $ popPending top
+  dbugM $ "After clearCurrentExecution:"
 
 lkupIdent' :: L.Ident -> CallFrame term -> AtomicValue term
 lkupIdent' i = flip (M.!) i . frmRegs

@@ -32,20 +32,23 @@ concBool = SBEConcrete . fromIntegral . fromEnum
 sbeConcrete :: SBE SBEConcrete
 sbeConcrete = SBE
   { termInt  = const (SBEConcrete . fromIntegral)
-  --, termWord = const (SBEConcrete . fromIntegral)
   , termBool = concBool
-  , applyEq  = \a b -> concBool $ a == b
   , applyIte = \a b c -> SBEConcrete $ if a == 0 then b else c
-  --, applyBNot = \a ->
-  --, applyBAnd = \a b ->
-  --, applyBOr = \a b ->
-  --, applyBXor = \a b ->
-  , applyINot = SBEConcrete . complement
-  , applyIAnd = \a b -> SBEConcrete $ a .&. b
-  , applyIOr = \a b -> SBEConcrete $ a .|. b
-  , applyIXor = \a b -> SBEConcrete $ a `xor` b
-  , applyShl = \a b -> SBEConcrete $ a `shiftL` fromIntegral b
-  , applyShr = \a b -> SBEConcrete $ a `shiftR` fromIntegral b
+  , applyICmp  = \op a b ->
+                   case op of
+                     LLVM.Ieq -> concBool $ a == b
+                     _ -> error $
+                          "unsupported comparison op: " ++
+                          show op
+  , applyBitwise = \op a b ->
+                     case op of
+                       LLVM.And -> SBEConcrete $ a .&. b
+                       LLVM.Or -> SBEConcrete $ a .|. b
+                       LLVM.Xor -> SBEConcrete $ a `xor` b
+                       LLVM.Shl -> SBEConcrete $ a `shiftL` fromIntegral b
+                       _ -> error $
+                            "unsupported bitwise op: " ++
+                            show op
   , applyArith = \op a b -> case op of
                               LLVM.Add -> SBEConcrete $ a + b
                               LLVM.Mul -> SBEConcrete $ a * b

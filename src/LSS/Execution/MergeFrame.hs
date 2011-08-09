@@ -52,7 +52,6 @@ import Control.Monad
 import Data.LLVM.Symbolic.AST
 import LSS.Execution.Common
 import LSS.Execution.Utils
-import qualified Data.Map as M
 import qualified Text.LLVM as L
 
 fromAV :: AtomicValue term -> term
