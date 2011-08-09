@@ -16,8 +16,8 @@ Point-of-contact : jstanley
 module LSS.Simulator
   ( module LSS.Execution.Codebase
   , callDefine
-  , withSBE -- Exported so we can construct argument values.
   , runSimulator
+  , withSBE -- Exported so we can construct argument values.
   )
 where
 
@@ -69,63 +69,19 @@ callDefine ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
   -> [L.Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
   -> Simulator sbe m ()
 callDefine calleeSym t args = do
-  callDefine' True entryRetNormalID calleeSym (Just $ t =: entryRsltReg) args
+  callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) args
   run
 
 callDefine' ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
-  => Bool                                  -- ^ Toplevel invocation?
-  -> SymBlockID                            -- ^ Normal call return block id
+  => SymBlockID                            -- ^ Normal call return block id
   -> L.Symbol                              -- ^ Callee symbol
   -> Maybe (L.Typed Reg)                   -- ^ Callee return type and result register
   -> [L.Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
   -> Simulator sbe m ()
-callDefine' isTopLevel normalRetID calleeSym mreg args = do
+callDefine' normalRetID calleeSym mreg args = do
   mcp  <- getPath
   def  <- lookupDefine calleeSym <$> gets codebase
-  dbugM $ show (ppSymDefine def)
   path <- pushCallFrame (CallFrame calleeSym (bindArgs (sdArgs def) args))
-          <$> ( if isTopLevel
-                  then id -- pushCallFrame entryCallFrame
-                  else case mcp of
-                         Nothing -> error "callDefine': No current path"
-
-                         -- TODO: It'd save space if we only copy the caller's
-                         -- call frame into the new path instead of the entire
-                         -- call frame stack.  However, this complicates merge
-                         -- frame merges a bit and will also complicate
-                         -- exception handling a bit because the dynamic call
-                         -- stack will be spread across multiple merge frames
-                         -- instead of all being present in the top merge frame.
-
-                         -- HERE: ^^^ Implement the above.  Note that this'll
-                         -- mean some subtle interaction in mergeMFs: instead of
-                         -- calling replacePending into 'dst', we'll need a
-                         -- custom operation that:
-                         --
-                         -- Replaces the topmost call frame in the current path
-                         -- of 'dst' with the topmost call frame in the merged
-                         -- state of 'src'.
-                         --
-                         -- Alternately, we never copy the caller's call frame
-                         -- into new RFs as they are put onto the control stack,
-                         -- and instead copy the return value from the 'src'
-                         -- merged state directly into the topmost call frame in
-                         -- the current path of 'dst'.  This would be a return
-                         -- to the "return value" record field member, and may
-                         -- require some reworking of the logic in the existing
-                         -- mergeReturn/clearCurrentExectuion/dummy entry call
-                         -- frame implementations...
-                         --
-                         -- Pain in the ass but it's probably a cleaner
-                         -- implementation to do it this way.
-                         --
-                         -- Start w/ int32_add and go from there.
-
---                          Just cp -> foldr (.) id
---                                     $ map pushCallFrame
---                                     $ pathCallFrames cp
-                         Just cp -> id
-              )
           <$> setCurrentBlock initSymBlockID
           <$> newPath
 
@@ -133,8 +89,8 @@ callDefine' isTopLevel normalRetID calleeSym mreg args = do
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
 
-  dbugM $ show $ ppSymDefine def
-  dumpCtrlStk
+--   dbugM $ show $ ppSymDefine def
+--   dumpCtrlStk
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
@@ -173,7 +129,7 @@ run = do
       | isExitFrame top -> do
           -- Set the exit frame return value (if any) and clear merged state.
           modifyCS $ \(popMF -> (_, cs)) -> pushMF (finalizeExit top) cs
-          dbugM $ "run terminating normally: exit frame detected"
+          dbugM $ "run terminating normally: found valid exit frame"
           dumpCtrlStk
       | otherwise -> do
           case topPending top of
@@ -261,7 +217,7 @@ mergeReturn (Just tv) = do
   Just p <- getPath
   modifyMF $ \mf -> setMergedState (mergePaths p $ getMergedState mf) mf
 
-  dbugM $ "end of mergeReturn"
+  dbugM $ "After mergeReturn, but before clearCurrentExecution:"
   dumpCtrlStk
 
 -- | @clearCurrentExecution@ clears the current pending path from the top merge
@@ -271,26 +227,23 @@ clearCurrentExecution ::
   (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
   => Simulator sbe m ()
 clearCurrentExecution = do
-  dbugM $ "clearCurrentExecution entry"
   top <- popMergeFrameM
   if (1 == length (pendingPaths top))
     then do
       -- We just executed the last remaining path, so merge the current merge
       -- frame into the caller's merge frame.
-      dbugM $ "pendingPaths top has one remaining path"
-      dbugM $ "popped merged frame is:\n " ++ show (pp top)
       pushMergeFrameM =<< mergeMFs top =<< popMergeFrameM
-      dbugM $ "after executing clearCurrentExecution/mergeMFs:"
-      dumpCtrlStk
     else do
-      -- We still have pending paths, so just complete the current path.
+      -- We still have pending paths, so only remove the current path.
       pushMergeFrameM $ snd $ popPending top
+  dbugM $ "After clearCurrentExecution:"
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
 mergeMFs :: (MonadIO m, PrettyTerm (SBETerm sbe))
   => MergeFrame (SBETerm sbe)
   -> MergeFrame (SBETerm sbe)
   -> Simulator sbe m (MergeFrame (SBETerm sbe))
+
 mergeMFs src@ReturnFrame{} dst = do
   let Just p = getMergedState src -- NB: src /must/ have a merged state.
   case pathRetVal p of
@@ -305,20 +258,11 @@ mergeMFs src@ReturnFrame{} dst = do
           -- Extract the return value from src's merged state and associate it
           -- with src's return register name in the top call frame of dst's
           -- current path.
-
-          dbugM $ "mergeMFs: src and dst both return frames case"
-          dbugM $ "src = " ++ show (pp src)
-          dbugM $ "dst = " ++ show (pp dst)
-
           case rfRetReg src of
             Nothing   -> error "mergeMFs: src return frame has RV but no return register"
             Just rreg -> do
-              dbugM $ "rreg = " ++ show (L.ppIdent <$> rreg) ++ ", rv = " ++ prettyTerm rv
-              dbugM $ "rv' = " ++ show (toAV $ typedAs rreg rv)
-
               -- Associate the return value in src's merged state with src's
               -- return register name in the caller's call frame.
-
               return $ (`modifyPending` dst) $ \dstPath ->
                 let rvAsAV                = toAV $ typedAs rreg rv
                     reg                   = L.typedValue rreg
@@ -328,44 +272,7 @@ mergeMFs src@ReturnFrame{} dst = do
       | otherwise -> do
           error "mergeMFs: postdom dst frame nyi"
 
-
---       | isReturnFrame dst -> do
---           dbugM $ "mergeMFs: return dst frame case"
---           dbugM $ "src = " ++ show (pp src)
---           dbugM $ "dst = " ++ show (pp dst)
-
---           -- extract the return value from src and associate it with src's
---           -- return reg name in the top call frame of the dst return frame
-
---           let (_, p') = popCallFrame p
---           dbugM $ "p' = " ++ show (pp p')
-
---           case (src, pathRetVal p') of
---             (_, Nothing)                     -> return dst
---             (rfRetReg -> Nothing, _)         -> error "mergeMFs: src return frame has RV but no rreg"
---             (rfRetReg -> Just rreg, Just rv) -> do
---               dbugM $ "rreg = " ++ show (L.ppIdent <$> rreg) ++ ", rv = " ++ prettyTerm rv
---               dbugM $ "rv' = " ++ show (toAV $ typedAs rreg rv)
---               -- Associate src's return value term with src's retreg name in the
---               -- caller's call frame.
---               return $ (`modifyPending` dst) $ \dstPath ->
---                 let rvAsAV                = toAV $ typedAs rreg rv
---                     reg                   = L.typedValue rreg
---                     (callerFrm, dstPath') = popCallFrame dstPath
---                 in
---                   pushCallFrame (setReg reg rvAsAV callerFrm) dstPath'
---       | otherwise -> do
---           error "mergeMFs: postdom dst frame nyi"
-
 mergeMFs _ _ = error "mergeMFs: non-retrun src frame nyi"
-
--- TODO: Handle exception paths
--- mergeMFs src dst = do
---   let src' = if isReturnFrame src
---                then modifyMergedState (fmap $ setCurrentBlock $ rfNormalLabel src) src
---                else src
---   let addPath = if isExitFrame dst then pushPending else replacePending
---   return $ maybe dst (`addPath` dst) (getMergedState src')
 
 -- | @mergePaths p1 p2@ merges path p1 into path p2, which may be empty; when p2
 -- does is empty, this function produces p1 as the merged path. Yields Nothing
@@ -417,7 +324,7 @@ step ClearCurrentExecution =
 -- PushCallFrame SymValue [Typed SymValue] (Maybe (Typed Reg))
 step (PushCallFrame (L.ValSymbol calleeSym) args mres) = do
   cb <- getCurrentBlock
-  callDefine' False cb calleeSym mres
+  callDefine' cb calleeSym mres
     =<< mapM (\tv -> typedAs tv <$> getTermAV tv) args
 
 step (PushCallFrame _ _ _) =
@@ -495,9 +402,6 @@ typedAs tv x = const x <$> tv
 
 setReg :: Reg -> AtomicValue term -> CallFrame term -> CallFrame term
 setReg r v frm@(CallFrame _ regMap) = frm{ frmRegs = M.insert r v regMap }
-
-entryCallFrame :: CallFrame term
-entryCallFrame = CallFrame (L.Symbol "_galois_lss_entry") M.empty
 
 entryRsltReg :: Reg
 entryRsltReg = L.Ident "__galois_final_rslt"
@@ -594,6 +498,3 @@ main = do
       [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
     mrv <- getProgramReturnValue
     dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
-
-
-
