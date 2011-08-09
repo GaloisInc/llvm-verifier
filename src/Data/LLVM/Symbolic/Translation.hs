@@ -29,7 +29,7 @@ import qualified Data.LLVM.CFG as CFG
 import qualified Data.List as L
 import qualified Data.Map as Map
 import qualified Text.LLVM.AST as LLVM
-import Text.LLVM.AST (Stmt(..), Typed (..))
+import Text.LLVM.AST (Stmt'(..), Stmt, Typed (..))
 import Text.PrettyPrint.HughesPJ
 
 import Data.LLVM.Symbolic.AST

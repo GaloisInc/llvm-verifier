@@ -436,7 +436,7 @@ __nowarn = undefined main
 main :: IO ()
 main = do
   let i32 = L.iT 32
-  cb <- loadCodebase "foo.bc"
+  cb <- loadCodebase "/Users/jstanley/work/Verifier/LLVM/src/testModule.bc"
 
   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
     i1 <- withSBE $ \sbe -> termInt sbe 32 2

@@ -33,12 +33,14 @@ library
 
   build-depends:
       base >= 4
+    , bytestring
     , containers
-    , llvm-pretty
+    , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
     , vector
     , Verinf
+
 
   hs-source-dirs: src
 
@@ -62,8 +64,9 @@ executable lss
 
   build-depends:
       base >= 4
+    , bytestring
     , containers
-    , llvm-pretty
+    , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
     , vector
