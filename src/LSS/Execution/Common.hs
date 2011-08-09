@@ -52,14 +52,20 @@ data CtrlStk term = CtrlStk { mergeFrames :: [MergeFrame term] }
 -- frames, which capture points immediately following function calls; and (3)
 -- exit frames, which represent program exit points.
 data MergeFrame term
-  = ExitFrame    { _mergedState :: Maybe (Path term), _pending :: [Path term] }
-  | PostdomFrame { _mergedState :: Maybe (Path term), _pending :: [Path term] }
+  = ExitFrame
+    { _mergedState  :: Maybe (Path term)
+    , programRetVal :: Maybe term
+    }
+  | PostdomFrame
+    { _mergedState :: Maybe (Path term)
+    , _pending :: [Path term]
+    }
   | ReturnFrame
-    { rfRetReg        :: Maybe Reg         -- ^ Register to store return value (if any)
-    , rfNormalLabel   :: SymBlockID        -- ^ Label for normal path
-    , _normalState    :: Maybe (Path term) -- ^ Merged state after function call return
-    , _exceptLabel    :: Maybe SymBlockID  -- ^ Label for exception path
-    , _exceptionState :: Maybe (Path term) -- ^ Merged exception state after function call return
+    { rfRetReg        :: Maybe (L.Typed Reg) -- ^ Register to store return value (if any)
+    , rfNormalLabel   :: SymBlockID          -- ^ Label for normal path
+    , _normalState    :: Maybe (Path term)   -- ^ Merged state after function call return
+    , _exceptLabel    :: Maybe SymBlockID    -- ^ Label for exception path
+    , _exceptionState :: Maybe (Path term)   -- ^ Merged exception state after function call return
     , _pending        :: [Path term]
     }
 
@@ -68,6 +74,9 @@ data MergeFrame term
 data Path term = Path
   { pathCallFrames  :: [CallFrame term]   -- ^ The dynamic call stack for this
                                           -- path
+  , pathRetVal      :: Maybe term         -- ^ The return value along this path
+                                          -- after normal function call return,
+                                          -- if any.
   , pathException   :: Maybe term         -- ^ When handling an exception along
                                           -- this path, a pointer to the
                                           -- exception structure; Nothing
@@ -94,33 +103,40 @@ data AtomicValue intTerm
 -- Pretty printing
 
 instance PrettyTerm intTerm => Show (AtomicValue intTerm) where
-  show (IValue w term) = "IValue {_w = " ++ show w ++ ", unIValue = " ++ prettyTerm term ++ "}"
+  show (IValue w term) =
+    "IValue {_w = " ++ show w ++ ", unIValue = " ++ prettyTerm term ++ "}"
 
-instance Pretty (Path term) => Pretty (MergeFrame term) where
+instance (PrettyTerm term, Pretty (Path term)) => Pretty (MergeFrame term) where
   pp mf = case mf of
-    ExitFrame mp pps ->
-      text "MF(Exit):" $+$ mpath "no merged state set" mp $+$ nest 2 (ppPendingPaths pps)
+    ExitFrame mp mrv ->
+      text "MF(Exit):"
+      $+$ mpath "no merged state set" mp
+      $+$ nest 2 ( maybe (parens $ text "no return value set")
+                         (\rv -> text "Return value:" <+> text (prettyTerm rv))
+                         mrv
+                 )
     PostdomFrame p pps ->
-      text "MF(Pdom):" $+$ nest 2 (text "Merged:" <+> pp p) $+$ nest 2 (ppPendingPaths pps)
+      text "MF(Pdom):"
+      $+$ nest 2 (text "Merged:" <+> pp p) $+$ nest 2 (ppPendingPaths pps)
     ReturnFrame _mr nl mns mel mes pps ->
       text "MF(Retn):" $+$ nest 2 rest
         where
-          rest      = text "Normal" <+> text "~>" <+> ppSymBlockID nl <> colon
-                      $+$ mpath "no normal-return merged state set" mns
-                      $+$ maybe PP.empty
-                            ( \el ->
-                                text "Exc" <+> text "~>" <+> ppSymBlockID el <> colon
-                                $+$ mpath "no exception path set" mes
-                            )
-                            mel
-                      $+$ ppPendingPaths pps
+          rest = text "Normal" <+> text "~>" <+> ppSymBlockID nl <> colon
+                 $+$ mpath "no normal-return merged state set" mns
+                 $+$ maybe PP.empty
+                       ( \el ->
+                           text "Exc" <+> text "~>" <+> ppSymBlockID el <> colon
+                           $+$ mpath "no exception path set" mes
+                       )
+                       mel
+                 $+$ ppPendingPaths pps
     where
       mpath str = nest 2 . maybe (parens $ text $ "Merged: " ++ str) pp
       ppPendingPaths pps =
         text "Pending paths:"
         $+$ nest 2 (if null pps then text "(none)" else vcat (map pp pps))
 
-instance Pretty (Path term) => Pretty (CtrlStk term) where
+instance (PrettyTerm term, Pretty (Path term)) => Pretty (CtrlStk term) where
   pp (CtrlStk mfs) =
     hang (text "CS" <+> lbrace) 2 (vcat (map pp mfs)) $+$ rbrace
 
@@ -135,10 +151,13 @@ instance PrettyTerm term => Pretty (CallFrame term) where
     text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (pp regMap)
 
 instance (PrettyTerm term) => Pretty (Path term) where
-  pp (Path frms _mexc mcb pathConstraint) =
+  pp (Path frms mrv _mexc mcb pathConstraint) =
     text "Path"
     <>  brackets (maybe (text "none") ppSymBlockID mcb)
     <>  colon <+> (parens $ text "Constraint:" <+> text (prettyTerm pathConstraint) )
+    $+$ nest 2 ( text "Return value:"
+                 <+> maybe (parens . text $ "not set") (text . prettyTerm) mrv
+               )
     $+$ nest 2 (vcat $ map pp frms)
 
 -----------------------------------------------------------------------------------------
