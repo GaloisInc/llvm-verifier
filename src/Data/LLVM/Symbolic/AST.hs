@@ -12,20 +12,20 @@ module Data.LLVM.Symbolic.AST
   ( FuncID
   , SymBlockID
   , Reg
-  , LLVM.Typed(..)
   , SymValue
   , SymExpr(..)
   , SymCond(..)
   , SymStmt(..)
   , SymBlock(..)
   , SymDefine(..)
+  , entryRetNormalID
   , initSymBlockID
   , lookupSymBlock
   , ppSymBlock
   , ppSymBlockID
   , ppSymDefine
-  , ppSymStmt
   , ppSymExpr
+  , ppSymStmt
   , symBlockID
   ) where
 
@@ -35,6 +35,11 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Text.LLVM.AST as LLVM
 import Text.PrettyPrint.HughesPJ
+
+-- | A fake sentinel SymBlockID to represent a fictitious target block for after
+-- a normal return from a toplevel function invocation.
+entryRetNormalID :: SymBlockID
+entryRetNormalID = NamedBlock (LLVM.Ident "__galois_entry_ret_normal") (-1)
 
 -- | Intersperse commas into document.
 commas :: [Doc] -> Doc
@@ -189,7 +194,7 @@ data SymStmt
 ppSymStmt :: SymStmt -> Doc
 ppSymStmt ClearCurrentExecution = text "clearCurrentExecution"
 ppSymStmt (PushCallFrame fn args res)
-  = text "pushCallFrame " <+> ppSymValue fn
+  = text "pushCallFrame" <+> ppSymValue fn
   <> parens (commas (map ppTypedValue args))
   <+> maybe (text "void") (LLVM.ppTyped ppReg) res
 ppSymStmt (PushInvokeFrame fn args res e)
