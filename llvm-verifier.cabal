@@ -33,12 +33,14 @@ library
 
   build-depends:
       base >= 4
+    , bytestring
     , containers
-    , llvm-pretty
+    , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
     , vector
     , Verinf
+
 
   hs-source-dirs: src
 
@@ -51,7 +53,7 @@ library
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
-executable llss
+executable lss
   hs-source-dirs: src
 
   main-is:
@@ -62,8 +64,9 @@ executable llss
 
   build-depends:
       base >= 4
+    , bytestring
     , containers
-    , llvm-pretty
+    , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
     , vector
