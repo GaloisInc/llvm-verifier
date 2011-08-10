@@ -25,7 +25,7 @@ type instance SBEMemory S.SymbolicMonad = S.SymbolicTerm
 sbeSymbolic :: SBE S.SymbolicMonad
 sbeSymbolic = SBE
   { termInt  = \w v -> return . S.mkCInt (S.Wx w) . fromIntegral $ v
-  , termBool = return . S.mkCInt (S.Wx 1) . fromIntegral . fromEnum
+  , termBool = return . S.mkCBool
   , applyIte = S.applyIte
   , applyICmp = \op -> case op of
                          LLVM.Ieq -> S.applyEq

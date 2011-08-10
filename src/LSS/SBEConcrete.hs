@@ -5,16 +5,22 @@ Stability        : provisional
 Point-of-contact : atomb
 -}
 
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilies         #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+
 module LSS.SBEConcrete where
 
-import Data.Bits
-import qualified Text.LLVM.AST as LLVM
-
-import LSS.SBEInterface
+import           Data.Bits
+import           LSS.SBEInterface
+import           Verinf.Symbolic.Common (PrettyTerm(..))
+import qualified Text.PrettyPrint.HughesPJ as PP
+import qualified Text.LLVM.AST    as LLVM
 
 --------------------------------------------------------------------------------
 -- Purely concrete backend
+
+instance PrettyTerm Integer where
+  prettyTermWithD = const PP.integer
 
 newtype SBEConcrete a = SBEConcrete { runConcrete :: a }
 type instance SBETerm SBEConcrete = Integer
@@ -48,7 +54,7 @@ sbeConcrete = SBE
                               LLVM.Mul -> SBEConcrete $ a * b
                               LLVM.Sub -> SBEConcrete $ a - b
                               _ -> error $
-                                   "unsupported arithmetic op: " ++
+                                   "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
   , memInitMemory = SBEConcrete undefined
   , memAlloca = \_mem _eltType _len _a -> SBEConcrete undefined

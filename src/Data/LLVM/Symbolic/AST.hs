@@ -12,29 +12,33 @@ module Data.LLVM.Symbolic.AST
   ( FuncID
   , SymBlockID
   , Reg
-  , LLVM.Typed(..)
   , SymValue
   , SymExpr(..)
   , SymCond(..)
   , SymStmt(..)
   , SymBlock(..)
   , SymDefine(..)
+  , entryRetNormalID
   , initSymBlockID
   , lookupSymBlock
   , ppSymBlock
   , ppSymBlockID
   , ppSymDefine
-  , ppSymStmt
   , ppSymExpr
+  , ppSymStmt
   , symBlockID
   ) where
 
-import Data.Int (Int32)
 import Data.List (intersperse)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Text.LLVM.AST as LLVM
 import Text.PrettyPrint.HughesPJ
+
+-- | A fake sentinel SymBlockID to represent a fictitious target block for after
+-- a normal return from a toplevel function invocation.
+entryRetNormalID :: SymBlockID
+entryRetNormalID = NamedBlock (LLVM.Ident "__galois_entry_ret_normal") (-1)
 
 -- | Intersperse commas into document.
 commas :: [Doc] -> Doc
@@ -105,8 +109,8 @@ data SymExpr
   -- | GetElementPointer instruction.
   | GEP (Typed SymValue) [Typed SymValue]
   | Select (Typed SymValue) (Typed SymValue) SymValue
-  | ExtractValue (Typed SymValue) Int32
-  | InsertValue (Typed SymValue) (Typed SymValue) Int32
+  | ExtractValue (Typed SymValue) SymValue
+  | InsertValue (Typed SymValue) (Typed SymValue) SymValue
 
 
 -- | Pretty print symbolic expression.
@@ -124,10 +128,10 @@ ppSymExpr (Select c t f) = text "select" <+> ppTypedValue c
                          <> comma <+> ppTypedValue t
                          <> comma <+> LLVM.ppType (LLVM.typedType t) <+> ppSymValue f
 ppSymExpr (ExtractValue v i) = text "extractvalue" <+> ppTypedValue v
-                             <> comma <+> integer (toInteger i)
+                             <> comma <+> ppSymValue i
 ppSymExpr (InsertValue a v i) = text "insertvalue" <+> ppTypedValue a
                               <> comma <+> ppTypedValue v
-                              <> comma <+> integer (toInteger i)
+                              <> comma <+> ppSymValue i
 -- | Predicates in symbolic simulator context.
 data SymCond
   -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.
@@ -189,7 +193,7 @@ data SymStmt
 ppSymStmt :: SymStmt -> Doc
 ppSymStmt ClearCurrentExecution = text "clearCurrentExecution"
 ppSymStmt (PushCallFrame fn args res)
-  = text "pushCallFrame " <+> ppSymValue fn
+  = text "pushCallFrame" <+> ppSymValue fn
   <> parens (commas (map ppTypedValue args))
   <+> maybe (text "void") (LLVM.ppTyped ppReg) res
 ppSymStmt (PushInvokeFrame fn args res e)
