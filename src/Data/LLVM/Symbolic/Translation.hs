@@ -227,7 +227,7 @@ liftBB lti phiMap bb = do
          in impl rest idx (s' : il)
    in impl (LLVM.bbStmts bb) 0 []
 
--- Lift LLVM definitino to symbolic definition {{{1
+-- Lift LLVM definition to symbolic definition {{{1
 liftDefine :: LLVM.Define -> SymDefine
 liftDefine d =
   let cfg            = CFG.buildCFG (LLVM.defBody d)
