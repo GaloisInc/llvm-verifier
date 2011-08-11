@@ -59,6 +59,8 @@ executable lss
   main-is:
     Driver.hs
 
+  GHC-options: -O2 -Wall -fno-ignore-asserts
+
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
