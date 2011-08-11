@@ -37,6 +37,7 @@ library
     , llvm-pretty
     , mtl
     , pretty
+    , transformers
     , vector
     , Verinf
 
@@ -48,6 +49,8 @@ library
     LSS.Simulator
 
   other-modules:
+    LSS.SBEInterface
+    LSS.SBEBitBlast
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
