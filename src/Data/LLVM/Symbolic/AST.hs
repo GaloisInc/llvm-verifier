@@ -29,6 +29,7 @@ module Data.LLVM.Symbolic.AST
   , symBlockID
   ) where
 
+import Data.Int
 import Data.List (intersperse)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -109,8 +110,8 @@ data SymExpr
   -- | GetElementPointer instruction.
   | GEP (Typed SymValue) [Typed SymValue]
   | Select (Typed SymValue) (Typed SymValue) SymValue
-  | ExtractValue (Typed SymValue) SymValue
-  | InsertValue (Typed SymValue) (Typed SymValue) SymValue
+  | ExtractValue (Typed SymValue) [Int32]
+  | InsertValue (Typed SymValue) (Typed SymValue) [Int32]
 
 
 -- | Pretty print symbolic expression.
@@ -127,11 +128,11 @@ ppSymExpr (GEP ptr ixs) = text "getelementptr" <+> commas (map (ppTypedValue) (p
 ppSymExpr (Select c t f) = text "select" <+> ppTypedValue c
                          <> comma <+> ppTypedValue t
                          <> comma <+> LLVM.ppType (LLVM.typedType t) <+> ppSymValue f
-ppSymExpr (ExtractValue v i) = text "extractvalue" <+> ppTypedValue v
-                             <> comma <+> ppSymValue i
-ppSymExpr (InsertValue a v i) = text "insertvalue" <+> ppTypedValue a
-                              <> comma <+> ppTypedValue v
-                              <> comma <+> ppSymValue i
+ppSymExpr (ExtractValue v is) = text "extractvalue" <+> ppTypedValue v
+                              <> comma <+> text (show is)
+ppSymExpr (InsertValue a v is) = text "insertvalue" <+> ppTypedValue a
+                               <> comma <+> ppTypedValue v
+                               <> comma <+> text (show is)
 -- | Predicates in symbolic simulator context.
 data SymCond
   -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.
