@@ -82,5 +82,8 @@ data SBE m = SBE
     -- | @memSelect c t f@ returns a memory that corresponds to @t@ if @c@ is
     -- true and @f@ otherwise.  This function is useful in merging.
   , memSelect :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
+    -- | @writeAiger f t@ writes an AIG representation of @t@ into
+    -- file @f@ in the Aiger format.
+  , writeAiger :: String -> SBETerm m -> m ()
   }
 

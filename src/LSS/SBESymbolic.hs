@@ -54,6 +54,7 @@ sbeSymbolic = SBE
   , memLookupDefine = \_mem _t -> return undefined
   , memBlockAddress = \_mem _s _b -> return undefined
   , memSelect = \_t _mem _mem' -> return undefined
+  , writeAiger = \_f _t -> return undefined
   }
 
 liftSBESymbolic :: S.SymbolicMonad a -> IO a
@@ -85,6 +86,9 @@ sbeSymbolicBit be = SBE
   , memLookupDefine = \_mem _t -> BM $ return undefined
   , memBlockAddress = \_mem _s _b -> BM $ return undefined
   , memSelect = \_t _mem _mem' -> BM $ return undefined
+  , writeAiger = \f t -> case t of
+                           S.LV ls -> BM $ S.beWriteAigerV be f ls
+                           _ -> error "writeAiger called on non-scalar"
   }
 
 bitIte :: S.BitEngine S.Lit

@@ -64,6 +64,8 @@ sbeConcrete = SBE
   , memLookupDefine = \_mem _t -> SBEConcrete undefined
   , memBlockAddress = \_mem _s _b -> SBEConcrete undefined
   , memSelect = \_t _mem _mem' -> SBEConcrete undefined
+  , writeAiger = \_f _t ->
+                 error "Aiger creation not supported in concrete backend"
   }
 
 liftSBEConcrete :: SBEConcrete a -> IO a
