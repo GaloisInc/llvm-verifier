@@ -9,6 +9,7 @@ Point-of-contact : atomb
 
 module LSS.SBESymbolic where
 
+import qualified Data.Vector.Storable as LV
 import Control.Applicative
 import qualified Text.LLVM.AST as LLVM
 import qualified Verinf.Symbolic as S
@@ -72,8 +73,8 @@ sbeSymbolicBit :: S.BitEngine S.Lit -> SBE BitMonad
 sbeSymbolicBit be = SBE
   { termInt  = \w -> BM . return . S.concreteValueLit be . S.CInt (S.Wx w)
   , termBool = BM . return . S.concreteValueLit be . S.mkCBool
-  , applyIte = undefined
-  , applyICmp = undefined
+  , applyIte = bitIte be
+  , applyICmp = bitICmp be
   , applyBitwise = bitBitwise be
   , applyArith = bitArith be
   , memInitMemory = BM $ return undefined
@@ -85,6 +86,27 @@ sbeSymbolicBit be = SBE
   , memBlockAddress = \_mem _s _b -> BM $ return undefined
   , memSelect = \_t _mem _mem' -> BM $ return undefined
   }
+
+bitIte :: S.BitEngine S.Lit
+       -> S.LitResult S.Lit -> S.LitResult S.Lit -> S.LitResult S.Lit
+       -> BitMonad (S.LitResult S.Lit)
+bitIte be (S.LV c) (S.LV a) (S.LV b) = BM $ do
+  let zero = LV.replicate (LV.length c) (S.beFalse be)
+  cbit <- S.beEqVector be c zero
+  S.LV <$> S.beIteInt be cbit (return b) (return a)
+bitIte _ _ _ _ = error "if-then-else applied to non-scalar arguments"
+
+bitICmp :: S.BitEngine S.Lit -> LLVM.ICmpOp
+        -> S.LitResult S.Lit -> S.LitResult S.Lit
+        -> BitMonad (S.LitResult S.Lit)
+bitICmp be op (S.LV a) (S.LV b) = BM $ (S.LV . LV.singleton) <$> f be a b
+  where f = case op of
+              LLVM.Ieq -> S.beEqVector
+              _ -> error $ "unsupported comparison op: " ++ show op
+bitICmp _ op (S.LVN _) _ =
+  error $ "comparison op " ++ show op ++ " applied to non-scalar"
+bitICmp _ op _ (S.LVN _) =
+  error $ "comparison op " ++ show op ++ " applied to non-scalar"
 
 bitArith :: S.BitEngine S.Lit -> LLVM.ArithOp
          -> S.LitResult S.Lit -> S.LitResult S.Lit
