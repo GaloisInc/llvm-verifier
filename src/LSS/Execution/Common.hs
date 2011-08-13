@@ -15,17 +15,18 @@ Point-of-contact : jstanley
 
 module LSS.Execution.Common where
 
-import           Control.Monad.State      hiding (State)
+import           Control.Monad.State       hiding (State)
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.SBEInterface
 import           LSS.Execution.Utils
+import           Text.LLVM                 (Typed(..))
 import           Text.PrettyPrint.HughesPJ
 import           Text.PrettyPrint.Pretty
 import           Verinf.Symbolic.Common
 import           Verinf.Utils.LogMonad
-import qualified Data.Map                 as M
-import qualified Text.LLVM                as L
+import qualified Data.Map                  as M
+import qualified Text.LLVM                 as L
 import qualified Text.PrettyPrint.HughesPJ as PP
 
 newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
@@ -89,7 +90,7 @@ data Path term = Path
                                           -- execution of this path
   }
 
-type RegMap term = M.Map Reg (AtomicValue term)
+type RegMap term = M.Map Reg (Typed term)
 
 -- | A frame (activation record) in the program being simulated
 data CallFrame term = CallFrame
@@ -97,9 +98,6 @@ data CallFrame term = CallFrame
   , frmRegs    :: RegMap term
   }
   deriving Show
-
-data AtomicValue intTerm
-  = IValue { _w :: Int, unIValue :: intTerm }
 
 --------------------------------------------------------------------------------
 -- Misc typeclass instances
@@ -110,10 +108,6 @@ instance MonadIO m => LogMonad (Simulator sbe m) where
 
 -----------------------------------------------------------------------------------------
 -- Pretty printing
-
-instance PrettyTerm intTerm => Show (AtomicValue intTerm) where
-  show (IValue w term) =
-    "IValue {_w = " ++ show w ++ ", unIValue = " ++ prettyTerm term ++ "}"
 
 instance (PrettyTerm term, Pretty (Path term)) => Pretty (MergeFrame term) where
   pp mf = case mf of
@@ -152,8 +146,10 @@ instance (PrettyTerm term, Pretty (Path term)) => Pretty (CtrlStk term) where
 --------------------------------------------------------------------------------
 -- Pretty printing
 
-instance PrettyTerm term => Pretty (RegMap term) where
-  pp mp = vcat [ L.ppIdent r <+> (text $ "=> " ++ show v) | (r,v) <- M.toList mp]
+instance (PrettyTerm term) => Pretty (RegMap term) where
+  pp mp = vcat [ L.ppIdent r <+> (text $ "=> " ++ show (L.ppTyped (text . prettyTerm) v))
+               | (r,v) <- M.toList mp
+               ]
 
 instance PrettyTerm term => Pretty (CallFrame term) where
   pp (CallFrame sym regMap) =

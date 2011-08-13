@@ -39,10 +39,6 @@ module LSS.Execution.MergeFrame
   , modifyCallFrame
   , setCurrentBlock
   , setReturnValue
-
-  -- * AtomicValue utility functions
-  , fromAV
-  , toAV
   )
 
 where
@@ -53,13 +49,6 @@ import Data.LLVM.Symbolic.AST
 import LSS.Execution.Common
 import LSS.Execution.Utils
 import qualified Text.LLVM as L
-
-fromAV :: AtomicValue term -> term
-fromAV (IValue _ t) = t
-
-toAV :: L.Typed term -> AtomicValue term
-toAV (L.Typed (L.PrimType (L.Integer (fromIntegral -> w))) t) = IValue w t
-toAV (L.Typed t _) = error $ "toAV: unsupported type: " ++ show (L.ppType t)
 
 emptyCtrlStk :: CtrlStk term
 emptyCtrlStk = CtrlStk []

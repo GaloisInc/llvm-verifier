@@ -54,7 +54,7 @@ binCInt32Fn bcFile sym chkOp = do
     runSimulator cb sbeSymbolic (SM . lift . liftSBESymbolic) $ do
       i1 <- withSBE $ \sbe -> termInt sbe 32 (fromIntegral x)
       i2 <- withSBE $ \sbe -> termInt sbe 32 (fromIntegral y)
-      callDefine sym i32 [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
+      callDefine sym i32 [ i32 =: i1 , i32 =: i2 ]
       getProgramReturnValue
   case mrv of
     Just (getSVal -> Just v) ->
@@ -67,7 +67,7 @@ runCInt32Fn bcFile sym cargs = do
     cb <- loadCodebase $ supportDir </> bcFile
     runSimulator cb sbeSymbolic (SM . lift . liftSBESymbolic) $ do
       args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
-      callDefine sym i32 $ map (\x -> i32 =: IValue 32 x) args
+      callDefine sym i32 $ map (\x -> i32 =: x) args
       getProgramReturnValue
 
 unaryCInt32Fn :: FilePath -> L.Symbol -> (Int32 -> Int32) -> PropertyM IO ()
@@ -77,7 +77,7 @@ unaryCInt32Fn bcFile sym chkOp = do
     cb <- loadCodebase $ supportDir </> bcFile
     runSimulator cb sbeSymbolic (SM . lift . liftSBESymbolic) $ do
      i1 <- withSBE $ \sbe -> termInt sbe 32 (fromIntegral x)
-     callDefine sym i32 [ i32 =: IValue 32 i1 ]
+     callDefine sym i32 [ i32 =: i1 ]
      getProgramReturnValue
   case mrv of
     Just (getSVal -> Just v) ->
@@ -87,8 +87,6 @@ unaryCInt32Fn bcFile sym chkOp = do
 
 nullaryCInt32Fn :: FilePath -> L.Symbol -> Int32 -> PropertyM IO ()
 nullaryCInt32Fn bcFile sym chkVal = undefined
-
-
 
 --------------------------------------------------------------------------------
 -- Scratch
