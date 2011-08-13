@@ -162,11 +162,21 @@ liftBB lti phiMap bb = do
       -- * Allocate block for next block after call.
       -- * Define previous block to end with pushing call frame.
       -- * Process rest of instructions.
+      -- * TODO: Handle invoke instructions
       impl (Result reg (LLVM.Call _b tp v tpvl):r) idx il = do
-        let res = Typed { typedType = tp, typedValue = reg }
+        let res = case (LLVM.elimPtrTo >=> LLVM.elimFunTy) tp of
+                    -- NB: The LLVM bitcode parser always types call
+                    -- instructions with the full ptr-to-fun type in order to
+                    -- present a consistent form that also handles varargs.  We
+                    -- just extract the return type here for now, but will
+                    -- likely need to support varargs more explicitly
+                    -- later. TODO.
+                    Nothing -> error "internal: malformed call instruction type"
+                    Just (rty, _, _) -> Typed { typedType = rty, typedValue = reg}
         defineBlock (blockName idx) $ reverse il ++
           [ SetCurrentBlock (blockName (idx+1))
-          , PushCallFrame v tpvl (Just res)]
+          , PushCallFrame v tpvl (Just res)
+          ]
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
       impl (Effect (LLVM.Call _b _tp v tpvl):r) idx il = do

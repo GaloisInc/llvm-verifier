@@ -61,23 +61,6 @@ lookupDefine s cb = case M.lookup s (cbGlobalNameMap cb) of
   Nothing -> error $ "Failed to locate " ++ show s ++ " in code base."
   Just sd -> sd
 
--- testMdl :: IO LLVM.Module
--- testMdl = return $ snd $ LLVM.runLLVM $ do
---   let i32 = LLVM.iT 32
---   LLVM.define LLVM.emptyFunAttrs i32 "int32_add" (i32, i32) $ \x y -> do
---     LLVM.ret =<< LLVM.add x y
-
---   LLVM.define LLVM.emptyFunAttrs i32 "int32_mul" (i32, i32) $ \x y -> do
---     LLVM.ret =<< LLVM.mul x y
-
---   LLVM.define LLVM.emptyFunAttrs i32 "int32_square" i32 $ \x -> do
---     LLVM.ret =<< LLVM.call i32 (LLVM.Symbol "int32_mul") [x, x]
-
---   LLVM.define LLVM.emptyFunAttrs i32 "int32_muladd" (i32, i32) $ \x y -> do
---     r0 <- LLVM.call i32 (LLVM.Symbol "int32_add") [x, y]
---     r1 <- LLVM.call i32 (LLVM.Symbol "int32_square") [r0]
---     LLVM.ret r1
-
 dumpSymDefine :: MonadIO m => m Codebase -> String -> m ()
 dumpSymDefine getCB sym = getCB >>= \cb ->
   liftIO $ putStrLn $ show $ ppSymDefine (lookupDefine (LLVM.Symbol sym) cb)

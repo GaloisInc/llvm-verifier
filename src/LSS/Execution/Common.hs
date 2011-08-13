@@ -23,6 +23,7 @@ import           LSS.Execution.Utils
 import           Text.PrettyPrint.HughesPJ
 import           Text.PrettyPrint.Pretty
 import           Verinf.Symbolic.Common
+import           Verinf.Utils.LogMonad
 import qualified Data.Map                 as M
 import qualified Text.LLVM                as L
 import qualified Text.PrettyPrint.HughesPJ as PP
@@ -42,6 +43,7 @@ data State sbe m = State
   , symBE     :: SBE sbe               -- ^ Symbolic backend interface
   , liftSymBE :: LiftSBE sbe m         -- ^ Lift SBE operations into the Simulator monad
   , ctrlStk   :: CtrlStk (SBETerm sbe) -- ^ Control stack for tracking merge points
+  , verbosity :: Int
   }
 
 data CtrlStk term = CtrlStk { mergeFrames :: [MergeFrame term] }
@@ -98,6 +100,13 @@ data CallFrame term = CallFrame
 
 data AtomicValue intTerm
   = IValue { _w :: Int, unIValue :: intTerm }
+
+--------------------------------------------------------------------------------
+-- Misc typeclass instances
+
+instance MonadIO m => LogMonad (Simulator sbe m) where
+  getVerbosity   = gets verbosity
+  setVerbosity v = modify $ \s -> s{ verbosity = v }
 
 -----------------------------------------------------------------------------------------
 -- Pretty printing
@@ -165,3 +174,10 @@ instance (PrettyTerm term) => Pretty (Path term) where
 
 dumpCtrlStk :: (MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
 dumpCtrlStk = banners . show . pp =<< gets ctrlStk
+
+dumpCtrlStk' :: (MonadIO m, LogMonad m, PrettyTerm (SBETerm sbe)) => Int -> Simulator sbe m ()
+dumpCtrlStk' lvl = whenVerbosity (>=lvl) dumpCtrlStk
+
+instance (LogMonad IO) where
+  setVerbosity _ = return ()
+  getVerbosity   = return 1

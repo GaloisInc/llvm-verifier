@@ -60,9 +60,16 @@ runSimulator cb sbe lifter m =
       modifyCS $ pushMF emptyExitFrame
 
 newSimState :: Codebase -> SBE sbe -> LiftSBE sbe m -> State sbe m
-newSimState cb sbe liftSBE' = State cb sbe liftSBE' emptyCtrlStk
+newSimState cb sbe lifter =
+  State
+  { codebase  = cb
+  , symBE     = sbe
+  , liftSymBE = lifter
+  , ctrlStk   = emptyCtrlStk
+  , verbosity = 1
+  }
 
-callDefine ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
+callDefine ::(LogMonad m, MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
   => L.Symbol                              -- ^ Callee symbol
   -> L.Type                                -- ^ Callee return type
   -> [L.Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
@@ -83,9 +90,6 @@ callDefine' normalRetID calleeSym mreg args = do
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
-
---   dbugM $ show $ ppSymDefine def
---   dumpCtrlStk
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
@@ -115,7 +119,7 @@ getProgramReturnValue = do
     ExitFrame _ mrv -> return mrv
     _               -> error "getProgramReturnValue: program not yet terminated"
 
-run :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
+run :: (LogMonad m, Functor m, MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
 run = do
   mtop <- topMF <$> gets ctrlStk
   case mtop of
@@ -125,8 +129,8 @@ run = do
           -- Set the exit merge frame return value (if any) and clear merged
           -- state.
           modifyCS $ \(popMF -> (_, cs)) -> pushMF (finalizeExit top) cs
-          dbugM $ "run terminating normally: found valid exit frame"
-          dumpCtrlStk
+          dbugM' 2 $ "run terminating normally: found valid exit frame"
+          dumpCtrlStk' 2
       | otherwise -> do
           case topPending top of
             Nothing -> error $ "internal: run: no path to execute"
@@ -170,7 +174,7 @@ getCurrentBlockM = do
     Nothing -> error "getCurrentBlock: no current path"
     Just p  -> maybe (error "getCurrentBlock: no current block") return (pathCB p)
 
-mergeReturn :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
+mergeReturn :: (LogMonad m, Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
   => Maybe (L.Typed SymValue)
   -> Simulator sbe m ()
 mergeReturn Nothing   = return ()
@@ -190,8 +194,8 @@ mergeReturn (Just tv) = do
   Just p <- getPath
   modifyMF $ modifyMergedState $ mergePaths p
 
-  dbugM $ "After mergeReturn, but before clearCurrentExecution:"
-  dumpCtrlStk
+  dbugM' 5 $ "After mergeReturn, but before clearCurrentExecution:"
+  dumpCtrlStk' 5
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
 mergeMFs :: (MonadIO m, PrettyTerm (SBETerm sbe))
@@ -252,7 +256,7 @@ clearCurrentExecution = do
     else do
       -- We still have pending paths, so only remove the current path.
       pushMergeFrame $ snd $ popPending top
-  dbugM $ "After clearCurrentExecution:"
+  dbugM' 5 $ "After clearCurrentExecution:"
 
 lkupIdent' :: L.Ident -> CallFrame term -> AtomicValue term
 lkupIdent' i = flip (M.!) i . frmRegs
@@ -279,7 +283,7 @@ getTermAV' _ (L.Typed t v)
 -- Instruction stepper
 
 -- | Execute a single LLVM-Sym AST instruction
-step :: (MonadIO m, Functor m, Monad m, PrettyTerm (SBETerm sbe))
+step :: (LogMonad m, MonadIO m, Functor m, Monad m, PrettyTerm (SBETerm sbe))
   => SymStmt -> Simulator sbe m ()
 
 step ClearCurrentExecution =
@@ -415,17 +419,17 @@ modifyCallFrameM :: (Functor m, Monad m)
   => (CallFrame (SBETerm sbe) -> CallFrame (SBETerm sbe)) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
-dbugStep :: (MonadIO m, PrettyTerm (SBETerm sbe), Functor m)
+dbugStep :: (LogMonad m, MonadIO m, PrettyTerm (SBETerm sbe), Functor m)
   => SymStmt -> Simulator sbe m ()
 dbugStep stmt = do
   Just p <- getPath
   withCallFrame p $ \frm -> do
-    dbugM $ "Executing: "
-            ++ show (L.ppSymbol (frmFuncSym frm))
-            ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
-            ++ ": " ++ show (ppSymStmt stmt)
+    dbugM' 2 $ "Executing: "
+               ++ show (L.ppSymbol (frmFuncSym frm))
+               ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
+               ++ ": " ++ show (ppSymStmt stmt)
     step stmt
-    dumpCtrlStk
+    dumpCtrlStk' 5
 
 --------------------------------------------------------------------------------
 -- Testing
@@ -436,15 +440,15 @@ __nowarn = undefined main
 main :: IO ()
 main = do
   let i32 = L.iT 32
-  cb <- loadCodebase "/Users/jstanley/work/Verifier/LLVM/src/testModule.bc"
+  cb <- loadCodebase "/Users/jstanley/work/Verifier/LLVM/test/src/support/primOps.bc"
 
-  runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
-    i1 <- withSBE $ \sbe -> termInt sbe 32 2
-    i2 <- withSBE $ \sbe -> termInt sbe 32 3
-    callDefine (L.Symbol "int32_add") i32
-      [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
-    mrv <- getProgramReturnValue
-    dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
+--   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
+--     i1 <- withSBE $ \sbe -> termInt sbe 32 2
+--     i2 <- withSBE $ \sbe -> termInt sbe 32 3
+--     callDefine (L.Symbol "int32_add") i32
+--       [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
+--     mrv <- getProgramReturnValue
+--     dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
 
   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
     i1 <- withSBE $ \sbe -> termInt sbe 32 2
@@ -452,10 +456,10 @@ main = do
     mrv <- getProgramReturnValue
     dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
 
-  runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
-    i1 <- withSBE $ \sbe -> termInt sbe 32 2
-    i2 <- withSBE $ \sbe -> termInt sbe 32 3
-    callDefine (L.Symbol "int32_muladd") i32
-      [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
-    mrv <- getProgramReturnValue
-    dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
+--   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
+--     i1 <- withSBE $ \sbe -> termInt sbe 32 2
+--     i2 <- withSBE $ \sbe -> termInt sbe 32 3
+--     callDefine (L.Symbol "int32_muladd") i32
+--       [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
+--     mrv <- getProgramReturnValue
+--     dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv

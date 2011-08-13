@@ -7,7 +7,14 @@ Point-of-contact : atomb
 
 {-# LANGUAGE TypeFamilies #-}
 
-module LSS.SBESymbolic where
+module LSS.SBESymbolic
+  ( module LSS.SBEInterface
+  , sbeSymbolic
+  , sbeSymbolicBit
+  , liftSBESymbolic
+  )
+
+where
 
 import qualified Text.LLVM.AST as LLVM
 import qualified Verinf.Symbolic as S
