@@ -147,9 +147,15 @@ instance (PrettyTerm term, Pretty (Path term)) => Pretty (CtrlStk term) where
 -- Pretty printing
 
 instance (PrettyTerm term) => Pretty (RegMap term) where
-  pp mp = vcat [ L.ppIdent r <+> (text $ "=> " ++ show (L.ppTyped (text . prettyTerm) v))
-               | (r,v) <- M.toList mp
-               ]
+  pp mp =
+    vcat [ ppIdentAssoc r <> (L.ppTyped (text . prettyTerm) v) | (r,v) <- as ]
+    where
+      ppIdentAssoc r = L.ppIdent r
+                       <> text (replicate (maxLen - identLen r) ' ')
+                       <> text " => "
+      maxLen         = foldr max 0 $ map (identLen . fst) as
+      identLen       = length . show . L.ppIdent
+      as             = M.toList mp
 
 instance PrettyTerm term => Pretty (CallFrame term) where
   pp (CallFrame sym regMap) =
