@@ -55,6 +55,8 @@ sbeSymbolic = SBE
                           _ -> error $
                                "unsupported arithmetic op: " ++
                                show op
+  , applyBAnd = S.applyBAnd
+  , getBool = return . S.getBool
   , memInitMemory = return undefined
   , memAlloca = \_mem _eltType _len _a -> return undefined
   , memLoad = \_mem _ptr -> return undefined
@@ -77,6 +79,8 @@ sbeSymbolicBit = SBE
   , applyICmp = undefined
   , applyBitwise = undefined
   , applyArith = undefined
+  , applyBAnd = undefined
+  , getBool = undefined
   , memInitMemory = return undefined
   , memAlloca = \_mem _eltType _len _a -> return undefined
   , memLoad = \_mem _ptr -> return undefined

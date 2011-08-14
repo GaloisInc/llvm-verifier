@@ -12,9 +12,10 @@ module LSS.SBEConcrete where
 
 import           Data.Bits
 import           LSS.SBEInterface
-import           Verinf.Symbolic.Common (PrettyTerm(..))
+import           Verinf.Symbolic.Common    (PrettyTerm(..))
+import qualified Text.LLVM.AST             as LLVM
 import qualified Text.PrettyPrint.HughesPJ as PP
-import qualified Text.LLVM.AST    as LLVM
+import qualified Verinf.Symbolic           as S
 
 --------------------------------------------------------------------------------
 -- Purely concrete backend
@@ -56,6 +57,17 @@ sbeConcrete = SBE
                               _ -> error $
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
+  , applyBAnd = \x y -> case (x, y) of
+                          (0,_) -> SBEConcrete 0
+                          (_,0) -> SBEConcrete 0
+                          (1,1) -> SBEConcrete 1
+                          _     -> error "SBEConcrete: applyBAnd applied to non-bool-valued terms"
+
+  , getBool = \term -> if term == 0
+                       then SBEConcrete $ Just False
+                       else if term == 1
+                            then SBEConcrete $ Just True
+                            else SBEConcrete $ Nothing
   , memInitMemory = SBEConcrete undefined
   , memAlloca = \_mem _eltType _len _a -> SBEConcrete undefined
   , memLoad = \_mem _ptr -> SBEConcrete undefined

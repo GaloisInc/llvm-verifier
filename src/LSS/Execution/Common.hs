@@ -61,7 +61,8 @@ data MergeFrame term
     }
   | PostdomFrame
     { _mergedState :: Maybe (Path term)
-    , _pending :: [Path term]
+    , _pending     :: [Path term]
+    , pdfLabel     :: SymBlockID
     }
   | ReturnFrame
     { rfRetReg        :: Maybe (L.Typed Reg) -- ^ Register to store return value (if any)
@@ -118,8 +119,8 @@ instance (PrettyTerm term, Pretty (Path term)) => Pretty (MergeFrame term) where
                          (\rv -> text "Return value:" <+> text (prettyTerm rv))
                          mrv
                  )
-    PostdomFrame p pps ->
-      text "MF(Pdom):"
+    PostdomFrame p pps bid ->
+      text "MF(Pdom|" <>  ppSymBlockID bid <> text "):"
       $+$ nest 2 (text "Merged:" <+> pp p) $+$ nest 2 (ppPendingPaths pps)
     ReturnFrame _mr nl mns mel mes pps ->
       text "MF(Retn):" $+$ nest 2 rest

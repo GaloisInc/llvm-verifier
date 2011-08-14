@@ -5,11 +5,14 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE TypeFamilies     #-}
 
 module LSS.SBEInterface where
 
-import qualified Text.LLVM.AST as LLVM
+import qualified Verinf.Symbolic as S
+import qualified Text.LLVM.AST   as LLVM
 
 -- | SBETerm yields the type used to represent terms in particular SBE interface
 -- implementation.
@@ -41,6 +44,10 @@ data SBE m = SBE
   , applyBitwise :: LLVM.BitOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
   , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  , -- | @applyBAnd@ performs the logical and of its operand terms
+    applyBAnd :: SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @getBool@ returns the value of a concrete boolean term
+  , getBool :: S.ConstantProjection (SBETerm m) => SBETerm m -> m (Maybe Bool)
     -- | @memInitMemory@ returns an initial heap with no values defined.
   , memInitMemory :: m (SBEMemory m)
     -- | @memAlloca h tp i align@ allocates memory on the stack for the given

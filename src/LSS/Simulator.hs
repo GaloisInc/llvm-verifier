@@ -32,14 +32,11 @@ import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
-import           Verinf.Symbolic.Common    (PrettyTerm(..))
+import           Text.PrettyPrint.Pretty
+import           Verinf.Symbolic.Common    (ConstantProjection, PrettyTerm(..))
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
-
--- BEGIN TESTING
-import qualified LSS.SBESymbolic as TestSBE
--- END TESTING
 
 liftSBE :: Monad m => sbe a -> Simulator sbe m a
 liftSBE sa = gets liftSymBE >>= \f -> f sa
@@ -86,6 +83,9 @@ callDefine' ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
   -> Simulator sbe m ()
 callDefine' normalRetID calleeSym mreg args = do
   def  <- lookupDefine calleeSym <$> gets codebase
+  whenVerbosity (>=5) $ do
+    dbugM $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
+    banners $ show $ ppSymDefine def
   path <- newPath $ CallFrame calleeSym $ bindArgs (sdArgs def) args
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
@@ -266,13 +266,20 @@ getTypedTerm tv = (`getTypedTerm'` tv) =<< getCallFrame
 -- identifier lookup in the regmap of the given call frame as needed.
 getTypedTerm' :: (Functor m, Monad m, term ~ SBETerm sbe)
   => CallFrame term -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
+
+getTypedTerm' _ (Typed (L.PtrTo L.FunTy{}) _)
+  = error "getTypedTerm': TODO: Support for funptr args (requires mem interaction)"
+
 getTypedTerm' frm (Typed _ (L.ValIdent i))
   = return $ lkupIdent' i frm
-getTypedTerm' _ (Typed t v)
+
+getTypedTerm' _ tv@(Typed t v)
   = error $ "getTypedTerm': unsupported value: "
           ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
+          ++ show (parens $ text $ show tv)
 
 --------------------------------------------------------------------------------
 -- Instruction stepper
@@ -294,10 +301,21 @@ step (PushCallFrame _ _ _) =
 step (PushInvokeFrame _fn _args _mres _e) =
   error "PushInvokeFrame nyi"
 
-step (PushPostDominatorFrame _pdid) =
-  error "PushPostDominatorFrame nyi"
+step (PushPostDominatorFrame pdid) = do
+  dbugM $ "pushpostdom: pdid = " ++ show (ppSymBlockID pdid)
+  Just p <- getPath
+  dbugM $ "pushpostdom: curr path = " ++ show (pp p)
+  pushMergeFrame
+    $ pushPending p
+    $ emptyPdomFrame pdid
+  dumpCtrlStk' 5
 
-step (MergePostDominator _pdid _cond) =
+step (MergePostDominator pdid cond) = do
+  dbugM $ "mergepostdom: pdid = " ++ show (ppSymBlockID pdid) ++ ", cond = " ++ show (ppSymCond cond)
+
+  -- HERE: Add the given new path constraint to the current path, via the new
+  -- &&& operator.
+
   error "MergePostDominator nyi"
 
 step MergeReturnVoidAndClear =
@@ -355,6 +373,24 @@ eval (GEP _tv _idxs          ) = error "eval GEP nyi"
 eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
 eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
 eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
+
+(&&&) :: (ConstantProjection (SBETerm sbe), Functor m, Monad m)
+  => Simulator sbe m (SBETerm sbe)
+  -> Simulator sbe m (SBETerm sbe)
+  -> Simulator sbe m (SBETerm sbe)
+mx &&& my = do
+   x <- mx
+   xb <- withSBE $ \sbe -> getBool sbe x
+   case xb of
+     Just True  -> my
+     Just False -> return x
+     _          -> do
+       y  <- my
+       yb <- withSBE $ \sbe -> getBool sbe y
+       case yb of
+         Just True  -> return x
+         Just False -> return y
+         _          -> withSBE $ \sbe -> applyBAnd sbe x y
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
@@ -416,44 +452,13 @@ modifyCallFrameM = modifyPath . modifyCallFrame
 dbugStep :: (LogMonad m, MonadIO m, PrettyTerm (SBETerm sbe), Functor m)
   => SymStmt -> Simulator sbe m ()
 dbugStep stmt = do
-  Just p <- getPath
-  withCallFrame p $ \frm -> do
-    dbugM' 2 $ "Executing: "
-               ++ show (L.ppSymbol (frmFuncSym frm))
-               ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
-               ++ ": " ++ show (ppSymStmt stmt)
-    step stmt
-    dumpCtrlStk' 5
-
---------------------------------------------------------------------------------
--- Testing
-
-__nowarn :: forall a. a
-__nowarn = undefined main
-
-main :: IO ()
-main = do
-  let i32 = L.iT 32
-  cb <- loadCodebase "/Users/jstanley/work/Verifier/LLVM/test/src/support/primOps.bc"
-
---   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
---     i1 <- withSBE $ \sbe -> termInt sbe 32 2
---     i2 <- withSBE $ \sbe -> termInt sbe 32 3
---     callDefine (Symbol "int32_add") i32
---       [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
---     mrv <- getProgramReturnValue
---     dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
-
-  runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
-    i1 <- withSBE $ \sbe -> termInt sbe 32 2
-    callDefine (L.Symbol "int32_square") i32 [ i32 =: i1 ]
-    mrv <- getProgramReturnValue
-    dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
-
---   runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
---     i1 <- withSBE $ \sbe -> termInt sbe 32 2
---     i2 <- withSBE $ \sbe -> termInt sbe 32 3
---     callDefine (Symbol "int32_muladd") i32
---       [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
---     mrv <- getProgramReturnValue
---     dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
+  mp <- getPath
+  case mp of
+    Nothing -> dbugM' 2 $ "Executing: (no current path): " ++ show (ppSymStmt stmt)
+    Just p  -> withCallFrame p $ \frm -> do
+      dbugM' 2 $ "Executing: "
+                 ++ show (L.ppSymbol (frmFuncSym frm))
+                 ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
+                 ++ ": " ++ show (ppSymStmt stmt)
+  step stmt
+  dumpCtrlStk' 5
