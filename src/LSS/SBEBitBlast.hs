@@ -398,6 +398,46 @@ bmCodeLookupDefine be m (BitTerm a) = do
         Nothing -> Invalid
         Just d -> Result d
 
+-- Arithmetic and logical operations {{{1
+
+bitIte :: (LV.Storable l, Eq l) =>
+          BitEngine l -> BitTerm l -> BitTerm l -> BitTerm l
+       -> BitIO l (BitTerm l)
+bitIte be (BitTerm c) (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> do
+  let zero = LV.replicate (LV.length c) (beFalse be)
+  cbit <- beEqVector be c zero
+  beIteVector be cbit (return b) (return a)
+
+bitICmp :: (LV.Storable l, Eq l) =>
+           BitEngine l -> LLVM.ICmpOp
+        -> BitTerm l -> BitTerm l
+        -> BitIO l (BitTerm l)
+bitICmp be op (BitTerm a) (BitTerm b) =
+  BitIO $ (BitTerm . LV.singleton) <$> f be a b
+  where f = case op of
+              LLVM.Ieq -> beEqVector
+              _ -> bmError $ "unsupported comparison op: " ++ show op
+
+bitBitwise :: (LV.Storable l, Eq l) =>
+              BitEngine l -> LLVM.BitOp
+           -> BitTerm l -> BitTerm l
+           -> BitIO l (BitTerm l)
+bitBitwise be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
+  where f = case op of
+              LLVM.And -> beAndInt
+              LLVM.Or -> beOrInt
+              _ -> bmError $ "unsupported arithmetic op: " ++ show op
+
+bitArith :: (LV.Storable l, Eq l) =>
+            BitEngine l -> LLVM.ArithOp
+         -> BitTerm l -> BitTerm l
+         -> BitIO l (BitTerm l)
+bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
+  where f = case op of
+              LLVM.Add -> beAddInt
+              LLVM.Mul -> beMulInt
+              _ -> bmError $ "unsupported arithmetic op: " ++ show op
+
 --  SBE Definition {{{1
 
 newtype BitIO l a = BitIO { runBitIO :: IO a }
@@ -410,12 +450,12 @@ sbeBitBlast :: (Eq l, LV.Storable l) => LLVMContext -> BitEngine l -> SBE (BitIO
 sbeBitBlast lc be = SBE
   { termInt  = (return . BitTerm) `c2` beVectorFromInt be
   , termBool = return . BitTerm . LV.singleton . beLitFromBool be
-  , applyIte = undefined
-  , applyICmp = undefined
-  , applyBitwise = undefined
-  , applyArith = undefined
+  , applyIte = bitIte be
+  , applyICmp = bitICmp be
+  , applyBitwise = bitBitwise be
+  , applyArith = bitArith be
   , memLoad = BitIO `c2` bmLoad lc be
-  , memStore = BitIO `c3` bmStore be 
+  , memStore = BitIO `c3` bmStore be
   , memMerge = BitIO `c3` bmMerge be
   , codeAddDefine = \m def idl -> do
       let bbcnt = toInteger (length idl)
@@ -443,7 +483,11 @@ sbeBitBlast lc be = SBE
   , stackAlloca = return `c4` bmStackAlloca lc be
   , stackPushFrame = return . bmStackPush
   , stackPopFrame = return . bmStackPop
+  , writeAiger = \f t -> BitIO $ beWriteAigerV be f (btVector t)
   }
+
+liftSBEBitBlast :: BitIO l a -> IO a
+liftSBEBitBlast = runBitIO
 
 overlap :: (Addr,Addr) -> (Addr,Addr) -> Bool 
 overlap (s1,e1) (s2,e2) = if s1 <= s2 then s2 < e1 else s1 < e2

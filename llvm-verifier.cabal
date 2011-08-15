@@ -74,5 +74,6 @@ executable lss
     , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
+    , transformers
     , vector
     , Verinf

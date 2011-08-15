@@ -3,6 +3,7 @@ import LSS.Execution.Common
 import LSS.Execution.Utils
 import LSS.SBEInterface
 import LSS.SBESymbolic
+import LSS.SBEBitBlast
 import LSS.Simulator
 import Verinf.Symbolic.Common hiding (termInt)
 import Text.LLVM
@@ -14,8 +15,8 @@ main = do
   be <- createBitEngine
 
   let i32 = iT 32
-      mainSBE = sbeSymbolicBit be
-      liftSBE = SM . lift . liftSBESymbolicBit
+      mainSBE = sbeBitBlast be
+      liftSBE = SM . lift . liftSBEBitBlast
 
   runSimulator cb mainSBE liftSBE $ do
     i1 <- withSBE $ \sbe -> termInt sbe 32 2
