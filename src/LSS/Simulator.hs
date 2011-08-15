@@ -66,7 +66,13 @@ newSimState cb sbe lifter =
   , verbosity = 1
   }
 
-callDefine ::(LogMonad m, MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
+callDefine ::
+  ( LogMonad m
+  , MonadIO m
+  , Functor m
+  , PrettyTerm (SBETerm sbe)
+  , ConstantProjection (SBETerm sbe)
+  )
   => L.Symbol              -- ^ Callee symbol
   -> L.Type                -- ^ Callee return type
   -> [Typed (SBETerm sbe)] -- ^ Callee arguments
@@ -115,7 +121,14 @@ getProgramReturnValue = do
     ExitFrame _ mrv -> return mrv
     _               -> error "getProgramReturnValue: program not yet terminated"
 
-run :: (LogMonad m, Functor m, MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
+run ::
+  ( LogMonad m
+  , Functor m
+  , MonadIO m
+  , PrettyTerm (SBETerm sbe)
+  , ConstantProjection (SBETerm sbe)
+  )
+  => Simulator sbe m ()
 run = do
   mtop <- topMF <$> gets ctrlStk
   case mtop of
@@ -135,7 +148,7 @@ run = do
     runPath (pathCB -> Nothing)    = error "runPath: no current block"
     runPath p@(pathCB -> Just pcb) = withCallFrame p $ \frm -> do
       def <- lookupDefine (frmFuncSym frm) <$> gets codebase
-      mapM_ dbugStep (sbStmts $ lookupSymBlock def pcb)
+      runStmts $ sbStmts $ lookupSymBlock def pcb
       run
     runPath _ = error "unreachable"
 
@@ -199,6 +212,7 @@ mergeMFs :: (MonadIO m, PrettyTerm (SBETerm sbe))
   -> MergeFrame (SBETerm sbe)
   -> Simulator sbe m (MergeFrame (SBETerm sbe))
 
+-- Source frame is a return frame
 mergeMFs src@ReturnFrame{} dst = do
   let Just p = getMergedState src -- NB: src /must/ have a merged state.
   case pathRetVal p of
@@ -225,7 +239,16 @@ mergeMFs src@ReturnFrame{} dst = do
                   modifyCallFrame (setReg reg trv) dstPath
       | otherwise -> do
           error "mergeMFs: postdom dst frame nyi"
-mergeMFs _ _ = error "mergeMFs: non-retrun src frame nyi"
+
+-- Source frame is a postdom frame
+mergeMFs src@PostdomFrame{} dst = do
+  let Just p = getMergedState src -- NB: src /must/ have a merged state.
+  if isExitFrame dst
+    then error "mergeMFs: postdom MF => exit MF is not allowed"
+    else
+      return $ (`modifyPending` dst) $ const p
+
+mergeMFs _ _ = error "mergeMFs: unsupported source merge frame type"
 
 -- | @mergePaths p1 p2@ merges path p1 into path p2, which may be empty; when p2
 -- does is empty, this function produces p1 as the merged path. Yields Nothing
@@ -252,7 +275,6 @@ clearCurrentExecution = do
     else do
       -- We still have pending paths, so only remove the current path.
       pushMergeFrame $ snd $ popPending top
-  dbugM' 5 $ "After clearCurrentExecution:"
 
 lkupIdent' :: L.Ident -> CallFrame term -> Typed term
 lkupIdent' i = flip (M.!) i . frmRegs
@@ -285,11 +307,18 @@ getTypedTerm' _ tv@(Typed t v)
 -- Instruction stepper
 
 -- | Execute a single LLVM-Sym AST instruction
-step :: (LogMonad m, MonadIO m, Functor m, Monad m, PrettyTerm (SBETerm sbe))
+step ::
+  ( LogMonad m
+  , MonadIO m
+  , Functor m
+  , Monad m
+  , PrettyTerm (SBETerm sbe)
+  , ConstantProjection (SBETerm sbe)
+  )
   => SymStmt -> Simulator sbe m ()
 
 step ClearCurrentExecution =
-  error "ClearCurrentExecution nyi"
+  clearCurrentExecution
 
 step (PushCallFrame (L.ValSymbol calleeSym) args mres) = do
   cb <- getCurrentBlockM
@@ -302,21 +331,27 @@ step (PushInvokeFrame _fn _args _mres _e) =
   error "PushInvokeFrame nyi"
 
 step (PushPostDominatorFrame pdid) = do
-  dbugM $ "pushpostdom: pdid = " ++ show (ppSymBlockID pdid)
   Just p <- getPath
-  dbugM $ "pushpostdom: curr path = " ++ show (pp p)
-  pushMergeFrame
-    $ pushPending p
-    $ emptyPdomFrame pdid
-  dumpCtrlStk' 5
+  pushMergeFrame $ pushPending p $ emptyPdomFrame pdid
 
 step (MergePostDominator pdid cond) = do
-  dbugM $ "mergepostdom: pdid = " ++ show (ppSymBlockID pdid) ++ ", cond = " ++ show (ppSymCond cond)
+  mtop <- topMF <$> gets ctrlStk
+  case mtop of
+    Just PostdomFrame{} -> return ()
+    Just _              -> error "merge postdom: expected postdom merge frame"
+    Nothing             -> error "merge postdom: empty control stack"
 
-  -- HERE: Add the given new path constraint to the current path, via the new
-  -- &&& operator.
+  Just p <- getPath
 
-  error "MergePostDominator nyi"
+  -- Construct the new path constraint for the current path
+  newPC  <- case cond of
+    TrueSymCond -> return (pathConstraints p) &&& boolTerm True
+    HasConstValue{} -> error "path constraint addition: HasConstValue nyi"
+
+  dbugM' 5 $ "New path constraint is: " ++ prettyTerm newPC
+
+  -- Merge the current path into the merged state for the current merge frame
+  modifyMF $ modifyMergedState $ mergePaths p{ pathConstraints = newPC }
 
 step MergeReturnVoidAndClear =
   error "MergeReturnVoidAndClear nyi"
@@ -338,8 +373,18 @@ step (Assign reg expr) = assign reg =<< eval expr
 step (Store _addr _val) =
   error "Store nyi"
 
-step (IfThenElse _c _thenStms _elseStms)
-  = error "IfThenElse nyi"
+step (IfThenElse cond thenStmts elseStmts) = do
+  b <- evalCond cond
+  runStmts $ if b then thenStmts else elseStmts
+  where
+    evalCond TrueSymCond = return True
+    evalCond (HasConstValue v i) = do
+      Typed t v' <- getTypedTerm (Typed i1 v)
+      CE.assert (t == i1) $ return ()
+      mb <- fmap (fromIntegral . fromEnum) <$> withSBE (`getBool` v')
+      case mb of
+        Nothing -> error "non-bool or symbolic bool SymCond HasConstValue terms nyi"
+        Just b  -> return (i == b)
 
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
@@ -360,13 +405,21 @@ eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   CE.assert (t == t1 && t == t2) $ return ()
   Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
 
-eval s@Arith{} = error $ "Unsupported arith expr: " ++ show (ppSymExpr s)
+eval s@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
 
 eval (Bit _op _tv1 _v2       ) = error "eval Bit nyi"
 eval (Conv _op _tv1 _t       ) = error "eval Conv nyi"
 eval (Alloca _t _mtv _malign ) = error "eval Alloca nyi"
 eval (Load _tv               ) = error "eval Load nyi"
-eval (ICmp _op _tv1 _v2      ) = error "eval ICmp nyi"
+
+eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
+  Typed t1 x <- getTypedTerm (Typed t v1)
+  Typed t2 y <- getTypedTerm (Typed t v2)
+  CE.assert (t == t1 && t == t2) $ return ()
+  Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
+
+eval s@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr s)
+
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val _tv                ) = error "eval Val nyi"
 eval (GEP _tv _idxs          ) = error "eval GEP nyi"
@@ -395,6 +448,19 @@ mx &&& my = do
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
+runStmts ::
+  ( LogMonad m
+  , Functor m
+  , MonadIO m
+  , PrettyTerm (SBETerm sbe)
+  , ConstantProjection (SBETerm sbe)
+  )
+  => [SymStmt] -> Simulator sbe m ()
+runStmts = mapM_ dbugStep
+
+i1 :: L.Type
+i1 = L.PrimType (L.Integer 1)
+
 typedAs :: Typed a -> b -> Typed b
 typedAs tv x = const x <$> tv
 
@@ -406,7 +472,10 @@ entryRsltReg = L.Ident "__galois_final_rslt"
 
 newPath :: (Functor m, Monad m)
   => CallFrame (SBETerm sbe) -> Simulator sbe m (Path (SBETerm sbe))
-newPath cf = Path cf Nothing Nothing (Just initSymBlockID) <$> withSBE (`termBool` True)
+newPath cf = Path cf Nothing Nothing (Just initSymBlockID) <$> boolTerm True
+
+boolTerm :: (Functor m, Monad m) => Bool -> Simulator sbe m (SBETerm sbe)
+boolTerm = withSBE . flip termBool
 
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
 -- that the control stack is empty or the top entry of the control stack has no
@@ -449,7 +518,13 @@ modifyCallFrameM :: (Functor m, Monad m)
   => (CallFrame (SBETerm sbe) -> CallFrame (SBETerm sbe)) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
-dbugStep :: (LogMonad m, MonadIO m, PrettyTerm (SBETerm sbe), Functor m)
+dbugStep ::
+  ( LogMonad m
+  , MonadIO m
+  , PrettyTerm (SBETerm sbe)
+  , Functor m
+  , ConstantProjection (SBETerm sbe)
+  )
   => SymStmt -> Simulator sbe m ()
 dbugStep stmt = do
   mp <- getPath
@@ -459,6 +534,10 @@ dbugStep stmt = do
       dbugM' 2 $ "Executing: "
                  ++ show (L.ppSymbol (frmFuncSym frm))
                  ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
-                 ++ ": " ++ show (ppSymStmt stmt)
+                 ++ ": " ++
+                 case stmt of
+                   IfThenElse{} -> "\n"
+                   _ -> ""
+                 ++ show (ppSymStmt stmt)
   step stmt
   dumpCtrlStk' 5
