@@ -54,15 +54,15 @@ data SBE m = SBE
     -- | @memMerge c t f@ returns a memory that corresponds to @t@ if @c@ is
     -- true and @f@ otherwise.
   , memMerge :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
-    -- | @codeAddDefine mem d blocks@ adds a definition of @d@ with block
+    -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
     -- identifiers @blocks@ to the memory @mem@ and returns a pointer to
     -- the definition, and updated memory.
     -- It is undefined to call this function with a symbol that has already
     -- been defined in the memory.
-  , codeAddDefine :: SBEMemory m
-                  -> LLVM.Symbol
-                  -> [LLVM.Ident]
-                  -> m (SBETerm m, SBEMemory m)
+  , memAddDefine :: SBEMemory m
+                 -> LLVM.Symbol
+                 -> [LLVM.Ident]
+                 -> m (SBETerm m, SBEMemory m)
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
