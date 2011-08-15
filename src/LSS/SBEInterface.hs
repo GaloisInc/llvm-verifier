@@ -41,17 +41,6 @@ data SBE m = SBE
   , applyBitwise :: LLVM.BitOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
   , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
-    -- | @memInitMemory@ returns an initial heap with no values defined.
-  , memInitMemory :: m (SBEMemory m)
-    -- | @memAlloca h tp i align@ allocates memory on the stack for the given
-    -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
-    -- byte boundary.
-    -- TODO: Add support for malloc, new, etc.
-  , memAlloca :: SBEMemory m
-              -> LLVM.Type
-              -> LLVM.Typed (SBETerm m)
-              -> Int
-              -> m (SBETerm m, SBEMemory m)
     -- | @memLoad h ptr@ returns the value in the given location in memory.
   , memLoad :: SBEMemory m
             -> LLVM.Typed (SBETerm m)
@@ -62,28 +51,42 @@ data SBE m = SBE
              -> LLVM.Typed (SBETerm m)
              -> SBETerm m
              -> m (SBEMemory m)
-    -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
+    -- | @memMerge c t f@ returns a memory that corresponds to @t@ if @c@ is
+    -- true and @f@ otherwise.
+  , memMerge :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
+    -- | @codeAddDefine mem d blocks@ adds a definition of @d@ with block
     -- identifiers @blocks@ to the memory @mem@ and returns a pointer to
     -- the definition, and updated memory.
     -- It is undefined to call this function with a symbol that has already
     -- been defined in the memory.
-  , memAddDefine :: SBEMemory m
-                 -> LLVM.Symbol
-                 -> [LLVM.Ident]
-                 -> m (SBETerm m, SBEMemory m)
-    -- | @memLookupDefine ptr@ returns the symbol at the given address.
+  , codeAddDefine :: SBEMemory m
+                  -> LLVM.Symbol
+                  -> [LLVM.Ident]
+                  -> m (SBETerm m, SBEMemory m)
+    -- | @codeBlockAddress mem d l@ returns the address of basic block with
+    -- label @l@ in definition @d@.
+  , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
+    -- | @codeLookupDefine ptr@ returns the symbol at the given address.
     -- Lookup may fail if the pointer does not point to a symbol, or if
     -- the pointer is a symbolic vlaue without a clear meaning.
     -- TODO: Consider moving this function to the symbolic simulator.
-  , memLookupDefine :: SBEMemory m -> SBETerm m -> m (PartialResult LLVM.Symbol)
-    -- | @memBlockAddress mem d l@ returns the address of basic block with
-    -- label @l@ in definition @d@.
-  , memBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
-    -- | @memSelect c t f@ returns a memory that corresponds to @t@ if @c@ is
-    -- true and @f@ otherwise.  This function is useful in merging.
-  , memSelect :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
+  , codeLookupDefine :: SBEMemory m -> SBETerm m -> m (PartialResult LLVM.Symbol)
+    -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
+    -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
+    -- byte boundary.
+    -- TODO: Add support for malloc, new, etc.
+  , stackAlloca :: SBEMemory m
+                -> LLVM.Type
+                -> LLVM.Typed (SBETerm m)
+                -> Int
+                -> m (SBETerm m, SBEMemory m)
+    -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
+    -- stack frame to @mem@.
+  , stackPushFrame :: SBEMemory m -> m (SBEMemory m)
+    -- | @stackPushFrame mem@ returns the memory obtained by popping a new
+    -- stack frame from @mem@.
+  , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
     -- | @writeAiger f t@ writes an AIG representation of @t@ into
     -- file @f@ in the Aiger format.
   , writeAiger :: String -> SBETerm m -> m ()
   }
-

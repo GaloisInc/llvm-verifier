@@ -46,14 +46,15 @@ sbeSymbolic = SBE
                           _ -> error $
                                "unsupported arithmetic op: " ++
                                show op
-  , memInitMemory = return undefined
-  , memAlloca = \_mem _eltType _len _a -> return undefined
   , memLoad = \_mem _ptr -> return undefined
   , memStore = \_mem _val _ptr -> return undefined
-  , memAddDefine = \_mem _sym _id -> return (undefined, undefined)
-  , memLookupDefine = \_mem _t -> return undefined
-  , memBlockAddress = \_mem _s _b -> return undefined
-  , memSelect = \_t _mem _mem' -> return undefined
+  , memMerge = \_t _mem _mem' -> return undefined
+  , codeAddDefine = \_mem _sym _id -> return (undefined, undefined)
+  , codeBlockAddress = \_mem _s _b -> return undefined
+  , codeLookupDefine = \_mem _t -> return undefined
+  , stackAlloca = \_mem _eltTp _n _a -> return undefined
+  , stackPushFrame = \_mem -> return undefined
+  , stackPopFrame = \_mem -> return undefined
   , writeAiger = \_f _t -> return undefined
   }
 
@@ -78,14 +79,15 @@ sbeSymbolicBit be = SBE
   , applyICmp = bitICmp be
   , applyBitwise = bitBitwise be
   , applyArith = bitArith be
-  , memInitMemory = BM $ return undefined
-  , memAlloca = \_mem _eltType _len _a -> BM $ return undefined
   , memLoad = \_mem _ptr -> BM $ return undefined
   , memStore = \_mem _val _ptr -> BM $ return undefined
-  , memAddDefine = \_mem _sym _id -> BM $ return (undefined, undefined)
-  , memLookupDefine = \_mem _t -> BM $ return undefined
-  , memBlockAddress = \_mem _s _b -> BM $ return undefined
-  , memSelect = \_t _mem _mem' -> BM $ return undefined
+  , memMerge = \_t _mem _mem' -> BM $ return undefined
+  , codeAddDefine = \_mem _sym _id -> BM $ return (undefined, undefined)
+  , codeBlockAddress = \_mem _s _b -> BM $ return undefined
+  , codeLookupDefine = \_mem _t -> BM $ return undefined
+  , stackAlloca = \_mem _eltTp _n _a -> BM $ return undefined
+  , stackPushFrame = \_mem -> BM $ return undefined
+  , stackPopFrame = \_mem -> BM $ return undefined
   , writeAiger = \f t -> case t of
                            S.LV ls -> BM $ S.beWriteAigerV be f ls
                            _ -> error "writeAiger called on non-scalar"

@@ -56,14 +56,15 @@ sbeConcrete = SBE
                               _ -> error $
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
-  , memInitMemory = SBEConcrete undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEConcrete undefined
   , memLoad = \_mem _ptr -> SBEConcrete undefined
   , memStore = \_mem _val _ptr -> SBEConcrete undefined
-  , memAddDefine = \_mem _sym _id -> SBEConcrete (undefined, undefined)
-  , memLookupDefine = \_mem _t -> SBEConcrete undefined
-  , memBlockAddress = \_mem _s _b -> SBEConcrete undefined
-  , memSelect = \_t _mem _mem' -> SBEConcrete undefined
+  , memMerge = \_t _mem _mem' -> SBEConcrete undefined
+  , codeAddDefine = \_mem _sym _id -> SBEConcrete (undefined, undefined)
+  , codeBlockAddress = \_mem _s _b -> SBEConcrete undefined
+  , codeLookupDefine = \_mem _t -> SBEConcrete undefined
+  , stackAlloca = \_mem _eltTp _n _a -> SBEConcrete undefined
+  , stackPushFrame = \_mem -> SBEConcrete undefined
+  , stackPopFrame = \_mem -> SBEConcrete undefined
   , writeAiger = \_f _t ->
                  error "Aiger creation not supported in concrete backend"
   }
