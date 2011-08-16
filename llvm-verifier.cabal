@@ -42,6 +42,7 @@ library
     , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
+    , transformers
     , vector
     , Verinf
 
@@ -54,6 +55,8 @@ library
     LSS.Simulator
 
   other-modules:
+    LSS.SBEInterface
+    LSS.SBEBitBlast
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
@@ -89,17 +92,20 @@ executable Tests
   main-is        : Tests.hs
   hs-source-dirs : src test/src
 
+  GHC-options: -O2 -Wall -fno-ignore-asserts
+
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
   build-depends:
-      base >= 4
+      QuickCheck >= 2.1.2
+    , Verinf
+    , base >= 4
     , bytestring
     , containers
     , filepath
     , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
-    , QuickCheck >= 2.1.2
+    , transformers
     , vector
-    , Verinf

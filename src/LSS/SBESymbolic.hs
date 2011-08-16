@@ -10,7 +10,6 @@ Point-of-contact : atomb
 module LSS.SBESymbolic
   ( module LSS.SBEInterface
   , sbeSymbolic
-  , sbeSymbolicBit
   , liftSBESymbolic
   )
 
@@ -21,7 +20,7 @@ import qualified Verinf.Symbolic as S
 import LSS.SBEInterface
 
 --------------------------------------------------------------------------------
--- Symbolic backend
+-- Word-level symbolic backend
 
 type instance SBETerm S.SymbolicMonad = S.SymbolicTerm
 type instance SBEMemory S.SymbolicMonad = S.SymbolicTerm
@@ -57,38 +56,16 @@ sbeSymbolic = SBE
                                show op
   , applyBAnd = S.applyBAnd
   , getBool = return . S.getBool
-  , memInitMemory = return undefined
-  , memAlloca = \_mem _eltType _len _a -> return undefined
   , memLoad = \_mem _ptr -> return undefined
   , memStore = \_mem _val _ptr -> return undefined
-  , memAddDefine = \_mem _sym _id -> return (undefined, undefined)
-  , memLookupDefine = \_mem _t -> return undefined
-  , memBlockAddress = \_mem _s _b -> return undefined
-  , memSelect = \_t _mem _mem' -> return undefined
-  }
-
--- | Symbolic interface with all operations at the bit level.
--- TODO: can this be over S.SymbolicMonad? That enforces that the term
--- type is S.SymbolicTerm, which won't necessarily work here. Do we need
--- a newtype wrapper for bit-blasted symbolic terms?
-sbeSymbolicBit :: SBE S.SymbolicMonad
-sbeSymbolicBit = SBE
-  { termInt  = undefined
-  , termBool = undefined
-  , applyIte = undefined
-  , applyICmp = undefined
-  , applyBitwise = undefined
-  , applyArith = undefined
-  , applyBAnd = undefined
-  , getBool = undefined
-  , memInitMemory = return undefined
-  , memAlloca = \_mem _eltType _len _a -> return undefined
-  , memLoad = \_mem _ptr -> return undefined
-  , memStore = \_mem _val _ptr -> return undefined
-  , memAddDefine = \_mem _sym _id -> return (undefined, undefined)
-  , memLookupDefine = \_mem _t -> return undefined
-  , memBlockAddress = \_mem _s _b -> return undefined
-  , memSelect = \_t _mem _mem' -> return undefined
+  , memMerge = \_t _mem _mem' -> return undefined
+  , codeAddDefine = \_mem _sym _id -> return (undefined, undefined)
+  , codeBlockAddress = \_mem _s _b -> return undefined
+  , codeLookupDefine = \_mem _t -> return undefined
+  , stackAlloca = \_mem _eltTp _n _a -> return undefined
+  , stackPushFrame = \_mem -> return undefined
+  , stackPopFrame = \_mem -> return undefined
+  , writeAiger = \_f _t -> return undefined
   }
 
 liftSBESymbolic :: S.SymbolicMonad a -> IO a
