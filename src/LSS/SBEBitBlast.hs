@@ -25,14 +25,13 @@ import qualified Data.Vector as V
 
 import qualified Text.LLVM.AST as LLVM
 import Verinf.Symbolic.Lit
-import qualified Verinf.Symbolic.Lit.ABC as ABC
+import Verinf.Symbolic.Common (createBitEngine)
 import Verinf.Symbolic (PrettyTerm(..))
 import LSS.SBEInterface
 import Text.PrettyPrint.HughesPJ
 
 
 import Debug.Trace
-
 
 c2 :: (r -> s) -> (a -> b -> r) -> a -> b -> s
 g `c2` f = \x y -> g (f x y)
@@ -102,7 +101,7 @@ loadByte be mem vi = impl mem (LV.length vi - 1)
   where impl (SBranch f t) i =
            beIteVector be (vi LV.! i) (impl t (i+1)) (impl f (i+1))
         impl (SValue v) _ = return v
-        impl (SDefine d) _ = 
+        impl (SDefine d) _ =
           bmError $ "Attempt to read address that may point to definition of " ++ show d ++ "."
         impl (SBlock d b) _ =
           bmError $ "Attempt to read address that may point to block " ++ show b ++ " in " ++ show d ++ "."
@@ -142,7 +141,7 @@ storeByte be mem new ptr = impl mem (LV.length ptr) (beTrue be)
           | c == beTrue be = return (SValue new)
           | otherwise =
               bmError "Attempt to store symbolically to address that has not been initialized."
-        impl (SDefine d) _ _ = 
+        impl (SDefine d) _ _ =
           bmError $ "Attempt to store to address that may point to definition of " ++ show d ++ "."
         impl (SBlock d b) _ _ =
           bmError $ "Attempt to store to address that may point to block " ++ show b ++ " in " ++ show d ++ "."
@@ -181,12 +180,12 @@ initFreeList low high = V.unfoldr fn (low,high,0)
                                     (True,  True)  -> [l,hc]
                                     (False, True)  -> [hc]
                                     (True, False)  -> [l]
-                                    (False, False) -> [] 
+                                    (False, False) -> []
                         in (elts, (l', h', i+1))
 
 -- @setBytes w low high val mem@ sets all bytes in [low .. high) to @val@.
 setBytes :: Int -> Addr -> Addr -> (Addr -> Storage l) -> Storage l -> Storage l
-setBytes w low high fn mem 
+setBytes w low high fn mem
    | low == high = mem
    | otherwise = trace ("setBytes " ++ show low ++ " " ++ show high) $ impl mem (w-1) 0
   where impl _ (-1) v = fn v
@@ -227,15 +226,15 @@ data BitMemory l = BitMemory {
 type FreeList = V.Vector [Addr]
 
 
--- | @allocBlock l n@ attempt to allocate a block with @2^n@ 
+-- | @allocBlock l n@ attempt to allocate a block with @2^n@
 allocBlock :: FreeList -> Int -> Maybe (FreeList, Addr)
 allocBlock fl n = impl n
   where -- @impl i@
         impl i | V.length fl <= i = Nothing
-               | otherwise = 
+               | otherwise =
                    case fl V.! i of
                      [] -> impl (i+1)
-                     a:r -> 
+                     a:r ->
                        -- Generation function for new free list removes
                        -- free block found and adds new free blocks for
                        -- space that was unallocated by previous request.
@@ -352,11 +351,11 @@ bmStackAlloca lc be bm eltTp typedCnt a =
     ( BitTerm (beVectorFromInt be w res)
     , bm { bmStorage = newStorage, bmStackAddr = newAddr })
   where -- Number of bytes in element type.
-        eltSize = llvmByteSizeOf lc eltTp 
+        eltSize = llvmByteSizeOf lc eltTp
         BitTerm cntVector = LLVM.typedValue typedCnt
         -- Get number requested.
         cnt = case beVectorToMaybeInt be cntVector of
-                Nothing -> 
+                Nothing ->
                   bmError $ "Symbolic number of elements requested with alloca;"
                                ++ " when current implementation only supports concrete"
                 Just v -> v
@@ -365,7 +364,7 @@ bmStackAlloca lc be bm eltTp typedCnt a =
         errorMsg = bmError "Stack limit exceeded in alloca."
         -- Get result pointer
         -- Get new bit memory.
-        (res,newStorage,newAddr) 
+        (res,newStorage,newAddr)
           | bmStackGrowsUp bm =
               let alignedAddr = alignUp (bmStackAddr bm) a
                   newStackAddr = alignedAddr + eltSize * cnt
@@ -392,7 +391,7 @@ bmStackPop :: LLVMContext -> BitMemory l -> BitMemory l
 bmStackPop _ BitMemory { bmStackFrames = [] } =
   bmError "internal: Attempted to pop stack frame from memory when no stack frames have been pushed."
 bmStackPop lc bm@BitMemory { bmStackFrames = f : fl } =
-  bm { bmStorage = 
+  bm { bmStorage =
          let (l,h) = if bmStackGrowsUp bm then (f, bmStackAddr bm) else (bmStackAddr bm, f)
           in setBytes (llvmAddrWidth lc) l h (\_ -> SUnallocated) (bmStorage bm)
      , bmStackAddr = f
@@ -424,7 +423,7 @@ bmMerge be (BitTerm cv) m m'
         fail "internal: Attempt to merge memories with different block addresses."
       -- Free lists should be implicitly equivalent if storages are compatible.
       return BitMemory
-        { bmStorage = newStorage 
+        { bmStorage = newStorage
         , bmStackAddr = bmStackAddr m
         , bmStackEnd = bmStackEnd m
         , bmStackFrames = bmStackFrames m
@@ -438,12 +437,12 @@ bmMerge be (BitTerm cv) m m'
 bmMemAddDefine :: (Eq l, LV.Storable l)
                 => LLVMContext
                 -> BitEngine l -- ^ Bit engine for literals.
-                -> BitMemory l -- ^ Memory 
+                -> BitMemory l -- ^ Memory
                 -> LLVM.Symbol -- ^ Definition
                 -> [LLVM.Ident] -- ^ Identifiers for blocks
                 -> (BitTerm l, BitMemory l)
 bmMemAddDefine lc be m def idl
-    | newCodeAddr > bmCodeEnd m 
+    | newCodeAddr > bmCodeEnd m
     = bmError "Not enough space in code memory to allocate new definition."
     | otherwise
     = ( BitTerm (beVectorFromInt be (llvmAddrWidth lc) codeAddr)
@@ -468,7 +467,7 @@ bmMemAddDefine lc be m def idl
 bmCodeBlockAddress :: (Eq l, LV.Storable l)
                    => LLVMContext
                    -> BitEngine l -- ^ Bit engine for literals.
-                   -> BitMemory l -- ^ Memory 
+                   -> BitMemory l -- ^ Memory
                    -> LLVM.Symbol -- ^ Definition
                    -> LLVM.Ident -- ^ Block identifier
                    -> BitTerm l
@@ -478,7 +477,7 @@ bmCodeBlockAddress lc be m d b = do
     Just a -> BitTerm (beVectorFromInt be (llvmAddrWidth lc) a)
 
 -- | Return symbol as given address in memory.
-bmCodeLookupDefine :: (Eq l, LV.Storable l) 
+bmCodeLookupDefine :: (Eq l, LV.Storable l)
                    => LLVMContext
                    -> BitEngine l
                    -> BitMemory l
@@ -487,7 +486,7 @@ bmCodeLookupDefine :: (Eq l, LV.Storable l)
 bmCodeLookupDefine lc be m (BitTerm a) = do
   case beVectorToMaybeInt be a of
     Nothing -> Indeterminate
-    Just v -> 
+    Just v ->
       case loadDef (bmStorage m) (llvmAddrWidth lc) v of
         Nothing -> Invalid
         Just d -> Result d
@@ -565,7 +564,7 @@ type Range t = (t,t)
 norm :: Range Addr -> Range Addr
 norm (x,y) = (min x y, max x y)
 
-overlap :: Range Addr -> Range Addr -> Bool 
+overlap :: Range Addr -> Range Addr -> Bool
 overlap (s1,e1) (s2,e2) = if s1 <= s2 then s2 < e2 && s2 < e1 else s1 < e1 && s1 < e2
 
 start :: Range i -> i
@@ -601,9 +600,10 @@ sbeBitBlastMem stack code heap
         , bmFreeLists = initFreeList (start heap) (end heap)
         }
 
+testSBEBitBlast :: IO ()
 testSBEBitBlast = do
   let lc = LLVMContext 4 undefined
-  be <- ABC.createBitEngine
+  be <- createBitEngine
   let sbe = sbeBitBlast lc be
   let m0 = sbeBitBlastMem (0x10,0x0) (0x0,0x0)  (0x0,0x0)
   liftSBEBitBlast $ do
