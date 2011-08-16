@@ -32,20 +32,20 @@ i32 = L.iT 32
 primOpTests :: [(Args, Property)]
 primOpTests =
   [
-    test 10 False "concrete int32 add" $
-      chkBinCInt32Fn 1 "primOps.bc"  (L.Symbol "int32_add") (+)
-  ,
-    test 10 False "concrete int32 sqr" $
-      chkUnaryCInt32Fn 1 "primOps.bc" (L.Symbol "int32_square") sqr
-  ,
-    test 10 False "concrete int32 muladd" $
-      chkBinCInt32Fn 1 "primOps.bc" (L.Symbol "int32_muladd") (\x y -> sqr (x + y))
-  ,
-    test1 "test-arith"  $ chkMain 1 "test-arith.bc" 0
-  ,
+--     test 10 False "concrete int32 add" $
+--       chkBinCInt32Fn 1 "primOps.bc"  (L.Symbol "int32_add") (+)
+--   ,
+--     test 10 False "concrete int32 sqr" $
+--       chkUnaryCInt32Fn 1 "primOps.bc" (L.Symbol "int32_square") sqr
+--   ,
+--     test 10 False "concrete int32 muladd" $
+--       chkBinCInt32Fn 1 "primOps.bc" (L.Symbol "int32_muladd") (\x y -> sqr (x + y))
+--   ,
+--     test1 "test-arith"  $ chkMain 1 "test-arith.bc" 0
+--   ,
     test1 "test-call"   $ chkMain 1 "test-call.bc" 0
-  ,
-    test1 "test-branch" $ chkMain 1 "test-branch.bc" 0
+--   ,
+--     test1 "test-branch" $ chkMain 1 "test-branch.bc" 0
   ]
   where
     sqr x   = x * x
