@@ -5,25 +5,25 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
-{-# LANGUAGE ViewPatterns #-}
-
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ViewPatterns     #-}
 
 module Tests.PrimOps (primOpTests) where
 
+import           Control.Applicative
 import           Control.Monad.Trans
 import           Data.Int
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
-import           LSS.SBESymbolic
+import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           System.FilePath
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import           Tests.Common
 import           Text.LLVM               ((=:))
-import           Verinf.Symbolic         (SymbolicTerm)
-import           Verinf.Symbolic.Common  (getSVal)
+import           Verinf.Symbolic.Common  (ConstantProjection(..), Lit, createBitEngine)
 import qualified Text.LLVM               as L
 
 i32 :: L.Type
@@ -32,20 +32,20 @@ i32 = L.iT 32
 primOpTests :: [(Args, Property)]
 primOpTests =
   [
---     test 10 False "concrete int32 add" $
---       chkBinCInt32Fn 1 "primOps.bc"  (L.Symbol "int32_add") (+)
---   ,
---     test 10 False "concrete int32 sqr" $
---       chkUnaryCInt32Fn 1 "primOps.bc" (L.Symbol "int32_square") sqr
---   ,
---     test 10 False "concrete int32 muladd" $
---       chkBinCInt32Fn 1 "primOps.bc" (L.Symbol "int32_muladd") (\x y -> sqr (x + y))
---   ,
---     test1 "test-arith"  $ chkMain 1 "test-arith.bc" 0
---   ,
+    test 10 False "concrete int32 add" $
+      chkBinCInt32Fn 1 "primOps.bc"  (L.Symbol "int32_add") (+)
+  ,
+    test 10 False "concrete int32 sqr" $
+      chkUnaryCInt32Fn 1 "primOps.bc" (L.Symbol "int32_square") sqr
+  ,
+    test 10 False "concrete int32 muladd" $
+      chkBinCInt32Fn 1 "primOps.bc" (L.Symbol "int32_muladd") (\x y -> sqr (x + y))
+  ,
+    test1 "test-arith"  $ chkMain 1 "test-arith.bc" 0
+  ,
     test1 "test-call"   $ chkMain 1 "test-call.bc" 0
---   ,
---     test1 "test-branch" $ chkMain 1 "test-branch.bc" 0
+  ,
+    test1 "test-branch" $ chkMain 1 "test-branch.bc" 0
   ]
   where
     sqr x   = x * x
@@ -68,18 +68,26 @@ chkNullaryCInt32Fn v bcFile sym chkVal = do
 chkMain :: Int -> FilePath -> Int32 -> PropertyM IO ()
 chkMain v bcFile = chkNullaryCInt32Fn v bcFile (L.Symbol "main")
 
-runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe SymbolicTerm)
+runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe (BitTermClosed Lit))
 runCInt32Fn v bcFile sym cargs = do
   cb <- loadCodebase $ supportDir </> bcFile
-  runSimulator cb sbeSymbolic (SM . lift . liftSBESymbolic) $ withVerbosity v $ do
+  be <- createBitEngine
+
+  let lc      = LLVMContext 4 (error "LLVM Context has no ident -> type alias map defined")
+      backend = sbeBitBlast lc be
+
+  runSimulator cb backend (SM . lift . liftSBEBitBlast) $ withVerbosity v $ do
     args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
     callDefine sym i32 $ map (\x -> i32 =: x) args
-    getProgramReturnValue
+    rv <- getProgramReturnValue
+    return $ BitTermClosed . (,) be <$> rv
 
-chkRslt :: L.Symbol -> Integer -> Maybe SymbolicTerm -> PropertyM IO ()
-chkRslt _ chk (Just (getSVal -> Just v)) = assert $ v == chk
-chkRslt sym _ _                          = assertMsg False
-                                           $ show (L.ppSymbol sym) ++ ": unexpected return value"
+chkRslt :: ConstantProjection t => L.Symbol -> Integer -> Maybe t -> PropertyM IO ()
+chkRslt _ chk (Just (getSVal -> Just v)) = do
+  -- run $ putStrLn $ "chkRslt: constant v = " ++ show v
+  assert $ v == chk
+chkRslt sym _ _ =
+  assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
 
 --------------------------------------------------------------------------------
 -- Scratch
