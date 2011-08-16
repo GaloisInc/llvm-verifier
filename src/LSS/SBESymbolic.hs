@@ -54,7 +54,6 @@ sbeSymbolic = SBE
                           _ -> error $
                                "unsupported arithmetic op: " ++
                                show op
-  , applyBAnd = S.applyBAnd
   , getBool = return . S.getBool
   , memLoad = \_mem _ptr -> return undefined
   , memStore = \_mem _val _ptr -> return undefined

@@ -34,6 +34,7 @@ import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Text.PrettyPrint.Pretty
 import           Verinf.Symbolic.Common    (ConstantProjection, PrettyTerm(..))
+import qualified Verinf.Symbolic.Common    as S
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
@@ -71,11 +72,11 @@ callDefine ::
   , MonadIO m
   , Functor m
   , PrettyTerm (SBETerm sbe)
-  , ConstantProjection (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
   )
   => L.Symbol              -- ^ Callee symbol
   -> L.Type                -- ^ Callee return type
-  -> [Typed (SBETerm sbe)] -- ^ Callee arguments
+  -> [Typed (SBETerm sbe)] -- ^ Callee argumenxblitts
   -> Simulator sbe m ()
 callDefine calleeSym t args = do
   callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) args
@@ -126,7 +127,7 @@ run ::
   , Functor m
   , MonadIO m
   , PrettyTerm (SBETerm sbe)
-  , ConstantProjection (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
   )
   => Simulator sbe m ()
 run = do
@@ -313,7 +314,7 @@ step ::
   , Functor m
   , Monad m
   , PrettyTerm (SBETerm sbe)
-  , ConstantProjection (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
   )
   => SymStmt -> Simulator sbe m ()
 
@@ -381,6 +382,7 @@ step (IfThenElse cond thenStmts elseStmts) = do
     evalCond (HasConstValue v i) = do
       Typed t v' <- getTypedTerm (Typed i1 v)
       CE.assert (t == i1) $ return ()
+
       mb <- fmap (fromIntegral . fromEnum) <$> withSBE (`getBool` v')
       case mb of
         Nothing -> error "non-bool or symbolic bool SymCond HasConstValue terms nyi"
@@ -427,7 +429,7 @@ eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
 eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
 eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 
-(&&&) :: (ConstantProjection (SBETerm sbe), Functor m, Monad m)
+(&&&) :: (ConstantProjection (SBEClosedTerm sbe), Functor m, Monad m)
   => Simulator sbe m (SBETerm sbe)
   -> Simulator sbe m (SBETerm sbe)
   -> Simulator sbe m (SBETerm sbe)
@@ -443,7 +445,7 @@ mx &&& my = do
        case yb of
          Just True  -> return x
          Just False -> return y
-         _          -> withSBE $ \sbe -> applyBAnd sbe x y
+         _          -> withSBE $ \sbe -> applyBitwise sbe L.And x y
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
@@ -453,7 +455,7 @@ runStmts ::
   , Functor m
   , MonadIO m
   , PrettyTerm (SBETerm sbe)
-  , ConstantProjection (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
   )
   => [SymStmt] -> Simulator sbe m ()
 runStmts = mapM_ dbugStep
@@ -523,7 +525,7 @@ dbugStep ::
   , MonadIO m
   , PrettyTerm (SBETerm sbe)
   , Functor m
-  , ConstantProjection (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
   )
   => SymStmt -> Simulator sbe m ()
 dbugStep stmt = do

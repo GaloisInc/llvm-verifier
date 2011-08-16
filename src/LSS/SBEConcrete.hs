@@ -57,12 +57,6 @@ sbeConcrete = SBE
                               _ -> error $
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
-  , applyBAnd = \x y -> case (x, y) of
-                          (0,_) -> SBEConcrete 0
-                          (_,0) -> SBEConcrete 0
-                          (1,1) -> SBEConcrete 1
-                          _     -> error "SBEConcrete: applyBAnd applied to non-bool-valued terms"
-
   , getBool = \term -> if term == 0
                        then SBEConcrete $ Just False
                        else if term == 1

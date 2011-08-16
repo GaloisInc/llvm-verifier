@@ -6,33 +6,37 @@ Point-of-contact : atomb, jhendrix
 -}
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilies               #-}
+
 module LSS.SBEBitBlast
-  ( LLVMContext(..)
+  ( module LSS.SBEInterface
+  , BitTerm
+  , BitTermClosed(..)
+  , LLVMContext(..)
   , sbeBitBlast
   , sbeBitBlastMem
   , liftSBEBitBlast
   ) where
 
-import Control.Applicative ((<$>))
-import Control.Exception (assert)
-import Control.Monad
-import Control.Monad.IO.Class
-import Data.Bits
-import Data.Map (Map)
-import qualified Data.Map as Map
-import qualified Data.Vector.Storable as LV
-import qualified Data.Vector as V
-
-import qualified Text.LLVM.AST as LLVM
-import Verinf.Symbolic.Lit
-import Verinf.Symbolic.Common (createBitEngine)
-import Verinf.Symbolic (PrettyTerm(..))
-import LSS.SBEInterface
-import Text.PrettyPrint.HughesPJ
-
-
-import Debug.Trace
+import           Control.Applicative       ((<$>))
+import           Control.Exception         (assert)
+import           Control.Monad
+import           Control.Monad.IO.Class
+import           Data.Bits
+import           Data.Int
+import           Data.Map                  (Map)
+import           Debug.Trace
+import           LSS.SBEInterface
+import           Text.PrettyPrint.HughesPJ
+import           Verinf.Symbolic           (PrettyTerm(..))
+import           Verinf.Symbolic.Common    (ConstantProjection(..), createBitEngine)
+import           Verinf.Symbolic.Lit
+import qualified Data.Map                  as Map
+import qualified Data.Vector               as V
+import qualified Data.Vector.Storable      as LV
+import qualified Text.LLVM.AST             as LLVM
+import qualified Verinf.Symbolic.Common    as S
+import qualified LSS.SBEInterface          as SBE
 
 c2 :: (r -> s) -> (a -> b -> r) -> a -> b -> s
 g `c2` f = \x y -> g (f x y)
@@ -47,8 +51,32 @@ g `c4` f = \w x y z -> g (f w x y z)
 -- Symbolic backend
 
 newtype BitTerm l = BitTerm { btVector :: LV.Vector l }
+newtype BitTermClosed l = BitTermClosed (BitEngine l, BitTerm l)
 
 instance PrettyTerm (BitTerm l) where
+  prettyTermWithD _ _ = text "BitTerm"
+
+instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
+  getSVal (BitTermClosed (be, t)) =
+    case beVectorToMaybeInt be (btVector t) of
+      Nothing     -> Nothing
+      Just (w, v) -> Just $ case w of
+                              32 -> fromIntegral (fromIntegral v :: Int32)
+                              64 -> fromIntegral (fromIntegral v :: Int64)
+                              _  -> error "BitTermClosed/getSVal: unsupported integer width"
+
+  getUVal = error "ConstantProjection (BitTermClosed): getUVal BitTerm nyi"
+
+  getBool (BitTermClosed (be, t)) =
+    case beVectorToMaybeInt be (btVector t) of
+      Nothing     -> Nothing
+      Just (w, v) -> Just $ case w of
+                              1 -> toEnum (fromIntegral v) :: Bool
+                              _ -> error "BitTermClosed/getBool: term bit width not 1"
+
+  termConst = error "ConstantProjection (BitTermClosed): termConst BitTerm nyi"
+
+  isConst = error "ConstantProjection (BitTermClosed): isConst BitTerm nyi"
 
 -- | Returns number of bytes.
 byteSize :: LV.Storable l => LV.Vector l -> Int
@@ -312,12 +340,12 @@ bmLoad :: (Eq l, LV.Storable l)
        -> BitMemory l
        -> LLVM.Typed (BitTerm l)
        -> IO (BitTerm l)
-bmLoad lc be bm ptr 
+bmLoad lc be bm ptr
   | LV.length ptrVal /= llvmAddrWidth lc = bmError "internal: Illegal pointer given to load"
   | otherwise =
       case resolveType lc (LLVM.typedType ptr) of
         LLVM.PtrTo tp -> do
-          bits <- 
+          bits <-
               loadBytes be (bmStorage bm) ptrVal (llvmByteSizeOf lc tp)
           return (BitTerm (loadPtr tp bits))
         _ -> bmError "Illegal type given to load"
@@ -363,7 +391,7 @@ bmStackAlloca lc be bm eltTp typedCnt a =
                 Nothing ->
                   bmError $ "Symbolic number of elements requested with alloca;"
                                ++ " when current implementation only supports concrete"
-                Just v -> v
+                Just (_,v) -> v
         w = llvmAddrWidth lc
         -- Stack pointer adjusted to alignment boundary.
         errorMsg = bmError "Stack limit exceeded in alloca."
@@ -491,7 +519,7 @@ bmCodeLookupDefine :: (Eq l, LV.Storable l)
 bmCodeLookupDefine lc be m (BitTerm a) = do
   case beVectorToMaybeInt be a of
     Nothing -> Indeterminate
-    Just v ->
+    Just (_,v) ->
       case loadDef (bmStorage m) (llvmAddrWidth lc) v of
         Nothing -> Invalid
         Just d -> Result d
@@ -532,8 +560,13 @@ bitArith :: (LV.Storable l, Eq l) =>
          -> BitIO l (BitTerm l)
 bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
   where f = case op of
-              LLVM.Add -> beAddInt
-              LLVM.Mul -> beMulInt
+              LLVM.Add  -> beAddInt
+              LLVM.Mul  -> beMulInt
+              LLVM.Sub  -> beSubInt
+              LLVM.SDiv -> beQuot
+              LLVM.SRem -> beRem
+              LLVM.UDiv -> beQuot -- TODO: FIXME: beQuot does not do proper unsigned division
+              LLVM.URem -> beRem  -- TODO: FIXME: SAB
               _ -> bmError $ "unsupported arithmetic op: " ++ show op
 
 --  SBE Definition {{{1
@@ -541,8 +574,9 @@ bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
 newtype BitIO l a = BitIO { liftSBEBitBlast :: IO a }
   deriving (Monad, MonadIO)
 
-type instance SBETerm (BitIO l) = BitTerm l
-type instance SBEMemory (BitIO l) = BitMemory l
+type instance SBETerm (BitIO l)       = BitTerm l
+type instance SBEClosedTerm (BitIO l) = BitTermClosed l
+type instance SBEMemory (BitIO l)     = BitMemory l
 
 sbeBitBlast :: (Eq l, LV.Storable l) => LLVMContext -> BitEngine l -> SBE (BitIO l)
 sbeBitBlast lc be = SBE
@@ -552,6 +586,7 @@ sbeBitBlast lc be = SBE
   , applyICmp = bitICmp be
   , applyBitwise = bitBitwise be
   , applyArith = bitArith be
+  , SBE.getBool = \t -> return $ S.getBool $ BitTermClosed (be, t)
   , memLoad = BitIO `c2` bmLoad lc be
   , memStore = BitIO `c3` bmStore lc be
   , memMerge = BitIO `c3` bmMerge be
