@@ -15,7 +15,7 @@ main = do
   be <- createBitEngine
 
   let i32 = iT 32
-      mainSBE = sbeBitBlast be
+      mainSBE = sbeBitBlast undefined be
       liftSBE = SM . lift . liftSBEBitBlast
 
   runSimulator cb mainSBE liftSBE $ do
