@@ -15,6 +15,7 @@ module LSS.SBEBitBlast
   ) where
 
 import Control.Applicative ((<$>))
+import Control.Exception (assert)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bits
@@ -99,7 +100,8 @@ loadByte :: (Eq l, LV.Storable l)
          => BitEngine l -> Storage l -> LV.Vector l -> IO (LV.Vector l)
 loadByte be mem vi = impl mem (LV.length vi - 1)
   where impl (SBranch f t) i =
-           beIteVector be (vi LV.! i) (impl t (i+1)) (impl f (i+1))
+          assert (0 <= i && i < LV.length vi) $
+            beIteVector be (vi LV.! i) (impl t (i-1)) (impl f (i-1))
         impl (SValue v) _ = return v
         impl (SDefine d) _ =
           bmError $ "Attempt to read address that may point to definition of " ++ show d ++ "."
@@ -310,12 +312,15 @@ bmLoad :: (Eq l, LV.Storable l)
        -> BitMemory l
        -> LLVM.Typed (BitTerm l)
        -> IO (BitTerm l)
-bmLoad lc be bm ptr =
-    case resolveType lc (LLVM.typedType ptr) of
-      LLVM.PtrTo tp -> do
-        bits <- loadBytes be (bmStorage bm) ptrVal (llvmByteSizeOf lc tp)
-        return (BitTerm (loadPtr tp bits))
-      _ -> bmError "Illegal type given to load"
+bmLoad lc be bm ptr 
+  | LV.length ptrVal /= llvmAddrWidth lc = bmError "internal: Illegal pointer given to load"
+  | otherwise =
+      case resolveType lc (LLVM.typedType ptr) of
+        LLVM.PtrTo tp -> do
+          bits <- 
+              loadBytes be (bmStorage bm) ptrVal (llvmByteSizeOf lc tp)
+          return (BitTerm (loadPtr tp bits))
+        _ -> bmError "Illegal type given to load"
   where BitTerm ptrVal = LLVM.typedValue ptr
         loadPtr (LLVM.PrimType (LLVM.Integer w)) bits = LV.take (fromIntegral w) bits
         loadPtr _ bits = bits
@@ -608,9 +613,14 @@ testSBEBitBlast = do
   let m0 = sbeBitBlastMem (0x10,0x0) (0x0,0x0)  (0x0,0x0)
   liftSBEBitBlast $ do
     let i32 = LLVM.PrimType (LLVM.Integer 32)
+    let ptr = LLVM.PtrTo
     l1 <- termInt sbe 32 1
     (sp,m1) <- stackAlloca sbe m0 i32 (LLVM.Typed i32 l1) 1
     liftIO $ putStrLn (render (ppStorage (bmStorage m1)))
     liftIO $ putStrLn $ show $ beVectorToMaybeInt be (btVector sp)
-    m2 <- memStore sbe m1 (LLVM.Typed i32 l1) sp
+    lv <- termInt sbe 32 0x12345678
+    m2 <- memStore sbe m1 (LLVM.Typed i32 lv) sp
+    BitTerm actualValue <- memLoad sbe m2 (LLVM.Typed (ptr i32) sp)
+    liftIO $ putStrLn $ show $ 0x12345678
+    liftIO $ putStrLn $ show $ beVectorToMaybeInt be actualValue
     return ()
