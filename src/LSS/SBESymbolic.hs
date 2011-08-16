@@ -14,7 +14,7 @@ import qualified Verinf.Symbolic as S
 import LSS.SBEInterface
 
 --------------------------------------------------------------------------------
--- Symbolic backend
+-- Word-level symbolic backend
 
 type instance SBETerm S.SymbolicMonad = S.SymbolicTerm
 type instance SBEMemory S.SymbolicMonad = S.SymbolicTerm
@@ -23,7 +23,7 @@ type instance SBEMemory S.SymbolicMonad = S.SymbolicTerm
 sbeSymbolic :: SBE S.SymbolicMonad
 sbeSymbolic = SBE
   { termInt  = \w v -> return . S.mkCInt (S.Wx w) . fromIntegral $ v
-  , termBool = return . S.mkCInt (S.Wx 1) . fromIntegral . fromEnum
+  , termBool = return . S.mkCBool
   , applyIte = S.applyIte
   , applyICmp = \op -> case op of
                          LLVM.Ieq -> S.applyEq
@@ -53,6 +53,7 @@ sbeSymbolic = SBE
   , stackAlloca = \_mem _eltTp _n _a -> return undefined
   , stackPushFrame = \_mem -> return undefined
   , stackPopFrame = \_mem -> return undefined
+  , writeAiger = \_f _t -> return undefined
   }
 
 liftSBESymbolic :: S.SymbolicMonad a -> IO a

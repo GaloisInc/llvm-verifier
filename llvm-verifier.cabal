@@ -33,13 +33,15 @@ library
 
   build-depends:
       base >= 4
+    , bytestring
     , containers
-    , llvm-pretty
+    , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
     , transformers
     , vector
     , Verinf
+
 
   hs-source-dirs: src
 
@@ -54,20 +56,24 @@ library
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
-executable llss
+executable lss
   hs-source-dirs: src
 
   main-is:
     Driver.hs
+
+  GHC-options: -O2 -Wall -fno-ignore-asserts
 
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
   build-depends:
       base >= 4
+    , bytestring
     , containers
-    , llvm-pretty
+    , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
+    , transformers
     , vector
     , Verinf

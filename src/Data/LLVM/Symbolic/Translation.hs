@@ -18,7 +18,7 @@
 --   executed.  Since phi statements must appear at the top of the block, we can
 --   move phi statements to execute during the transition from the previous
 --   block to the new block.
-module Data.LLVM.Symbolic.Translation 
+module Data.LLVM.Symbolic.Translation
   ( liftDefine
   , testTranslate
   ) where
@@ -29,7 +29,7 @@ import qualified Data.LLVM.CFG as CFG
 import qualified Data.List as L
 import qualified Data.Map as Map
 import qualified Text.LLVM.AST as LLVM
-import Text.LLVM.AST (Stmt(..))
+import Text.LLVM.AST (Stmt'(..), Stmt, Typed (..))
 import Text.PrettyPrint.HughesPJ
 
 import Data.LLVM.Symbolic.AST
@@ -54,7 +54,7 @@ mkLTI = LTI
 -- later are earlier in the list (e.g., the last entry is the immediate
 -- post-dominator).
 ltiPostDominators :: LLVMTranslationInfo -> LLVM.Ident -> [LLVM.Ident]
-ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) = 
+ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) =
   case lookup aid (CFG.pdoms cfg) of
     Nothing   -> []
     Just apds -> map (CFG.asName cfg) apds
@@ -235,15 +235,15 @@ liftDefine d =
       blocks         = CFG.allBBs cfg
       initBlock      = CFG.bbById cfg (CFG.entryId cfg)
       initBlockLabel = CFG.blockName initBlock
-      initSymBlock = 
+      initSymBlock =
         mkSymBlock initSymBlockID
-                   ([ PushPostDominatorFrame (symBlockID dom 0) 
+                   ([ PushPostDominatorFrame (symBlockID dom 0)
                         | dom <- ltiPostDominators lti initBlockLabel]
                     ++ [SetCurrentBlock (symBlockID initBlockLabel 0)])
       phiMap = blockPhiMap blocks
       symBlocks = initSymBlock : execState (mapM_ (liftBB lti phiMap) blocks) []
    in SymDefine {
-          sdName = LLVM.defName d 
+          sdName = LLVM.defName d
         , sdArgs = LLVM.defArgs d
         , sdRetType = LLVM.defRetType d
         , sdBody = Map.fromList [ (sbId b,b) | b <- symBlocks ]

@@ -86,4 +86,7 @@ data SBE m = SBE
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
+    -- | @writeAiger f t@ writes an AIG representation of @t@ into
+    -- file @f@ in the Aiger format.
+  , writeAiger :: String -> SBETerm m -> m ()
   }
