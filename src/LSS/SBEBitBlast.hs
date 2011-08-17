@@ -61,6 +61,17 @@ sliceIntoBytes v =
    V.map (\i -> LV.slice (i `shiftL` 3) 8 v) (V.enumFromN 0 (byteSize v))
 
 -- | Tree-based data structure for representing value of bytes in memory.
+-- The height of the storage tree is equal to the address width of
+-- pointers in memory.  Leaves in the tree correspond to either:
+-- * Single bytes
+-- * The address of a LLVM definition.
+-- * The address of a LLVM basic block
+-- * An uninitalized, but allocated byte.
+-- * An unallocated block of @2^n@ bytes.
+-- Interior nodes are branches @SBranch f t@ that correspond to the value
+-- of bits beneath that tree.  The top-most branch corresponds to the
+-- branch for the most-significant bits, while lower branches correspond
+-- to the less significant bites.
 data Storage l
   = SBranch (Storage l) (Storage l) -- ^ Branch falseBranch trueBranch
   | SValue (LV.Vector l) -- ^ SValue validBit definedBit value
@@ -191,7 +202,7 @@ setBytes :: Int -> Addr -> Addr -> (Addr -> Storage l) -> Storage l -> Storage l
 setBytes w low high fn mem 
    | low == high = mem
    | otherwise = trace ("setBytes " ++ show low ++ " " ++ show high) $ impl mem (w-1) 0
-  where impl _ (-1) v = fn v
+  where impl _ (-1) v = assert (low <= v && v < high) $ fn v
         impl (SBranch f t) i v =
            SBranch (if low < mid  then impl f (i-1) v   else f)
                    (if mid < high then impl t (i-1) mid else t)
@@ -252,15 +263,18 @@ allocBlock fl n = impl n
 bmStackGrowsUp :: BitMemory l -> Bool
 bmStackGrowsUp bm = bmStackAddr bm <= bmStackEnd bm
 
+-- | Provides static information about the LLVM symbolic simulator to the
+-- memory model.
 data LLVMContext = LLVMContext {
+    -- | Width of addresses in bits.
     llvmAddrWidth :: Int
+    -- | Return type associated with a given identifier.
   , llvmLookupAlias :: LLVM.Ident -> LLVM.Type
   }
 
 resolveType :: LLVMContext -> LLVM.Type -> LLVM.Type
 resolveType lc (LLVM.Alias nm) = resolveType lc (llvmLookupAlias lc nm)
 resolveType _ tp = tp
-
 
 -- | Returns size of type in memory.
 llvmPrimSizeOf :: LLVM.PrimType -> Integer
@@ -441,12 +455,12 @@ bmMerge be (BitTerm cv) m m'
   | otherwise = bmError "internal: Malformed condition given to bmMerge."
 
 bmMemAddDefine :: (Eq l, LV.Storable l)
-                => LLVMContext
-                -> BitEngine l -- ^ Bit engine for literals.
-                -> BitMemory l -- ^ Memory 
-                -> LLVM.Symbol -- ^ Definition
-                -> [LLVM.Ident] -- ^ Identifiers for blocks
-                -> (BitTerm l, BitMemory l)
+               => LLVMContext
+               -> BitEngine l -- ^ Bit engine for literals.
+               -> BitMemory l -- ^ Memory 
+               -> LLVM.Symbol -- ^ Definition
+               -> [LLVM.Ident] -- ^ Identifiers for blocks
+               -> (BitTerm l, BitMemory l)
 bmMemAddDefine lc be m def idl
     | newCodeAddr > bmCodeEnd m 
     = bmError "Not enough space in code memory to allocate new definition."
@@ -607,10 +621,10 @@ sbeBitBlastMem stack code heap
         }
 
 testSBEBitBlast = do
-  let lc = LLVMContext 4 undefined
+  let lc = LLVMContext 5 undefined
   be <- ABC.createBitEngine
   let sbe = sbeBitBlast lc be
-  let m0 = sbeBitBlastMem (0x10,0x0) (0x0,0x0)  (0x0,0x0)
+  let m0 = sbeBitBlastMem (0x10,0x0) (0x10,0x20)  (0x0,0x0)
   liftSBEBitBlast $ do
     let i32 = LLVM.PrimType (LLVM.Integer 32)
     let ptr = LLVM.PtrTo
@@ -620,7 +634,8 @@ testSBEBitBlast = do
     liftIO $ putStrLn $ show $ beVectorToMaybeInt be (btVector sp)
     lv <- termInt sbe 32 0x12345678
     m2 <- memStore sbe m1 (LLVM.Typed i32 lv) sp
-    BitTerm actualValue <- memLoad sbe m2 (LLVM.Typed (ptr i32) sp)
-    liftIO $ putStrLn $ show $ 0x12345678
-    liftIO $ putStrLn $ show $ beVectorToMaybeInt be actualValue
+    (_,m3) <- memAddDefine sbe m2 (LLVM.Symbol "d") [LLVM.Ident "b0"] 
+    BitTerm actualValue <- memLoad sbe m3 (LLVM.Typed (ptr i32) sp)
+    unless (beVectorToMaybeInt be actualValue == Just 0x12345678) $ do
+      fail "Incorrect value read from memory!"
     return ()
