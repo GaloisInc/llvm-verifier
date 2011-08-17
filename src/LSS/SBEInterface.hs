@@ -11,6 +11,7 @@ Point-of-contact : jstanley
 
 module LSS.SBEInterface where
 
+import           Text.PrettyPrint.HughesPJ
 import qualified Verinf.Symbolic as S
 import qualified Text.LLVM.AST   as LLVM
 
@@ -36,12 +37,20 @@ data PartialResult r
   | Invalid -- ^ The operation failed.
 
 data SBE m = SBE
-  { -- | @termInt w n@ creates a term representing the constant @w@-bit
+  {
+    ----------------------------------------------------------------------------
+    -- Term creation, operators
+
+    -- | @termInt w n@ creates a term representing the constant @w@-bit
     -- value @n@
     termInt  :: Int -> Integer -> m (SBETerm m)
     -- | @termBool b@ creates a term representing the constant boolean
     -- (1-bit) value @b@
   , termBool :: Bool   -> m (SBETerm m)
+
+    ----------------------------------------------------------------------------
+    -- Term operator application
+
     -- | @applyIte a b c@ creates an if-then-else term
   , applyIte    :: SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyICmp op a b@ performs LLVM integer comparison @op@
@@ -50,8 +59,16 @@ data SBE m = SBE
   , applyBitwise :: LLVM.BitOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
   , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
-    -- | @getBool@ returns the value of a concrete boolean term
-  , getBool :: S.ConstantProjection (SBEClosedTerm m) => SBETerm m -> m (Maybe Bool)
+
+    ----------------------------------------------------------------------------
+    -- Term miscellany
+
+  , closeTerm   :: SBETerm m -> SBEClosedTerm m
+  , prettyTermD :: SBETerm m -> Doc
+
+    ----------------------------------------------------------------------------
+    -- Memory model interface
+
     -- | @memLoad h ptr@ returns the value in the given location in memory.
   , memLoad :: SBEMemory m
             -> LLVM.Typed (SBETerm m)
@@ -97,6 +114,10 @@ data SBE m = SBE
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
+
+    ----------------------------------------------------------------------------
+    -- Output functions
+
     -- | @writeAiger f t@ writes an AIG representation of @t@ into
     -- file @f@ in the Aiger format.
   , writeAiger :: String -> SBETerm m -> m ()

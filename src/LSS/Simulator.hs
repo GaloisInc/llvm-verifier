@@ -32,8 +32,7 @@ import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
-import           Text.PrettyPrint.Pretty
-import           Verinf.Symbolic.Common    (ConstantProjection, PrettyTerm(..))
+import           Verinf.Symbolic.Common    (ConstantProjection(..))
 import qualified Verinf.Symbolic.Common    as S
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
@@ -44,6 +43,9 @@ liftSBE sa = gets liftSymBE >>= \f -> f sa
 
 withSBE :: (Functor m, Monad m) => (SBE sbe -> sbe a) -> Simulator sbe m a
 withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
+
+pureWithSBE :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
+pureWithSBE f = gets symBE >>= \sbe -> return (f sbe)
 
 runSimulator :: (Functor m, MonadIO m)
   => Codebase              -- ^ Post-transform LLVM code
@@ -71,7 +73,6 @@ callDefine ::
   ( LogMonad m
   , MonadIO m
   , Functor m
-  , PrettyTerm (SBETerm sbe)
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => L.Symbol              -- ^ Callee symbol
@@ -82,7 +83,7 @@ callDefine calleeSym t args = do
   callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) args
   run
 
-callDefine' ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
+callDefine' ::(MonadIO m, Functor m)
   => SymBlockID            -- ^ Normal call return block id
   -> L.Symbol              -- ^ Callee symbol
   -> Maybe (Typed Reg)     -- ^ Callee return type and result register
@@ -126,7 +127,6 @@ run ::
   ( LogMonad m
   , Functor m
   , MonadIO m
-  , PrettyTerm (SBETerm sbe)
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => Simulator sbe m ()
@@ -184,7 +184,7 @@ getCurrentBlockM = do
     Nothing -> error "getCurrentBlock: no current path"
     Just p  -> maybe (error "getCurrentBlock: no current block") return (pathCB p)
 
-mergeReturn :: (LogMonad m, Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
+mergeReturn :: (LogMonad m, Functor m, MonadIO m)
   => Maybe (Typed SymValue)
   -> Simulator sbe m ()
 mergeReturn Nothing   = return ()
@@ -208,7 +208,7 @@ mergeReturn (Just tv) = do
   dumpCtrlStk' 5
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
-mergeMFs :: (MonadIO m, PrettyTerm (SBETerm sbe))
+mergeMFs :: (MonadIO m)
   => MergeFrame (SBETerm sbe)
   -> MergeFrame (SBETerm sbe)
   -> Simulator sbe m (MergeFrame (SBETerm sbe))
@@ -264,7 +264,7 @@ mergePaths p1 Nothing     = Just p1
 -- frame; then, if no pending paths remain, it merges the top merge frame with
 -- the merge frame beneath it on the control stack.
 clearCurrentExecution ::
-  (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
+  (Functor m, MonadIO m)
   => Simulator sbe m ()
 clearCurrentExecution = do
   top <- popMergeFrame
@@ -313,7 +313,6 @@ step ::
   , MonadIO m
   , Functor m
   , Monad m
-  , PrettyTerm (SBETerm sbe)
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => SymStmt -> Simulator sbe m ()
@@ -349,7 +348,8 @@ step (MergePostDominator pdid cond) = do
     TrueSymCond -> return (pathConstraints p) &&& boolTerm True
     HasConstValue{} -> error "path constraint addition: HasConstValue nyi"
 
-  dbugM' 5 $ "New path constraint is: " ++ prettyTerm newPC
+  pretty <- pureWithSBE $ \sbe -> prettyTermD sbe newPC
+  dbugM' 5 $ "New path constraint is: " ++ render pretty
 
   -- Merge the current path into the merged state for the current merge frame
   modifyMF $ modifyMergedState $ mergePaths p{ pathConstraints = newPC }
@@ -383,7 +383,8 @@ step (IfThenElse cond thenStmts elseStmts) = do
       Typed t v' <- getTypedTerm (Typed i1 v)
       CE.assert (t == i1) $ return ()
 
-      mb <- fmap (fromIntegral . fromEnum) <$> withSBE (`getBool` v')
+      mb <- fmap (fromIntegral . fromEnum)
+            <$> pureWithSBE (\sbe -> getBool $ closeTerm sbe v')
       case mb of
         Nothing -> error "non-bool or symbolic bool SymCond HasConstValue terms nyi"
         Just b  -> return (i == b)
@@ -398,7 +399,7 @@ step Unwind
 -- Symbolic expression evaluation
 
 -- | @eval expr@ evaluates @expr@ via the symbolic backend
-eval :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
+eval :: (Functor m, MonadIO m)
   => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
 
 eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
@@ -435,13 +436,13 @@ eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
   -> Simulator sbe m (SBETerm sbe)
 mx &&& my = do
    x <- mx
-   xb <- withSBE $ \sbe -> getBool sbe x
+   xb <- pureWithSBE $ \sbe -> getBool (closeTerm sbe x)
    case xb of
      Just True  -> my
      Just False -> return x
      _          -> do
        y  <- my
-       yb <- withSBE $ \sbe -> getBool sbe y
+       yb <- pureWithSBE $ \sbe -> getBool (closeTerm sbe y)
        case yb of
          Just True  -> return x
          Just False -> return y
@@ -454,7 +455,6 @@ runStmts ::
   ( LogMonad m
   , Functor m
   , MonadIO m
-  , PrettyTerm (SBETerm sbe)
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => [SymStmt] -> Simulator sbe m ()
@@ -523,7 +523,6 @@ modifyCallFrameM = modifyPath . modifyCallFrame
 dbugStep ::
   ( LogMonad m
   , MonadIO m
-  , PrettyTerm (SBETerm sbe)
   , Functor m
   , ConstantProjection (SBEClosedTerm sbe)
   )

@@ -12,7 +12,6 @@ module LSS.SBEConcrete where
 
 import           Data.Bits
 import           LSS.SBEInterface
-import           Verinf.Symbolic.Common    (PrettyTerm(..))
 import qualified Text.LLVM.AST             as LLVM
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Verinf.Symbolic           as S
@@ -20,12 +19,14 @@ import qualified Verinf.Symbolic           as S
 --------------------------------------------------------------------------------
 -- Purely concrete backend
 
-instance PrettyTerm Integer where
+instance S.PrettyTerm Integer where
   prettyTermWithD = const PP.integer
 
 newtype SBEConcrete a = SBEConcrete { runConcrete :: a }
-type instance SBETerm SBEConcrete = Integer
-type instance SBEMemory SBEConcrete = () -- TODO
+
+type instance SBETerm SBEConcrete       = Integer
+type instance SBEClosedTerm SBEConcrete = Integer
+type instance SBEMemory SBEConcrete     = () -- TODO
 
 concBool :: Bool -> SBEConcrete Integer
 concBool = SBEConcrete . fromIntegral . fromEnum
@@ -57,24 +58,18 @@ sbeConcrete = SBE
                               _ -> error $
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
-  , getBool = \term -> if term == 0
-                       then SBEConcrete $ Just False
-                       else if term == 1
-                            then SBEConcrete $ Just True
-                            else SBEConcrete $ Nothing
-  , memInitMemory = SBEConcrete undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEConcrete undefined
-  , memLoad = \_mem _ptr -> SBEConcrete undefined
-  , memStore = \_mem _val _ptr -> SBEConcrete undefined
-  , memMerge = \_t _mem _mem' -> SBEConcrete undefined
-  , memAddDefine = \_mem _sym _id -> SBEConcrete (undefined, undefined)
-  , codeBlockAddress = \_mem _s _b -> SBEConcrete undefined
-  , codeLookupDefine = \_mem _t -> SBEConcrete undefined
-  , stackAlloca = \_mem _eltTp _n _a -> SBEConcrete undefined
-  , stackPushFrame = \_mem -> SBEConcrete undefined
-  , stackPopFrame = \_mem -> SBEConcrete undefined
-  , writeAiger = \_f _t ->
-                 error "Aiger creation not supported in concrete backend"
+  , closeTerm        = id
+  , prettyTermD      = S.prettyTermD
+  , memLoad          = \_mem _ptr         -> undefined
+  , memStore         = \_mem _val _ptr    -> undefined
+  , memMerge         = \_t _mem _mem'     -> undefined
+  , memAddDefine     = \_mem _sym _id     -> undefined
+  , codeBlockAddress = \_mem _s _b        -> undefined
+  , codeLookupDefine = \_mem _t           -> undefined
+  , stackAlloca      = \_mem _eltTp _n _a -> undefined
+  , stackPushFrame   = \_mem              -> undefined
+  , stackPopFrame    = \_mem              -> undefined
+  , writeAiger       = \_f _t             -> undefined
   }
 
 liftSBEConcrete :: SBEConcrete a -> IO a

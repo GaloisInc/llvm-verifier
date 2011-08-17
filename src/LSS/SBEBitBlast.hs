@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : atomb, jhendrix
 -}
 
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeFamilies               #-}
 
@@ -28,14 +29,13 @@ import           Data.Map                  (Map)
 import           Debug.Trace
 import           LSS.SBEInterface
 import           Text.PrettyPrint.HughesPJ
-import           Verinf.Symbolic           (PrettyTerm(..))
 import           Verinf.Symbolic.Common    (ConstantProjection(..), createBitEngine)
 import           Verinf.Symbolic.Lit
 import qualified Data.Map                  as Map
 import qualified Data.Vector               as V
 import qualified Data.Vector.Storable      as LV
 import qualified Text.LLVM.AST             as LLVM
-import qualified Verinf.Symbolic.Common    as S
+import qualified Verinf.Symbolic           as S
 import qualified LSS.SBEInterface          as SBE
 
 c2 :: (r -> s) -> (a -> b -> r) -> a -> b -> s
@@ -53,7 +53,7 @@ g `c4` f = \w x y z -> g (f w x y z)
 newtype BitTerm l = BitTerm { btVector :: LV.Vector l }
 newtype BitTermClosed l = BitTermClosed (BitEngine l, BitTerm l)
 
-instance PrettyTerm (BitTerm l) where
+instance S.PrettyTerm (BitTermClosed l) where
   prettyTermWithD _ _ = text "BitTerm"
 
 instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
@@ -578,26 +578,29 @@ type instance SBETerm (BitIO l)       = BitTerm l
 type instance SBEClosedTerm (BitIO l) = BitTermClosed l
 type instance SBEMemory (BitIO l)     = BitMemory l
 
-sbeBitBlast :: (Eq l, LV.Storable l) => LLVMContext -> BitEngine l -> SBE (BitIO l)
-sbeBitBlast lc be = SBE
-  { termInt  = (return . BitTerm) `c2` beVectorFromInt be
-  , termBool = return . BitTerm . LV.singleton . beLitFromBool be
-  , applyIte = bitIte be
-  , applyICmp = bitICmp be
-  , applyBitwise = bitBitwise be
-  , applyArith = bitArith be
-  , SBE.getBool = \t -> return $ S.getBool $ BitTermClosed (be, t)
-  , memLoad = BitIO `c2` bmLoad lc be
-  , memStore = BitIO `c3` bmStore lc be
-  , memMerge = BitIO `c3` bmMerge be
-  , memAddDefine = return `c3` bmMemAddDefine lc be
-  , codeBlockAddress = return `c3` bmCodeBlockAddress lc be
-  , codeLookupDefine = return `c2` bmCodeLookupDefine lc be
-  , stackAlloca = return `c4` bmStackAlloca lc be
-  , stackPushFrame = return . bmStackPush
-  , stackPopFrame = return . bmStackPop lc
-  , writeAiger = \f t -> BitIO $ beWriteAigerV be f (btVector t)
-  }
+sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
+  => LLVMContext -> BitEngine l -> SBE (BitIO l)
+sbeBitBlast lc be = sbe
+  where sbe = SBE
+              { termInt  = (return . BitTerm) `c2` beVectorFromInt be
+              , termBool = return . BitTerm . LV.singleton . beLitFromBool be
+              , applyIte = bitIte be
+              , applyICmp = bitICmp be
+              , applyBitwise = bitBitwise be
+              , applyArith = bitArith be
+              , closeTerm = BitTermClosed . (,) be
+              , prettyTermD = S.prettyTermD . closeTerm sbe
+              , memLoad = BitIO `c2` bmLoad lc be
+              , memStore = BitIO `c3` bmStore lc be
+              , memMerge = BitIO `c3` bmMerge be
+              , memAddDefine = return `c3` bmMemAddDefine lc be
+              , codeBlockAddress = return `c3` bmCodeBlockAddress lc be
+              , codeLookupDefine = return `c2` bmCodeLookupDefine lc be
+              , stackAlloca = return `c4` bmStackAlloca lc be
+              , stackPushFrame = return . bmStackPush
+              , stackPopFrame = return . bmStackPop lc
+              , writeAiger = \f t -> BitIO $ beWriteAigerV be f (btVector t)
+              }
 
 type Range t = (t,t)
 

@@ -22,8 +22,9 @@ import LSS.SBEInterface
 --------------------------------------------------------------------------------
 -- Word-level symbolic backend
 
-type instance SBETerm S.SymbolicMonad = S.SymbolicTerm
-type instance SBEMemory S.SymbolicMonad = S.SymbolicTerm
+type instance SBETerm S.SymbolicMonad       = S.SymbolicTerm
+type instance SBEClosedTerm S.SymbolicMonad = S.SymbolicTerm
+type instance SBEMemory S.SymbolicMonad     = S.SymbolicTerm
 
 -- | Symbolic interface with all operations at the word level.
 sbeSymbolic :: SBE S.SymbolicMonad
@@ -54,7 +55,8 @@ sbeSymbolic = SBE
                           _ -> error $
                                "unsupported arithmetic op: " ++
                                show op
-  , getBool = return . S.getBool
+  , closeTerm = id
+  , prettyTermD = S.prettyTermD
   , memLoad = \_mem _ptr -> return undefined
   , memStore = \_mem _val _ptr -> return undefined
   , memMerge = \_t _mem _mem' -> return undefined

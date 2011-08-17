@@ -42,8 +42,8 @@ primOpTests =
       chkBinCInt32Fn 1 "primOps.bc" (L.Symbol "int32_muladd") (\x y -> sqr (x + y))
   ,
     test1 "test-arith"  $ chkMain 1 "test-arith.bc" 0
-  ,
-    test1 "test-call"   $ chkMain 1 "test-call.bc" 0
+--  ,
+--    test1 "test-call"   $ chkMain 1 "test-call.bc" 0
   ,
     test1 "test-branch" $ chkMain 1 "test-branch.bc" 0
   ]

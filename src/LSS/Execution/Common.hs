@@ -9,25 +9,25 @@ Point-of-contact : jstanley
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
+{-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
 {-# OPTIONS_GHC -fno-warn-orphans       #-}
 
 module LSS.Execution.Common where
 
-import           Control.Monad.State       hiding (State)
+import           Control.Arrow              hiding ((<+>))
+import           Control.Monad.State        hiding (State)
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.SBEInterface
 import           LSS.Execution.Utils
-import           Text.LLVM                 (Typed(..))
+import           Text.LLVM                  (Typed(..))
 import           Text.PrettyPrint.HughesPJ
-import           Text.PrettyPrint.Pretty
-import           Verinf.Symbolic.Common
 import           Verinf.Utils.LogMonad
-import qualified Data.Map                  as M
-import qualified Text.LLVM                 as L
-import qualified Text.PrettyPrint.HughesPJ as PP
+import qualified Data.Map                   as M
+import qualified Text.LLVM                  as L
+import qualified Text.PrettyPrint.HughesPJ  as PP
 
 newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
   deriving ( Functor
@@ -110,46 +110,59 @@ instance MonadIO m => LogMonad (Simulator sbe m) where
 -----------------------------------------------------------------------------------------
 -- Pretty printing
 
-instance (PrettyTerm term, Pretty (Path term)) => Pretty (MergeFrame term) where
-  pp mf = case mf of
-    ExitFrame mp mrv ->
-      text "MF(Exit):"
-      $+$ mpath "no merged state set" mp
-      $+$ nest 2 ( maybe (parens $ text "no return value set")
-                         (\rv -> text "Return value:" <+> text (prettyTerm rv))
-                         mrv
-                 )
-    PostdomFrame p pps bid ->
-      text "MF(Pdom|" <>  ppSymBlockID bid <> text "):"
-      $+$ nest 2 (text "Merged:" <+> pp p) $+$ nest 2 (ppPendingPaths pps)
-    ReturnFrame _mr nl mns mel mes pps ->
-      text "MF(Retn):" $+$ nest 2 rest
-        where
-          rest = text "Normal" <+> text "~>" <+> ppSymBlockID nl <> colon
-                 $+$ mpath "no normal-return merged state set" mns
-                 $+$ maybe PP.empty
-                       ( \el ->
-                           text "Exc" <+> text "~>" <+> ppSymBlockID el <> colon
-                           $+$ mpath "no exception path set" mes
-                       )
-                       mel
-                 $+$ ppPendingPaths pps
-    where
-      mpath str = nest 2 . maybe (parens $ text $ "Merged: " ++ str) pp
-      ppPendingPaths pps =
-        text "Pending paths:"
-        $+$ nest 2 (if null pps then text "(none)" else vcat (map pp pps))
+ppCtrlStk :: SBE sbe -> CtrlStk (SBETerm sbe) -> Doc
+ppCtrlStk sbe (CtrlStk mfs) =
+  hang (text "CS" <+> lbrace) 2 (vcat (map (ppMergeFrame sbe) mfs)) $+$ rbrace
 
-instance (PrettyTerm term, Pretty (Path term)) => Pretty (CtrlStk term) where
-  pp (CtrlStk mfs) =
-    hang (text "CS" <+> lbrace) 2 (vcat (map pp mfs)) $+$ rbrace
+ppMergeFrame :: SBE sbe -> MergeFrame (SBETerm sbe) -> Doc
+ppMergeFrame sbe mf = case mf of
+  ExitFrame mp mrv ->
+    text "MF(Exit):"
+    $+$ mpath "no merged state set" mp
+    $+$ nest 2 ( maybe (parens $ text "no return value set")
+                       (\rv -> text "Return value:" <+> prettyTermD sbe rv)
+                       mrv
+               )
+  PostdomFrame p pps bid ->
+    text "MF(Pdom|" <>  ppSymBlockID bid <> text "):"
+    $+$ nest 2 (text "Merged:" <+> maybe empty (ppPath sbe) p)
+    $+$ nest 2 (ppPendingPaths pps)
+  ReturnFrame _mr nl mns mel mes pps ->
+    text "MF(Retn):" $+$ nest 2 rest
+      where
+        rest = text "Normal" <+> text "~>" <+> ppSymBlockID nl <> colon
+               $+$ mpath "no normal-return merged state set" mns
+               $+$ maybe PP.empty
+                     ( \el ->
+                         text "Exc" <+> text "~>" <+> ppSymBlockID el <> colon
+                         $+$ mpath "no exception path set" mes
+                     )
+                     mel
+               $+$ ppPendingPaths pps
+  where
+    mpath str = nest 2 . maybe (parens $ text $ "Merged: " ++ str) (ppPath sbe)
+    ppPendingPaths pps =
+      text "Pending paths:"
+      $+$ nest 2 (if null pps then text "(none)" else vcat (map (ppPath sbe) pps))
 
---------------------------------------------------------------------------------
--- Pretty printing
+ppCallFrame :: SBE sbe -> CallFrame (SBETerm sbe) -> Doc
+ppCallFrame sbe (CallFrame sym regMap) =
+  text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (ppRegMap sbe regMap)
 
-instance (PrettyTerm term) => Pretty (RegMap term) where
-  pp mp =
-    vcat [ ppIdentAssoc r <> (L.ppTyped (text . prettyTerm) v) | (r,v) <- as ]
+
+ppPath :: SBE sbe -> Path (SBETerm sbe) -> Doc
+ppPath sbe (Path cf mrv _mexc mcb pathConstraint) =
+  text "Path"
+  <>  brackets (maybe (text "none") ppSymBlockID mcb)
+  <>  colon <+> (parens $ text "Constraint:" <+> prettyTermD sbe pathConstraint)
+  $+$ nest 2 ( text "Return value:"
+               <+> maybe (parens . text $ "not set") (prettyTermD sbe) mrv
+             )
+  $+$ nest 2 (ppCallFrame sbe cf)
+
+ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
+ppRegMap sbe mp =
+    vcat [ ppIdentAssoc r <> (L.ppTyped (prettyTermD sbe) v) | (r,v) <- as ]
     where
       ppIdentAssoc r = L.ppIdent r
                        <> text (replicate (maxLen - identLen r) ' ')
@@ -158,27 +171,15 @@ instance (PrettyTerm term) => Pretty (RegMap term) where
       identLen       = length . show . L.ppIdent
       as             = M.toList mp
 
-instance PrettyTerm term => Pretty (CallFrame term) where
-  pp (CallFrame sym regMap) =
-    text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (pp regMap)
-
-instance (PrettyTerm term) => Pretty (Path term) where
-  pp (Path cf mrv _mexc mcb pathConstraint) =
-    text "Path"
-    <>  brackets (maybe (text "none") ppSymBlockID mcb)
-    <>  colon <+> (parens $ text "Constraint:" <+> text (prettyTerm pathConstraint) )
-    $+$ nest 2 ( text "Return value:"
-                 <+> maybe (parens . text $ "not set") (text . prettyTerm) mrv
-               )
-    $+$ nest 2 (pp cf)
-
 -----------------------------------------------------------------------------------------
 -- Debugging
 
-dumpCtrlStk :: (MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
-dumpCtrlStk = banners . show . pp =<< gets ctrlStk
+dumpCtrlStk :: (MonadIO m) => Simulator sbe m ()
+dumpCtrlStk = do
+  (sbe, cs) <- gets (symBE &&& ctrlStk)
+  banners $ show $ ppCtrlStk sbe cs
 
-dumpCtrlStk' :: (MonadIO m, LogMonad m, PrettyTerm (SBETerm sbe)) => Int -> Simulator sbe m ()
+dumpCtrlStk' :: (MonadIO m, LogMonad m) => Int -> Simulator sbe m ()
 dumpCtrlStk' lvl = whenVerbosity (>=lvl) dumpCtrlStk
 
 instance (LogMonad IO) where
