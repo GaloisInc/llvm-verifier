@@ -15,16 +15,18 @@ Point-of-contact : jstanley
 
 module LSS.Execution.Common where
 
-import           Control.Monad.State      hiding (State)
+import           Control.Monad.State       hiding (State)
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.SBEInterface
 import           LSS.Execution.Utils
+import           Text.LLVM                 (Typed(..))
 import           Text.PrettyPrint.HughesPJ
 import           Text.PrettyPrint.Pretty
 import           Verinf.Symbolic.Common
-import qualified Data.Map                 as M
-import qualified Text.LLVM                as L
+import           Verinf.Utils.LogMonad
+import qualified Data.Map                  as M
+import qualified Text.LLVM                 as L
 import qualified Text.PrettyPrint.HughesPJ as PP
 
 newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
@@ -42,6 +44,7 @@ data State sbe m = State
   , symBE     :: SBE sbe               -- ^ Symbolic backend interface
   , liftSymBE :: LiftSBE sbe m         -- ^ Lift SBE operations into the Simulator monad
   , ctrlStk   :: CtrlStk (SBETerm sbe) -- ^ Control stack for tracking merge points
+  , verbosity :: Int
   }
 
 data CtrlStk term = CtrlStk { mergeFrames :: [MergeFrame term] }
@@ -58,7 +61,8 @@ data MergeFrame term
     }
   | PostdomFrame
     { _mergedState :: Maybe (Path term)
-    , _pending :: [Path term]
+    , _pending     :: [Path term]
+    , pdfLabel     :: SymBlockID
     }
   | ReturnFrame
     { rfRetReg        :: Maybe (L.Typed Reg) -- ^ Register to store return value (if any)
@@ -87,7 +91,7 @@ data Path term = Path
                                           -- execution of this path
   }
 
-type RegMap term = M.Map Reg (AtomicValue term)
+type RegMap term = M.Map Reg (Typed term)
 
 -- | A frame (activation record) in the program being simulated
 data CallFrame term = CallFrame
@@ -96,15 +100,15 @@ data CallFrame term = CallFrame
   }
   deriving Show
 
-data AtomicValue intTerm
-  = IValue { _w :: Int, unIValue :: intTerm }
+--------------------------------------------------------------------------------
+-- Misc typeclass instances
+
+instance MonadIO m => LogMonad (Simulator sbe m) where
+  getVerbosity   = gets verbosity
+  setVerbosity v = modify $ \s -> s{ verbosity = v }
 
 -----------------------------------------------------------------------------------------
 -- Pretty printing
-
-instance PrettyTerm intTerm => Show (AtomicValue intTerm) where
-  show (IValue w term) =
-    "IValue {_w = " ++ show w ++ ", unIValue = " ++ prettyTerm term ++ "}"
 
 instance (PrettyTerm term, Pretty (Path term)) => Pretty (MergeFrame term) where
   pp mf = case mf of
@@ -115,8 +119,8 @@ instance (PrettyTerm term, Pretty (Path term)) => Pretty (MergeFrame term) where
                          (\rv -> text "Return value:" <+> text (prettyTerm rv))
                          mrv
                  )
-    PostdomFrame p pps ->
-      text "MF(Pdom):"
+    PostdomFrame p pps bid ->
+      text "MF(Pdom|" <>  ppSymBlockID bid <> text "):"
       $+$ nest 2 (text "Merged:" <+> pp p) $+$ nest 2 (ppPendingPaths pps)
     ReturnFrame _mr nl mns mel mes pps ->
       text "MF(Retn):" $+$ nest 2 rest
@@ -143,8 +147,16 @@ instance (PrettyTerm term, Pretty (Path term)) => Pretty (CtrlStk term) where
 --------------------------------------------------------------------------------
 -- Pretty printing
 
-instance PrettyTerm term => Pretty (RegMap term) where
-  pp mp = vcat [ L.ppIdent r <+> (text $ "=> " ++ show v) | (r,v) <- M.toList mp]
+instance (PrettyTerm term) => Pretty (RegMap term) where
+  pp mp =
+    vcat [ ppIdentAssoc r <> (L.ppTyped (text . prettyTerm) v) | (r,v) <- as ]
+    where
+      ppIdentAssoc r = L.ppIdent r
+                       <> text (replicate (maxLen - identLen r) ' ')
+                       <> text " => "
+      maxLen         = foldr max 0 $ map (identLen . fst) as
+      identLen       = length . show . L.ppIdent
+      as             = M.toList mp
 
 instance PrettyTerm term => Pretty (CallFrame term) where
   pp (CallFrame sym regMap) =
@@ -165,3 +177,10 @@ instance (PrettyTerm term) => Pretty (Path term) where
 
 dumpCtrlStk :: (MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
 dumpCtrlStk = banners . show . pp =<< gets ctrlStk
+
+dumpCtrlStk' :: (MonadIO m, LogMonad m, PrettyTerm (SBETerm sbe)) => Int -> Simulator sbe m ()
+dumpCtrlStk' lvl = whenVerbosity (>=lvl) dumpCtrlStk
+
+instance (LogMonad IO) where
+  setVerbosity _ = return ()
+  getVerbosity   = return 1

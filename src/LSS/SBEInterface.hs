@@ -5,15 +5,24 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE TypeFamilies     #-}
 
 module LSS.SBEInterface where
 
-import qualified Text.LLVM.AST as LLVM
+import qualified Verinf.Symbolic as S
+import qualified Text.LLVM.AST   as LLVM
 
 -- | SBETerm yields the type used to represent terms in particular SBE interface
 -- implementation.
 type family SBETerm (sbe :: * -> *)
+
+-- | SBEClosedTerm yields the newtype-wrapped, isomorphic-to-tuple type used to
+-- represent SBE interface terms together with any SBE-specific state necessary
+-- to perform certain operations (e.g. constant projection/injection) on those
+-- terms.
+type family SBEClosedTerm (sbe :: * -> *)
 
 -- | SBEMemory yields the type used to represent the memory in a particular SBE
 -- interface implementation.
@@ -41,6 +50,8 @@ data SBE m = SBE
   , applyBitwise :: LLVM.BitOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
   , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @getBool@ returns the value of a concrete boolean term
+  , getBool :: S.ConstantProjection (SBEClosedTerm m) => SBETerm m -> m (Maybe Bool)
     -- | @memLoad h ptr@ returns the value in the given location in memory.
   , memLoad :: SBEMemory m
             -> LLVM.Typed (SBETerm m)

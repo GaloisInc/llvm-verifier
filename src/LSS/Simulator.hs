@@ -30,16 +30,14 @@ import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
-import           Text.LLVM                 ((=:))
+import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
-import           Verinf.Symbolic.Common    (PrettyTerm(..))
+import           Text.PrettyPrint.Pretty
+import           Verinf.Symbolic.Common    (ConstantProjection, PrettyTerm(..))
+import qualified Verinf.Symbolic.Common    as S
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
-
--- BEGIN TESTING
-import qualified LSS.SBESymbolic as TestSBE
--- END TESTING
 
 liftSBE :: Monad m => sbe a -> Simulator sbe m a
 liftSBE sa = gets liftSymBE >>= \f -> f sa
@@ -60,32 +58,45 @@ runSimulator cb sbe lifter m =
       modifyCS $ pushMF emptyExitFrame
 
 newSimState :: Codebase -> SBE sbe -> LiftSBE sbe m -> State sbe m
-newSimState cb sbe liftSBE' = State cb sbe liftSBE' emptyCtrlStk
+newSimState cb sbe lifter =
+  State
+  { codebase  = cb
+  , symBE     = sbe
+  , liftSymBE = lifter
+  , ctrlStk   = emptyCtrlStk
+  , verbosity = 1
+  }
 
-callDefine ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
-  => L.Symbol                              -- ^ Callee symbol
-  -> L.Type                                -- ^ Callee return type
-  -> [L.Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
+callDefine ::
+  ( LogMonad m
+  , MonadIO m
+  , Functor m
+  , PrettyTerm (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Symbol              -- ^ Callee symbol
+  -> L.Type                -- ^ Callee return type
+  -> [Typed (SBETerm sbe)] -- ^ Callee argumenxblitts
   -> Simulator sbe m ()
 callDefine calleeSym t args = do
   callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) args
   run
 
 callDefine' ::(MonadIO m, Functor m, PrettyTerm (SBETerm sbe))
-  => SymBlockID                            -- ^ Normal call return block id
-  -> L.Symbol                              -- ^ Callee symbol
-  -> Maybe (L.Typed Reg)                   -- ^ Callee return type and result register
-  -> [L.Typed (AtomicValue (SBETerm sbe))] -- ^ Callee arguments
+  => SymBlockID            -- ^ Normal call return block id
+  -> L.Symbol              -- ^ Callee symbol
+  -> Maybe (Typed Reg)     -- ^ Callee return type and result register
+  -> [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m ()
 callDefine' normalRetID calleeSym mreg args = do
   def  <- lookupDefine calleeSym <$> gets codebase
+  whenVerbosity (>=5) $ do
+    dbugM $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
+    banners $ show $ ppSymDefine def
   path <- newPath $ CallFrame calleeSym $ bindArgs (sdArgs def) args
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
-
---   dbugM $ show $ ppSymDefine def
---   dumpCtrlStk
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
@@ -95,14 +106,10 @@ callDefine' normalRetID calleeSym mreg args = do
       | otherwise =
           foldr bindArg M.empty (formals `zip` actuals)
 
-    bindArg (L.Typed ft reg, L.Typed at val) mp
-      | ft == at =
-          case val of
-            v@(IValue w _) -> case ft of
-              L.PrimType (L.Integer w')
-                | fromIntegral w == w' -> M.insert reg v mp
-                | otherwise            -> err $ text "int width mismatch"
-              ty -> err $ text "unsupported type:" <+> L.ppType ty
+    bindArg (Typed ft reg, v@(Typed at _)) mp
+      | ft == at = case at of
+          L.PrimType (L.Integer{}) -> M.insert reg v mp
+          _                        -> err $ text "unsupported arg type:" <+> L.ppType at
       | otherwise = err
           $ text "formal/actual type mismatch:"
             <+> L.ppType ft <+> text "vs." <+> L.ppType at
@@ -115,7 +122,14 @@ getProgramReturnValue = do
     ExitFrame _ mrv -> return mrv
     _               -> error "getProgramReturnValue: program not yet terminated"
 
-run :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe)) => Simulator sbe m ()
+run ::
+  ( LogMonad m
+  , Functor m
+  , MonadIO m
+  , PrettyTerm (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Simulator sbe m ()
 run = do
   mtop <- topMF <$> gets ctrlStk
   case mtop of
@@ -125,8 +139,8 @@ run = do
           -- Set the exit merge frame return value (if any) and clear merged
           -- state.
           modifyCS $ \(popMF -> (_, cs)) -> pushMF (finalizeExit top) cs
-          dbugM $ "run terminating normally: found valid exit frame"
-          dumpCtrlStk
+          dbugM' 2 $ "run terminating normally: found valid exit frame"
+          dumpCtrlStk' 2
       | otherwise -> do
           case topPending top of
             Nothing -> error $ "internal: run: no path to execute"
@@ -135,7 +149,7 @@ run = do
     runPath (pathCB -> Nothing)    = error "runPath: no current block"
     runPath p@(pathCB -> Just pcb) = withCallFrame p $ \frm -> do
       def <- lookupDefine (frmFuncSym frm) <$> gets codebase
-      mapM_ dbugStep (sbStmts $ lookupSymBlock def pcb)
+      runStmts $ sbStmts $ lookupSymBlock def pcb
       run
     runPath _ = error "unreachable"
 
@@ -156,7 +170,7 @@ pushMergeFrame :: Monad m => MergeFrame (SBETerm sbe) -> Simulator sbe m ()
 pushMergeFrame = modifyCS . pushMF
 
 assign :: (Functor m, Monad m)
-  => Reg -> AtomicValue (SBETerm sbe) -> Simulator sbe m ()
+  => Reg -> Typed (SBETerm sbe) -> Simulator sbe m ()
 assign reg v = modifyCallFrameM $ \frm ->
   frm{ frmRegs = M.insert reg v (frmRegs frm) }
 
@@ -170,8 +184,8 @@ getCurrentBlockM = do
     Nothing -> error "getCurrentBlock: no current path"
     Just p  -> maybe (error "getCurrentBlock: no current block") return (pathCB p)
 
-mergeReturn :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
-  => Maybe (L.Typed SymValue)
+mergeReturn :: (LogMonad m, Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
+  => Maybe (Typed SymValue)
   -> Simulator sbe m ()
 mergeReturn Nothing   = return ()
 mergeReturn (Just tv) = do
@@ -183,15 +197,15 @@ mergeReturn (Just tv) = do
 
   -- Set the return value in the current path
   callFrm <- getCallFrame
-  rv      <- fromAV <$> getTermAV' callFrm tv
-  modifyPath $ setReturnValue (Just rv)
+  rv      <- getTypedTerm' callFrm tv
+  modifyPath $ setReturnValue (Just $ typedValue rv)
 
   -- Merge the current path into the merged state for the current merge frame.
   Just p <- getPath
   modifyMF $ modifyMergedState $ mergePaths p
 
-  dbugM $ "After mergeReturn, but before clearCurrentExecution:"
-  dumpCtrlStk
+  dbugM' 5 $ "After mergeReturn, but before clearCurrentExecution:"
+  dumpCtrlStk' 5
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
 mergeMFs :: (MonadIO m, PrettyTerm (SBETerm sbe))
@@ -199,6 +213,7 @@ mergeMFs :: (MonadIO m, PrettyTerm (SBETerm sbe))
   -> MergeFrame (SBETerm sbe)
   -> Simulator sbe m (MergeFrame (SBETerm sbe))
 
+-- Source frame is a return frame
 mergeMFs src@ReturnFrame{} dst = do
   let Just p = getMergedState src -- NB: src /must/ have a merged state.
   case pathRetVal p of
@@ -219,13 +234,22 @@ mergeMFs src@ReturnFrame{} dst = do
               -- Associate the return value in src's merged state with src's
               -- return register name in the caller's call frame.
               return $ (`modifyPending` dst) $ \dstPath ->
-                let rvAsAV                = toAV $ typedAs rreg rv
-                    reg                   = L.typedValue rreg
+                let trv = typedAs rreg rv
+                    reg = typedValue rreg
                 in
-                  modifyCallFrame (setReg reg rvAsAV) dstPath
+                  modifyCallFrame (setReg reg trv) dstPath
       | otherwise -> do
           error "mergeMFs: postdom dst frame nyi"
-mergeMFs _ _ = error "mergeMFs: non-retrun src frame nyi"
+
+-- Source frame is a postdom frame
+mergeMFs src@PostdomFrame{} dst = do
+  let Just p = getMergedState src -- NB: src /must/ have a merged state.
+  if isExitFrame dst
+    then error "mergeMFs: postdom MF => exit MF is not allowed"
+    else
+      return $ (`modifyPending` dst) $ const p
+
+mergeMFs _ _ = error "mergeMFs: unsupported source merge frame type"
 
 -- | @mergePaths p1 p2@ merges path p1 into path p2, which may be empty; when p2
 -- does is empty, this function produces p1 as the merged path. Yields Nothing
@@ -252,44 +276,54 @@ clearCurrentExecution = do
     else do
       -- We still have pending paths, so only remove the current path.
       pushMergeFrame $ snd $ popPending top
-  dbugM $ "After clearCurrentExecution:"
 
-lkupIdent' :: L.Ident -> CallFrame term -> AtomicValue term
+lkupIdent' :: L.Ident -> CallFrame term -> Typed term
 lkupIdent' i = flip (M.!) i . frmRegs
 
--- | getTermAV' in the context of the current call frame
-getTermAV :: (Functor m, Monad m)
-  => L.Typed L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
-getTermAV tv = (`getTermAV'` tv) =<< getCallFrame
+-- | getTypedTerm' in the context of the current call frame
+getTypedTerm :: (Functor m, Monad m)
+  => Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+getTypedTerm tv = (`getTypedTerm'` tv) =<< getCallFrame
 
--- | Obtain the AtomicValue-wrapped SBE term representation for the given LLVM
--- value; performs identifier lookup in the regmap of the given call frame as
--- needed.
-getTermAV' :: (Functor m, Monad m, term ~ SBETerm sbe)
-  => CallFrame term -> L.Typed L.Value -> Simulator sbe m (AtomicValue (SBETerm sbe))
-getTermAV' _ (L.Typed (L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
-  = IValue w <$> withSBE (\sbe -> termInt sbe w x)
-getTermAV' frm (L.Typed _ (L.ValIdent i))
+-- | Obtain the typed SBE term representation for the given LLVM value; performs
+-- identifier lookup in the regmap of the given call frame as needed.
+getTypedTerm' :: (Functor m, Monad m, term ~ SBETerm sbe)
+  => CallFrame term -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+
+getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
+  = Typed t <$> withSBE (\sbe -> termInt sbe w x)
+
+getTypedTerm' _ (Typed (L.PtrTo L.FunTy{}) _)
+  = error "getTypedTerm': TODO: Support for funptr args (requires mem interaction)"
+
+getTypedTerm' frm (Typed _ (L.ValIdent i))
   = return $ lkupIdent' i frm
-getTermAV' _ (L.Typed t v)
-  = error $ "getTermAV': unsupported value: "
+
+getTypedTerm' _ tv@(Typed t v)
+  = error $ "getTypedTerm': unsupported value: "
           ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
+          ++ show (parens $ text $ show tv)
 
 --------------------------------------------------------------------------------
 -- Instruction stepper
 
 -- | Execute a single LLVM-Sym AST instruction
-step :: (MonadIO m, Functor m, Monad m, PrettyTerm (SBETerm sbe))
+step ::
+  ( LogMonad m
+  , MonadIO m
+  , Functor m
+  , Monad m
+  , PrettyTerm (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => SymStmt -> Simulator sbe m ()
 
 step ClearCurrentExecution =
-  error "ClearCurrentExecution nyi"
+  clearCurrentExecution
 
--- PushCallFrame SymValue [Typed SymValue] (Maybe (Typed Reg))
 step (PushCallFrame (L.ValSymbol calleeSym) args mres) = do
   cb <- getCurrentBlockM
-  callDefine' cb calleeSym mres
-    =<< mapM (\tv -> typedAs tv <$> getTermAV tv) args
+  callDefine' cb calleeSym mres =<< mapM getTypedTerm args
 
 step (PushCallFrame _ _ _) =
   error "PushCallFrame with non-Symbol callees nyi"
@@ -297,11 +331,28 @@ step (PushCallFrame _ _ _) =
 step (PushInvokeFrame _fn _args _mres _e) =
   error "PushInvokeFrame nyi"
 
-step (PushPostDominatorFrame _pdid) =
-  error "PushPostDominatorFrame nyi"
+step (PushPostDominatorFrame pdid) = do
+  Just p <- getPath
+  pushMergeFrame $ pushPending p $ emptyPdomFrame pdid
 
-step (MergePostDominator _pdid _cond) =
-  error "MergePostDominator nyi"
+step (MergePostDominator pdid cond) = do
+  mtop <- topMF <$> gets ctrlStk
+  case mtop of
+    Just PostdomFrame{} -> return ()
+    Just _              -> error "merge postdom: expected postdom merge frame"
+    Nothing             -> error "merge postdom: empty control stack"
+
+  Just p <- getPath
+
+  -- Construct the new path constraint for the current path
+  newPC  <- case cond of
+    TrueSymCond -> return (pathConstraints p) &&& boolTerm True
+    HasConstValue{} -> error "path constraint addition: HasConstValue nyi"
+
+  dbugM' 5 $ "New path constraint is: " ++ prettyTerm newPC
+
+  -- Merge the current path into the merged state for the current merge frame
+  modifyMF $ modifyMergedState $ mergePaths p{ pathConstraints = newPC }
 
 step MergeReturnVoidAndClear =
   error "MergeReturnVoidAndClear nyi"
@@ -323,8 +374,19 @@ step (Assign reg expr) = assign reg =<< eval expr
 step (Store _addr _val) =
   error "Store nyi"
 
-step (IfThenElse _c _thenStms _elseStms)
-  = error "IfThenElse nyi"
+step (IfThenElse cond thenStmts elseStmts) = do
+  b <- evalCond cond
+  runStmts $ if b then thenStmts else elseStmts
+  where
+    evalCond TrueSymCond = return True
+    evalCond (HasConstValue v i) = do
+      Typed t v' <- getTypedTerm (Typed i1 v)
+      CE.assert (t == i1) $ return ()
+
+      mb <- fmap (fromIntegral . fromEnum) <$> withSBE (`getBool` v')
+      case mb of
+        Nothing -> error "non-bool or symbolic bool SymCond HasConstValue terms nyi"
+        Just b  -> return (i == b)
 
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
@@ -337,20 +399,29 @@ step Unwind
 
 -- | @eval expr@ evaluates @expr@ via the symbolic backend
 eval :: (Functor m, MonadIO m, PrettyTerm (SBETerm sbe))
-  => SymExpr -> Simulator sbe m (AtomicValue (SBETerm sbe))
+  => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
 
-eval (Arith op (L.Typed t@(L.PrimType L.Integer{}) v1) v2) = do
-  IValue w1 x <- getTermAV (L.Typed t v1)
-  IValue w2 y <- getTermAV (L.Typed t v2)
-  IValue (CE.assert (w1 == w2) w1) <$> withSBE (\sbe -> applyArith sbe op x y)
+eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
+  Typed t1 x <- getTypedTerm (Typed t v1)
+  Typed t2 y <- getTypedTerm (Typed t v2)
+  CE.assert (t == t1 && t == t2) $ return ()
+  Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
 
-eval s@Arith{} = error $ "Unsupported arith expr: " ++ show (ppSymExpr s)
+eval s@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
 
 eval (Bit _op _tv1 _v2       ) = error "eval Bit nyi"
 eval (Conv _op _tv1 _t       ) = error "eval Conv nyi"
 eval (Alloca _t _mtv _malign ) = error "eval Alloca nyi"
 eval (Load _tv               ) = error "eval Load nyi"
-eval (ICmp _op _tv1 _v2      ) = error "eval ICmp nyi"
+
+eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
+  Typed t1 x <- getTypedTerm (Typed t v1)
+  Typed t2 y <- getTypedTerm (Typed t v2)
+  CE.assert (t == t1 && t == t2) $ return ()
+  Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
+
+eval s@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr s)
+
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val _tv                ) = error "eval Val nyi"
 eval (GEP _tv _idxs          ) = error "eval GEP nyi"
@@ -358,13 +429,44 @@ eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
 eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
 eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 
+(&&&) :: (ConstantProjection (SBEClosedTerm sbe), Functor m, Monad m)
+  => Simulator sbe m (SBETerm sbe)
+  -> Simulator sbe m (SBETerm sbe)
+  -> Simulator sbe m (SBETerm sbe)
+mx &&& my = do
+   x <- mx
+   xb <- withSBE $ \sbe -> getBool sbe x
+   case xb of
+     Just True  -> my
+     Just False -> return x
+     _          -> do
+       y  <- my
+       yb <- withSBE $ \sbe -> getBool sbe y
+       case yb of
+         Just True  -> return x
+         Just False -> return y
+         _          -> withSBE $ \sbe -> applyBitwise sbe L.And x y
+
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
-typedAs :: L.Typed a -> b -> L.Typed b
+runStmts ::
+  ( LogMonad m
+  , Functor m
+  , MonadIO m
+  , PrettyTerm (SBETerm sbe)
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => [SymStmt] -> Simulator sbe m ()
+runStmts = mapM_ dbugStep
+
+i1 :: L.Type
+i1 = L.PrimType (L.Integer 1)
+
+typedAs :: Typed a -> b -> Typed b
 typedAs tv x = const x <$> tv
 
-setReg :: Reg -> AtomicValue term -> CallFrame term -> CallFrame term
+setReg :: Reg -> Typed term -> CallFrame term -> CallFrame term
 setReg r v frm@(CallFrame _ regMap) = frm{ frmRegs = M.insert r v regMap }
 
 entryRsltReg :: Reg
@@ -372,7 +474,10 @@ entryRsltReg = L.Ident "__galois_final_rslt"
 
 newPath :: (Functor m, Monad m)
   => CallFrame (SBETerm sbe) -> Simulator sbe m (Path (SBETerm sbe))
-newPath cf = Path cf Nothing Nothing (Just initSymBlockID) <$> withSBE (`termBool` True)
+newPath cf = Path cf Nothing Nothing (Just initSymBlockID) <$> boolTerm True
+
+boolTerm :: (Functor m, Monad m) => Bool -> Simulator sbe m (SBETerm sbe)
+boolTerm = withSBE . flip termBool
 
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
 -- that the control stack is empty or the top entry of the control stack has no
@@ -415,47 +520,26 @@ modifyCallFrameM :: (Functor m, Monad m)
   => (CallFrame (SBETerm sbe) -> CallFrame (SBETerm sbe)) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
-dbugStep :: (MonadIO m, PrettyTerm (SBETerm sbe), Functor m)
+dbugStep ::
+  ( LogMonad m
+  , MonadIO m
+  , PrettyTerm (SBETerm sbe)
+  , Functor m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => SymStmt -> Simulator sbe m ()
 dbugStep stmt = do
-  Just p <- getPath
-  withCallFrame p $ \frm -> do
-    dbugM $ "Executing: "
-            ++ show (L.ppSymbol (frmFuncSym frm))
-            ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
-            ++ ": " ++ show (ppSymStmt stmt)
-    step stmt
-    dumpCtrlStk
-
---------------------------------------------------------------------------------
--- Testing
-
-__nowarn :: forall a. a
-__nowarn = undefined main
-
-main :: IO ()
-main = do
-  let i32 = L.iT 32
-  cb <- loadCodebase "/Users/jstanley/work/Verifier/LLVM/src/testModule.bc"
-
-  runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
-    i1 <- withSBE $ \sbe -> termInt sbe 32 2
-    i2 <- withSBE $ \sbe -> termInt sbe 32 3
-    callDefine (L.Symbol "int32_add") i32
-      [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
-    mrv <- getProgramReturnValue
-    dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
-
-  runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
-    i1 <- withSBE $ \sbe -> termInt sbe 32 2
-    callDefine (L.Symbol "int32_square") i32 [ i32 =: IValue 32 i1 ]
-    mrv <- getProgramReturnValue
-    dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
-
-  runSimulator cb TestSBE.sbeSymbolic (SM . lift . TestSBE.liftSBESymbolic) $ do
-    i1 <- withSBE $ \sbe -> termInt sbe 32 2
-    i2 <- withSBE $ \sbe -> termInt sbe 32 3
-    callDefine (L.Symbol "int32_muladd") i32
-      [ i32 =: IValue 32 i1 , i32 =: IValue 32 i2 ]
-    mrv <- getProgramReturnValue
-    dbugM $ "Driver: program return value is: " ++ maybe ("none") prettyTerm mrv
+  mp <- getPath
+  case mp of
+    Nothing -> dbugM' 2 $ "Executing: (no current path): " ++ show (ppSymStmt stmt)
+    Just p  -> withCallFrame p $ \frm -> do
+      dbugM' 2 $ "Executing: "
+                 ++ show (L.ppSymbol (frmFuncSym frm))
+                 ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
+                 ++ ": " ++
+                 case stmt of
+                   IfThenElse{} -> "\n"
+                   _ -> ""
+                 ++ show (ppSymStmt stmt)
+  step stmt
+  dumpCtrlStk' 5

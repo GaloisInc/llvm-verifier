@@ -11,6 +11,7 @@ module LSS.Execution.MergeFrame
   ( emptyCtrlStk
   , emptyExitFrame
   , emptyReturnFrame
+  , emptyPdomFrame
 
   -- * Control stack manipulation/query
   , pushMF
@@ -39,10 +40,6 @@ module LSS.Execution.MergeFrame
   , modifyCallFrame
   , setCurrentBlock
   , setReturnValue
-
-  -- * AtomicValue utility functions
-  , fromAV
-  , toAV
   )
 
 where
@@ -52,14 +49,6 @@ import Control.Monad
 import Data.LLVM.Symbolic.AST
 import LSS.Execution.Common
 import LSS.Execution.Utils
-import qualified Text.LLVM as L
-
-fromAV :: AtomicValue term -> term
-fromAV (IValue _ t) = t
-
-toAV :: L.Typed term -> AtomicValue term
-toAV (L.Typed (L.PrimType (L.Integer (fromIntegral -> w))) t) = IValue w t
-toAV (L.Typed t _) = error $ "toAV: unsupported type: " ++ show (L.ppType t)
 
 emptyCtrlStk :: CtrlStk term
 emptyCtrlStk = CtrlStk []
@@ -105,7 +94,7 @@ modifyPending f mf = let (p, mf') = popPending mf in pushPending (f p) mf'
 pushPending :: Path term -> MergeFrame term -> MergeFrame term
 pushPending p mf = case mf of
   ExitFrame{}                   -> error "pushPending not supported on exit frames"
-  PostdomFrame s ps             -> PostdomFrame s (p:ps)
+  PostdomFrame s ps bid         -> PostdomFrame s (p:ps) bid
   ReturnFrame rr nl ns el es ps -> ReturnFrame rr nl ns el es (p:ps)
 
 -- | Pop a pending path from the given non-exit merge frame; runtime error if
@@ -113,8 +102,8 @@ pushPending p mf = case mf of
 popPending :: MergeFrame term -> (Path term, MergeFrame term)
 popPending mf = case mf of
   ExitFrame{}                       -> error "popPending not supported on exit frames"
-  PostdomFrame _ []                 -> err
-  PostdomFrame s (p:ps)             -> (p, PostdomFrame s ps)
+  PostdomFrame _ [] _               -> err
+  PostdomFrame s (p:ps) bid         -> (p, PostdomFrame s ps bid)
   ReturnFrame _ _ _ _ _ []          -> err
   ReturnFrame rr nl ns el es (p:ps) -> (p, ReturnFrame rr nl ns el es ps)
   where
@@ -142,14 +131,14 @@ modifyMergedState f mf = setMergedState (f (getMergedState mf)) mf
 -- return.
 getMergedState :: MergeFrame term -> Maybe (Path term)
 getMergedState (ExitFrame ms _ )          = ms
-getMergedState (PostdomFrame ms _)        = ms
+getMergedState (PostdomFrame ms _ _)      = ms
 getMergedState (ReturnFrame _ _ ms _ _ _) = ms
 
 -- | Sets the merged state in the given merge frame; in the case of return merge
 -- frames, this function sets the merged state for normal function call return.
 setMergedState :: Maybe (Path term) -> MergeFrame term -> MergeFrame term
 setMergedState ms (ExitFrame _ mrv)              = ExitFrame ms mrv
-setMergedState ms (PostdomFrame _ ps)            = PostdomFrame ms ps
+setMergedState ms (PostdomFrame _ ps bid)        = PostdomFrame ms ps bid
 setMergedState ms (ReturnFrame rr nl _ el es ps) = ReturnFrame rr nl ms el es ps
 
 -- | Obtains the merged exception state after function call return from a return
@@ -176,7 +165,7 @@ topPending = safeHead . pendingPaths
 -- | Yields all pending paths in the given non-exit merge frame
 pendingPaths :: MergeFrame term -> [Path term]
 pendingPaths ExitFrame{}                = error "pendingPaths not supported for exit merge frames"
-pendingPaths (PostdomFrame _ ps)        = ps
+pendingPaths (PostdomFrame _ ps _)      = ps
 pendingPaths (ReturnFrame _ _ _ _ _ ps) = ps
 
 setCurrentBlock :: SymBlockID -> Path term -> Path term
@@ -193,6 +182,9 @@ emptyReturnFrame = ReturnFrame Nothing initSymBlockID Nothing Nothing Nothing []
 
 emptyExitFrame :: MergeFrame term
 emptyExitFrame = ExitFrame Nothing Nothing
+
+emptyPdomFrame :: SymBlockID -> MergeFrame term
+emptyPdomFrame = PostdomFrame Nothing []
 
 finalizeExit :: MergeFrame term -> MergeFrame term
 finalizeExit (ExitFrame _ Just{})      = error "finalizeExitFrame: frame already finalized"

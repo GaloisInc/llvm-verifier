@@ -12,9 +12,10 @@ module LSS.SBEConcrete where
 
 import           Data.Bits
 import           LSS.SBEInterface
-import           Verinf.Symbolic.Common (PrettyTerm(..))
+import           Verinf.Symbolic.Common    (PrettyTerm(..))
+import qualified Text.LLVM.AST             as LLVM
 import qualified Text.PrettyPrint.HughesPJ as PP
-import qualified Text.LLVM.AST    as LLVM
+import qualified Verinf.Symbolic           as S
 
 --------------------------------------------------------------------------------
 -- Purely concrete backend
@@ -56,6 +57,13 @@ sbeConcrete = SBE
                               _ -> error $
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
+  , getBool = \term -> if term == 0
+                       then SBEConcrete $ Just False
+                       else if term == 1
+                            then SBEConcrete $ Just True
+                            else SBEConcrete $ Nothing
+  , memInitMemory = SBEConcrete undefined
+  , memAlloca = \_mem _eltType _len _a -> SBEConcrete undefined
   , memLoad = \_mem _ptr -> SBEConcrete undefined
   , memStore = \_mem _val _ptr -> SBEConcrete undefined
   , memMerge = \_t _mem _mem' -> SBEConcrete undefined

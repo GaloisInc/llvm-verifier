@@ -23,6 +23,7 @@ module Data.LLVM.Symbolic.AST
   , lookupSymBlock
   , ppSymBlock
   , ppSymBlockID
+  , ppSymCond
   , ppSymDefine
   , ppSymExpr
   , ppSymStmt

@@ -7,7 +7,13 @@ Point-of-contact : atomb
 
 {-# LANGUAGE TypeFamilies #-}
 
-module LSS.SBESymbolic where
+module LSS.SBESymbolic
+  ( module LSS.SBEInterface
+  , sbeSymbolic
+  , liftSBESymbolic
+  )
+
+where
 
 import qualified Text.LLVM.AST as LLVM
 import qualified Verinf.Symbolic as S
@@ -38,12 +44,17 @@ sbeSymbolic = SBE
                                "unsupported bitwise op: " ++
                                show op
   , applyArith = \op -> case op of
-                          LLVM.Add -> S.applyAdd
-                          LLVM.Mul -> S.applyMul
-                          LLVM.Sub -> S.applySub
+                          LLVM.Add  -> S.applyAdd
+                          LLVM.Mul  -> S.applyMul
+                          LLVM.Sub  -> S.applySub
+                          LLVM.SDiv -> S.applySignedDiv
+                          LLVM.SRem -> S.applySignedRem
+                          LLVM.UDiv -> S.applyUnsignedDiv
+                          LLVM.URem -> S.applyUnsignedRem
                           _ -> error $
                                "unsupported arithmetic op: " ++
                                show op
+  , getBool = return . S.getBool
   , memLoad = \_mem _ptr -> return undefined
   , memStore = \_mem _val _ptr -> return undefined
   , memMerge = \_t _mem _mem' -> return undefined

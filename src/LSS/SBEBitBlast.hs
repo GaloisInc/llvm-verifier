@@ -6,34 +6,37 @@ Point-of-contact : atomb, jhendrix
 -}
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilies               #-}
+
 module LSS.SBEBitBlast
-  ( LLVMContext(..)
+  ( module LSS.SBEInterface
+  , BitTerm
+  , BitTermClosed(..)
+  , LLVMContext(..)
   , sbeBitBlast
   , sbeBitBlastMem
   , liftSBEBitBlast
   ) where
 
-import Control.Applicative ((<$>))
-import Control.Exception (assert)
-import Control.Monad
-import Control.Monad.IO.Class
-import Data.Bits
-import Data.Map (Map)
-import qualified Data.Map as Map
-import qualified Data.Vector.Storable as LV
-import qualified Data.Vector as V
-
-import qualified Text.LLVM.AST as LLVM
-import Verinf.Symbolic.Lit
-import qualified Verinf.Symbolic.Lit.ABC as ABC
-import Verinf.Symbolic (PrettyTerm(..))
-import LSS.SBEInterface
-import Text.PrettyPrint.HughesPJ
-
-
-import Debug.Trace
-
+import           Control.Applicative       ((<$>))
+import           Control.Exception         (assert)
+import           Control.Monad
+import           Control.Monad.IO.Class
+import           Data.Bits
+import           Data.Int
+import           Data.Map                  (Map)
+import           Debug.Trace
+import           LSS.SBEInterface
+import           Text.PrettyPrint.HughesPJ
+import           Verinf.Symbolic           (PrettyTerm(..))
+import           Verinf.Symbolic.Common    (ConstantProjection(..), createBitEngine)
+import           Verinf.Symbolic.Lit
+import qualified Data.Map                  as Map
+import qualified Data.Vector               as V
+import qualified Data.Vector.Storable      as LV
+import qualified Text.LLVM.AST             as LLVM
+import qualified Verinf.Symbolic.Common    as S
+import qualified LSS.SBEInterface          as SBE
 
 c2 :: (r -> s) -> (a -> b -> r) -> a -> b -> s
 g `c2` f = \x y -> g (f x y)
@@ -48,8 +51,32 @@ g `c4` f = \w x y z -> g (f w x y z)
 -- Symbolic backend
 
 newtype BitTerm l = BitTerm { btVector :: LV.Vector l }
+newtype BitTermClosed l = BitTermClosed (BitEngine l, BitTerm l)
 
 instance PrettyTerm (BitTerm l) where
+  prettyTermWithD _ _ = text "BitTerm"
+
+instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
+  getSVal (BitTermClosed (be, t)) =
+    case beVectorToMaybeInt be (btVector t) of
+      Nothing     -> Nothing
+      Just (w, v) -> Just $ case w of
+                              32 -> fromIntegral (fromIntegral v :: Int32)
+                              64 -> fromIntegral (fromIntegral v :: Int64)
+                              _  -> error "BitTermClosed/getSVal: unsupported integer width"
+
+  getUVal = error "ConstantProjection (BitTermClosed): getUVal BitTerm nyi"
+
+  getBool (BitTermClosed (be, t)) =
+    case beVectorToMaybeInt be (btVector t) of
+      Nothing     -> Nothing
+      Just (w, v) -> Just $ case w of
+                              1 -> toEnum (fromIntegral v) :: Bool
+                              _ -> error "BitTermClosed/getBool: term bit width not 1"
+
+  termConst = error "ConstantProjection (BitTermClosed): termConst BitTerm nyi"
+
+  isConst = error "ConstantProjection (BitTermClosed): isConst BitTerm nyi"
 
 -- | Returns number of bytes.
 byteSize :: LV.Storable l => LV.Vector l -> Int
@@ -115,7 +142,7 @@ loadByte be mem vi = impl mem (LV.length vi - 1)
           assert (0 <= i && i < LV.length vi) $
             beIteVector be (vi LV.! i) (impl t (i-1)) (impl f (i-1))
         impl (SValue v) _ = return v
-        impl (SDefine d) _ = 
+        impl (SDefine d) _ =
           bmError $ "Attempt to read address that may point to definition of " ++ show d ++ "."
         impl (SBlock d b) _ =
           bmError $ "Attempt to read address that may point to block " ++ show b ++ " in " ++ show d ++ "."
@@ -155,7 +182,7 @@ storeByte be mem new ptr = impl mem (LV.length ptr) (beTrue be)
           | c == beTrue be = return (SValue new)
           | otherwise =
               bmError "Attempt to store symbolically to address that has not been initialized."
-        impl (SDefine d) _ _ = 
+        impl (SDefine d) _ _ =
           bmError $ "Attempt to store to address that may point to definition of " ++ show d ++ "."
         impl (SBlock d b) _ _ =
           bmError $ "Attempt to store to address that may point to block " ++ show b ++ " in " ++ show d ++ "."
@@ -194,12 +221,12 @@ initFreeList low high = V.unfoldr fn (low,high,0)
                                     (True,  True)  -> [l,hc]
                                     (False, True)  -> [hc]
                                     (True, False)  -> [l]
-                                    (False, False) -> [] 
+                                    (False, False) -> []
                         in (elts, (l', h', i+1))
 
 -- @setBytes w low high val mem@ sets all bytes in [low .. high) to @val@.
 setBytes :: Int -> Addr -> Addr -> (Addr -> Storage l) -> Storage l -> Storage l
-setBytes w low high fn mem 
+setBytes w low high fn mem
    | low == high = mem
    | otherwise = trace ("setBytes " ++ show low ++ " " ++ show high) $ impl mem (w-1) 0
   where impl _ (-1) v = assert (low <= v && v < high) $ fn v
@@ -240,15 +267,15 @@ data BitMemory l = BitMemory {
 type FreeList = V.Vector [Addr]
 
 
--- | @allocBlock l n@ attempt to allocate a block with @2^n@ 
+-- | @allocBlock l n@ attempt to allocate a block with @2^n@
 allocBlock :: FreeList -> Int -> Maybe (FreeList, Addr)
 allocBlock fl n = impl n
   where -- @impl i@
         impl i | V.length fl <= i = Nothing
-               | otherwise = 
+               | otherwise =
                    case fl V.! i of
                      [] -> impl (i+1)
-                     a:r -> 
+                     a:r ->
                        -- Generation function for new free list removes
                        -- free block found and adds new free blocks for
                        -- space that was unallocated by previous request.
@@ -327,12 +354,12 @@ bmLoad :: (Eq l, LV.Storable l)
        -> BitMemory l
        -> LLVM.Typed (BitTerm l)
        -> IO (BitTerm l)
-bmLoad lc be bm ptr 
+bmLoad lc be bm ptr
   | LV.length ptrVal /= llvmAddrWidth lc = bmError "internal: Illegal pointer given to load"
   | otherwise =
       case resolveType lc (LLVM.typedType ptr) of
         LLVM.PtrTo tp -> do
-          bits <- 
+          bits <-
               loadBytes be (bmStorage bm) ptrVal (llvmByteSizeOf lc tp)
           return (BitTerm (loadPtr tp bits))
         _ -> bmError "Illegal type given to load"
@@ -371,20 +398,20 @@ bmStackAlloca lc be bm eltTp typedCnt a =
     ( BitTerm (beVectorFromInt be w res)
     , bm { bmStorage = newStorage, bmStackAddr = newAddr })
   where -- Number of bytes in element type.
-        eltSize = llvmByteSizeOf lc eltTp 
+        eltSize = llvmByteSizeOf lc eltTp
         BitTerm cntVector = LLVM.typedValue typedCnt
         -- Get number requested.
         cnt = case beVectorToMaybeInt be cntVector of
-                Nothing -> 
+                Nothing ->
                   bmError $ "Symbolic number of elements requested with alloca;"
                                ++ " when current implementation only supports concrete"
-                Just v -> v
+                Just (_,v) -> v
         w = llvmAddrWidth lc
         -- Stack pointer adjusted to alignment boundary.
         errorMsg = bmError "Stack limit exceeded in alloca."
         -- Get result pointer
         -- Get new bit memory.
-        (res,newStorage,newAddr) 
+        (res,newStorage,newAddr)
           | bmStackGrowsUp bm =
               let alignedAddr = alignUp (bmStackAddr bm) a
                   newStackAddr = alignedAddr + eltSize * cnt
@@ -411,7 +438,7 @@ bmStackPop :: LLVMContext -> BitMemory l -> BitMemory l
 bmStackPop _ BitMemory { bmStackFrames = [] } =
   bmError "internal: Attempted to pop stack frame from memory when no stack frames have been pushed."
 bmStackPop lc bm@BitMemory { bmStackFrames = f : fl } =
-  bm { bmStorage = 
+  bm { bmStorage =
          let (l,h) = if bmStackGrowsUp bm then (f, bmStackAddr bm) else (bmStackAddr bm, f)
           in setBytes (llvmAddrWidth lc) l h (\_ -> SUnallocated) (bmStorage bm)
      , bmStackAddr = f
@@ -443,7 +470,7 @@ bmMerge be (BitTerm cv) m m'
         fail "internal: Attempt to merge memories with different block addresses."
       -- Free lists should be implicitly equivalent if storages are compatible.
       return BitMemory
-        { bmStorage = newStorage 
+        { bmStorage = newStorage
         , bmStackAddr = bmStackAddr m
         , bmStackEnd = bmStackEnd m
         , bmStackFrames = bmStackFrames m
@@ -462,7 +489,7 @@ bmMemAddDefine :: (Eq l, LV.Storable l)
                -> [LLVM.Ident] -- ^ Identifiers for blocks
                -> (BitTerm l, BitMemory l)
 bmMemAddDefine lc be m def idl
-    | newCodeAddr > bmCodeEnd m 
+    | newCodeAddr > bmCodeEnd m
     = bmError "Not enough space in code memory to allocate new definition."
     | otherwise
     = ( BitTerm (beVectorFromInt be (llvmAddrWidth lc) codeAddr)
@@ -487,7 +514,7 @@ bmMemAddDefine lc be m def idl
 bmCodeBlockAddress :: (Eq l, LV.Storable l)
                    => LLVMContext
                    -> BitEngine l -- ^ Bit engine for literals.
-                   -> BitMemory l -- ^ Memory 
+                   -> BitMemory l -- ^ Memory
                    -> LLVM.Symbol -- ^ Definition
                    -> LLVM.Ident -- ^ Block identifier
                    -> BitTerm l
@@ -497,7 +524,7 @@ bmCodeBlockAddress lc be m d b = do
     Just a -> BitTerm (beVectorFromInt be (llvmAddrWidth lc) a)
 
 -- | Return symbol as given address in memory.
-bmCodeLookupDefine :: (Eq l, LV.Storable l) 
+bmCodeLookupDefine :: (Eq l, LV.Storable l)
                    => LLVMContext
                    -> BitEngine l
                    -> BitMemory l
@@ -506,7 +533,7 @@ bmCodeLookupDefine :: (Eq l, LV.Storable l)
 bmCodeLookupDefine lc be m (BitTerm a) = do
   case beVectorToMaybeInt be a of
     Nothing -> Indeterminate
-    Just v -> 
+    Just (_,v) ->
       case loadDef (bmStorage m) (llvmAddrWidth lc) v of
         Nothing -> Invalid
         Just d -> Result d
@@ -547,8 +574,13 @@ bitArith :: (LV.Storable l, Eq l) =>
          -> BitIO l (BitTerm l)
 bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
   where f = case op of
-              LLVM.Add -> beAddInt
-              LLVM.Mul -> beMulInt
+              LLVM.Add  -> beAddInt
+              LLVM.Mul  -> beMulInt
+              LLVM.Sub  -> beSubInt
+              LLVM.SDiv -> beQuot
+              LLVM.SRem -> beRem
+              LLVM.UDiv -> beQuot -- TODO: FIXME: beQuot does not do proper unsigned division
+              LLVM.URem -> beRem  -- TODO: FIXME: SAB
               _ -> bmError $ "unsupported arithmetic op: " ++ show op
 
 --  SBE Definition {{{1
@@ -556,8 +588,9 @@ bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
 newtype BitIO l a = BitIO { liftSBEBitBlast :: IO a }
   deriving (Monad, MonadIO)
 
-type instance SBETerm (BitIO l) = BitTerm l
-type instance SBEMemory (BitIO l) = BitMemory l
+type instance SBETerm (BitIO l)       = BitTerm l
+type instance SBEClosedTerm (BitIO l) = BitTermClosed l
+type instance SBEMemory (BitIO l)     = BitMemory l
 
 sbeBitBlast :: (Eq l, LV.Storable l) => LLVMContext -> BitEngine l -> SBE (BitIO l)
 sbeBitBlast lc be = SBE
@@ -567,6 +600,7 @@ sbeBitBlast lc be = SBE
   , applyICmp = bitICmp be
   , applyBitwise = bitBitwise be
   , applyArith = bitArith be
+  , SBE.getBool = \t -> return $ S.getBool $ BitTermClosed (be, t)
   , memLoad = BitIO `c2` bmLoad lc be
   , memStore = BitIO `c3` bmStore lc be
   , memMerge = BitIO `c3` bmMerge be
@@ -584,7 +618,7 @@ type Range t = (t,t)
 norm :: Range Addr -> Range Addr
 norm (x,y) = (min x y, max x y)
 
-overlap :: Range Addr -> Range Addr -> Bool 
+overlap :: Range Addr -> Range Addr -> Bool
 overlap (s1,e1) (s2,e2) = if s1 <= s2 then s2 < e2 && s2 < e1 else s1 < e1 && s1 < e2
 
 start :: Range i -> i
@@ -620,9 +654,10 @@ sbeBitBlastMem stack code heap
         , bmFreeLists = initFreeList (start heap) (end heap)
         }
 
+testSBEBitBlast :: IO ()
 testSBEBitBlast = do
   let lc = LLVMContext 5 undefined
-  be <- ABC.createBitEngine
+  be <- createBitEngine
   let sbe = sbeBitBlast lc be
   let m0 = sbeBitBlastMem (0x10,0x0) (0x10,0x20)  (0x0,0x0)
   liftSBEBitBlast $ do
