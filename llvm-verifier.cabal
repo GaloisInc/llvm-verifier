@@ -19,6 +19,10 @@ Flag build-examples
 
 Flag build-tests
   description: Build the test executables
+  default: True
+
+Flag build-lss
+  description: Build the LSS command-line tool
   default: False
 
 library
@@ -56,11 +60,37 @@ library
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
-executable lss
-  hs-source-dirs: src
+-- executable lss
+--   if !flag(build-lss)
+--     buildable: False
+--   if flag(abc-backend)
+--     cpp-options: -DUseABC
 
-  main-is:
-    Driver.hs
+--   hs-source-dirs: src
+
+--   main-is: Driver.hs
+
+--   if os(darwin)
+--     GHC-options: -optl-Wl,-dead_strip
+
+--   build-depends:
+--       base >= 4
+--     , bytestring
+--     , containers
+--     , llvm-pretty == 0.1.1.0
+--     , mtl
+--     , pretty
+--     , vector
+--     , Verinf
+
+executable Tests
+  if !flag(build-tests)
+    buildable: False
+  if flag(abc-backend)
+    cpp-options: -DUseABC
+
+  main-is        : Tests.hs
+  hs-source-dirs : src test/src
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
 
@@ -68,12 +98,14 @@ executable lss
     GHC-options: -optl-Wl,-dead_strip
 
   build-depends:
-      base >= 4
+      QuickCheck >= 2.1.2
+    , Verinf
+    , base >= 4
     , bytestring
     , containers
+    , filepath
     , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
     , transformers
     , vector
-    , Verinf
