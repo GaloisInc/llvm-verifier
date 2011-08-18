@@ -12,6 +12,7 @@ module Tests.PrimOps (primOpTests) where
 
 import           Control.Applicative
 import           Control.Monad.Trans
+import           Data.Bits
 import           Data.Int
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
@@ -42,28 +43,33 @@ primOpTests =
       chkBinCInt32Fn 1 "primOps.bc" (L.Symbol "int32_muladd") (\x y -> sqr (x + y))
   ,
     test1 "test-arith"  $ chkMain 1 "test-arith.bc" 0
---  ,
---    test1 "test-call"   $ chkMain 1 "test-call.bc" 0
   ,
     test1 "test-branch" $ chkMain 1 "test-branch.bc" 0
+--   ,
+--     test1 "test-call-simple" $ chkMain 5 "test-call-simple.bc" 0
+--   ,
+--     test1 "test-call-exit"   $ chkMain 1 "test-call-exit.bc" 0
   ]
   where
     sqr x   = x * x
     test1   = test 1 False
 
 chkBinCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Int32 -> Int32) -> PropertyM IO ()
-chkBinCInt32Fn v bcFile sym chkOp = forAllM arbitrary $ \(x,y) -> do
-  chkRslt sym (fromIntegral (x `chkOp` y))
-    =<< run (runCInt32Fn v bcFile sym [x, y])
+chkBinCInt32Fn v bcFile sym chkOp = do
+  forAllM arbitrary $ \(x,y) -> do
+    chkRslt sym (fromIntegral (x `chkOp` y))
+      =<< run (runCInt32Fn v bcFile sym [x, y])
 
 chkUnaryCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Int32) -> PropertyM IO ()
-chkUnaryCInt32Fn v bcFile sym chkOp = forAllM arbitrary $ \x -> do
-  chkRslt sym (fromIntegral (chkOp x))
-    =<< run (runCInt32Fn v bcFile sym [x])
+chkUnaryCInt32Fn v bcFile sym chkOp =
+  forAllM arbitrary $ \x -> do
+    chkRslt sym (fromIntegral (chkOp x))
+      =<< run (runCInt32Fn v bcFile sym [x])
 
 chkNullaryCInt32Fn :: Int -> FilePath -> L.Symbol -> Int32 -> PropertyM IO ()
-chkNullaryCInt32Fn v bcFile sym chkVal = do
-  chkRslt sym (fromIntegral chkVal) =<< run (runCInt32Fn v bcFile sym [])
+chkNullaryCInt32Fn v bcFile sym chkVal =
+  chkRslt sym (fromIntegral chkVal)
+    =<< run (runCInt32Fn v bcFile sym [])
 
 chkMain :: Int -> FilePath -> Int32 -> PropertyM IO ()
 chkMain v bcFile = chkNullaryCInt32Fn v bcFile (L.Symbol "main")
@@ -73,10 +79,19 @@ runCInt32Fn v bcFile sym cargs = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
 
-  let lc      = LLVMContext 4 (error "LLVM Context has no ident -> type alias map defined")
-      backend = sbeBitBlast lc be
+  let addrWidthBits = 32
+      lc            = LLVMContext addrWidthBits (error "LLVM Context has no ident -> type alias map defined")
+      backend       = sbeBitBlast lc be
+      sz st bytes   = let ws = bytes `div` fromIntegral (addrWidthBits `shiftR` 3) in (st + ws, st + ws)
+      mem           = sbeBitBlastMem (sst, send) (cst, cend) (hst, hend)
+                      where
+                        sst            = 0 :: Integer
+                        defaultSzBytes = 32768
+                        (send, cst)    = sz sst defaultSzBytes
+                        (cend, hst)    = sz cst defaultSzBytes
+                        (hend, _)      = sz hst defaultSzBytes
 
-  runSimulator cb backend (SM . lift . liftSBEBitBlast) $ withVerbosity v $ do
+  runSimulator cb backend mem (SM . lift . liftSBEBitBlast) $ withVerbosity v $ do
     args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
     callDefine sym i32 $ map (\x -> i32 =: x) args
     rv <- getProgramReturnValue
