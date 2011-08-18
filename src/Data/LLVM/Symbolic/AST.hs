@@ -28,6 +28,7 @@ module Data.LLVM.Symbolic.AST
   , ppSymExpr
   , ppSymStmt
   , symBlockID
+  , symBlockIdent
   ) where
 
 import Data.Int
@@ -66,6 +67,10 @@ initSymBlockID = InitBlock
 -- The first block is for the entry point to the LLVM block.
 symBlockID :: LLVM.Ident -> Int -> SymBlockID
 symBlockID i = NamedBlock i
+
+symBlockIdent :: SymBlockID -> Maybe LLVM.Ident
+symBlockIdent (NamedBlock i _) = Just i
+symBlockIdent _                = Nothing
 
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc

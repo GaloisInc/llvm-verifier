@@ -27,6 +27,8 @@ import           Data.Bits
 import           Data.Int
 import           Data.Map                  (Map)
 import           Debug.Trace
+import           Debug.Trace               (trace)
+import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..), createBitEngine)
@@ -36,7 +38,6 @@ import qualified Data.Vector               as V
 import qualified Data.Vector.Storable      as LV
 import qualified Text.LLVM.AST             as LLVM
 import qualified Verinf.Symbolic           as S
-import qualified LSS.SBEInterface          as SBE
 
 c2 :: (r -> s) -> (a -> b -> r) -> a -> b -> s
 g `c2` f = \x y -> g (f x y)
@@ -53,8 +54,15 @@ g `c4` f = \w x y z -> g (f w x y z)
 newtype BitTerm l = BitTerm { btVector :: LV.Vector l }
 newtype BitTermClosed l = BitTermClosed (BitEngine l, BitTerm l)
 
-instance S.PrettyTerm (BitTermClosed l) where
-  prettyTermWithD _ _ = text "BitTerm"
+instance (Eq l, LV.Storable l) => S.PrettyTerm (BitTermClosed l) where
+  prettyTermWithD _ppconf ct@(BitTermClosed (be, BitTerm bv)) =
+    let str      = LV.foldr (\lit acc -> acc ++ [toChar lit]) "" bv
+        toChar x = if x == beFalse be then '0' else if x == beTrue be then '1' else '?'
+    in
+      if 1 == LV.length bv
+      then text (maybe "?:[1]" show $ getBool ct)
+      else text str <> colon <>  brackets (text $ show $ LV.length bv)
+           <+> maybe empty (parens . integer) (getSVal ct)
 
 instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
   getSVal (BitTermClosed (be, t)) =
@@ -63,7 +71,7 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
       Just (w, v) -> Just $ case w of
                               32 -> fromIntegral (fromIntegral v :: Int32)
                               64 -> fromIntegral (fromIntegral v :: Int64)
-                              _  -> error "BitTermClosed/getSVal: unsupported integer width"
+                              _  -> error $ "BitTermClosed/getSVal: unsupported integer width " ++ show w
 
   getUVal = error "ConstantProjection (BitTermClosed): getUVal BitTerm nyi"
 
@@ -280,7 +288,7 @@ bmStackGrowsUp :: BitMemory l -> Bool
 bmStackGrowsUp bm = bmStackAddr bm <= bmStackEnd bm
 
 data LLVMContext = LLVMContext {
-    llvmAddrWidth :: Int
+    llvmAddrWidthBits :: Int
   , llvmLookupAlias :: LLVM.Ident -> LLVM.Type
   }
 
@@ -310,7 +318,7 @@ llvmByteSizeOf lc tp =
     LLVM.Alias a -> llvmByteSizeOf lc (llvmLookupAlias lc a)
     LLVM.Array l eTp -> toInteger l * llvmByteSizeOf lc eTp
     LLVM.FunTy _retTp _argTpl _ -> bmError "internal: Cannot get size of function type."
-    LLVM.PtrTo _tp -> toInteger (llvmAddrWidth lc `shiftR` 3)
+    LLVM.PtrTo _tp -> toInteger (llvmAddrWidthBits lc `shiftR` 3)
     --TODO: support alignment based on targetdata string in module.
     LLVM.Struct argTypes -> sum [ llvmByteSizeOf lc atp | atp <- argTypes ]
     LLVM.PackedStruct argTypes -> sum [ llvmByteSizeOf lc atp | atp <- argTypes ]
@@ -334,6 +342,14 @@ alignDn addr i = addr .&. (complement mask)
 bmError :: String -> a
 bmError = error
 
+bmDump :: BitMemory l -> IO ()
+bmDump bm = do
+  banners $ render $
+    text "Memory Model Dump"
+    $+$ text "Stack:" <+> text (show (bmStackAddr bm, bmStackEnd bm))
+    $+$ text "Code :" <+> text (show (bmCodeAddr bm, bmCodeEnd bm))
+    $+$ ppStorage (bmStorage bm)
+
 bmLoad :: (Eq l, LV.Storable l)
        => LLVMContext
        -> BitEngine l
@@ -341,7 +357,7 @@ bmLoad :: (Eq l, LV.Storable l)
        -> LLVM.Typed (BitTerm l)
        -> IO (BitTerm l)
 bmLoad lc be bm ptr
-  | LV.length ptrVal /= llvmAddrWidth lc = bmError "internal: Illegal pointer given to load"
+  | LV.length ptrVal /= llvmAddrWidthBits lc = bmError "internal: Illegal pointer given to load"
   | otherwise =
       case resolveType lc (LLVM.typedType ptr) of
         LLVM.PtrTo tp -> do
@@ -392,7 +408,7 @@ bmStackAlloca lc be bm eltTp typedCnt a =
                   bmError $ "Symbolic number of elements requested with alloca;"
                                ++ " when current implementation only supports concrete"
                 Just (_,v) -> v
-        w = llvmAddrWidth lc
+        w = llvmAddrWidthBits lc
         -- Stack pointer adjusted to alignment boundary.
         errorMsg = bmError "Stack limit exceeded in alloca."
         -- Get result pointer
@@ -426,7 +442,7 @@ bmStackPop _ BitMemory { bmStackFrames = [] } =
 bmStackPop lc bm@BitMemory { bmStackFrames = f : fl } =
   bm { bmStorage =
          let (l,h) = if bmStackGrowsUp bm then (f, bmStackAddr bm) else (bmStackAddr bm, f)
-          in setBytes (llvmAddrWidth lc) l h (\_ -> SUnallocated) (bmStorage bm)
+          in setBytes (llvmAddrWidthBits lc) l h (\_ -> SUnallocated) (bmStorage bm)
      , bmStackAddr = f
      , bmStackFrames = fl
      }
@@ -478,7 +494,12 @@ bmMemAddDefine lc be m def idl
     | newCodeAddr > bmCodeEnd m
     = bmError "Not enough space in code memory to allocate new definition."
     | otherwise
-    = ( BitTerm (beVectorFromInt be (llvmAddrWidth lc) codeAddr)
+    = trace ("bmMemAddDefine: def = " ++ show def ++ ", idl = " ++ show idl)
+      trace (", bbcnt = " ++ show bbcnt)
+      trace (", codeAddr = " ++ show codeAddr)
+      trace (", newCodeAddr = " ++ show newCodeAddr)
+      $
+      ( BitTerm (beVectorFromInt be (llvmAddrWidthBits lc) codeAddr)
       , m { bmStorage = newStorage
           , bmCodeAddr = newCodeAddr
             -- Include new addresses in memory
@@ -494,8 +515,8 @@ bmMemAddDefine lc be m def idl
         newCodeAddr = codeAddr + newSpaceReq
         insertAddr bmap (bb,idx) = Map.insert (def,bb) (codeAddr + idx) bmap
         updateAddr a | a == codeAddr = SDefine def
-                     | otherwise = SBlock def (idl !! fromInteger (a - codeAddr))
-        newStorage = setBytes (llvmAddrWidth lc) codeAddr newCodeAddr updateAddr (bmStorage m)
+                     | otherwise     = SBlock def (idl !! fromInteger (a - codeAddr - 1))
+        newStorage = setBytes (llvmAddrWidthBits lc) codeAddr newCodeAddr updateAddr (bmStorage m)
 
 bmCodeBlockAddress :: (Eq l, LV.Storable l)
                    => LLVMContext
@@ -507,7 +528,7 @@ bmCodeBlockAddress :: (Eq l, LV.Storable l)
 bmCodeBlockAddress lc be m d b = do
   case Map.lookup (d,b) (bmCodeBlockMap m) of
     Nothing -> bmError $ "Failed to find block " ++ show b ++ " in " ++ show d ++ "."
-    Just a -> BitTerm (beVectorFromInt be (llvmAddrWidth lc) a)
+    Just a -> BitTerm (beVectorFromInt be (llvmAddrWidthBits lc) a)
 
 -- | Return symbol as given address in memory.
 bmCodeLookupDefine :: (Eq l, LV.Storable l)
@@ -520,7 +541,7 @@ bmCodeLookupDefine lc be m (BitTerm a) = do
   case beVectorToMaybeInt be a of
     Nothing -> Indeterminate
     Just (_,v) ->
-      case loadDef (bmStorage m) (llvmAddrWidth lc) v of
+      case loadDef (bmStorage m) (llvmAddrWidthBits lc) v of
         Nothing -> Invalid
         Just d -> Result d
 
@@ -590,6 +611,7 @@ sbeBitBlast lc be = sbe
               , applyArith = bitArith be
               , closeTerm = BitTermClosed . (,) be
               , prettyTermD = S.prettyTermD . closeTerm sbe
+              , memDump = BitIO . bmDump
               , memLoad = BitIO `c2` bmLoad lc be
               , memStore = BitIO `c3` bmStore lc be
               , memMerge = BitIO `c3` bmMerge be
@@ -659,6 +681,9 @@ testSBEBitBlast = do
     lv <- termInt sbe 32 0x12345678
     m2 <- memStore sbe m1 (LLVM.Typed i32 lv) sp
     BitTerm actualValue <- memLoad sbe m2 (LLVM.Typed (ptr i32) sp)
-    liftIO $ putStrLn $ show $ 0x12345678
+    liftIO $ putStrLn $ show $ (0x12345678 :: Integer)
     liftIO $ putStrLn $ show $ beVectorToMaybeInt be actualValue
     return ()
+
+__nowarn_unused :: a
+__nowarn_unused = undefined testSBEBitBlast allocBlock

@@ -69,6 +69,9 @@ data SBE m = SBE
     ----------------------------------------------------------------------------
     -- Memory model interface
 
+    -- | @memDump h@ prints the contents of the memory model
+  , memDump :: SBEMemory m -> m ()
+
     -- | @memLoad h ptr@ returns the value in the given location in memory.
   , memLoad :: SBEMemory m
             -> LLVM.Typed (SBETerm m)

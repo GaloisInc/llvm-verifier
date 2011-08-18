@@ -24,6 +24,8 @@ where
 
 import           Control.Applicative
 import           Control.Monad.State       hiding (State)
+import           Data.Maybe
+import           Data.List
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
@@ -33,7 +35,6 @@ import           LSS.SBEInterface
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..))
-import qualified Verinf.Symbolic.Common    as S
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
@@ -50,22 +51,25 @@ pureWithSBE f = gets symBE >>= \sbe -> return (f sbe)
 runSimulator :: (Functor m, MonadIO m)
   => Codebase              -- ^ Post-transform LLVM code
   -> SBE sbe               -- ^ A symbolic backend
+  -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
   -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
   -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
-runSimulator cb sbe lifter m =
-  evalStateT (runSM (setup >> m)) (newSimState cb sbe lifter)
+runSimulator cb sbe mem lifter m =
+  evalStateT (runSM (setup >> m)) (newSimState cb sbe mem lifter)
   where
     setup = do
       modifyCS $ pushMF emptyExitFrame
 
-newSimState :: Codebase -> SBE sbe -> LiftSBE sbe m -> State sbe m
-newSimState cb sbe lifter =
+newSimState :: Codebase -> SBE sbe -> SBEMemory sbe -> LiftSBE sbe m -> State sbe m
+newSimState cb sbe mem lifter =
   State
   { codebase  = cb
   , symBE     = sbe
+  , memModel  = mem
   , liftSymBE = lifter
   , ctrlStk   = emptyCtrlStk
+  , gfpTerms  = M.empty
   , verbosity = 1
   }
 
@@ -281,20 +285,24 @@ lkupIdent' :: L.Ident -> CallFrame term -> Typed term
 lkupIdent' i = flip (M.!) i . frmRegs
 
 -- | getTypedTerm' in the context of the current call frame
-getTypedTerm :: (Functor m, Monad m)
+getTypedTerm :: (Functor m, MonadIO m)
   => Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 getTypedTerm tv = (`getTypedTerm'` tv) =<< getCallFrame
 
 -- | Obtain the typed SBE term representation for the given LLVM value; performs
 -- identifier lookup in the regmap of the given call frame as needed.
-getTypedTerm' :: (Functor m, Monad m, term ~ SBETerm sbe)
+getTypedTerm' :: (Functor m, MonadIO m, term ~ SBETerm sbe)
   => CallFrame term -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
 
-getTypedTerm' _ (Typed (L.PtrTo L.FunTy{}) _)
-  = error "getTypedTerm': TODO: Support for funptr args (requires mem interaction)"
+-- Typed {typedType = PtrTo (FunTy (PrimType (Integer 32)) [PrimType (Integer 8),PrimType (Integer 16)] False), typedValue = ValSymbol (Symbol "test")}
+getTypedTerm' _ (Typed t@(L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
+  = Typed t <$> getGFPTerm (sym, argtys)
+
+getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
+  = error $ "getTypedTerm': Non-symbol ptr-to-fun nyi: " ++ show tv
 
 getTypedTerm' frm (Typed _ (L.ValIdent i))
   = return $ lkupIdent' i frm
@@ -303,6 +311,25 @@ getTypedTerm' _ tv@(Typed t v)
   = error $ "getTypedTerm': unsupported value: "
           ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
           ++ show (parens $ text $ show tv)
+
+getGFPTerm :: (Functor m, MonadIO m)
+  => (L.Symbol, [L.Type]) -> Simulator sbe m (SBETerm sbe)
+getGFPTerm key@(sym, _) = do
+  mt <- M.lookup key <$> gets gfpTerms
+  case mt of
+    Just t  -> return t
+    Nothing -> do
+      def <- lookupDefine sym <$> gets codebase
+      m0  <- gets memModel
+      dbugM $ "getGFPTerm mkassoc: m0:"
+      dumpMem m0
+      (t, m1) <- withSBE $ \sbe ->
+                 memAddDefine sbe m0 sym
+                 $ nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
+      dbugM $ "getGFPTerm mkassoc: m1:"
+      dumpMem m1
+      modify $ \s -> s{ memModel = m1, gfpTerms = M.insert key t (gfpTerms s)}
+      return t
 
 --------------------------------------------------------------------------------
 -- Instruction stepper
@@ -337,9 +364,11 @@ step (PushPostDominatorFrame pdid) = do
 step (MergePostDominator pdid cond) = do
   mtop <- topMF <$> gets ctrlStk
   case mtop of
-    Just PostdomFrame{} -> return ()
-    Just _              -> error "merge postdom: expected postdom merge frame"
-    Nothing             -> error "merge postdom: empty control stack"
+    Just (PostdomFrame _ _ lab)
+      | lab == pdid -> return ()
+      | otherwise   -> error "merge postdom: top pdom frame has unexpected block ID"
+    Just _          -> error "merge postdom: expected postdom merge frame"
+    Nothing         -> error "merge postdom: empty control stack"
 
   Just p <- getPath
 
@@ -519,6 +548,9 @@ modifyPath f = modifyCS $ \cs ->
 modifyCallFrameM :: (Functor m, Monad m)
   => (CallFrame (SBETerm sbe) -> CallFrame (SBETerm sbe)) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
+
+dumpMem :: (Functor m, Monad m) => SBEMemory sbe -> Simulator sbe m ()
+dumpMem mem = withSBE $ flip memDump mem
 
 dbugStep ::
   ( LogMonad m
