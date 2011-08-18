@@ -5,13 +5,14 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
-{-# LANGUAGE RankNTypes                 #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE ViewPatterns               #-}
-{-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes            #-}
+{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE UndecidableInstances  #-}
+{-# LANGUAGE ViewPatterns          #-}
 
 module LSS.Simulator
   ( module LSS.Execution.Codebase
@@ -45,8 +46,18 @@ liftSBE sa = gets liftSymBE >>= \f -> f sa
 withSBE :: (Functor m, Monad m) => (SBE sbe -> sbe a) -> Simulator sbe m a
 withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 
-pureWithSBE :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
-pureWithSBE f = gets symBE >>= \sbe -> return (f sbe)
+withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
+withSBE' f = gets symBE >>= \sbe -> return (f sbe)
+
+withMem :: (Monad m) => (SBEMemory sbe -> Simulator sbe m a) -> Simulator sbe m a
+withMem f = gets memModel >>= f
+
+mutateMem :: (Monad m) => (SBEMemory sbe -> Simulator sbe m (a, SBEMemory sbe)) -> Simulator sbe m a
+mutateMem f = do
+  m0      <- gets memModel
+  (r, m1) <- f m0
+  modify $ \s -> s{ memModel = m1 }
+  return r
 
 runSimulator :: (Functor m, MonadIO m)
   => Codebase              -- ^ Post-transform LLVM code
@@ -112,9 +123,13 @@ callDefine' normalRetID calleeSym mreg args = do
           foldr bindArg M.empty (formals `zip` actuals)
 
     bindArg (Typed ft reg, v@(Typed at _)) mp
-      | ft == at = case at of
-          L.PrimType (L.Integer{}) -> M.insert reg v mp
-          _                        -> err $ text "unsupported arg type:" <+> L.ppType at
+      | ft == at =
+          let ok = M.insert reg v mp
+          in
+            case at of
+            L.PrimType L.Integer{} -> ok
+            L.PtrTo L.FunTy{}      -> ok
+            _ -> err $ text "unsupported arg type:" <+> L.ppType at
       | otherwise = err
           $ text "formal/actual type mismatch:"
             <+> L.ppType ft <+> text "vs." <+> L.ppType at
@@ -188,21 +203,40 @@ getCurrentBlockM = do
     Nothing -> error "getCurrentBlock: no current path"
     Just p  -> maybe (error "getCurrentBlock: no current block") return (pathCB p)
 
+-- | @clearCurrentExecution@ clears the current pending path from the top merge
+-- frame; then, if no pending paths remain, it merges the top merge frame with
+-- the merge frame beneath it on the control stack.
+clearCurrentExecution ::
+  (Functor m, MonadIO m)
+  => Simulator sbe m ()
+clearCurrentExecution = do
+  top <- popMergeFrame
+  if (1 == length (pendingPaths top))
+    then do
+      -- We just executed the last remaining path, so merge the current merge
+      -- frame into the caller's merge frame.
+      pushMergeFrame =<< mergeMFs top =<< popMergeFrame
+    else do
+      -- We still have pending paths, so only remove the current path.
+      pushMergeFrame $ snd $ popPending top
+
 mergeReturn :: (LogMonad m, Functor m, MonadIO m)
   => Maybe (Typed SymValue)
   -> Simulator sbe m ()
-mergeReturn Nothing   = return ()
-mergeReturn (Just tv) = do
+mergeReturn mtv = do
   mtop <- topMF <$> gets ctrlStk
   case mtop of
     Just ReturnFrame{} -> return ()
     Just _             -> error "mergeReturn: expected return merge frame"
     Nothing            -> error "mergeReturn: empty control stack"
 
-  -- Set the return value in the current path
-  callFrm <- getCallFrame
-  rv      <- getTypedTerm' callFrm tv
-  modifyPath $ setReturnValue (Just $ typedValue rv)
+  case mtv of
+    Nothing -> return ()
+    Just tv -> do
+      -- Set the return value in the current path
+      callFrm <- getCallFrame
+      rv      <- getTypedTerm' callFrm tv
+      modifyPath $ setReturnValue (Just $ typedValue rv)
 
   -- Merge the current path into the merged state for the current merge frame.
   Just p <- getPath
@@ -220,15 +254,17 @@ mergeMFs :: (MonadIO m)
 -- Source frame is a return frame
 mergeMFs src@ReturnFrame{} dst = do
   let Just p = getMergedState src -- NB: src /must/ have a merged state.
-  case pathRetVal p of
-    Nothing -> error "mergeMFs w/ void retty nyi"
-    Just rv
-      | isExitFrame dst -> do
-          -- Merge src's merged state with dst's merged state
-          let f Nothing = Just p
-              f ms      = mergePaths p ms
-          return $ modifyMergedState f dst
-      | isReturnFrame dst -> do
+
+  case dst of
+    ExitFrame{} -> do
+      -- Merge src's merged state with dst's merged state
+      let f Nothing = Just p
+          f ms      = mergePaths p ms
+      return $ modifyMergedState f dst
+    ReturnFrame{} -> do
+      case pathRetVal p of
+        Nothing -> return dst
+        Just rv -> do
           -- Extract the return value from src's merged state and associate it
           -- with src's return register name in the call frame of dst's current
           -- path.
@@ -242,8 +278,43 @@ mergeMFs src@ReturnFrame{} dst = do
                     reg = typedValue rreg
                 in
                   modifyCallFrame (setReg reg trv) dstPath
-      | otherwise -> do
-          error "mergeMFs: postdom dst frame nyi"
+    PostdomFrame{} -> do
+      error "mergeMFs: postdom dst frame nyi"
+
+
+--   case pathRetVal p of
+--     Nothing
+--       | isExitFrame dst -> do
+--           -- Merge src's merged state with dst's merged state
+--           let f Nothing = Just p
+--               f ms      = mergePaths p ms
+--           return $ modifyMergedState f dst
+--       | isReturnFrame dst -> return dst
+--       | otherwise -> do
+--           error "mergeMFs: postdom dst frame nyi"
+
+--     Just rv
+--       | isExitFrame dst -> do
+--           -- Merge src's merged state with dst's merged state
+--           let f Nothing = Just p
+--               f ms      = mergePaths p ms
+--           return $ modifyMergedState f dst
+--       | isReturnFrame dst -> do
+--           -- Extract the return value from src's merged state and associate it
+--           -- with src's return register name in the call frame of dst's current
+--           -- path.
+--           case rfRetReg src of
+--             Nothing   -> error "mergeMFs: src return frame has RV but no return register"
+--             Just rreg -> do
+--               -- Associate the return value in src's merged state with src's
+--               -- return register name in the caller's call frame.
+--               return $ (`modifyPending` dst) $ \dstPath ->
+--                 let trv = typedAs rreg rv
+--                     reg = typedValue rreg
+--                 in
+--                   modifyCallFrame (setReg reg trv) dstPath
+--       | otherwise -> do
+--           error "mergeMFs: postdom dst frame nyi"
 
 -- Source frame is a postdom frame
 mergeMFs src@PostdomFrame{} dst = do
@@ -263,26 +334,6 @@ mergePaths :: Path term -> Maybe (Path term) -> Maybe (Path term)
 -- precondition violation explanation datatype in JSS, for example.
 mergePaths _p1 (Just _p2) = error "real path merging nyi"
 mergePaths p1 Nothing     = Just p1
-
--- | @clearCurrentExecution@ clears the current pending path from the top merge
--- frame; then, if no pending paths remain, it merges the top merge frame with
--- the merge frame beneath it on the control stack.
-clearCurrentExecution ::
-  (Functor m, MonadIO m)
-  => Simulator sbe m ()
-clearCurrentExecution = do
-  top <- popMergeFrame
-  if (1 == length (pendingPaths top))
-    then do
-      -- We just executed the last remaining path, so merge the current merge
-      -- frame into the caller's merge frame.
-      pushMergeFrame =<< mergeMFs top =<< popMergeFrame
-    else do
-      -- We still have pending paths, so only remove the current path.
-      pushMergeFrame $ snd $ popPending top
-
-lkupIdent' :: L.Ident -> CallFrame term -> Typed term
-lkupIdent' i = flip (M.!) i . frmRegs
 
 -- | getTypedTerm' in the context of the current call frame
 getTypedTerm :: (Functor m, MonadIO m)
@@ -305,7 +356,7 @@ getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
   = error $ "getTypedTerm': Non-symbol ptr-to-fun nyi: " ++ show tv
 
 getTypedTerm' frm (Typed _ (L.ValIdent i))
-  = return $ lkupIdent' i frm
+  = return $ lkupIdent i frm
 
 getTypedTerm' _ tv@(Typed t v)
   = error $ "getTypedTerm': unsupported value: "
@@ -320,15 +371,19 @@ getGFPTerm key@(sym, _) = do
     Just t  -> return t
     Nothing -> do
       def <- lookupDefine sym <$> gets codebase
-      m0  <- gets memModel
-      dbugM $ "getGFPTerm mkassoc: m0:"
-      dumpMem m0
-      (t, m1) <- withSBE $ \sbe ->
-                 memAddDefine sbe m0 sym
-                 $ nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
+      t   <- mutateMem $ \m0 -> do
+               -- dbug
+               dbugM $ "getGFPTerm mkassoc: m0:"
+               dumpMem m0
+
+               let idl = nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
+               withSBE $ \sbe -> memAddDefine sbe m0 sym idl
+      -- dbug
+      m1 <- gets memModel
       dbugM $ "getGFPTerm mkassoc: m1:"
       dumpMem m1
-      modify $ \s -> s{ memModel = m1, gfpTerms = M.insert key t (gfpTerms s)}
+
+      modify $ \s -> s{ gfpTerms = M.insert key t (gfpTerms s)}
       return t
 
 --------------------------------------------------------------------------------
@@ -347,12 +402,13 @@ step ::
 step ClearCurrentExecution =
   clearCurrentExecution
 
-step (PushCallFrame (L.ValSymbol calleeSym) args mres) = do
-  cb <- getCurrentBlockM
-  callDefine' cb calleeSym mres =<< mapM getTypedTerm args
-
-step (PushCallFrame _ _ _) =
-  error "PushCallFrame with non-Symbol callees nyi"
+step (PushCallFrame callee args mres) = do
+  cb  <- getCurrentBlockM
+  eab <- resolveCallee callee
+  case eab of
+    Left msg        -> error $ "PushCallFrame: " ++ msg
+    Right calleeSym -> callDefine' cb calleeSym mres
+                         =<< mapM getTypedTerm args
 
 step (PushInvokeFrame _fn _args _mres _e) =
   error "PushInvokeFrame nyi"
@@ -377,18 +433,15 @@ step (MergePostDominator pdid cond) = do
     TrueSymCond -> return (pathConstraints p) &&& boolTerm True
     HasConstValue{} -> error "path constraint addition: HasConstValue nyi"
 
-  pretty <- pureWithSBE $ \sbe -> prettyTermD sbe newPC
+  pretty <- withSBE' $ \sbe -> prettyTermD sbe newPC
   dbugM' 5 $ "New path constraint is: " ++ render pretty
 
   -- Merge the current path into the merged state for the current merge frame
   modifyMF $ modifyMergedState $ mergePaths p{ pathConstraints = newPC }
 
-step MergeReturnVoidAndClear =
-  error "MergeReturnVoidAndClear nyi"
+step MergeReturnVoidAndClear = mergeReturn Nothing >> clearCurrentExecution
 
-step (MergeReturnAndClear rslt) = do
-  mergeReturn (Just rslt)
-  clearCurrentExecution
+step (MergeReturnAndClear rslt) = mergeReturn (Just rslt) >> clearCurrentExecution
 
 step (PushPendingExecution _cond) =
   error "PushPendingExecution nyi"
@@ -413,7 +466,7 @@ step (IfThenElse cond thenStmts elseStmts) = do
       CE.assert (t == i1) $ return ()
 
       mb <- fmap (fromIntegral . fromEnum)
-            <$> pureWithSBE (\sbe -> getBool $ closeTerm sbe v')
+            <$> withSBE' (\sbe -> getBool $ closeTerm sbe v')
       case mb of
         Nothing -> error "non-bool or symbolic bool SymCond HasConstValue terms nyi"
         Just b  -> return (i == b)
@@ -436,11 +489,20 @@ eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
-
 eval s@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
 
-eval (Bit _op _tv1 _v2       ) = error "eval Bit nyi"
-eval (Conv _op _tv1 _t       ) = error "eval Conv nyi"
+eval (Bit _op _tv1 _v2) = error "eval Bit nyi"
+
+eval (Conv op tv@(Typed t1@(L.PrimType (L.Integer w1)) v1) t2@(L.PrimType (L.Integer w2))) = do
+  Typed t x <- getTypedTerm tv
+  CE.assert (t == t1) $ return ()
+  $(dV 'op)
+  $(dV 'w1)
+  $(dV 'w2)
+  dbugTerm "x" x
+  Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
+eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr s)
+
 eval (Alloca _t _mtv _malign ) = error "eval Alloca nyi"
 eval (Load _tv               ) = error "eval Load nyi"
 
@@ -449,7 +511,6 @@ eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
-
 eval s@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr s)
 
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
@@ -465,13 +526,13 @@ eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
   -> Simulator sbe m (SBETerm sbe)
 mx &&& my = do
    x <- mx
-   xb <- pureWithSBE $ \sbe -> getBool (closeTerm sbe x)
+   xb <- withSBE' $ \sbe -> getBool (closeTerm sbe x)
    case xb of
      Just True  -> my
      Just False -> return x
      _          -> do
        y  <- my
-       yb <- pureWithSBE $ \sbe -> getBool (closeTerm sbe y)
+       yb <- withSBE' $ \sbe -> getBool (closeTerm sbe y)
        case yb of
          Just True  -> return x
          Just False -> return y
@@ -479,6 +540,31 @@ mx &&& my = do
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+resolveCallee :: (MonadIO m, Functor m) => SymValue -> Simulator sbe m (Either String L.Symbol)
+resolveCallee callee = case callee of
+ L.ValSymbol sym -> ok sym
+ L.ValIdent i    -> resolveIdent i
+ _               -> err $ "Unexpected callee value: " ++ show (L.ppValue callee)
+ where
+   resolveIdent i = do
+     Typed t fp <- lkupIdent i <$> getCallFrame
+     case L.elimFunPtr t of
+       Nothing -> err "Callee identifier referent is not a function pointer"
+       Just (_rty, _argtys, _isVarArgs) -> do
+         $(dV 't)
+         dbugTerm "fp" fp
+         withMem $ \mem -> do
+            pr <- withSBE $ \sbe -> codeLookupDefine sbe mem fp
+            case pr of
+              Result sym -> ok sym
+              _ -> err "resolveCallee: Failed to resolve callee function pointer"
+   ok sym  = return $ Right $ sym
+   err msg = return $ Left $ "resolveCallee: " ++ msg
+
+
+lkupIdent :: L.Ident -> CallFrame term -> Typed term
+lkupIdent i = flip (M.!) i . frmRegs
 
 runStmts ::
   ( LogMonad m
@@ -574,3 +660,8 @@ dbugStep stmt = do
                  ++ show (ppSymStmt stmt)
   step stmt
   dumpCtrlStk' 5
+
+dbugTerm :: (MonadIO m, Functor m) => String -> SBETerm sbe -> Simulator sbe m ()
+dbugTerm desc t = do
+  pretty <- render <$> withSBE' (\sbe -> prettyTermD sbe t)
+  dbugM $ desc ++ ": " ++ pretty

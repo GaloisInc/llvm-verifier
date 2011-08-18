@@ -47,10 +47,12 @@ loadCodebase bcFile = do
   case eab of
     Left msg  -> err msg
     Right mdl -> do
---       putStrLn $ "mdl = " ++ show (LLVM.ppModule mdl)
       let xlt d = M.insert (LLVM.defName d) (liftDefine d)
           cb    = Codebase
                   { cbGlobalNameMap = foldr xlt M.empty (LLVM.modDefines mdl) }
+--       putStrLn $ "mdl = \n" ++ show (LLVM.ppModule mdl)
+--       putStrLn $ "xlated = \n" ++ (unlines $ map (show . ppSymDefine) (M.elems (cbGlobalNameMap cb)))
+--       putStrLn "--"
       return cb
   where
     parse   = BS.readFile >=> BC.parseBitCode

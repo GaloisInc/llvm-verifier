@@ -164,7 +164,7 @@ liftBB lti phiMap bb = do
       -- * Process rest of instructions.
       -- * TODO: Handle invoke instructions
       impl (Result reg (LLVM.Call _b tp v tpvl):r) idx il = do
-        let res = case (LLVM.elimPtrTo >=> LLVM.elimFunTy) tp of
+        let res = case LLVM.elimFunPtr tp of
                     -- NB: The LLVM bitcode parser always types call
                     -- instructions with the full ptr-to-fun type in order to
                     -- present a consistent form that also handles varargs.  We

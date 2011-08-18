@@ -8,6 +8,7 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE ViewPatterns               #-}
 
 module LSS.SBEBitBlast
   ( module LSS.SBEInterface
@@ -27,7 +28,6 @@ import           Data.Bits
 import           Data.Int
 import           Data.Map                  (Map)
 import           Debug.Trace
-import           Debug.Trace               (trace)
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Text.PrettyPrint.HughesPJ
@@ -69,9 +69,15 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
     case beVectorToMaybeInt be (btVector t) of
       Nothing     -> Nothing
       Just (w, v) -> Just $ case w of
-                              32 -> fromIntegral (fromIntegral v :: Int32)
-                              64 -> fromIntegral (fromIntegral v :: Int64)
-                              _  -> error $ "BitTermClosed/getSVal: unsupported integer width " ++ show w
+        8             -> fromIntegral (i8 v)
+        16            -> fromIntegral (fromIntegral v :: Int16)
+        32            -> fromIntegral (fromIntegral v :: Int32)
+        64            -> fromIntegral (fromIntegral v :: Int64)
+        n | n < 8     -> fromIntegral (i8 v .&. (2 ^ n - 1))
+          | otherwise -> error $ "BitTermClosed/getSVal: unsupported integer width " ++ show w
+        where
+          i8 :: Integer -> Int8
+          i8 x = fromIntegral x :: Int8
 
   getUVal = error "ConstantProjection (BitTermClosed): getUVal BitTerm nyi"
 
@@ -494,12 +500,7 @@ bmMemAddDefine lc be m def idl
     | newCodeAddr > bmCodeEnd m
     = bmError "Not enough space in code memory to allocate new definition."
     | otherwise
-    = trace ("bmMemAddDefine: def = " ++ show def ++ ", idl = " ++ show idl)
-      trace (", bbcnt = " ++ show bbcnt)
-      trace (", codeAddr = " ++ show codeAddr)
-      trace (", newCodeAddr = " ++ show newCodeAddr)
-      $
-      ( BitTerm (beVectorFromInt be (llvmAddrWidthBits lc) codeAddr)
+    = ( BitTerm (beVectorFromInt be (llvmAddrWidthBits lc) codeAddr)
       , m { bmStorage = newStorage
           , bmCodeAddr = newCodeAddr
             -- Include new addresses in memory
@@ -590,6 +591,18 @@ bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
               LLVM.URem -> beRem  -- TODO: FIXME: SAB
               _ -> bmError $ "unsupported arithmetic op: " ++ show op
 
+bitConv :: (LV.Storable l, Eq l) =>
+           BitEngine l -> LLVM.ConvOp
+        -> BitTerm l -> LLVM.Type
+        -> BitIO l (BitTerm l)
+bitConv be op (BitTerm x) (LLVM.PrimType (LLVM.Integer (fromIntegral -> w))) =
+  BitIO $ BitTerm <$> f be w x
+  where f = case op of
+              LLVM.Trunc -> assert (w < LV.length x) beTrunc
+              LLVM.ZExt  -> assert (w > LV.length x) beZext
+              _ -> bmError $ "Unsupported conv op: " ++ show op
+bitConv _ _ _ ty = bmError $ "Unsupported conv target type: " ++ show (LLVM.ppType ty)
+
 --  SBE Definition {{{1
 
 newtype BitIO l a = BitIO { liftSBEBitBlast :: IO a }
@@ -603,25 +616,26 @@ sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
   => LLVMContext -> BitEngine l -> SBE (BitIO l)
 sbeBitBlast lc be = sbe
   where sbe = SBE
-              { termInt  = (return . BitTerm) `c2` beVectorFromInt be
-              , termBool = return . BitTerm . LV.singleton . beLitFromBool be
-              , applyIte = bitIte be
-              , applyICmp = bitICmp be
-              , applyBitwise = bitBitwise be
-              , applyArith = bitArith be
-              , closeTerm = BitTermClosed . (,) be
-              , prettyTermD = S.prettyTermD . closeTerm sbe
-              , memDump = BitIO . bmDump
-              , memLoad = BitIO `c2` bmLoad lc be
-              , memStore = BitIO `c3` bmStore lc be
-              , memMerge = BitIO `c3` bmMerge be
-              , memAddDefine = return `c3` bmMemAddDefine lc be
+              { termInt          = (return . BitTerm) `c2` beVectorFromInt be
+              , termBool         = return . BitTerm . LV.singleton . beLitFromBool be
+              , applyIte         = bitIte be
+              , applyICmp        = bitICmp be
+              , applyBitwise     = bitBitwise be
+              , applyArith       = bitArith be
+              , applyConv        = bitConv be
+              , closeTerm        = BitTermClosed . (,) be
+              , prettyTermD      = S.prettyTermD . closeTerm sbe
+              , memDump          = BitIO . bmDump
+              , memLoad          = BitIO `c2` bmLoad lc be
+              , memStore         = BitIO `c3` bmStore lc be
+              , memMerge         = BitIO `c3` bmMerge be
+              , memAddDefine     = return `c3` bmMemAddDefine lc be
               , codeBlockAddress = return `c3` bmCodeBlockAddress lc be
               , codeLookupDefine = return `c2` bmCodeLookupDefine lc be
-              , stackAlloca = return `c4` bmStackAlloca lc be
-              , stackPushFrame = return . bmStackPush
-              , stackPopFrame = return . bmStackPop lc
-              , writeAiger = \f t -> BitIO $ beWriteAigerV be f (btVector t)
+              , stackAlloca      = return `c4` bmStackAlloca lc be
+              , stackPushFrame   = return . bmStackPush
+              , stackPopFrame    = return . bmStackPop lc
+              , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)
               }
 
 type Range t = (t,t)

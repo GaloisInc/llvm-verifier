@@ -12,7 +12,6 @@ Point-of-contact : jstanley
 module LSS.SBEInterface where
 
 import           Text.PrettyPrint.HughesPJ
-import qualified Verinf.Symbolic as S
 import qualified Text.LLVM.AST   as LLVM
 
 -- | SBETerm yields the type used to represent terms in particular SBE interface
@@ -35,6 +34,7 @@ data PartialResult r
   = Result r -- ^ The result of the operation.
   | Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed.
+  deriving Show
 
 data SBE m = SBE
   {
@@ -59,7 +59,8 @@ data SBE m = SBE
   , applyBitwise :: LLVM.BitOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
   , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
-
+    -- | @applyConv op v t@ performs LLVM conversion operation @op@
+  , applyConv   :: LLVM.ConvOp -> SBETerm m -> LLVM.Type -> m (SBETerm m)
     ----------------------------------------------------------------------------
     -- Term miscellany
 

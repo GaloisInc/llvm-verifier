@@ -11,6 +11,7 @@ Point-of-contact : jstanley
 module Tests.PrimOps (primOpTests) where
 
 import           Control.Applicative
+import           Control.Monad
 import           Control.Monad.Trans
 import           Data.Bits
 import           Data.Int
@@ -33,46 +34,49 @@ i32 = L.iT 32
 primOpTests :: [(Args, Property)]
 primOpTests =
   [
-    test 10 False "concrete int32 add" $
-      chkBinCInt32Fn 1 "primOps.bc"  (L.Symbol "int32_add") (+)
-  ,
-    test 10 False "concrete int32 sqr" $
-      chkUnaryCInt32Fn 1 "primOps.bc" (L.Symbol "int32_square") sqr
-  ,
-    test 10 False "concrete int32 muladd" $
-      chkBinCInt32Fn 1 "primOps.bc" (L.Symbol "int32_muladd") (\x y -> sqr (x + y))
-  ,
-    test1 "test-arith"  $ chkMain 1 "test-arith.bc" 0
-  ,
-    test1 "test-branch" $ chkMain 1 "test-branch.bc" 0
---   ,
---     test1 "test-call-simple" $ chkMain 5 "test-call-simple.bc" 0
---   ,
---     test1 "test-call-exit"   $ chkMain 1 "test-call-exit.bc" 0
+    test 10 False "concrete int32 add"    $ int32add       1
+  , test 10 False "concrete int32 sqr"    $ int32sqr       1
+  , test 10 False "concrete int32 muladd" $ int32muladd    1
+  , test  1 False "test-arith"            $ testArith      1
+  , test  1 False "test-branch"           $ testBranch     1
+  , test  1 False "test-call-voidrty"     $ testCallVR     1
+  , test  1 False "test-call-simple"      $ testCallSimple 1
+  , test  1 False "test-call-exit"        $ testCallExit   0
   ]
   where
-    sqr x   = x * x
-    test1   = test 1 False
+    -- The 'v' parameter to all of these tests controls the verbosity; a
+    -- verbosity of '0' turns the test into a successful no-op, but issues a
+    -- warning.
 
-chkBinCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Int32 -> Int32) -> PropertyM IO ()
+    int32add v       = psk v $ chkBinCInt32Fn v "primOps.bc"  (L.Symbol "int32_add") (\x y -> Just (x + y))
+    int32sqr v       = psk v $ chkUnaryCInt32Fn v "primOps.bc" (L.Symbol "int32_square") (Just . sqr)
+    int32muladd v    = psk v $ chkBinCInt32Fn v "primOps.bc" (L.Symbol "int32_muladd") (\x y -> Just $ sqr (x + y))
+    testArith v      = runMain v "test-arith.bc" (Just 0)
+    testBranch v     = runMain v "test-branch.bc" (Just 0)
+    testCallVR v     = runMain v "test-call-voidrty.bc" Nothing
+    testCallSimple v = runMain v "test-call-simple.bc" (Just 1)
+    testCallExit v   = runMain v "test-call-exit.bc" (Just 0)
+    runMain v bc     = psk v . chkNullaryCInt32Fn v bc (L.Symbol "main")
+    psk v act        = if (v > 0) then act else disabledWarn
+    sqr x            = x * x
+    disabledWarn     = run $ putStrLn "Warning: Next test is currently DISABLED!"
+
+chkBinCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Int32 -> Maybe Int32) -> PropertyM IO ()
 chkBinCInt32Fn v bcFile sym chkOp = do
   forAllM arbitrary $ \(x,y) -> do
-    chkRslt sym (fromIntegral (x `chkOp` y))
+    chkRslt sym (fromIntegral <$> x `chkOp` y)
       =<< run (runCInt32Fn v bcFile sym [x, y])
 
-chkUnaryCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Int32) -> PropertyM IO ()
+chkUnaryCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Maybe Int32) -> PropertyM IO ()
 chkUnaryCInt32Fn v bcFile sym chkOp =
   forAllM arbitrary $ \x -> do
-    chkRslt sym (fromIntegral (chkOp x))
+    chkRslt sym (fromIntegral <$> chkOp x)
       =<< run (runCInt32Fn v bcFile sym [x])
 
-chkNullaryCInt32Fn :: Int -> FilePath -> L.Symbol -> Int32 -> PropertyM IO ()
+chkNullaryCInt32Fn :: Int -> FilePath -> L.Symbol -> Maybe Int32 -> PropertyM IO ()
 chkNullaryCInt32Fn v bcFile sym chkVal =
-  chkRslt sym (fromIntegral chkVal)
+  chkRslt sym (fromIntegral <$> chkVal)
     =<< run (runCInt32Fn v bcFile sym [])
-
-chkMain :: Int -> FilePath -> Int32 -> PropertyM IO ()
-chkMain v bcFile = chkNullaryCInt32Fn v bcFile (L.Symbol "main")
 
 runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe (BitTermClosed Lit))
 runCInt32Fn v bcFile sym cargs = do
@@ -97,12 +101,14 @@ runCInt32Fn v bcFile sym cargs = do
     rv <- getProgramReturnValue
     return $ BitTermClosed . (,) be <$> rv
 
-chkRslt :: ConstantProjection t => L.Symbol -> Integer -> Maybe t -> PropertyM IO ()
-chkRslt _ chk (Just (getSVal -> Just v)) = do
-  -- run $ putStrLn $ "chkRslt: constant v = " ++ show v
-  assert $ v == chk
-chkRslt sym _ _ =
-  assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
+chkRslt :: ConstantProjection t => L.Symbol -> Maybe Integer -> Maybe t -> PropertyM IO ()
+chkRslt _ (Just chk) (Just (getSVal -> Just v))
+  | v == chk  = assert True
+  | otherwise = assertMsg False $ "Expected " ++ show chk ++ ", got " ++ show v
+chkRslt _ Nothing Nothing
+  = assert True
+chkRslt sym _ _
+  = assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
 
 --------------------------------------------------------------------------------
 -- Scratch

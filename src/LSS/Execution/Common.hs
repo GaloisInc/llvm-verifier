@@ -9,6 +9,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
+{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
@@ -16,18 +17,21 @@ Point-of-contact : jstanley
 
 module LSS.Execution.Common where
 
-import           Control.Arrow              hiding ((<+>))
-import           Control.Monad.State        hiding (State)
+import           Control.Applicative
+import           Control.Arrow             hiding ((<+>))
+import           Control.Monad.State       hiding (State)
 import           Data.LLVM.Symbolic.AST
+import           Debug.Trace
 import           LSS.Execution.Codebase
-import           LSS.SBEInterface
 import           LSS.Execution.Utils
-import           Text.LLVM                  (Typed(..))
+import           LSS.SBEInterface
+import           Language.Haskell.TH
+import           Text.LLVM                 (Typed(..))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Utils.LogMonad
-import qualified Data.Map                   as M
-import qualified Text.LLVM                  as L
-import qualified Text.PrettyPrint.HughesPJ  as PP
+import qualified Data.Map                  as M
+import qualified Text.LLVM                 as L
+import qualified Text.PrettyPrint.HughesPJ as PP
 
 newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
   deriving ( Functor
@@ -110,6 +114,10 @@ instance MonadIO m => LogMonad (Simulator sbe m) where
   getVerbosity   = gets verbosity
   setVerbosity v = modify $ \s -> s{ verbosity = v }
 
+instance (Monad m, Functor m) => Applicative (Simulator sbe m) where
+  pure      = return
+  af <*> aa = af >>= \f -> f <$> aa
+
 -----------------------------------------------------------------------------------------
 -- Pretty printing
 
@@ -128,7 +136,7 @@ ppMergeFrame sbe mf = case mf of
                )
   PostdomFrame p pps bid ->
     text "MF(Pdom|" <>  ppSymBlockID bid <> text "):"
-    $+$ nest 2 (text "Merged:" <+> maybe empty (ppPath sbe) p)
+    $+$ nest 2 (text "Merged:" <+> maybe PP.empty (ppPath sbe) p)
     $+$ nest 2 (ppPendingPaths pps)
   ReturnFrame _mr nl mns mel mes pps ->
     text "MF(Retn):" $+$ nest 2 rest
@@ -188,3 +196,11 @@ dumpCtrlStk' lvl = whenVerbosity (>=lvl) dumpCtrlStk
 instance (LogMonad IO) where
   setVerbosity _ = return ()
   getVerbosity   = return 1
+
+dbugV :: (MonadIO m, Show a) => String -> a -> m ()
+dbugV desc v = dbugM $ desc ++ ": " ++ show v
+
+dt, dV, nmStr :: Name -> Q Exp
+dt name    = [| trace ( $(nmStr name) ++ ": " ++ show $(varE name)) $(varE name) |]
+dV name    = [| dbugV $(nmStr name) $(varE name) |]
+nmStr name = [| $(litE . StringL $ nameBase name) |]
