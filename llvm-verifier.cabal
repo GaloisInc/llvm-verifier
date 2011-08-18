@@ -43,10 +43,8 @@ library
     , mtl
     , pretty
     , transformers
-    , template-haskell
     , vector
     , Verinf
-
 
   hs-source-dirs: src
 
@@ -60,6 +58,8 @@ library
     LSS.SBEBitBlast
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
+  if os(darwin)
+    GHC-options: -optl-Wl,-dead_strip
 
 -- executable lss
 --   if !flag(build-lss)
@@ -94,7 +94,6 @@ executable Tests
   hs-source-dirs : src test/src
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
-
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
