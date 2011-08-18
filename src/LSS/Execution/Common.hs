@@ -9,7 +9,6 @@ Point-of-contact : jstanley
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
-{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
@@ -25,7 +24,6 @@ import           Debug.Trace
 import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
-import           Language.Haskell.TH
 import           Text.LLVM                 (Typed(..))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Utils.LogMonad
@@ -199,8 +197,3 @@ instance (LogMonad IO) where
 
 dbugV :: (MonadIO m, Show a) => String -> a -> m ()
 dbugV desc v = dbugM $ desc ++ ": " ++ show v
-
-dt, dV, nmStr :: Name -> Q Exp
-dt name    = [| trace ( $(nmStr name) ++ ": " ++ show $(varE name)) $(varE name) |]
-dV name    = [| dbugV $(nmStr name) $(varE name) |]
-nmStr name = [| $(litE . StringL $ nameBase name) |]

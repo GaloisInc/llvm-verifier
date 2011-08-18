@@ -9,7 +9,6 @@ Point-of-contact : jstanley
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes            #-}
-{-# LANGUAGE TemplateHaskell       #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
@@ -281,41 +280,6 @@ mergeMFs src@ReturnFrame{} dst = do
     PostdomFrame{} -> do
       error "mergeMFs: postdom dst frame nyi"
 
-
---   case pathRetVal p of
---     Nothing
---       | isExitFrame dst -> do
---           -- Merge src's merged state with dst's merged state
---           let f Nothing = Just p
---               f ms      = mergePaths p ms
---           return $ modifyMergedState f dst
---       | isReturnFrame dst -> return dst
---       | otherwise -> do
---           error "mergeMFs: postdom dst frame nyi"
-
---     Just rv
---       | isExitFrame dst -> do
---           -- Merge src's merged state with dst's merged state
---           let f Nothing = Just p
---               f ms      = mergePaths p ms
---           return $ modifyMergedState f dst
---       | isReturnFrame dst -> do
---           -- Extract the return value from src's merged state and associate it
---           -- with src's return register name in the call frame of dst's current
---           -- path.
---           case rfRetReg src of
---             Nothing   -> error "mergeMFs: src return frame has RV but no return register"
---             Just rreg -> do
---               -- Associate the return value in src's merged state with src's
---               -- return register name in the caller's call frame.
---               return $ (`modifyPending` dst) $ \dstPath ->
---                 let trv = typedAs rreg rv
---                     reg = typedValue rreg
---                 in
---                   modifyCallFrame (setReg reg trv) dstPath
---       | otherwise -> do
---           error "mergeMFs: postdom dst frame nyi"
-
 -- Source frame is a postdom frame
 mergeMFs src@PostdomFrame{} dst = do
   let Just p = getMergedState src -- NB: src /must/ have a merged state.
@@ -496,10 +460,6 @@ eval (Bit _op _tv1 _v2) = error "eval Bit nyi"
 eval (Conv op tv@(Typed t1@(L.PrimType (L.Integer w1)) v1) t2@(L.PrimType (L.Integer w2))) = do
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
-  $(dV 'op)
-  $(dV 'w1)
-  $(dV 'w2)
-  dbugTerm "x" x
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr s)
 
@@ -552,8 +512,6 @@ resolveCallee callee = case callee of
      case L.elimFunPtr t of
        Nothing -> err "Callee identifier referent is not a function pointer"
        Just (_rty, _argtys, _isVarArgs) -> do
-         $(dV 't)
-         dbugTerm "fp" fp
          withMem $ \mem -> do
             pr <- withSBE $ \sbe -> codeLookupDefine sbe mem fp
             case pr of
@@ -561,7 +519,6 @@ resolveCallee callee = case callee of
               _ -> err "resolveCallee: Failed to resolve callee function pointer"
    ok sym  = return $ Right $ sym
    err msg = return $ Left $ "resolveCallee: " ++ msg
-
 
 lkupIdent :: L.Ident -> CallFrame term -> Typed term
 lkupIdent i = flip (M.!) i . frmRegs
