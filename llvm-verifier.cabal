@@ -43,6 +43,7 @@ library
     , mtl
     , pretty
     , transformers
+    , template-haskell
     , vector
     , Verinf
 
