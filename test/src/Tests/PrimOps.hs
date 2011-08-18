@@ -41,7 +41,7 @@ primOpTests =
   , test  1 False "test-branch"           $ testBranch     1
   , test  1 False "test-call-voidrty"     $ testCallVR     1
   , test  1 False "test-call-simple"      $ testCallSimple 1
-  , test  1 False "test-ptr-simple"       $ testPtrSimple  1
+  , test  1 False "test-ptr-simple"       $ testPtrSimple  0
   , test  1 False "test-call-exit"        $ testCallExit   0
   ]
   where
