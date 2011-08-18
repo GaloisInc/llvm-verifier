@@ -48,9 +48,10 @@ primOpTests =
     -- verbosity of '0' turns the test into a successful no-op, but issues a
     -- warning.
 
-    int32add v       = psk v $ chkBinCInt32Fn v "primOps.bc"  (L.Symbol "int32_add") (\x y -> Just (x + y))
-    int32sqr v       = psk v $ chkUnaryCInt32Fn v "primOps.bc" (L.Symbol "int32_square") (Just . sqr)
-    int32muladd v    = psk v $ chkBinCInt32Fn v "primOps.bc" (L.Symbol "int32_muladd") (\x y -> Just $ sqr (x + y))
+    int32add v       = psk v $ chkBinCInt32Fn v "test-primops.bc"  (L.Symbol "int32_add") (\x y -> Just (x + y))
+    int32sqr v       = psk v $ chkUnaryCInt32Fn v "test-primops.bc" (L.Symbol "int32_square") (Just . sqr)
+
+    int32muladd v    = psk v $ chkBinCInt32Fn v "test-primops.bc" (L.Symbol "int32_muladd") (\x y -> Just $ sqr (x + y))
     testArith v      = runMain v "test-arith.bc" (Just 0)
     testBranch v     = runMain v "test-branch.bc" (Just 0)
     testCallVR v     = runMain v "test-call-voidrty.bc" Nothing
