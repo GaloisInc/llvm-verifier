@@ -583,7 +583,10 @@ bitBitwise be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
   where f = case op of
               LLVM.And -> beAndInt
               LLVM.Or -> beOrInt
-              _ -> bmError $ "unsupported arithmetic op: " ++ show op
+              LLVM.Xor -> beXorInt
+              LLVM.Shl -> beShl
+              LLVM.Lshr -> beUnsignedShr
+              LLVM.Ashr -> beSignedShr
 
 bitArith :: (LV.Storable l, Eq l) =>
             BitEngine l -> LLVM.ArithOp
