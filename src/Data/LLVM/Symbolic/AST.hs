@@ -187,7 +187,7 @@ data SymStmt
   | AddPathConstraint SymCond
   -- | Assign result of instruction to register.
   | Assign Reg SymExpr
-  -- | @Store addr v@ stores value @v@ in @addr@.
+  -- | @Store v addr@ stores value @v@ in @addr@.
   | Store (Typed SymValue) (Typed SymValue)
   -- | Conditional execution.
   | IfThenElse SymCond [SymStmt] [SymStmt]
@@ -216,7 +216,7 @@ ppSymStmt (PushPendingExecution c) = text "pushPendingExecution" <+> ppSymCond c
 ppSymStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
 ppSymStmt (AddPathConstraint c) = text "addPathConstraint" <+> ppSymCond c
 ppSymStmt (Assign v e) = ppReg v <+> char '=' <+> ppSymExpr e
-ppSymStmt (Store addr v) = text "store" <+> ppTypedValue addr <> comma <+> ppTypedValue v
+ppSymStmt (Store v addr) = text "store" <+> ppTypedValue v <> comma <+> ppTypedValue addr
 ppSymStmt (IfThenElse c t f) =
   text "if" <+> ppSymCond c <> char '{'
     $+$ nest 2 (vcat (map ppSymStmt t))

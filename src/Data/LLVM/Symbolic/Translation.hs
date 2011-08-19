@@ -223,7 +223,7 @@ liftBB lti phiMap bb = do
                    Result r (LLVM.Conv  op tpv tp)    -> Assign r (Conv  op tpv tp)
                    Result r (LLVM.Alloca tp mtpv mi)  -> Assign r (Alloca tp mtpv mi)
                    Result r (LLVM.Load tpv)           -> Assign r (Load tpv)
-                   Effect   (LLVM.Store a v)          -> Store a v
+                   Effect   (LLVM.Store v addr)       -> Store v addr
                    Result r (LLVM.ICmp op tpv1 v2)    -> Assign r (ICmp op tpv1 v2)
                    Result r (LLVM.FCmp op tpv1 v2)    -> Assign r (FCmp op tpv1 v2)
                    Result r (LLVM.GEP tp tpvl)        -> Assign r (GEP tp tpvl)

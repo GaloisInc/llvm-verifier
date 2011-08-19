@@ -110,14 +110,17 @@ data Storage l
   | SUninitialized -- ^ A memory byte that has not been initialized by LLVM.
   | SUnallocated -- ^ A memory section that has not been allocated to the program.
 
-ppStorage :: Storage l -> Doc
-ppStorage (SBranch f t) = text "SBranch" <+> parens (ppStorage f) <+> parens (ppStorage t)
-ppStorage (SValue _) = text "SValue XXXX"
-ppStorage (SDefine d) = text ("SDefine " ++ show d)
-ppStorage (SBlock d b) = text ("SBlock " ++ show d ++ " " ++ show b)
-ppStorage SUninitialized = text "SUninitialized"
-ppStorage SUnallocated = text "SUnallocated"
-
+-- TODO: Write an alternate pretty printer that only shows address ranges and
+-- contents of allocated regions
+ppStorage :: (Eq l, LV.Storable l) => BitEngine l -> Storage l -> Doc
+ppStorage be (SBranch f t) = text "SBranch" <+> parens (ppStorage be f) <+> parens (ppStorage be t)
+ppStorage be (SValue lv) = text "SValue"
+                           <+> parens (S.prettyTermWithD S.defaultPPConfig
+                                       $ BitTermClosed (be, BitTerm lv))
+ppStorage _ (SDefine d) = text ("SDefine " ++ show d)
+ppStorage _ (SBlock d b) = text ("SBlock " ++ show d ++ " " ++ show b)
+ppStorage _ SUninitialized = text "SUninitialized"
+ppStorage _ SUnallocated = text "SUnallocated"
 
 mergeStorage :: (Eq l, LV.Storable l) => BitEngine l -> l -> Storage l -> Storage l -> IO (Storage l)
 mergeStorage be c x y = impl x y
@@ -231,7 +234,7 @@ initFreeList low high = V.unfoldr fn (low,high,0)
 setBytes :: Int -> Addr -> Addr -> (Addr -> Storage l) -> Storage l -> Storage l
 setBytes w low high fn mem
    | low == high = mem
-   | otherwise = trace ("setBytes " ++ show low ++ " " ++ show high) $ impl mem (w-1) 0
+   | otherwise = {- trace ("setBytes " ++ show low ++ " " ++ show high) $ -} impl mem (w-1) 0
   where impl _ (-1) v = fn v
         impl (SBranch f t) i v =
            SBranch (if low < mid  then impl f (i-1) v   else f)
@@ -348,13 +351,14 @@ alignDn addr i = addr .&. (complement mask)
 bmError :: String -> a
 bmError = error
 
-bmDump :: BitMemory l -> IO ()
-bmDump bm = do
+bmDump :: (Eq l, LV.Storable l) => BitEngine l -> BitMemory l -> IO ()
+bmDump be bm = do
   banners $ render $
     text "Memory Model Dump"
-    $+$ text "Stack:" <+> text (show (bmStackAddr bm, bmStackEnd bm))
-    $+$ text "Code :" <+> text (show (bmCodeAddr bm, bmCodeEnd bm))
-    $+$ ppStorage (bmStorage bm)
+    $+$ text "Stack Range:" <+> text (show (bmStackAddr bm, bmStackEnd bm))
+    $+$ text "Code Range:" <+> text (show (bmCodeAddr bm, bmCodeEnd bm))
+    $+$ text "Frame pointers:" <+> text (show (bmStackFrames bm))
+    $+$ ppStorage be (bmStorage bm)
 
 bmLoad :: (Eq l, LV.Storable l)
        => LLVMContext
@@ -606,7 +610,7 @@ bitConv _ _ _ ty = bmError $ "Unsupported conv target type: " ++ show (LLVM.ppTy
 --  SBE Definition {{{1
 
 newtype BitIO l a = BitIO { liftSBEBitBlast :: IO a }
-  deriving (Monad, MonadIO)
+  deriving (Monad, MonadIO, Functor)
 
 type instance SBETerm (BitIO l)       = BitTerm l
 type instance SBEClosedTerm (BitIO l) = BitTermClosed l
@@ -625,7 +629,7 @@ sbeBitBlast lc be = sbe
               , applyConv        = bitConv be
               , closeTerm        = BitTermClosed . (,) be
               , prettyTermD      = S.prettyTermD . closeTerm sbe
-              , memDump          = BitIO . bmDump
+              , memDump          = BitIO . bmDump be
               , memLoad          = BitIO `c2` bmLoad lc be
               , memStore         = BitIO `c3` bmStore lc be
               , memMerge         = BitIO `c3` bmMerge be
@@ -690,7 +694,7 @@ testSBEBitBlast = do
     let ptr = LLVM.PtrTo
     l1 <- termInt sbe 32 1
     (sp,m1) <- stackAlloca sbe m0 i32 (LLVM.Typed i32 l1) 1
-    liftIO $ putStrLn (render (ppStorage (bmStorage m1)))
+    liftIO $ putStrLn (render (ppStorage be (bmStorage m1)))
     liftIO $ putStrLn $ show $ beVectorToMaybeInt be (btVector sp)
     lv <- termInt sbe 32 0x12345678
     m2 <- memStore sbe m1 (LLVM.Typed i32 lv) sp
@@ -700,4 +704,4 @@ testSBEBitBlast = do
     return ()
 
 __nowarn_unused :: a
-__nowarn_unused = undefined testSBEBitBlast allocBlock
+__nowarn_unused = undefined testSBEBitBlast allocBlock trace

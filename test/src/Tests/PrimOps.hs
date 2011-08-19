@@ -11,9 +11,7 @@ Point-of-contact : jstanley
 module Tests.PrimOps (primOpTests) where
 
 import           Control.Applicative
-import           Control.Monad
 import           Control.Monad.Trans
-import           Data.Bits
 import           Data.Int
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
@@ -41,7 +39,7 @@ primOpTests =
   , test  1 False "test-branch"           $ testBranch     1
   , test  1 False "test-call-voidrty"     $ testCallVR     1
   , test  1 False "test-call-simple"      $ testCallSimple 1
-  , test  1 False "test-ptr-simple"       $ testPtrSimple  0
+  , test  1 False "test-ptr-simple"       $ testPtrSimple  1
   , test  1 False "test-call-exit"        $ testCallExit   0
   ]
   where
@@ -56,7 +54,7 @@ primOpTests =
     testBranch v     = runMain v "test-branch.bc" (Just 0)
     testCallVR v     = runMain v "test-call-voidrty.bc" Nothing
     testCallSimple v = runMain v "test-call-simple.bc" (Just 1)
-    testPtrSimple v  = runMain v "test-ptr-simple.bc" (Just 42)
+    testPtrSimple v  = runMain v "test-ptr-simple.bc" (Just 99)
     testCallExit v   = runMain v "test-call-exit.bc" (Just 0)
     runMain v bc     = psk v . chkNullaryCInt32Fn v bc (L.Symbol "main")
     psk v act        = if (v > 0) then act else disabledWarn
@@ -88,14 +86,13 @@ runCInt32Fn v bcFile sym cargs = do
   let addrWidthBits = 32
       lc            = LLVMContext addrWidthBits (error "LLVM Context has no ident -> type alias map defined")
       backend       = sbeBitBlast lc be
-      sz st bytes   = let ws = bytes `div` fromIntegral (addrWidthBits `shiftR` 3) in (st + ws, st + ws)
-      mem           = sbeBitBlastMem (sst, send) (cst, cend) (hst, hend)
+      mem           = sbeBitBlastMem (stkSt, stkEnd) (codeSt, codeEnd) (heapSt, heapEnd)
                       where
-                        sst            = 0 :: Integer
-                        defaultSzBytes = 32768
-                        (send, cst)    = sz sst defaultSzBytes
-                        (cend, hst)    = sz cst defaultSzBytes
-                        (hend, _)      = sz hst defaultSzBytes
+                        defaultSz         = 2^(16 :: Int)
+                        ext st len        = (st, st + len)
+                        (stkSt, stkEnd)   = ext 0 defaultSz
+                        (codeSt, codeEnd) = ext stkEnd defaultSz
+                        (heapSt, heapEnd) = ext codeEnd defaultSz
 
   runSimulator cb backend mem (SM . lift . liftSBEBitBlast) $ withVerbosity v $ do
     args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs

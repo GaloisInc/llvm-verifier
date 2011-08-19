@@ -20,7 +20,6 @@ import           Control.Applicative
 import           Control.Arrow             hiding ((<+>))
 import           Control.Monad.State       hiding (State)
 import           Data.LLVM.Symbolic.AST
-import           Debug.Trace
 import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
@@ -194,6 +193,3 @@ dumpCtrlStk' lvl = whenVerbosity (>=lvl) dumpCtrlStk
 instance (LogMonad IO) where
   setVerbosity _ = return ()
   getVerbosity   = return 1
-
-dbugV :: (MonadIO m, Show a) => String -> a -> m ()
-dbugV desc v = dbugM $ desc ++ ": " ++ show v

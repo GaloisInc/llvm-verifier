@@ -24,9 +24,10 @@ where
 
 import           Control.Applicative
 import           Control.Monad.State       hiding (State)
-import           Data.Maybe
-import           Data.List
+import           Data.Int
 import           Data.LLVM.Symbolic.AST
+import           Data.List
+import           Data.Maybe
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
@@ -38,25 +39,6 @@ import           Verinf.Symbolic.Common    (ConstantProjection(..))
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
-
-liftSBE :: Monad m => sbe a -> Simulator sbe m a
-liftSBE sa = gets liftSymBE >>= \f -> f sa
-
-withSBE :: (Functor m, Monad m) => (SBE sbe -> sbe a) -> Simulator sbe m a
-withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
-
-withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
-withSBE' f = gets symBE >>= \sbe -> return (f sbe)
-
-withMem :: (Monad m) => (SBEMemory sbe -> Simulator sbe m a) -> Simulator sbe m a
-withMem f = gets memModel >>= f
-
-mutateMem :: (Monad m) => (SBEMemory sbe -> Simulator sbe m (a, SBEMemory sbe)) -> Simulator sbe m a
-mutateMem f = do
-  m0      <- gets memModel
-  (r, m1) <- f m0
-  modify $ \s -> s{ memModel = m1 }
-  return r
 
 runSimulator :: (Functor m, MonadIO m)
   => Codebase              -- ^ Post-transform LLVM code
@@ -87,6 +69,7 @@ callDefine ::
   ( LogMonad m
   , MonadIO m
   , Functor m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => L.Symbol              -- ^ Callee symbol
@@ -97,7 +80,7 @@ callDefine calleeSym t args = do
   callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) args
   run
 
-callDefine' ::(MonadIO m, Functor m)
+callDefine' ::(MonadIO m, Functor m, Functor sbe)
   => SymBlockID            -- ^ Normal call return block id
   -> L.Symbol              -- ^ Callee symbol
   -> Maybe (Typed Reg)     -- ^ Callee return type and result register
@@ -105,13 +88,13 @@ callDefine' ::(MonadIO m, Functor m)
   -> Simulator sbe m ()
 callDefine' normalRetID calleeSym mreg args = do
   def  <- lookupDefine calleeSym <$> gets codebase
-  whenVerbosity (>=5) $ do
-    dbugM $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
-    banners $ show $ ppSymDefine def
+  dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
+  banners' 5 $ show $ ppSymDefine def
   path <- newPath $ CallFrame calleeSym $ bindArgs (sdArgs def) args
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
+  pushMemFrame
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
@@ -125,9 +108,12 @@ callDefine' normalRetID calleeSym mreg args = do
       | ft == at =
           let ok = M.insert reg v mp
           in
+            -- It's doubtful that anything will remain excluded here, but this
+            -- makes it explicit when we've not handled particular argument
+            -- types.
             case at of
             L.PrimType L.Integer{} -> ok
-            L.PtrTo L.FunTy{}      -> ok
+            L.PtrTo{}              -> ok
             _ -> err $ text "unsupported arg type:" <+> L.ppType at
       | otherwise = err
           $ text "formal/actual type mismatch:"
@@ -145,6 +131,7 @@ run ::
   ( LogMonad m
   , Functor m
   , MonadIO m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => Simulator sbe m ()
@@ -173,6 +160,20 @@ run = do
 
 --------------------------------------------------------------------------------
 -- LLVM-Sym operations
+
+-- | @pushMemFrame@ tells the memory model to push a new stack frame to the
+-- stack region.
+pushMemFrame :: (MonadIO m, Functor m, Functor sbe) => Simulator sbe m ()
+pushMemFrame = do
+  dbugM' 6 "Memory model: pushing stack frame"
+  mutateMem_ stackPushFrame
+
+-- | @pushMemFrame@ tells the memory model to pop a stack frame from the stack
+-- region.
+popMemFrame :: (MonadIO m, Functor m, Functor sbe) => Simulator sbe m ()
+popMemFrame = do
+  dbugM' 6 "Memory model: popping stack frame"
+  mutateMem_ stackPopFrame
 
 -- | @popMergeFrame@ removes the top entry of the control stack; assumes
 -- that the control stack is nonempty.
@@ -206,7 +207,7 @@ getCurrentBlockM = do
 -- frame; then, if no pending paths remain, it merges the top merge frame with
 -- the merge frame beneath it on the control stack.
 clearCurrentExecution ::
-  (Functor m, MonadIO m)
+  (Functor m, MonadIO m, Functor sbe)
   => Simulator sbe m ()
 clearCurrentExecution = do
   top <- popMergeFrame
@@ -215,9 +216,11 @@ clearCurrentExecution = do
       -- We just executed the last remaining path, so merge the current merge
       -- frame into the caller's merge frame.
       pushMergeFrame =<< mergeMFs top =<< popMergeFrame
+      popMemFrame
     else do
       -- We still have pending paths, so only remove the current path.
       pushMergeFrame $ snd $ popPending top
+
 
 mergeReturn :: (LogMonad m, Functor m, MonadIO m)
   => Maybe (Typed SymValue)
@@ -233,8 +236,7 @@ mergeReturn mtv = do
     Nothing -> return ()
     Just tv -> do
       -- Set the return value in the current path
-      callFrm <- getCallFrame
-      rv      <- getTypedTerm' callFrm tv
+      rv      <- getTypedTerm tv
       modifyPath $ setReturnValue (Just $ typedValue rv)
 
   -- Merge the current path into the merged state for the current merge frame.
@@ -302,30 +304,30 @@ mergePaths p1 Nothing     = Just p1
 -- | getTypedTerm' in the context of the current call frame
 getTypedTerm :: (Functor m, MonadIO m)
   => Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
-getTypedTerm tv = (`getTypedTerm'` tv) =<< getCallFrame
+getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 
 -- | Obtain the typed SBE term representation for the given LLVM value; performs
--- identifier lookup in the regmap of the given call frame as needed.
-getTypedTerm' :: (Functor m, MonadIO m, term ~ SBETerm sbe)
-  => CallFrame term -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+-- identifier lookup in the regmap of the given call frame as needed.  Note that
+-- a call frame is only required for identifier lookup, and may be omitted for
+-- other types of values.
 
+getTypedTerm' :: (Functor m, MonadIO m, term ~ SBETerm sbe)
+  => Maybe (CallFrame term) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
-
--- Typed {typedType = PtrTo (FunTy (PrimType (Integer 32)) [PrimType (Integer 8),PrimType (Integer 16)] False), typedValue = ValSymbol (Symbol "test")}
 getTypedTerm' _ (Typed t@(L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
   = Typed t <$> getGFPTerm (sym, argtys)
-
 getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
   = error $ "getTypedTerm': Non-symbol ptr-to-fun nyi: " ++ show tv
-
-getTypedTerm' frm (Typed _ (L.ValIdent i))
+getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
   = return $ lkupIdent i frm
-
-getTypedTerm' _ tv@(Typed t v)
-  = error $ "getTypedTerm': unsupported value: "
+getTypedTerm' mfrm tv@(Typed t v)
+  = do
+  sbe <- gets symBE
+  error $ "getTypedTerm': unsupported value / call frame presence: "
           ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
           ++ show (parens $ text $ show tv)
+          ++ show ("mfrm = " ++ show (ppCallFrame sbe <$> mfrm))
 
 getGFPTerm :: (Functor m, MonadIO m)
   => (L.Symbol, [L.Type]) -> Simulator sbe m (SBETerm sbe)
@@ -335,30 +337,20 @@ getGFPTerm key@(sym, _) = do
     Just t  -> return t
     Nothing -> do
       def <- lookupDefine sym <$> gets codebase
-      t   <- mutateMem $ \m0 -> do
-               -- dbug
-               dbugM $ "getGFPTerm mkassoc: m0:"
-               dumpMem m0
-
-               let idl = nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
-               withSBE $ \sbe -> memAddDefine sbe m0 sym idl
-      -- dbug
-      m1 <- gets memModel
-      dbugM $ "getGFPTerm mkassoc: m1:"
-      dumpMem m1
-
+      let idl = nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
+      t <- mutateMem $ \sbe mem -> memAddDefine sbe mem sym idl
       modify $ \s -> s{ gfpTerms = M.insert key t (gfpTerms s)}
       return t
 
 --------------------------------------------------------------------------------
--- Instruction stepper
+-- Instruction stepper and related functions
 
 -- | Execute a single LLVM-Sym AST instruction
 step ::
   ( LogMonad m
   , MonadIO m
   , Functor m
-  , Monad m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => SymStmt -> Simulator sbe m ()
@@ -394,7 +386,8 @@ step (MergePostDominator pdid cond) = do
 
   -- Construct the new path constraint for the current path
   newPC  <- case cond of
-    TrueSymCond -> return (pathConstraints p) &&& boolTerm True
+    TrueSymCond -> return (pathConstraints p)
+                     &&& boolTerm True {- tmp: typecheck &&& -}
     HasConstValue{} -> error "path constraint addition: HasConstValue nyi"
 
   pretty <- withSBE' $ \sbe -> prettyTermD sbe newPC
@@ -417,8 +410,10 @@ step (AddPathConstraint _cond) =
 
 step (Assign reg expr) = assign reg =<< eval expr
 
-step (Store _addr _val) =
-  error "Store nyi"
+step (Store val addr) = do
+  valTerm          <- getTypedTerm val
+  Typed _ addrTerm <- getTypedTerm addr
+  mutateMem_ $ \sbe mem -> memStore sbe mem valTerm addrTerm
 
 step (IfThenElse cond thenStmts elseStmts) = do
   b <- evalCond cond
@@ -457,14 +452,24 @@ eval s@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
 
 eval (Bit _op _tv1 _v2) = error "eval Bit nyi"
 
-eval (Conv op tv@(Typed t1@(L.PrimType (L.Integer w1)) v1) t2@(L.PrimType (L.Integer w2))) = do
+eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{})) = do
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr s)
 
-eval (Alloca _t _mtv _malign ) = error "eval Alloca nyi"
-eval (Load _tv               ) = error "eval Load nyi"
+eval (Alloca t msztv malign ) = do
+  szt <- case msztv of
+           Nothing   -> getTypedTerm (i32const 1)
+           Just sztv -> getTypedTerm sztv
+  let alloca sbe m = stackAlloca sbe m t szt (maybe 0 id malign)
+  Typed (L.PtrTo t) <$> mutateMem alloca
+
+eval (Load tv@(Typed (L.PtrTo ty) _)) = do
+  addrTerm <- getTypedTerm tv
+  let load sbe mem = memLoad sbe mem addrTerm
+  Typed ty <$> withMem load
+eval s@(Load _) = error $ "Illegal load operand: " ++ show (ppSymExpr s)
 
 eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
@@ -499,7 +504,40 @@ mx &&& my = do
          _          -> withSBE $ \sbe -> applyBitwise sbe L.And x y
 
 --------------------------------------------------------------------------------
+-- SBE lifters and helpers
+
+liftSBE :: Monad m => sbe a -> Simulator sbe m a
+liftSBE sa = gets liftSymBE >>= \f -> f sa
+
+withSBE :: (Functor m, Monad m) => (SBE sbe -> sbe a) -> Simulator sbe m a
+withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
+
+withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
+withSBE' f = gets symBE >>= \sbe -> return (f sbe)
+
+withMem :: (Functor m, Monad m)
+  => (SBE sbe -> SBEMemory sbe -> sbe a) -> Simulator sbe m a
+withMem f = gets memModel >>= withSBE . flip f
+
+mutateMem :: (Functor m, MonadIO m)
+  => (SBE sbe -> SBEMemory sbe -> sbe (a, SBEMemory sbe)) -> Simulator sbe m a
+mutateMem f = do
+  m0 <-gets memModel
+  whenVerbosity (>=6) $ dbugM "mutateMem pre:" >> dumpMem m0
+  (r, m1) <- withSBE (`f` m0)
+  modify $ \s -> s{ memModel = m1 }
+  whenVerbosity (>=6) $ dbugM "mutateMem post:" >> dumpMem m1
+  return r
+
+mutateMem_ :: (Functor m, MonadIO m, Functor sbe)
+  => (SBE sbe -> SBEMemory sbe -> sbe (SBEMemory sbe)) -> Simulator sbe m ()
+mutateMem_ f = mutateMem (\sbe mem -> ((,) ()) <$> f sbe mem) >> return ()
+
+--------------------------------------------------------------------------------
 -- Misc utility functions
+
+i32const :: Int32 -> Typed L.Value
+i32const x = L.iT 32 =: L.ValInteger (fromIntegral x)
 
 resolveCallee :: (MonadIO m, Functor m) => SymValue -> Simulator sbe m (Either String L.Symbol)
 resolveCallee callee = case callee of
@@ -512,11 +550,10 @@ resolveCallee callee = case callee of
      case L.elimFunPtr t of
        Nothing -> err "Callee identifier referent is not a function pointer"
        Just (_rty, _argtys, _isVarArgs) -> do
-         withMem $ \mem -> do
-            pr <- withSBE $ \sbe -> codeLookupDefine sbe mem fp
-            case pr of
-              Result sym -> ok sym
-              _ -> err "resolveCallee: Failed to resolve callee function pointer"
+         pr <- withMem $ \sbe mem -> codeLookupDefine sbe mem fp
+         case pr of
+           Result sym -> ok sym
+           _          -> err "resolveCallee: Failed to resolve callee function pointer"
    ok sym  = return $ Right $ sym
    err msg = return $ Left $ "resolveCallee: " ++ msg
 
@@ -527,6 +564,7 @@ runStmts ::
   ( LogMonad m
   , Functor m
   , MonadIO m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => [SymStmt] -> Simulator sbe m ()
@@ -592,6 +630,9 @@ modifyCallFrameM :: (Functor m, Monad m)
   => (CallFrame (SBETerm sbe) -> CallFrame (SBETerm sbe)) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
+--------------------------------------------------------------------------------
+-- Debugging
+
 dumpMem :: (Functor m, Monad m) => SBEMemory sbe -> Simulator sbe m ()
 dumpMem mem = withSBE $ flip memDump mem
 
@@ -599,6 +640,7 @@ dbugStep ::
   ( LogMonad m
   , MonadIO m
   , Functor m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => SymStmt -> Simulator sbe m ()
@@ -622,3 +664,13 @@ dbugTerm :: (MonadIO m, Functor m) => String -> SBETerm sbe -> Simulator sbe m (
 dbugTerm desc t = do
   pretty <- render <$> withSBE' (\sbe -> prettyTermD sbe t)
   dbugM $ desc ++ ": " ++ pretty
+
+dbugTypedTerm :: (MonadIO m, Functor m) => String -> Typed (SBETerm sbe) -> Simulator sbe m ()
+dbugTypedTerm desc (Typed ty t) =
+  dbugTerm (desc ++ "(" ++ show (L.ppType ty) ++ ")") t
+
+_nowarn_unused :: a
+_nowarn_unused = undefined
+  (dbugTerm undefined undefined :: Simulator IO IO ())
+  (dbugTypedTerm undefined undefined :: Simulator IO IO ())
+
