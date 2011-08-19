@@ -79,7 +79,7 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
           i8 :: Integer -> Int8
           i8 x = fromIntegral x :: Int8
 
-  getUVal = error "ConstantProjection (BitTermClosed): getUVal BitTerm nyi"
+  getUVal (BitTermClosed (be, t)) = snd <$> beVectorToMaybeInt be (btVector t)
 
   getBool (BitTermClosed (be, t)) =
     case beVectorToMaybeInt be (btVector t) of
@@ -599,8 +599,8 @@ bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
               LLVM.Sub  -> beSubInt
               LLVM.SDiv -> beQuot
               LLVM.SRem -> beRem
-              LLVM.UDiv -> beQuot -- TODO: FIXME: beQuot does not do proper unsigned division
-              LLVM.URem -> beRem  -- TODO: FIXME: SAB
+              LLVM.UDiv -> beQuotUnsigned
+              LLVM.URem -> beRemUnsigned
               LLVM.FAdd -> noFloats
               LLVM.FSub -> noFloats
               LLVM.FMul -> noFloats
