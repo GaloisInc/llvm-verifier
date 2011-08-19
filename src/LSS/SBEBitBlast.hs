@@ -601,7 +601,12 @@ bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
               LLVM.SRem -> beRem
               LLVM.UDiv -> beQuot -- TODO: FIXME: beQuot does not do proper unsigned division
               LLVM.URem -> beRem  -- TODO: FIXME: SAB
-              _ -> bmError $ "unsupported arithmetic op: " ++ show op
+              LLVM.FAdd -> noFloats
+              LLVM.FSub -> noFloats
+              LLVM.FMul -> noFloats
+              LLVM.FDiv -> noFloats
+              LLVM.FRem -> noFloats
+        noFloats = bmError "floating point arithmetic not currently supported"
 
 bitConv :: (LV.Storable l, Eq l) =>
            BitEngine l -> LLVM.ConvOp
