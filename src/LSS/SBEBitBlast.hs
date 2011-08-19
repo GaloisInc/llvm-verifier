@@ -564,7 +564,16 @@ bitICmp be op (BitTerm a) (BitTerm b) =
   BitIO $ (BitTerm . LV.singleton) <$> f be a b
   where f = case op of
               LLVM.Ieq -> beEqVector
-              _ -> bmError $ "unsupported comparison op: " ++ show op
+              LLVM.Ine -> neg beEqVector
+              LLVM.Iugt -> neg beUnsignedLeq
+              LLVM.Iuge -> neg beUnsignedLt
+              LLVM.Iult -> beUnsignedLt
+              LLVM.Iule -> beUnsignedLeq
+              LLVM.Isgt -> neg beSignedLeq
+              LLVM.Isge -> neg beSignedLt
+              LLVM.Islt -> beSignedLt
+              LLVM.Isle -> beSignedLeq
+        neg fn bend x y = beNeg bend <$> fn bend x y
 
 bitBitwise :: (LV.Storable l, Eq l) =>
               BitEngine l -> LLVM.BitOp
