@@ -33,27 +33,26 @@ i32 = L.iT 32
 primOpTests :: [(Args, Property)]
 primOpTests =
   [
-    test 10 False "concrete int32 add"    $ int32add       1
-  , test 10 False "concrete int32 sqr"    $ int32sqr       1
-  , test 10 False "concrete int32 muladd" $ int32muladd    1
-  , test 100 False "direct int32 add"     $ dirInt32add    1
-  , test 100 False "direct int32 mul"     $ dirInt32mul    1
-  , test 100 False "direct int32 sdiv"    $ dirInt32sdiv   1
-  , test 100 False "direct int32 udiv"    $ dirInt32udiv   1
-  , test 100 False "direct int32 srem"    $ dirInt32srem   1
-  , test 100 False "direct int32 urem"    $ dirInt32urem   1
-  , test  1 False "test-arith"            $ testArith      1
-  , test  1 False "test-branch"           $ testBranch     1
-  , test  1 False "test-call-voidrty"     $ testCallVR     1
-  , test  1 False "test-call-simple"      $ testCallSimple 1
-  , test  1 False "test-ptr-simple"       $ testPtrSimple  1
-  , test  1 False "test-call-exit"        $ testCallExit   0
+    test 10  False "concrete int32 add"    $ int32add       1
+  , test 10  False "concrete int32 sqr"    $ int32sqr       1
+  , test 10  False "concrete int32 muladd" $ int32muladd    1
+  , test 100 False "direct int32 add"      $ dirInt32add    1
+  , test 100 False "direct int32 mul"      $ dirInt32mul    1
+  , test 100 False "direct int32 sdiv"     $ dirInt32sdiv   1
+  , test 100 False "direct int32 udiv"     $ dirInt32udiv   1
+  , test 100 False "direct int32 srem"     $ dirInt32srem   1
+  , test 100 False "direct int32 urem"     $ dirInt32urem   1
+  , test  1  False "test-arith"            $ testArith      1
+  , test  1  False "test-branch"           $ testBranch     1
+  , test  1  False "test-call-voidrty"     $ testCallVR     1
+  , test  1  False "test-call-simple"      $ testCallSimple 1
+  , test  1  False "test-ptr-simple"       $ testPtrSimple  1
+  , test  1  False "test-call-exit"        $ testCallExit   0
   ]
   where
     -- The 'v' parameter to all of these tests controls the verbosity; a
     -- verbosity of '0' turns the test into a successful no-op, but issues a
     -- warning.
-
     int32add v       = psk v $ chkBinCInt32Fn v "test-primops.bc"  (L.Symbol "int32_add") (\x y -> Just (x + y))
     int32sqr v       = psk v $ chkUnaryCInt32Fn v "test-primops.bc" (L.Symbol "int32_square") (Just . sqr)
     int32muladd v    = psk v $ chkBinCInt32Fn v "test-primops.bc" (L.Symbol "int32_muladd") (\x y -> Just $ sqr (x + y))
@@ -63,16 +62,6 @@ primOpTests =
     dirInt32udiv v   = psk v $ chkArithBitEngineFn 32 False L.UDiv wdiv
     dirInt32srem v   = psk v $ chkArithBitEngineFn 32 True L.SRem irem
     dirInt32urem v   = psk v $ chkArithBitEngineFn 32 False L.URem wrem
-    add, mul, idiv, irem :: Int32 -> Int32 -> Int32
-    add              = (+)
-    mul              = (*)
-    -- NB: Haskell's div rounds toward -inf. LLVM's sdiv rounds toward
-    -- 0. Bother.
-    idiv             = \a b -> (if a `rem` b /= 0 && signum a /= signum b then succ else id) (a `div` b)
-    irem             = rem
-    wdiv, wrem       :: Word32 -> Word32 -> Word32
-    wdiv             = div
-    wrem             = rem
     testArith v      = runMain v "test-arith.bc" (Just 0)
     testBranch v     = runMain v "test-branch.bc" (Just 0)
     testCallVR v     = runMain v "test-call-voidrty.bc" Nothing
@@ -80,10 +69,21 @@ primOpTests =
     testPtrSimple v  = runMain v "test-ptr-simple.bc" (Just 99)
     testCallExit v   = runMain v "test-call-exit.bc" (Just 0)
     runMain v bc     = psk v . chkNullaryCInt32Fn v bc (L.Symbol "main")
+
+    add, mul, idiv, irem :: Int32 -> Int32 -> Int32
+    add              = (+)
+    mul              = (*)
+    idiv             = quot
+    irem             = rem
+    wdiv, wrem       :: Word32 -> Word32 -> Word32
+    wdiv             = div
+    wrem             = rem
+    sqr x            = x * x
+
     psk              :: Int -> PropertyM IO () -> PropertyM IO ()
     psk v act        = if (v > 0) then act else disabledWarn
-    sqr x            = x * x
     disabledWarn     = run $ putStrLn "Warning: Next test is currently DISABLED!"
+
 
 chkBinCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Int32 -> Maybe Int32) -> PropertyM IO ()
 chkBinCInt32Fn v bcFile sym chkOp = do
@@ -107,8 +107,7 @@ runCInt32Fn v bcFile sym cargs = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
 
-  let addrWidthBits = 32
-      lc            = LLVMContext addrWidthBits (error "LLVM Context has no ident -> type alias map defined")
+  let lc            = LLVMContext 32 (error "LLVM Context has no ident -> type alias map defined")
       backend       = sbeBitBlast lc be
       mem           = sbeBitBlastMem (stkSt, stkEnd) (codeSt, codeEnd) (heapSt, heapEnd)
                       where
