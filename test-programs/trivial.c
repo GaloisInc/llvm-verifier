@@ -22,6 +22,13 @@ int int32_muladd(int x, int y)
     return u;
 }
 
+int arr1() 
+{
+    int arr[1];
+    arr[0] = 42;
+    return arr[0];
+}
+
 int ptr_arith_sum(int* vals, int n)
 {
     int sum = 0;
