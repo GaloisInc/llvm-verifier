@@ -12,9 +12,9 @@ Point-of-contact : atomb, jhendrix
 
 module LSS.SBEBitBlast
   ( module LSS.SBEInterface
+  , module Data.LLVM.Memory
   , BitTerm
   , BitTermClosed(..)
-  , LLVMContext(..)
   , sbeBitBlast
   , sbeBitBlastMem
   , liftSBEBitBlast
@@ -26,6 +26,7 @@ import           Control.Monad
 import           Control.Monad.IO.Class
 import           Data.Bits
 import           Data.Int
+import           Data.LLVM.Memory
 import           Data.Map                  (Map)
 import           Debug.Trace
 import           LSS.Execution.Utils
@@ -272,7 +273,6 @@ data BitMemory l = BitMemory {
 -- eleements that are free.
 type FreeList = V.Vector [Addr]
 
-
 -- | @allocBlock l n@ attempt to allocate a block with @2^n@
 allocBlock :: FreeList -> Int -> Maybe (FreeList, Addr)
 allocBlock fl n = impl n
@@ -295,44 +295,6 @@ allocBlock fl n = impl n
 -- stack.
 bmStackGrowsUp :: BitMemory l -> Bool
 bmStackGrowsUp bm = bmStackAddr bm <= bmStackEnd bm
-
-data LLVMContext = LLVMContext {
-    llvmAddrWidthBits :: Int
-  , llvmLookupAlias :: LLVM.Ident -> LLVM.Type
-  }
-
-resolveType :: LLVMContext -> LLVM.Type -> LLVM.Type
-resolveType lc (LLVM.Alias nm) = resolveType lc (llvmLookupAlias lc nm)
-resolveType _ tp = tp
-
-
--- | Returns size of type in memory.
-llvmPrimSizeOf :: LLVM.PrimType -> Integer
-llvmPrimSizeOf LLVM.Label = bmError "internal: Cannot get size of label."
-llvmPrimSizeOf LLVM.Void = bmError "internal: Cannot get size of void."
-llvmPrimSizeOf (LLVM.Integer w) = (toInteger w + 7) `shiftR` 3
-llvmPrimSizeOf (LLVM.FloatType LLVM.Float) = 4
-llvmPrimSizeOf (LLVM.FloatType LLVM.Double) = 8
-llvmPrimSizeOf (LLVM.FloatType LLVM.Fp128) = 16
-llvmPrimSizeOf (LLVM.FloatType LLVM.X86_fp80) = 10
-llvmPrimSizeOf (LLVM.FloatType LLVM.PPC_fp128) = 16
-llvmPrimSizeOf LLVM.X86mmx = bmError "internal: X86MMX memory size is undefined."
-llvmPrimSizeOf LLVM.Metadata = bmError "internal: Cannnot get size of metadata."
-
- -- | Returns number of bits for an LLVM.Type
-llvmByteSizeOf :: LLVMContext -> LLVM.Type -> Integer
-llvmByteSizeOf lc tp =
-  case tp of
-    LLVM.PrimType pt -> llvmPrimSizeOf pt
-    LLVM.Alias a -> llvmByteSizeOf lc (llvmLookupAlias lc a)
-    LLVM.Array l eTp -> toInteger l * llvmByteSizeOf lc eTp
-    LLVM.FunTy _retTp _argTpl _ -> bmError "internal: Cannot get size of function type."
-    LLVM.PtrTo _tp -> toInteger (llvmAddrWidthBits lc `shiftR` 3)
-    --TODO: support alignment based on targetdata string in module.
-    LLVM.Struct argTypes -> sum [ llvmByteSizeOf lc atp | atp <- argTypes ]
-    LLVM.PackedStruct argTypes -> sum [ llvmByteSizeOf lc atp | atp <- argTypes ]
-    LLVM.Vector l pt -> toInteger l * llvmPrimSizeOf pt
-    LLVM.Opaque -> bmError "internal: Cannot get size of function type."
 
 -- | @alignUp addr i@ returns the smallest multiple of @2^i@ that it
 -- at least @addr@.

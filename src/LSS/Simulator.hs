@@ -480,7 +480,38 @@ eval s@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr s)
 
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val _tv                ) = error "eval Val nyi"
-eval (GEP _tv _idxs          ) = error "eval GEP nyi"
+
+{-
+
+<result> = getelementptr <pty>* <ptrval>{, <ty> <idx>}*
+<result> = getelementptr inbounds <pty>* <ptrval>{, <ty> <idx>}*
+
+The first argument is always a pointer, and forms the basis of the
+calculation.
+
+The remaining arguments are indices that indicate which of the elements of the
+aggregate object are indexed. The interpretation of each index is dependent on
+the type being indexed into. The first index always indexes the pointer value
+given as the first argument, the second index indexes a value of the type
+pointed to (not necessarily the value directly pointed to, since the first index
+can be non-zero), etc.
+
+The first type indexed into must be a pointer value, subsequent types can be
+arrays, vectors, and structs. Note that subsequent types being indexed into can
+never be pointers, since that would require loading the pointer before
+continuing calculation.  The type of each index argument depends on the type it
+is indexing into. When indexing into a (optionally packed) structure, only i32
+integer constants are allowed. When indexing into an array, pointer or vector,
+integers of any width are allowed, and they are not required to be
+constant. These integers are treated as signed values where relevant.
+-}
+
+eval (GEP (Typed (L.PtrTo t1) v) idxs) = do
+  dbugM $ "index pointer points to t1:" ++ show t1
+  dbugM $ "indices = " ++ show idxs
+  error "eval GEP early term"
+eval s@GEP{} = error $ "Unsupported GEP form: " ++ show (ppSymExpr s)
+
 eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
 eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
 eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"

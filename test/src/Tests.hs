@@ -9,6 +9,7 @@ import Test.QuickCheck
 import Test.QuickCheck.Test
 
 import Tests.PrimOps
+import Tests.Array
 
 main :: IO ()
 main = do
@@ -31,7 +32,9 @@ runTests chooseTest = do
     noOfSelected = length qcProps
     qcProps      = filter chooseTest allTests
     allTests     = [ ("PrimOps", primOpTests)
+                   , ("Array", arrayTests)
                    ]
+
 
 
 
