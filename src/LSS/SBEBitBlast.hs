@@ -79,7 +79,7 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
           i8 :: Integer -> Int8
           i8 x = fromIntegral x :: Int8
 
-  getUVal = error "ConstantProjection (BitTermClosed): getUVal BitTerm nyi"
+  getUVal (BitTermClosed (be, t)) = snd <$> beVectorToMaybeInt be (btVector t)
 
   getBool (BitTermClosed (be, t)) =
     case beVectorToMaybeInt be (btVector t) of
@@ -568,7 +568,16 @@ bitICmp be op (BitTerm a) (BitTerm b) =
   BitIO $ (BitTerm . LV.singleton) <$> f be a b
   where f = case op of
               LLVM.Ieq -> beEqVector
-              _ -> bmError $ "unsupported comparison op: " ++ show op
+              LLVM.Ine -> neg beEqVector
+              LLVM.Iugt -> neg beUnsignedLeq
+              LLVM.Iuge -> neg beUnsignedLt
+              LLVM.Iult -> beUnsignedLt
+              LLVM.Iule -> beUnsignedLeq
+              LLVM.Isgt -> neg beSignedLeq
+              LLVM.Isge -> neg beSignedLt
+              LLVM.Islt -> beSignedLt
+              LLVM.Isle -> beSignedLeq
+        neg fn bend x y = beNeg bend <$> fn bend x y
 
 bitBitwise :: (LV.Storable l, Eq l) =>
               BitEngine l -> LLVM.BitOp
@@ -578,7 +587,10 @@ bitBitwise be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
   where f = case op of
               LLVM.And -> beAndInt
               LLVM.Or -> beOrInt
-              _ -> bmError $ "unsupported arithmetic op: " ++ show op
+              LLVM.Xor -> beXorInt
+              LLVM.Shl -> beShl
+              LLVM.Lshr -> beUnsignedShr
+              LLVM.Ashr -> beSignedShr
 
 bitArith :: (LV.Storable l, Eq l) =>
             BitEngine l -> LLVM.ArithOp
@@ -591,9 +603,14 @@ bitArith be op (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
               LLVM.Sub  -> beSubInt
               LLVM.SDiv -> beQuot
               LLVM.SRem -> beRem
-              LLVM.UDiv -> beQuot -- TODO: FIXME: beQuot does not do proper unsigned division
-              LLVM.URem -> beRem  -- TODO: FIXME: SAB
-              _ -> bmError $ "unsupported arithmetic op: " ++ show op
+              LLVM.UDiv -> beQuotUnsigned
+              LLVM.URem -> beRemUnsigned
+              LLVM.FAdd -> noFloats
+              LLVM.FSub -> noFloats
+              LLVM.FMul -> noFloats
+              LLVM.FDiv -> noFloats
+              LLVM.FRem -> noFloats
+        noFloats = bmError "floating point arithmetic not currently supported"
 
 bitConv :: (LV.Storable l, Eq l) =>
            BitEngine l -> LLVM.ConvOp

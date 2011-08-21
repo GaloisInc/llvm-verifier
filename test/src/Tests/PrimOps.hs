@@ -13,6 +13,7 @@ module Tests.PrimOps (primOpTests) where
 import           Control.Applicative
 import           Control.Monad.Trans
 import           Data.Int
+import           Data.Word
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
@@ -35,6 +36,12 @@ primOpTests =
     test 10 False "concrete int32 add"    $ int32add       1
   , test 10 False "concrete int32 sqr"    $ int32sqr       1
   , test 10 False "concrete int32 muladd" $ int32muladd    1
+  , test 100 False "direct int32 add"     $ dirInt32add    1
+  , test 100 False "direct int32 mul"     $ dirInt32mul    1
+  , test 100 False "direct int32 sdiv"    $ dirInt32sdiv   1
+  , test 100 False "direct int32 udiv"    $ dirInt32udiv   1
+  , test 100 False "direct int32 srem"    $ dirInt32srem   1
+  , test 100 False "direct int32 urem"    $ dirInt32urem   1
   , test  1 False "test-arith"            $ testArith      1
   , test  1 False "test-branch"           $ testBranch     1
   , test  1 False "test-call-voidrty"     $ testCallVR     1
@@ -50,6 +57,22 @@ primOpTests =
     int32add v       = psk v $ chkBinCInt32Fn v "test-primops.bc"  (L.Symbol "int32_add") (\x y -> Just (x + y))
     int32sqr v       = psk v $ chkUnaryCInt32Fn v "test-primops.bc" (L.Symbol "int32_square") (Just . sqr)
     int32muladd v    = psk v $ chkBinCInt32Fn v "test-primops.bc" (L.Symbol "int32_muladd") (\x y -> Just $ sqr (x + y))
+    dirInt32add v    = psk v $ chkArithBitEngineFn 32 True L.Add add
+    dirInt32mul v    = psk v $ chkArithBitEngineFn 32 True L.Mul mul
+    dirInt32sdiv v   = psk v $ chkArithBitEngineFn 32 True L.SDiv idiv
+    dirInt32udiv v   = psk v $ chkArithBitEngineFn 32 False L.UDiv wdiv
+    dirInt32srem v   = psk v $ chkArithBitEngineFn 32 True L.SRem irem
+    dirInt32urem v   = psk v $ chkArithBitEngineFn 32 False L.URem wrem
+    add, mul, idiv, irem :: Int32 -> Int32 -> Int32
+    add              = (+)
+    mul              = (*)
+    -- NB: Haskell's div rounds toward -inf. LLVM's sdiv rounds toward
+    -- 0. Bother.
+    idiv             = \a b -> (if a `rem` b /= 0 && signum a /= signum b then succ else id) (a `div` b)
+    irem             = rem
+    wdiv, wrem       :: Word32 -> Word32 -> Word32
+    wdiv             = div
+    wrem             = rem
     testArith v      = runMain v "test-arith.bc" (Just 0)
     testBranch v     = runMain v "test-branch.bc" (Just 0)
     testCallVR v     = runMain v "test-call-voidrty.bc" Nothing
@@ -57,6 +80,7 @@ primOpTests =
     testPtrSimple v  = runMain v "test-ptr-simple.bc" (Just 99)
     testCallExit v   = runMain v "test-call-exit.bc" (Just 0)
     runMain v bc     = psk v . chkNullaryCInt32Fn v bc (L.Symbol "main")
+    psk              :: Int -> PropertyM IO () -> PropertyM IO ()
     psk v act        = if (v > 0) then act else disabledWarn
     sqr x            = x * x
     disabledWarn     = run $ putStrLn "Warning: Next test is currently DISABLED!"
@@ -99,6 +123,23 @@ runCInt32Fn v bcFile sym cargs = do
     callDefine sym i32 $ map (\x -> i32 =: x) args
     rv <- getProgramReturnValue
     return $ BitTermClosed . (,) be <$> rv
+
+chkArithBitEngineFn :: (Integral a, Arbitrary a) =>
+                       Int -> Bool -> L.ArithOp -> (a -> a -> a)
+                    -> PropertyM IO ()
+chkArithBitEngineFn w s op fn = do
+  be <- run createBitEngine
+  let sbe = sbeBitBlast
+            (LLVMContext 32
+             (error "LLVM Context has no ident -> type alias map defined"))
+            be
+  forAllM arbitrary $ \(NonZero x,NonZero y) -> do
+    let r = fn x y
+        proj = if s then getSVal else getUVal
+    x' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral x)
+    y' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral y)
+    r' <- run . liftSBEBitBlast $ applyArith sbe op x' y'
+    assert (proj (BitTermClosed (be, r')) == Just (fromIntegral r))
 
 chkRslt :: ConstantProjection t => L.Symbol -> Maybe Integer -> Maybe t -> PropertyM IO ()
 chkRslt _ (Just chk) (Just (getSVal -> Just v))
