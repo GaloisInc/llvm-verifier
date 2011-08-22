@@ -90,7 +90,7 @@ runCInt32Fn v bcFile sym cargs = do
                         (codeSt, codeEnd) = ext stkEnd defaultSz
                         (heapSt, heapEnd) = ext codeEnd defaultSz
 
-  runSimulator cb backend mem (SM . lift . liftSBEBitBlast) $ withVerbosity v $ do
+  runSimulator cb lc backend mem (SM . lift . liftSBEBitBlast) $ withVerbosity v $ do
     args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
     callDefine sym i32 $ map (\x -> i32 =: x) args
     rv <- getProgramReturnValue

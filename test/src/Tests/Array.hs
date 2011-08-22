@@ -12,14 +12,18 @@ module Tests.Array (arrayTests) where
 
 import           Test.QuickCheck
 import           Tests.Common
+import qualified Text.LLVM as L
 
 arrayTests :: [(Args, Property)]
 arrayTests =
   [
-    test 1 False "test-array-index" $ arrayIdx 5
+    test 1 False "test-array-single-index" $ arrayBaseIdx 1
+  , test 1 False "test-array-multi-index"  $ arrayMultiIdx 1
   ]
   where
-    arrayIdx v = runMain v "test-array-simple.bc" (Just 42)
+    arrayBaseIdx v     = arraySimple v "arr1" (Just 42)
+    arrayMultiIdx v    = arraySimple v "arr2" (Just 141)
+    arraySimple v name = psk v . chkNullaryCInt32Fn v "test-array-simple.bc" (L.Symbol name)
 
 --------------------------------------------------------------------------------
 -- Scratch

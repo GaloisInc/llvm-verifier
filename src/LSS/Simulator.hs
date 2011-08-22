@@ -9,6 +9,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes            #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
@@ -25,6 +26,7 @@ where
 import           Control.Applicative
 import           Control.Monad.State       hiding (State)
 import           Data.Int
+import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
 import           Data.List
 import           Data.Maybe
@@ -42,21 +44,23 @@ import qualified Text.LLVM                 as L
 
 runSimulator :: (Functor m, MonadIO m)
   => Codebase              -- ^ Post-transform LLVM code
+  -> LLVMContext           -- ^ Memory alignment and type aliasing info
   -> SBE sbe               -- ^ A symbolic backend
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
   -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
   -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
-runSimulator cb sbe mem lifter m =
-  evalStateT (runSM (setup >> m)) (newSimState cb sbe mem lifter)
+runSimulator cb lc sbe mem lifter m =
+  evalStateT (runSM (setup >> m)) (newSimState cb lc sbe mem lifter)
   where
     setup = do
       modifyCS $ pushMF emptyExitFrame
 
-newSimState :: Codebase -> SBE sbe -> SBEMemory sbe -> LiftSBE sbe m -> State sbe m
-newSimState cb sbe mem lifter =
+newSimState :: Codebase -> LLVMContext -> SBE sbe -> SBEMemory sbe -> LiftSBE sbe m -> State sbe m
+newSimState cb lc sbe mem lifter =
   State
   { codebase  = cb
+  , llvmCtx   = lc
   , symBE     = sbe
   , memModel  = mem
   , liftSymBE = lifter
@@ -481,40 +485,86 @@ eval s@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr s)
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val _tv                ) = error "eval Val nyi"
 
-{-
+eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
+  where
+    impl :: (MonadIO m, Functor m)
+         => [Typed SymValue]
+         -> Typed (SBETerm sbe)
+         -> Simulator sbe m (Typed (SBETerm sbe))
 
-<result> = getelementptr <pty>* <ptrval>{, <ty> <idx>}*
-<result> = getelementptr inbounds <pty>* <ptrval>{, <ty> <idx>}*
+    impl [] (Typed referentTy ptrVal) = do
+      -- Truncate the final pointer value down to the target's address width
+      addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
+      Typed (L.PtrTo referentTy) <$> termConv L.Trunc ptrVal (L.iT addrWidth)
 
-The first argument is always a pointer, and forms the basis of the
-calculation.
+    impl (idx:idxs) (Typed (L.PtrTo referentTy) ptrVal) = do
+      impl idxs =<< baseOffset idx referentTy ptrVal
 
-The remaining arguments are indices that indicate which of the elements of the
-aggregate object are indexed. The interpretation of each index is dependent on
-the type being indexed into. The first index always indexes the pointer value
-given as the first argument, the second index indexes a value of the type
-pointed to (not necessarily the value directly pointed to, since the first index
-can be non-zero), etc.
+    impl (idx:idxs) (Typed (L.Array _len elemTy) ptrVal) = do
+      impl idxs =<< baseOffset idx elemTy ptrVal
 
-The first type indexed into must be a pointer value, subsequent types can be
-arrays, vectors, and structs. Note that subsequent types being indexed into can
-never be pointers, since that would require loading the pointer before
-continuing calculation.  The type of each index argument depends on the type it
-is indexing into. When indexing into a (optionally packed) structure, only i32
-integer constants are allowed. When indexing into an array, pointer or vector,
-integers of any width are allowed, and they are not required to be
-constant. These integers are treated as signed values where relevant.
--}
+    impl _ tv = do
+      dbugTypedTerm "tv" tv
+      error $ "GEP: support for aggregate type NYI: " ++ show (typedType tv)
 
-eval (GEP (Typed (L.PtrTo t1) v) idxs) = do
-  dbugM $ "index pointer points to t1:" ++ show t1
-  dbugM $ "indices = " ++ show idxs
-  error "eval GEP early term"
-eval s@GEP{} = error $ "Unsupported GEP form: " ++ show (ppSymExpr s)
+    sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m (Typed L.Value)
+    sizeof ty = Typed (L.PrimType (L.Integer 32)) <$> L.ValInteger <$> withLC (`llvmByteSizeOf` ty)
+
+    -- @baseOffset i ty p@ computes p + i * sizeof(ty)
+    baseOffset :: (MonadIO m, Functor m)
+      => Typed SymValue -> L.Type -> SBETerm sbe
+      -> Simulator sbe m (Typed (SBETerm sbe))
+    baseOffset idx referentTy ptrVal = do
+      Typed _ idxTerm <- getTypedTerm idx
+      Typed _ szTerm  <- getTypedTerm =<< sizeof referentTy
+      Typed referentTy <$> saxpy idxTerm szTerm ptrVal
 
 eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
 eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
 eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
+
+-----------------------------------------------------------------------------------------
+-- Term operations and helpers
+
+termAdd, termMul :: (Functor m, Monad m)
+  => SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
+termAdd x y = withSBE $ \sbe -> applyArith sbe L.Add x y
+termMul x y = withSBE $ \sbe -> applyArith sbe L.Mul x y
+
+termConv :: (Functor m, Monad m)
+  => L.ConvOp -> SBETerm sbe -> L.Type -> Simulator sbe m (SBETerm sbe)
+termConv op x ty = withSBE $ \sbe -> applyConv sbe op x ty
+
+-- @saxpy a x y@ computes a * x + y, promoting terms to larger sizes as needed.
+saxpy :: (Functor m, MonadIO m)
+  => SBETerm sbe
+  -> SBETerm sbe
+  -> SBETerm sbe
+  -> Simulator sbe m (SBETerm sbe)
+saxpy a x y = do
+  (a', x') <- resizeTerms a x
+  t        <- termMul a' x'
+  (t', y') <- resizeTerms t y
+  termAdd t' y'
+
+-- | @resizeTerms a b@ yields both arguments back after zero-extending the smaller of
+-- the two terms.
+resizeTerms :: (MonadIO m, Functor m)
+  => SBETerm sbe
+  -> SBETerm sbe
+  -> Simulator sbe m (SBETerm sbe, SBETerm sbe)
+resizeTerms a b = do
+  wa <- fromIntegral <$> withSBE' (\sbe -> termWidth sbe a)
+  wb <- fromIntegral <$> withSBE' (\sbe -> termWidth sbe b)
+  if wa > wb
+    then conv b (L.iT wa) >>= \b' -> return (a, b')
+    else
+      if wb > wa
+         then conv a (L.iT wb) >>= \a' -> return (a', b)
+         else return (a, b)
+  where
+    -- TODO: Probably want signed ext or offer the caller a choice.
+    conv = termConv L.ZExt
 
 (&&&) :: (ConstantProjection (SBEClosedTerm sbe), Functor m, Monad m)
   => Simulator sbe m (SBETerm sbe)
@@ -563,6 +613,9 @@ mutateMem f = do
 mutateMem_ :: (Functor m, MonadIO m, Functor sbe)
   => (SBE sbe -> SBEMemory sbe -> sbe (SBEMemory sbe)) -> Simulator sbe m ()
 mutateMem_ f = mutateMem (\sbe mem -> ((,) ()) <$> f sbe mem) >> return ()
+
+withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
+withLC f = f <$> gets llvmCtx
 
 --------------------------------------------------------------------------------
 -- Misc utility functions

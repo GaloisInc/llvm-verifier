@@ -606,6 +606,7 @@ sbeBitBlast lc be = sbe
               , applyBitwise     = bitBitwise be
               , applyArith       = bitArith be
               , applyConv        = bitConv be
+              , termWidth        = \(BitTerm bv) -> fromIntegral (LV.length bv)
               , closeTerm        = BitTermClosed . (,) be
               , prettyTermD      = S.prettyTermD . closeTerm sbe
               , memDump          = BitIO . bmDump be

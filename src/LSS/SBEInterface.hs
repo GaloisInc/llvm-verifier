@@ -64,6 +64,8 @@ data SBE m = SBE
     ----------------------------------------------------------------------------
     -- Term miscellany
 
+    -- | Yields the bitwidth of the given term in bytes
+  , termWidth   :: SBETerm m -> Integer
   , closeTerm   :: SBETerm m -> SBEClosedTerm m
   , prettyTermD :: SBETerm m -> Doc
 

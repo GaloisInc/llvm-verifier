@@ -19,6 +19,7 @@ module LSS.Execution.Common where
 import           Control.Applicative
 import           Control.Arrow             hiding ((<+>))
 import           Control.Monad.State       hiding (State)
+import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
@@ -43,6 +44,7 @@ type GFPMap sbe    = M.Map (L.Symbol, [L.Type]) (SBETerm sbe)
 -- | Symbolic simulator state
 data State sbe m = State
   { codebase  :: Codebase              -- ^ LLVM code, post-transformation to sym ast
+  , llvmCtx   :: LLVMContext           -- ^ Memory alignment and type aliasing info
   , symBE     :: SBE sbe               -- ^ Symbolic backend interface
   , memModel  :: SBEMemory sbe         -- ^ The SBE's LLVM memory model
   , liftSymBE :: LiftSBE sbe m         -- ^ Lift SBE operations into the Simulator monad
