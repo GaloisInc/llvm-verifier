@@ -255,6 +255,7 @@ liftDefine d =
    in SymDefine {
           sdName = LLVM.defName d
         , sdArgs = LLVM.defArgs d
+        , sdVarArgs = LLVM.defVarArgs d
         , sdRetType = LLVM.defRetType d
         , sdBody = Map.fromList [ (sbId b,b) | b <- symBlocks ]
         }

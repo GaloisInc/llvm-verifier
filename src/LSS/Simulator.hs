@@ -25,6 +25,7 @@ where
 
 import           Control.Applicative
 import           Control.Monad.State       hiding (State)
+import           Data.Bits
 import           Data.Int
 import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
@@ -59,14 +60,14 @@ runSimulator cb lc sbe mem lifter m =
 newSimState :: Codebase -> LLVMContext -> SBE sbe -> SBEMemory sbe -> LiftSBE sbe m -> State sbe m
 newSimState cb lc sbe mem lifter =
   State
-  { codebase  = cb
-  , llvmCtx   = lc
-  , symBE     = sbe
-  , memModel  = mem
-  , liftSymBE = lifter
-  , ctrlStk   = emptyCtrlStk
-  , gfpTerms  = M.empty
-  , verbosity = 1
+  { codebase    = cb
+  , llvmCtx     = lc
+  , symBE       = sbe
+  , memModel    = mem
+  , liftSymBE   = lifter
+  , ctrlStk     = emptyCtrlStk
+  , globalTerms = M.empty
+  , verbosity   = 1
   }
 
 callDefine ::
@@ -91,6 +92,9 @@ callDefine' ::(MonadIO m, Functor m, Functor sbe)
   -> [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m ()
 callDefine' normalRetID calleeSym mreg args = do
+
+  -- HERE: support llvm.memcpy intrinsic
+
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   banners' 5 $ show $ ppSymDefine def
@@ -316,13 +320,42 @@ getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 -- other types of values.
 
 getTypedTerm' :: (Functor m, MonadIO m, term ~ SBETerm sbe)
-  => Maybe (CallFrame term) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+  => Maybe (CallFrame (SBETerm sbe)) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
-getTypedTerm' _ (Typed t@(L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
-  = Typed t <$> getGFPTerm (sym, argtys)
+
+getTypedTerm' _ (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
+  = getGlobalPtrTerm (sym, Just argtys)
+
 getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
   = error $ "getTypedTerm': Non-symbol ptr-to-fun nyi: " ++ show tv
+
+getTypedTerm' _ (Typed ty@(L.Array len ety) (L.ValArray ety' es))
+  = do
+    CE.assert (ety == ety') $ return ()
+    CE.assert (fromIntegral len == length es) $ return ()
+    ebits <- fromIntegral . (`shiftL` 3) <$> withLC (`llvmByteSizeOf` ety)
+    vals  <- case ety of
+               L.PrimType L.Integer{} ->
+                 let f (L.ValInteger x) = x
+                     f _                = error "getTypedTerm': non-ValInteger primint nyi"
+                 in
+                   return (map f es)
+               _ -> error $ "getTypedTerm': Array element type not supported: " ++ show ety
+    Typed ty <$> withSBE (\sbe -> termIntArray sbe ebits vals)
+
+getTypedTerm' _ (Typed _ (L.ValSymbol sym))
+  = getGlobalPtrTerm (sym, Nothing)
+
+getTypedTerm' (Just frm) (Typed _ (L.ValConstExpr ce))
+  = case ce of
+      L.ConstConv L.BitCast tv t -> do
+        tv' <- Typed t . typedValue <$> getTypedTerm' (Just frm) tv
+        dbugTypedTerm "tv'" tv'
+        return tv'
+      _ -> error $ "getTypedTerm: ConstExpr eval nyi : " ++ show ce
+
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
   = return $ lkupIdent i frm
 getTypedTerm' mfrm tv@(Typed t v)
@@ -333,18 +366,35 @@ getTypedTerm' mfrm tv@(Typed t v)
           ++ show (parens $ text $ show tv)
           ++ show ("mfrm = " ++ show (ppCallFrame sbe <$> mfrm))
 
-getGFPTerm :: (Functor m, MonadIO m)
-  => (L.Symbol, [L.Type]) -> Simulator sbe m (SBETerm sbe)
-getGFPTerm key@(sym, _) = do
-  mt <- M.lookup key <$> gets gfpTerms
+getGlobalPtrTerm :: (Functor m, MonadIO m)
+  => (L.Symbol, Maybe [L.Type]) -> Simulator sbe m (Typed (SBETerm sbe))
+getGlobalPtrTerm key@(sym, _) = do
+  mt <- M.lookup key <$> gets globalTerms
   case mt of
     Just t  -> return t
     Nothing -> do
-      def <- lookupDefine sym <$> gets codebase
-      let idl = nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
-      t <- mutateMem $ \sbe mem -> memAddDefine sbe mem sym idl
-      modify $ \s -> s{ gfpTerms = M.insert key t (gfpTerms s)}
-      return t
+      cb <- gets codebase
+      case lookupDefine' sym cb of
+        Just def -> do
+          let fty = L.PtrTo
+                    $ L.FunTy
+                      (sdRetType def)
+                      (map typedType $ sdArgs def)
+                      (sdVarArgs def)
+              idl = nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
+          t <- Typed fty <$> mutateMem (\sbe mem -> memAddDefine sbe mem sym idl)
+          modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
+          return t
+        Nothing -> do
+          -- Symbol doesn't refer to a define, try globals.
+          case lookupGlobal' sym cb of
+            Nothing -> error "getGlobalPtrTerm: symbol resolution failed"
+            Just g  -> do
+             cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
+             ptr   <- Typed (L.PtrTo $ L.globalType g)
+                      <$> mutateMem (\sbe mem -> memInitGlobal sbe mem cdata)
+             modify $ \s -> s{ globalTerms = M.insert key ptr (globalTerms s) }
+             return ptr
 
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
@@ -460,6 +510,10 @@ eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
+
+eval (Conv L.BitCast tv ty) =
+  Typed ty . typedValue <$> getTypedTerm tv
+
 eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr s)
 
 eval (Alloca t msztv malign ) = do

@@ -39,18 +39,18 @@ newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
            )
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
-type GFPMap sbe    = M.Map (L.Symbol, [L.Type]) (SBETerm sbe)
+type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))
 
 -- | Symbolic simulator state
 data State sbe m = State
-  { codebase  :: Codebase              -- ^ LLVM code, post-transformation to sym ast
-  , llvmCtx   :: LLVMContext           -- ^ Memory alignment and type aliasing info
-  , symBE     :: SBE sbe               -- ^ Symbolic backend interface
-  , memModel  :: SBEMemory sbe         -- ^ The SBE's LLVM memory model
-  , liftSymBE :: LiftSBE sbe m         -- ^ Lift SBE operations into the Simulator monad
-  , ctrlStk   :: CtrlStk (SBETerm sbe) -- ^ Control stack for tracking merge points
-  , gfpTerms  :: GFPMap sbe            -- ^ Global function pointer terms
-  , verbosity :: Int                   -- ^ Verbosity level
+  { codebase     :: Codebase              -- ^ LLVM code, post-transformation to sym ast
+  , llvmCtx      :: LLVMContext           -- ^ Memory alignment and type aliasing info
+  , symBE        :: SBE sbe               -- ^ Symbolic backend interface
+  , memModel     :: SBEMemory sbe         -- ^ The SBE's LLVM memory model
+  , liftSymBE    :: LiftSBE sbe m         -- ^ Lift SBE operations into the Simulator monad
+  , ctrlStk      :: CtrlStk (SBETerm sbe) -- ^ Control stack for tracking merge points
+  , globalTerms  :: GlobalMap sbe         -- ^ Global ptr terms
+  , verbosity    :: Int                   -- ^ Verbosity level
   }
 
 data CtrlStk term = CtrlStk { mergeFrames :: [MergeFrame term] }

@@ -238,6 +238,7 @@ ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (map ppSymStmt (sbStmts 
 data SymDefine = SymDefine {
          sdName :: LLVM.Symbol
        , sdArgs :: [Typed Reg]
+       , sdVarArgs :: Bool
        , sdRetType :: LLVM.Type
        , sdBody :: Map SymBlockID SymBlock
        }

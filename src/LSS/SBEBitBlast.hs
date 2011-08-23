@@ -75,7 +75,8 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
         32            -> fromIntegral (fromIntegral v :: Int32)
         64            -> fromIntegral (fromIntegral v :: Int64)
         n | n < 8     -> fromIntegral (i8 v .&. (2 ^ n - 1))
-          | otherwise -> error $ "BitTermClosed/getSVal: unsupported integer width " ++ show w
+          | otherwise -> v
+              -- error $ "BitTermClosed/getSVal: unsupported integer width " ++ show w
         where
           i8 :: Integer -> Int8
           i8 x = fromIntegral x :: Int8
@@ -198,9 +199,9 @@ storeByte be mem new ptr = impl mem (LV.length ptr) (beTrue be)
 
 storeBytes :: (Eq l, LV.Storable l)
            => BitEngine l
-           -> Storage l -- ^ Base storage
-           -> LV.Vector l -- ^ Value to store
-           -> LV.Vector l -- ^ Address to store value in
+           -> Storage l      -- ^ Base storage
+           -> LV.Vector l    -- ^ Value to store
+           -> LV.Vector l    -- ^ Address to store value in
            -> IO (Storage l) -- ^ Storage with value written.
 storeBytes be mem value ptr =
   let bv = sliceIntoBytes value
@@ -249,6 +250,11 @@ setBytes w low high fn mem
                 t = SUnallocated
         impl _ _ _ = bmError "internal: Malformed storage"
 
+-- @uninitRegion lc low high@ marks all bytes in [low..high) as uninitialized.
+uninitRegion :: LLVMContext -> Addr -> Addr -> Storage l -> Storage l
+uninitRegion lc low high =
+  setBytes (llvmAddrWidthBits lc) low high (\_ -> SUninitialized)
+
 type Addr = Integer
 
 data BitMemory l = BitMemory {
@@ -266,6 +272,10 @@ data BitMemory l = BitMemory {
   , bmCodeEnd :: Addr
     -- | Maps (def,block) pairs to associated address.
   , bmCodeBlockMap :: Map (LLVM.Symbol,LLVM.Ident) Addr
+    -- | Address for initial global data pointers (and constants)
+  , bmDataAddr :: Addr
+    -- | Maximum address for data pointers.
+  , bmDataEnd :: Addr
   , bmFreeLists :: V.Vector [Addr]
   }
 
@@ -319,6 +329,7 @@ bmDump be bm = do
     text "Memory Model Dump"
     $+$ text "Stack Range:" <+> text (show (bmStackAddr bm, bmStackEnd bm))
     $+$ text "Code Range:" <+> text (show (bmCodeAddr bm, bmCodeEnd bm))
+    $+$ text "Data Range:" <+> text (show (bmDataAddr bm, bmDataEnd bm))
     $+$ text "Frame pointers:" <+> text (show (bmStackFrames bm))
     $+$ ppStorage be (bmStorage bm)
 
@@ -442,6 +453,10 @@ bmMerge be (BitTerm cv) m m'
         fail "internal: Attempt to merge memories with different code endpoints."
       unless (bmCodeBlockMap m == bmCodeBlockMap m') $
         fail "internal: Attempt to merge memories with different block addresses."
+      unless (bmDataAddr m == bmDataAddr m') $
+        fail "Attempt to merge memories with different data segment addresses."
+      unless (bmDataEnd m == bmDataEnd m') $
+        fail "internal: Attempt to merge memories with different data segment endpoints."
       -- Free lists should be implicitly equivalent if storages are compatible.
       return BitMemory
         { bmStorage = newStorage
@@ -451,9 +466,39 @@ bmMerge be (BitTerm cv) m m'
         , bmCodeAddr = bmCodeAddr m
         , bmCodeEnd = bmCodeEnd m
         , bmCodeBlockMap = bmCodeBlockMap m
+        , bmDataAddr = bmDataAddr m
+        , bmDataEnd = bmDataEnd m
         , bmFreeLists = bmFreeLists m
         }
   | otherwise = bmError "internal: Malformed condition given to bmMerge."
+
+bmMemInitGlobal :: (Eq l, LV.Storable l)
+               => LLVMContext
+               -> BitEngine l            -- ^ Bit engine for literals.
+               -> BitMemory l
+               -> LLVM.Typed (BitTerm l) -- ^ Global data
+               -> IO (BitTerm l, BitMemory l)
+bmMemInitGlobal lc be m (LLVM.Typed ty (BitTerm gd))
+  | newDataAddr > bmDataEnd m
+  = bmError "Not enough space in data segment to allocate new global."
+  | otherwise
+  = do
+--   dbugM $ "bmMemAddGlobal: ty = " ++ show ty
+--   dbugM $ "newSpaceReq = " ++ show newSpaceReq
+  let ptr@(BitTerm ptrv) = BitTerm $ beVectorFromInt be width dataAddr
+      mem                = uninitRegion lc dataAddr newDataAddr (bmStorage m)
+  newStorage <- storeBytes be mem gd ptrv
+
+--   dbugM $ show $ ppStorage be (bmStorage m)
+--   dbugM $ show $ ppStorage be mem
+--   dbugM $ show $ ppStorage be newStorage
+
+  return (ptr, m { bmStorage = newStorage, bmDataAddr = newDataAddr })
+  where
+    width       = llvmAddrWidthBits lc
+    dataAddr    = bmDataAddr m
+    newDataAddr = dataAddr + newSpaceReq
+    newSpaceReq = llvmByteSizeOf lc ty
 
 bmMemAddDefine :: (Eq l, LV.Storable l)
                 => LLVMContext
@@ -598,29 +643,35 @@ type instance SBEMemory (BitIO l)     = BitMemory l
 sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
   => LLVMContext -> BitEngine l -> SBE (BitIO l)
 sbeBitBlast lc be = sbe
-  where sbe = SBE
-              { termInt          = (return . BitTerm) `c2` beVectorFromInt be
-              , termBool         = return . BitTerm . LV.singleton . beLitFromBool be
-              , applyIte         = bitIte be
-              , applyICmp        = bitICmp be
-              , applyBitwise     = bitBitwise be
-              , applyArith       = bitArith be
-              , applyConv        = bitConv be
-              , termWidth        = \(BitTerm bv) -> fromIntegral (LV.length bv)
-              , closeTerm        = BitTermClosed . (,) be
-              , prettyTermD      = S.prettyTermD . closeTerm sbe
-              , memDump          = BitIO . bmDump be
-              , memLoad          = BitIO `c2` bmLoad lc be
-              , memStore         = BitIO `c3` bmStore lc be
-              , memMerge         = BitIO `c3` bmMerge be
-              , memAddDefine     = return `c3` bmMemAddDefine lc be
-              , codeBlockAddress = return `c3` bmCodeBlockAddress lc be
-              , codeLookupDefine = return `c2` bmCodeLookupDefine lc be
-              , stackAlloca      = return `c4` bmStackAlloca lc be
-              , stackPushFrame   = return . bmStackPush
-              , stackPopFrame    = return . bmStackPop lc
-              , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)
-              }
+  where
+    sbe = SBE
+          { termInt          = (return . BitTerm) `c2` beVectorFromInt be
+          , termIntArray     = c2 (return . BitTerm) $ \w vals ->
+                                 if null vals
+                                   then error "sbeBitBlast: termIntArray: empty value list"
+                                   else foldr1 (LV.++) $ map (beVectorFromInt be w) vals
+          , termBool         = return . BitTerm . LV.singleton . beLitFromBool be
+          , applyIte         = bitIte be
+          , applyICmp        = bitICmp be
+          , applyBitwise     = bitBitwise be
+          , applyArith       = bitArith be
+          , applyConv        = bitConv be
+          , termWidth        = \(BitTerm bv) -> fromIntegral (LV.length bv)
+          , closeTerm        = BitTermClosed . (,) be
+          , prettyTermD      = S.prettyTermD . closeTerm sbe
+          , memDump          = BitIO . bmDump be
+          , memLoad          = BitIO `c2` bmLoad lc be
+          , memStore         = BitIO `c3` bmStore lc be
+          , memMerge         = BitIO `c3` bmMerge be
+          , memAddDefine     = return `c3` bmMemAddDefine lc be
+          , memInitGlobal    = BitIO `c2` bmMemInitGlobal lc be
+          , codeBlockAddress = return `c3` bmCodeBlockAddress lc be
+          , codeLookupDefine = return `c2` bmCodeLookupDefine lc be
+          , stackAlloca      = return `c4` bmStackAlloca lc be
+          , stackPushFrame   = return . bmStackPush
+          , stackPopFrame    = return . bmStackPop lc
+          , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)
+          }
 
 type Range t = (t,t)
 
@@ -643,14 +694,19 @@ decreasing (x,y) = x > y
 sbeBitBlastMem :: LV.Storable l
                => (Addr, Addr) -- ^ Stack start and end address
                -> (Addr, Addr) -- ^ Code start and end address
+               -> (Addr, Addr) -- ^ Data start and end addresses
                -> (Addr, Addr) -- ^ Heap start and end address
                -> BitMemory l
-sbeBitBlastMem stack code heap
+sbeBitBlastMem stack code gdata heap
   | decreasing code = bmError "Code segment start and end are in wrong order."
+  | decreasing gdata = bmError "Data segment start and end are in wrong order."
   | decreasing heap = bmError "Heap segment start and end are in wrong order."
-  | norm stack `overlap` code = bmError "Stack and code segments overlap."
-  | norm stack `overlap` heap = bmError "Stack and heap segments overlap."
+  | norm stack `overlap` code  = bmError "Stack and code segments overlap."
+  | norm stack `overlap` gdata = bmError "Stack and data segments overlap."
+  | norm stack `overlap` heap  = bmError "Stack and heap segments overlap."
+  | code `overlap` gdata = bmError "Code and data segments overlap."
   | code `overlap` heap = bmError "Code and heap segments overlap."
+  | gdata `overlap` heap = bmError "Data and code segments overlap."
   | otherwise =
       BitMemory {
           bmStorage = SUnallocated
@@ -660,6 +716,8 @@ sbeBitBlastMem stack code heap
         , bmCodeAddr = start code
         , bmCodeEnd = end code
         , bmCodeBlockMap = Map.empty
+        , bmDataAddr = start gdata
+        , bmDataEnd = end gdata
         , bmFreeLists = initFreeList (start heap) (end heap)
         }
 
@@ -668,7 +726,7 @@ testSBEBitBlast = do
   let lc = LLVMContext 4 undefined
   be <- createBitEngine
   let sbe = sbeBitBlast lc be
-  let m0 = sbeBitBlastMem (0x10,0x0) (0x0,0x0)  (0x0,0x0)
+  let m0 = sbeBitBlastMem (0x10,0x0) (0x0,0x0) (0x0, 0x0) (0x0,0x0)
   liftSBEBitBlast $ do
     let i32 = LLVM.PrimType (LLVM.Integer 32)
     let ptr = LLVM.PtrTo

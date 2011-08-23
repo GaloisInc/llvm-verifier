@@ -44,6 +44,11 @@ data SBE m = SBE
     -- | @termInt w n@ creates a term representing the constant @w@-bit
     -- value @n@
     termInt  :: Int -> Integer -> m (SBETerm m)
+
+    -- | @termIntArray w ns@ creates a term representing a constant array of
+    -- @w@-bit values taken from @ns@.
+  , termIntArray :: Int -> [Integer] -> m (SBETerm m)
+
     -- | @termBool b@ creates a term representing the constant boolean
     -- (1-bit) value @b@
   , termBool :: Bool   -> m (SBETerm m)
@@ -97,6 +102,11 @@ data SBE m = SBE
                  -> LLVM.Symbol
                  -> [LLVM.Ident]
                  -> m (SBETerm m, SBEMemory m)
+    -- | @memInitGlobal mem data@ writes @data@ to a newly allocated region
+    -- of memory. Returns a pointer to the region and updated memory.
+  , memInitGlobal :: SBEMemory m
+                  -> LLVM.Typed (SBETerm m)
+                  -> m (SBETerm m, SBEMemory m)
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
