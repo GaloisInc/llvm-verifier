@@ -27,7 +27,7 @@ arrayTests =
     arrayOffsetIdx v   = arraySimple v "arr2" (Just 141)
     arrayInit1D v      = arraySimple v "onedim_init" (Just 3)
     arrayInit2D v      = arraySimple v "twodim_init" (Just 21)
-    arraySimple v name = psk v . chkNullaryCInt32Fn v "test-array-simple.bc" (L.Symbol name)
+    arraySimple v name = psk v . chkNullaryCInt32Fn v "test-arrays.bc" (L.Symbol name)
 
 --------------------------------------------------------------------------------
 -- Scratch
