@@ -69,7 +69,6 @@ A struct_test()
     return b;
 }
 
-#if 0
 int twodim()
 {
     int a[4][4] = {
@@ -81,6 +80,7 @@ int twodim()
     return (a[3][3] + a[1][2]); /* == 21 */
 }
 
+#if 0
 int matrix_mul_4x4()
 {
   int a[4][4] = {
