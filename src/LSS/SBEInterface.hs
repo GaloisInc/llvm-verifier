@@ -45,13 +45,13 @@ data SBE m = SBE
     -- value @n@
     termInt  :: Int -> Integer -> m (SBETerm m)
 
-    -- | @termIntArray w ns@ creates a term representing a constant array of
-    -- @w@-bit values taken from @ns@.
-  , termIntArray :: Int -> [Integer] -> m (SBETerm m)
-
     -- | @termBool b@ creates a term representing the constant boolean
     -- (1-bit) value @b@
   , termBool :: Bool   -> m (SBETerm m)
+
+  -- | @termArray ts@ creates a term representing an array with element terms
+  -- @ts@ (which must be nonempty)
+  , termArray :: [SBETerm m] -> m (SBETerm m)
 
     ----------------------------------------------------------------------------
     -- Term operator application

@@ -345,19 +345,24 @@ getTypedTerm' _ (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol s
 getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
   = error $ "getTypedTerm': Non-symbol ptr-to-fun nyi: " ++ show tv
 
-getTypedTerm' _ (Typed ty@(L.Array len ety) (L.ValArray ety' es))
+getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
   = do
     CE.assert (ety == ety') $ return ()
     CE.assert (fromIntegral len == length es) $ return ()
     ebits <- fromIntegral . (`shiftL` 3) <$> withLC (`llvmByteSizeOf` ety)
-    vals  <- case ety of
-               L.PrimType L.Integer{} ->
-                 let f (L.ValInteger x) = x
-                     f _                = error "getTypedTerm': non-ValInteger primint nyi"
-                 in
-                   return (map f es)
-               _ -> error $ "getTypedTerm': Array element type not supported: " ++ show ety
-    Typed ty <$> withSBE (\sbe -> termIntArray sbe ebits vals)
+    valTerms <- mapM (getTypedTerm' mfrm) (Typed ety <$> es)
+    mapM_ (dbugTypedTerm "val") valTerms
+    Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue valTerms))
+--    error "array cons early term"
+    -- Typed ty <$> withSBE (\sbe -> termIntArray sbe ebits vals)
+  where
+--    getVals =
+--       L.PrimType L.Integer{} ->
+--         let f (L.ValInteger x) = x
+--             f _                = error "extractVals: non-ValInteger primint nyi"
+--         in mapM f es
+--       _ -> error $ "getVals Array element type not supported: " ++ show ety
+
 
 getTypedTerm' _ (Typed _ (L.ValSymbol sym))
   = getGlobalPtrTerm (sym, Nothing)

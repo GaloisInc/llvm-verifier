@@ -685,11 +685,8 @@ sbeBitBlast lc be = sbe
   where
     sbe = SBE
           { termInt          = (return . BitTerm) `c2` beVectorFromInt be
-          , termIntArray     = c2 (return . BitTerm) $ \w vals ->
-                                 if null vals
-                                   then error "sbeBitBlast: termIntArray: empty value list"
-                                   else foldr1 (LV.++) $ map (beVectorFromInt be w) vals
           , termBool         = return . BitTerm . LV.singleton . beLitFromBool be
+          , termArray        = return . BitTerm . termArrayImpl
           , applyIte         = bitIte be
           , applyICmp        = bitICmp be
           , applyBitwise     = bitBitwise be
@@ -712,6 +709,9 @@ sbeBitBlast lc be = sbe
           , memCopy          = BitIO `c5` bmMemCopy lc be
           , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)
           }
+
+    termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"
+    termArrayImpl ts = foldr1 (LV.++) (map btVector ts)
 
 type Range t = (t,t)
 
