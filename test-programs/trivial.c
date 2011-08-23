@@ -52,6 +52,23 @@ int onedim_init()
     return a[3];
 }
 
+typedef struct A
+{ int x;
+  char y;
+} A;
+
+A struct_test() 
+{
+    A a;
+    a.x = 42;
+    a.y = 'q';
+
+    A b = { .x = 99, .y = 'z' };
+    b.x = a.x;
+    
+    return b;
+}
+
 #if 0
 int twodim()
 {

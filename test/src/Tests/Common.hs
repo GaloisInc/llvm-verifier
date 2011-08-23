@@ -80,15 +80,16 @@ runCInt32Fn v bcFile sym cargs = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
 
-  let lc            = LLVMContext 32 (error "LLVM Context has no ident -> type alias map defined")
-      backend       = sbeBitBlast lc be
-      mem           = sbeBitBlastMem (stkSt, stkEnd) (codeSt, codeEnd) (heapSt, heapEnd)
-                      where
-                        defaultSz         = 2^(16 :: Int)
-                        ext st len        = (st, st + len)
-                        (stkSt, stkEnd)   = ext 0 defaultSz
-                        (codeSt, codeEnd) = ext stkEnd defaultSz
-                        (heapSt, heapEnd) = ext codeEnd defaultSz
+  let lc      = LLVMContext 32 (error "LLVM Context has no ident -> type alias map defined")
+      backend = sbeBitBlast lc be
+      mem     = sbeBitBlastMem (ss, se) (cs, ce) (ds, de) (hs, he)
+                where
+                  defaultSz  = 2^(16 :: Int)
+                  ext st len = (st, st + len)
+                  (ss, se)   = ext 0 defaultSz
+                  (cs, ce)   = ext se defaultSz
+                  (ds, de)   = ext ce defaultSz
+                  (hs, he)   = ext de defaultSz
 
   runSimulator cb lc backend mem (SM . lift . liftSBEBitBlast) $ withVerbosity v $ do
     args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
