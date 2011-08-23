@@ -349,28 +349,16 @@ getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
   = do
     CE.assert (ety == ety') $ return ()
     CE.assert (fromIntegral len == length es) $ return ()
-    ebits <- fromIntegral . (`shiftL` 3) <$> withLC (`llvmByteSizeOf` ety)
     valTerms <- mapM (getTypedTerm' mfrm) (Typed ety <$> es)
-    mapM_ (dbugTypedTerm "val") valTerms
     Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue valTerms))
---    error "array cons early term"
-    -- Typed ty <$> withSBE (\sbe -> termIntArray sbe ebits vals)
-  where
---    getVals =
---       L.PrimType L.Integer{} ->
---         let f (L.ValInteger x) = x
---             f _                = error "extractVals: non-ValInteger primint nyi"
---         in mapM f es
---       _ -> error $ "getVals Array element type not supported: " ++ show ety
-
 
 getTypedTerm' _ (Typed _ (L.ValSymbol sym))
   = getGlobalPtrTerm (sym, Nothing)
 
-getTypedTerm' (Just frm) (Typed _ (L.ValConstExpr ce))
+getTypedTerm' mfrm (Typed _ (L.ValConstExpr ce))
   = case ce of
       L.ConstConv L.BitCast tv t ->
-        Typed t . typedValue <$> getTypedTerm' (Just frm) tv
+        Typed t . typedValue <$> getTypedTerm' mfrm tv
       _ -> error $ "getTypedTerm: ConstExpr eval nyi : " ++ show ce
 
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))

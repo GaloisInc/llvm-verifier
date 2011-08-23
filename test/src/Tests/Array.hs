@@ -20,7 +20,7 @@ arrayTests =
     test 1 False "test-array-index-base"      $ arrayBaseIdx   1
   , test 1 False "test-array-index-offset"    $ arrayOffsetIdx 1
   , test 1 False "test-array-1d-initializer"  $ arrayInit1D    1
---   , test 1 False "test-array-2d-initializer"  $ arrayInit2D    6
+  , test 1 False "test-array-2d-initializer"  $ arrayInit2D    1
   ]
   where
     arrayBaseIdx v     = arraySimple v "arr1" (Just 42)
