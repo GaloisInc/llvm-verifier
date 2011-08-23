@@ -16,6 +16,7 @@ module LSS.Execution.Codebase
   , lookupDefine'
   , lookupGlobal
   , lookupGlobal'
+  , lookupSym
   , dumpSymDefine
   )
 
@@ -84,6 +85,9 @@ lookupGlobal' :: LLVM.Symbol -> Codebase -> Maybe LLVM.Global
 lookupGlobal' sym cb = case M.lookup sym (cbGlobalNameMap cb) of
   Just (Left g) -> Just g
   _             -> Nothing
+
+lookupSym :: LLVM.Symbol -> Codebase -> Maybe (Either LLVM.Global SymDefine)
+lookupSym sym = M.lookup sym . cbGlobalNameMap
 
 dumpSymDefine :: MonadIO m => m Codebase -> String -> m ()
 dumpSymDefine getCB sym = getCB >>= \cb ->

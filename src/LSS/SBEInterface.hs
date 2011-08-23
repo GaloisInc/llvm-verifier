@@ -112,7 +112,7 @@ data SBE m = SBE
   , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
     -- | @codeLookupDefine ptr@ returns the symbol at the given address.
     -- Lookup may fail if the pointer does not point to a symbol, or if
-    -- the pointer is a symbolic vlaue without a clear meaning.
+    -- the pointer is a symbolic value without a clear meaning.
     -- TODO: Consider moving this function to the symbolic simulator.
   , codeLookupDefine :: SBEMemory m -> SBETerm m -> m (PartialResult LLVM.Symbol)
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
@@ -130,6 +130,15 @@ data SBE m = SBE
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
+    -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
+    -- both of which must be aligned according to @align@ and must refer to
+    -- non-overlapping regions.
+  , memCopy :: SBEMemory m
+            -> SBETerm m -- ^ Destination pointer
+            -> SBETerm m -- ^ Source pointer
+            -> SBETerm m -- ^ Number of bytes to copy
+            -> SBETerm m -- ^ Alignment in bytes
+            -> m (SBEMemory m)
 
     ----------------------------------------------------------------------------
     -- Output functions

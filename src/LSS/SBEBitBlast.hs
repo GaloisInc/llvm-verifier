@@ -5,9 +5,10 @@ Stability        : provisional
 Point-of-contact : atomb, jhendrix
 -}
 
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE ViewPatterns               #-}
 
 module LSS.SBEBitBlast
@@ -31,6 +32,7 @@ import           Data.Map                  (Map)
 import           Debug.Trace
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
+import           Numeric                   (showHex)
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..), createBitEngine)
 import           Verinf.Symbolic.Lit
@@ -49,6 +51,9 @@ g `c3` f = \x y z -> g (f x y z)
 c4 :: (r -> s) -> (a -> b -> c -> d -> r) -> a -> b -> c -> d -> s
 g `c4` f = \w x y z -> g (f w x y z)
 
+c5 :: (r -> s) -> (a -> b -> c -> d -> e -> r) -> a -> b -> c -> d -> e -> s
+g `c5` f = \v w x y z -> g (f v w x y z)
+
 --------------------------------------------------------------------------------
 -- Symbolic backend
 
@@ -63,7 +68,9 @@ instance (Eq l, LV.Storable l) => S.PrettyTerm (BitTermClosed l) where
       if 1 == LV.length bv
       then text (maybe "?:[1]" show $ getBool ct)
       else text str <> colon <>  brackets (text $ show $ LV.length bv)
-           <+> maybe empty (parens . integer) (getSVal ct)
+           <+> maybe empty cvt (getSVal ct)
+    where
+      cvt x = parens (integer x) <+> parens (text "0x" <> text (showHex x ""))
 
 instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
   getSVal (BitTermClosed (be, t)) =
@@ -94,6 +101,9 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
 
   isConst = error "ConstantProjection (BitTermClosed): isConst BitTerm nyi"
 
+prettyLV :: (Eq l, LV.Storable l) => BitEngine l -> LV.Vector l -> Doc
+prettyLV be bv = S.prettyTermWithD S.defaultPPConfig $ BitTermClosed (be, BitTerm bv)
+
 -- | Returns number of bytes.
 byteSize :: LV.Storable l => LV.Vector l -> Int
 byteSize v = LV.length v `shiftR` 3
@@ -112,17 +122,34 @@ data Storage l
   | SUninitialized -- ^ A memory byte that has not been initialized by LLVM.
   | SUnallocated -- ^ A memory section that has not been allocated to the program.
 
--- TODO: Write an alternate pretty printer that only shows address ranges and
--- contents of allocated regions
+-- A derived(Show)-like pretty printer for the Storage type
+ppStorageShow :: (Eq l, LV.Storable l) => BitEngine l -> Storage l -> Doc
+ppStorageShow be (SBranch f t) = text "SBranch" <+> parens (ppStorage be f) <+> parens (ppStorage be t)
+ppStorageShow be (SValue lv) = text "SValue" <+> parens (prettyLV be lv)
+ppStorageShow _ (SDefine d) = text ("SDefine " ++ show d)
+ppStorageShow _ (SBlock d b) = text ("SBlock " ++ show d ++ " " ++ show b)
+ppStorageShow _ SUninitialized = text "SUninitialized"
+ppStorageShow _ SUnallocated = text "SUnallocated"
+
+-- A "sparse" pretty printer for the Storage type; skips unallocated regions and
+-- shows addresses explicitly.
 ppStorage :: (Eq l, LV.Storable l) => BitEngine l -> Storage l -> Doc
-ppStorage be (SBranch f t) = text "SBranch" <+> parens (ppStorage be f) <+> parens (ppStorage be t)
-ppStorage be (SValue lv) = text "SValue"
-                           <+> parens (S.prettyTermWithD S.defaultPPConfig
-                                       $ BitTermClosed (be, BitTerm lv))
-ppStorage _ (SDefine d) = text ("SDefine " ++ show d)
-ppStorage _ (SBlock d b) = text ("SBlock " ++ show d ++ " " ++ show b)
-ppStorage _ SUninitialized = text "SUninitialized"
-ppStorage _ SUnallocated = text "SUnallocated"
+ppStorage be = impl 0 Nothing
+  where
+    impl _ Nothing SUnallocated      = text "empty memory"
+    impl a Nothing s                 = impl a (Just empty) s
+    impl a mdoc (SBranch f t)        = let la = a `shiftL` 1
+                                           ra = la `setBit` 0
+                                       in impl ra (Just $ impl la mdoc f) t
+    impl a (Just doc) (SValue v)     = item doc a (prettyLV be v)
+    impl a (Just doc) (SDefine sym)  = item doc a $ LLVM.ppSymbol sym
+    impl a (Just doc) (SBlock s i)   = item doc a
+                                       $ LLVM.ppSymbol s
+                                         <> char '/'
+                                         <> LLVM.ppIdent i
+    impl a (Just doc) SUninitialized = item doc a $ text "uninitialized"
+    impl _ (Just doc) SUnallocated   = doc
+    item doc addr desc               = doc $+$ integer addr <> colon <+> desc
 
 mergeStorage :: (Eq l, LV.Storable l) => BitEngine l -> l -> Storage l -> Storage l -> IO (Storage l)
 mergeStorage be c x y = impl x y
@@ -323,15 +350,16 @@ alignDn addr i = addr .&. (complement mask)
 bmError :: String -> a
 bmError = error
 
-bmDump :: (Eq l, LV.Storable l) => BitEngine l -> BitMemory l -> IO ()
-bmDump be bm = do
+bmDump :: (Eq l, LV.Storable l) => BitEngine l -> Bool -> BitMemory l -> IO ()
+bmDump be sparse bm = do
   banners $ render $
     text "Memory Model Dump"
     $+$ text "Stack Range:" <+> text (show (bmStackAddr bm, bmStackEnd bm))
     $+$ text "Code Range:" <+> text (show (bmCodeAddr bm, bmCodeEnd bm))
     $+$ text "Data Range:" <+> text (show (bmDataAddr bm, bmDataEnd bm))
     $+$ text "Frame pointers:" <+> text (show (bmStackFrames bm))
-    $+$ ppStorage be (bmStorage bm)
+    $+$ text "Storage:"
+    $+$ (if sparse then ppStorage else ppStorageShow) be (bmStorage bm)
 
 bmLoad :: (Eq l, LV.Storable l)
        => LLVMContext
@@ -380,7 +408,7 @@ bmStackAlloca :: (Eq l, LV.Storable l)
               -> Int
               -> (BitTerm l, BitMemory l)
 bmStackAlloca lc be bm eltTp typedCnt a =
-    ( BitTerm (beVectorFromInt be w res)
+    ( BitTerm (beVectorFromInt be (llvmAddrWidthBits lc) res)
     , bm { bmStorage = newStorage, bmStackAddr = newAddr })
   where -- Number of bytes in element type.
         eltSize = llvmByteSizeOf lc eltTp
@@ -391,7 +419,6 @@ bmStackAlloca lc be bm eltTp typedCnt a =
                   bmError $ "Symbolic number of elements requested with alloca;"
                                ++ " when current implementation only supports concrete"
                 Just (_,v) -> v
-        w = llvmAddrWidthBits lc
         -- Stack pointer adjusted to alignment boundary.
         errorMsg = bmError "Stack limit exceeded in alloca."
         -- Get result pointer
@@ -400,18 +427,18 @@ bmStackAlloca lc be bm eltTp typedCnt a =
           | bmStackGrowsUp bm =
               let alignedAddr = alignUp (bmStackAddr bm) a
                   newStackAddr = alignedAddr + eltSize * cnt
-               in if newStackAddr > bmStackEnd bm
-                    then errorMsg
-                    else ( alignedAddr
-                         , setBytes w alignedAddr newStackAddr (\_ -> SUninitialized) (bmStorage bm)
-                         , newStackAddr)
+              in if newStackAddr > bmStackEnd bm
+                   then errorMsg
+                   else ( alignedAddr
+                        , uninitRegion lc alignedAddr newStackAddr (bmStorage bm)
+                        , newStackAddr)
           | otherwise =
               let sz = eltSize * cnt
                   alignedAddr = alignDn (bmStackAddr bm - sz) a
                in if alignedAddr < bmStackEnd bm
                     then errorMsg
                     else ( alignedAddr
-                         , setBytes w alignedAddr (alignedAddr + sz) (\_ -> SUninitialized) (bmStorage bm)
+                         , uninitRegion lc alignedAddr (alignedAddr + sz) (bmStorage bm)
                          , alignedAddr)
 
 -- | Push stack frame to memory.
@@ -429,6 +456,25 @@ bmStackPop lc bm@BitMemory { bmStackFrames = f : fl } =
      , bmStackAddr = f
      , bmStackFrames = fl
      }
+
+bmMemCopy :: (Eq l, LV.Storable l)
+          => LLVMContext
+          -> BitEngine l -- ^ Bit engine for literals
+          -> BitMemory l
+          -> BitTerm l   -- ^ Destination pointer
+          -> BitTerm l   -- ^ Source pointer
+          -> BitTerm l   -- ^ Length value
+          -> BitTerm l   -- ^ Alignment in bytes
+          -> IO (BitMemory l)
+bmMemCopy _lc be m (BitTerm dst) (BitTerm src) (BitTerm len0) (BitTerm _align) = do
+  -- TODO: Alignment checks?
+  bytes      <- loadBytes be (bmStorage m) src len
+  newStorage <- storeBytes be (bmStorage m) bytes dst
+  return m{ bmStorage = newStorage }
+  where
+    len = case beVectorToMaybeInt be len0 of
+            Nothing    -> bmError $ "Symbolic memcpy len not supported"
+            Just (_,x) -> x
 
 bmMerge :: (Eq l, LV.Storable l)
         => BitEngine l
@@ -483,16 +529,9 @@ bmMemInitGlobal lc be m (LLVM.Typed ty (BitTerm gd))
   = bmError "Not enough space in data segment to allocate new global."
   | otherwise
   = do
---   dbugM $ "bmMemAddGlobal: ty = " ++ show ty
---   dbugM $ "newSpaceReq = " ++ show newSpaceReq
   let ptr@(BitTerm ptrv) = BitTerm $ beVectorFromInt be width dataAddr
       mem                = uninitRegion lc dataAddr newDataAddr (bmStorage m)
   newStorage <- storeBytes be mem gd ptrv
-
---   dbugM $ show $ ppStorage be (bmStorage m)
---   dbugM $ show $ ppStorage be mem
---   dbugM $ show $ ppStorage be newStorage
-
   return (ptr, m { bmStorage = newStorage, bmDataAddr = newDataAddr })
   where
     width       = llvmAddrWidthBits lc
@@ -659,7 +698,7 @@ sbeBitBlast lc be = sbe
           , termWidth        = \(BitTerm bv) -> fromIntegral (LV.length bv)
           , closeTerm        = BitTermClosed . (,) be
           , prettyTermD      = S.prettyTermD . closeTerm sbe
-          , memDump          = BitIO . bmDump be
+          , memDump          = BitIO . bmDump be True
           , memLoad          = BitIO `c2` bmLoad lc be
           , memStore         = BitIO `c3` bmStore lc be
           , memMerge         = BitIO `c3` bmMerge be
@@ -670,6 +709,7 @@ sbeBitBlast lc be = sbe
           , stackAlloca      = return `c4` bmStackAlloca lc be
           , stackPushFrame   = return . bmStackPush
           , stackPopFrame    = return . bmStackPop lc
+          , memCopy          = BitIO `c5` bmMemCopy lc be
           , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)
           }
 
@@ -731,11 +771,13 @@ testSBEBitBlast = do
     let i32 = LLVM.PrimType (LLVM.Integer 32)
     let ptr = LLVM.PtrTo
     l1 <- termInt sbe 32 1
+    liftIO $ putStrLn (render (text "m0:" <+> ppStorage be (bmStorage m0)))
     (sp,m1) <- stackAlloca sbe m0 i32 (LLVM.Typed i32 l1) 1
-    liftIO $ putStrLn (render (ppStorage be (bmStorage m1)))
+    liftIO $ putStrLn (render (text "m1:" <+> ppStorage be (bmStorage m1)))
     liftIO $ putStrLn $ show $ beVectorToMaybeInt be (btVector sp)
     lv <- termInt sbe 32 0x12345678
     m2 <- memStore sbe m1 (LLVM.Typed i32 lv) sp
+    liftIO $ putStrLn (render (text "m2:" <+> ppStorage be (bmStorage m2)))
     BitTerm actualValue <- memLoad sbe m2 (LLVM.Typed (ptr i32) sp)
     liftIO $ putStrLn $ show $ (0x12345678 :: Integer)
     liftIO $ putStrLn $ show $ beVectorToMaybeInt be actualValue

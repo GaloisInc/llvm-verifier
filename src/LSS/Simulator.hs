@@ -91,10 +91,13 @@ callDefine' ::(MonadIO m, Functor m, Functor sbe)
   -> Maybe (Typed Reg)     -- ^ Callee return type and result register
   -> [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m ()
-callDefine' normalRetID calleeSym mreg args = do
-
-  -- HERE: support llvm.memcpy intrinsic
-
+callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg args
+  | isPrefixOf "llvm." calleeName
+  = do
+  CE.assert (isNothing mreg) $ return ()
+  intrinsic calleeName args
+  | otherwise
+  = do
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   banners' 5 $ show $ ppSymDefine def
@@ -126,6 +129,18 @@ callDefine' normalRetID calleeSym mreg args = do
       | otherwise = err
           $ text "formal/actual type mismatch:"
             <+> L.ppType ft <+> text "vs." <+> L.ppType at
+
+intrinsic :: (MonadIO m, Functor m, Functor sbe)
+  => String -> [Typed (SBETerm sbe)] -> Simulator sbe m ()
+intrinsic intr args0 =
+  case intr of
+    -- TODO: Handle intrinsic overrides
+    "llvm.memcpy.p0i8.p0i8.i64" -> memcpy
+    _ -> error $ "Unsupported LLVM intrinsic: " ++ intr
+  where
+    memcpy = do
+      let [dst, src, len, align, _isvol] = map typedValue args0
+      mutateMem_ $ \sbe mem -> memCopy sbe mem dst src len align
 
 getProgramReturnValue :: (Monad m, Functor m)
   => Simulator sbe m (Maybe (SBETerm sbe))
@@ -318,7 +333,6 @@ getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 -- identifier lookup in the regmap of the given call frame as needed.  Note that
 -- a call frame is only required for identifier lookup, and may be omitted for
 -- other types of values.
-
 getTypedTerm' :: (Functor m, MonadIO m, term ~ SBETerm sbe)
   => Maybe (CallFrame (SBETerm sbe)) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
@@ -350,10 +364,8 @@ getTypedTerm' _ (Typed _ (L.ValSymbol sym))
 
 getTypedTerm' (Just frm) (Typed _ (L.ValConstExpr ce))
   = case ce of
-      L.ConstConv L.BitCast tv t -> do
-        tv' <- Typed t . typedValue <$> getTypedTerm' (Just frm) tv
-        dbugTypedTerm "tv'" tv'
-        return tv'
+      L.ConstConv L.BitCast tv t ->
+        Typed t . typedValue <$> getTypedTerm' (Just frm) tv
       _ -> error $ "getTypedTerm: ConstExpr eval nyi : " ++ show ce
 
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
@@ -374,27 +386,24 @@ getGlobalPtrTerm key@(sym, _) = do
     Just t  -> return t
     Nothing -> do
       cb <- gets codebase
-      case lookupDefine' sym cb of
-        Just def -> do
-          let fty = L.PtrTo
-                    $ L.FunTy
-                      (sdRetType def)
-                      (map typedType $ sdArgs def)
-                      (sdVarArgs def)
-              idl = nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
-          t <- Typed fty <$> mutateMem (\sbe mem -> memAddDefine sbe mem sym idl)
-          modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
-          return t
-        Nothing -> do
-          -- Symbol doesn't refer to a define, try globals.
-          case lookupGlobal' sym cb of
-            Nothing -> error "getGlobalPtrTerm: symbol resolution failed"
-            Just g  -> do
-             cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
-             ptr   <- Typed (L.PtrTo $ L.globalType g)
-                      <$> mutateMem (\sbe mem -> memInitGlobal sbe mem cdata)
-             modify $ \s -> s{ globalTerms = M.insert key ptr (globalTerms s) }
-             return ptr
+      maybe err (either addGlobal addDef) (lookupSym sym cb)
+  where
+    err = error "getGlobalPtrTerm: symbol resolution failed"
+
+    addDef def = do
+      let argTys = map typedType $ sdArgs def
+          fty    = L.FunTy (sdRetType def) argTys (sdVarArgs def)
+          idl    = nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
+      ins fty $ \sbe mem -> memAddDefine sbe mem sym idl
+
+    addGlobal g = do
+      cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
+      ins (L.globalType g) $ \sbe mem -> memInitGlobal sbe mem cdata
+
+    ins ty act = do
+      t <- Typed (L.PtrTo ty) <$> mutateMem act
+      modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
+      return t
 
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
@@ -520,7 +529,8 @@ eval (Alloca t msztv malign ) = do
   szt <- case msztv of
            Nothing   -> getTypedTerm (i32const 1)
            Just sztv -> getTypedTerm sztv
-  let alloca sbe m = stackAlloca sbe m t szt (maybe 0 id malign)
+  let alloca sbe m = stackAlloca sbe m t szt (maybe 0 lg malign)
+
   Typed (L.PtrTo t) <$> mutateMem alloca
 
 eval (Load tv@(Typed (L.PtrTo ty) _)) = do
@@ -673,6 +683,9 @@ withLC f = f <$> gets llvmCtx
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+lg :: (Ord a, Bits a) => a -> a
+lg = genericLength . takeWhile (>0) . drop 1 . iterate (`shiftR` 1)
 
 i32const :: Int32 -> Typed L.Value
 i32const x = L.iT 32 =: L.ValInteger (fromIntegral x)
