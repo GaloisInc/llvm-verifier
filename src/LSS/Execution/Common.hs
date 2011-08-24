@@ -109,7 +109,7 @@ data CallFrame term = CallFrame
 --------------------------------------------------------------------------------
 -- Misc typeclass instances
 
-instance MonadIO m => LogMonad (Simulator sbe m) where
+instance Monad m => LogMonad (Simulator sbe m) where
   getVerbosity   = gets verbosity
   setVerbosity v = modify $ \s -> s{ verbosity = v }
 
