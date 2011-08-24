@@ -70,7 +70,10 @@ instance (Eq l, LV.Storable l) => S.PrettyTerm (BitTermClosed l) where
       else text str <> colon <>  brackets (text $ show $ LV.length bv)
            <+> maybe empty cvt (getSVal ct)
     where
-      cvt x = parens (integer x) <+> parens (text "0x" <> text (showHex x ""))
+      cvt x = parens (integer x)
+              <+> if x >= 0
+                  then parens (text "0x" <> text (showHex x ""))
+                  else empty
 
 instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
   getSVal (BitTermClosed (be, t)) =
@@ -667,6 +670,7 @@ bitConv be op (BitTerm x) (LLVM.PrimType (LLVM.Integer (fromIntegral -> w))) =
   where f = case op of
               LLVM.Trunc -> assert (w < LV.length x) beTrunc
               LLVM.ZExt  -> assert (w > LV.length x) beZext
+              LLVM.SExt  -> assert (w > LV.length x) beSext
               _ -> bmError $ "Unsupported conv op: " ++ show op
 bitConv _ _ _ ty = bmError $ "Unsupported conv target type: " ++ show (LLVM.ppType ty)
 
