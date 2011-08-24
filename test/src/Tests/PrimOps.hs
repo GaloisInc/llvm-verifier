@@ -25,14 +25,15 @@ primOpTests =
     test 10  False "concrete int32 add"    $ int32add       1
   , test 10  False "concrete int32 sqr"    $ int32sqr       1
   , test 10  False "concrete int32 muladd" $ int32muladd    1
-  , test 100 False "direct int32 add"      $ dirInt32add    1
-  , test 100 False "direct int32 mul"      $ dirInt32mul    1
-  , test 100 False "direct int32 sdiv"     $ dirInt32sdiv   1
-  , test 100 False "direct int32 udiv"     $ dirInt32udiv   1
-  , test 100 False "direct int32 srem"     $ dirInt32srem   1
-  , test 100 False "direct int32 urem"     $ dirInt32urem   1
+  , test 10  False "direct int32 add"      $ dirInt32add    1
+  , test 10  False "direct int32 mul"      $ dirInt32mul    1
+  , test 10  False "direct int32 sdiv"     $ dirInt32sdiv   1
+  , test 10  False "direct int32 udiv"     $ dirInt32udiv   1
+  , test 10  False "direct int32 srem"     $ dirInt32srem   1
+  , test 10  False "direct int32 urem"     $ dirInt32urem   1
   , test  1  False "test-arith"            $ testArith      1
   , test  1  False "test-branch"           $ testBranch     1
+  , test 10  False "test-factorial"        $ testFactorial  1
   , test  1  False "test-call-voidrty"     $ testCallVR     1
   , test  1  False "test-call-simple"      $ testCallSimple 1
   , test  1  False "test-ptr-simple"       $ testPtrSimple  1
@@ -42,9 +43,11 @@ primOpTests =
     -- The 'v' parameter to all of these tests controls the verbosity; a
     -- verbosity of '0' turns the test into a successful no-op, but issues a
     -- warning.
-    int32add v       = psk v $ chkBinCInt32Fn v "test-primops.bc"  (L.Symbol "int32_add") (\x y -> Just (x + y))
-    int32sqr v       = psk v $ chkUnaryCInt32Fn v "test-primops.bc" (L.Symbol "int32_square") (Just . sqr)
-    int32muladd v    = psk v $ chkBinCInt32Fn v "test-primops.bc" (L.Symbol "int32_muladd") (\x y -> Just $ sqr (x + y))
+
+    int32add v       = primB v "int32_add"    Nothing $ \x y -> Just (x + y)
+    int32sqr v       = primU v "int32_square" Nothing $ Just . sqr
+    int32muladd v    = primB v "int32_muladd" Nothing $ \x y -> Just $ sqr (x + y)
+    testFactorial v  = primU v "factorial" (Just $ elements [0..12]) (Just . fact)
     dirInt32add v    = psk v $ chkArithBitEngineFn 32 True L.Add add
     dirInt32mul v    = psk v $ chkArithBitEngineFn 32 True L.Mul mul
     dirInt32sdiv v   = psk v $ chkArithBitEngineFn 32 True L.SDiv idiv
@@ -67,6 +70,11 @@ primOpTests =
     wdiv             = div
     wrem             = rem
     sqr x            = x * x
+    fact 0           = 1
+    fact x           = x * fact (x-1)
+
+    primU v nm mg f = psk v $ chkUnaryCInt32Fn mg v "test-primops.bc" (L.Symbol nm) f
+    primB v nm mg f = psk v $ chkBinCInt32Fn   mg v "test-primops.bc" (L.Symbol nm) f
 
 chkArithBitEngineFn :: (Integral a, Arbitrary a) =>
                        Int -> Bool -> L.ArithOp -> (a -> a -> a)

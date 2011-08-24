@@ -58,15 +58,25 @@ chkRslt _ Nothing Nothing
 chkRslt sym _ _
   = assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
 
-chkBinCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Int32 -> Maybe Int32) -> PropertyM IO ()
-chkBinCInt32Fn v bcFile sym chkOp = do
-  forAllM arbitrary $ \(x,y) -> do
+chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
+               -> Int
+               -> FilePath
+               -> L.Symbol
+               -> (Int32 -> Int32 -> Maybe Int32)
+               -> PropertyM IO ()
+chkBinCInt32Fn mgen v bcFile sym chkOp = do
+  forAllM (maybe arbitrary id mgen) $ \(x,y) -> do
     chkRslt sym (fromIntegral <$> x `chkOp` y)
       =<< run (runCInt32Fn v bcFile sym [x, y])
 
-chkUnaryCInt32Fn :: Int -> FilePath -> L.Symbol -> (Int32 -> Maybe Int32) -> PropertyM IO ()
-chkUnaryCInt32Fn v bcFile sym chkOp =
-  forAllM arbitrary $ \x -> do
+chkUnaryCInt32Fn :: Maybe (Gen Int32)
+                 -> Int
+                 -> FilePath
+                 -> L.Symbol
+                 -> (Int32 -> Maybe Int32)
+                 -> PropertyM IO ()
+chkUnaryCInt32Fn mgen v bcFile sym chkOp =
+  forAllM (maybe arbitrary id mgen) $ \x -> do
     chkRslt sym (fromIntegral <$> chkOp x)
       =<< run (runCInt32Fn v bcFile sym [x])
 
