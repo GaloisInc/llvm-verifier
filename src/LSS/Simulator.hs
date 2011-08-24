@@ -5,6 +5,17 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
+-- Debugging output at various verbosity levels:
+-- 1: No output, the lowest verbosity level
+-- 2: Instruction trace only
+-- 3: (open)
+-- 4: (open)
+-- 5: Simulator internal state (control stack dump per instruction)
+-- 6: Memory model dump on load/store operations only (for nontrivial codes,
+--    this generates a /lot/ of output)
+-- 7: Memory model dump pre/post every operation (for nontrivial codes, this
+--    generates a /lot/ of output -- now with more output than level 6!)
+
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -230,7 +241,7 @@ getCurrentBlockM = do
 -- frame; then, if no pending paths remain, it merges the top merge frame with
 -- the merge frame beneath it on the control stack.
 clearCurrentExecution ::
-  (Functor m, MonadIO m, Functor sbe)
+  (Functor m, MonadIO m)
   => Simulator sbe m ()
 clearCurrentExecution = do
   top <- popMergeFrame
@@ -239,13 +250,12 @@ clearCurrentExecution = do
       -- We just executed the last remaining path, so merge the current merge
       -- frame into the caller's merge frame.
       pushMergeFrame =<< mergeMFs top =<< popMergeFrame
-      popMemFrame
     else do
       -- We still have pending paths, so only remove the current path.
       pushMergeFrame $ snd $ popPending top
 
 
-mergeReturn :: (LogMonad m, Functor m, MonadIO m)
+mergeReturn :: (LogMonad m, Functor m, MonadIO m, Functor sbe)
   => Maybe (Typed SymValue)
   -> Simulator sbe m ()
 mergeReturn mtv = do
@@ -259,12 +269,14 @@ mergeReturn mtv = do
     Nothing -> return ()
     Just tv -> do
       -- Set the return value in the current path
-      rv      <- getTypedTerm tv
+      rv <- getTypedTerm tv
       modifyPath $ setReturnValue (Just $ typedValue rv)
 
   -- Merge the current path into the merged state for the current merge frame.
   Just p <- getPath
   modifyMF $ modifyMergedState $ mergePaths p
+
+  popMemFrame
 
   dbugM' 5 $ "After mergeReturn, but before clearCurrentExecution:"
   dumpCtrlStk' 5
@@ -467,9 +479,11 @@ step (AddPathConstraint _cond) =
 step (Assign reg expr) = assign reg =<< eval expr
 
 step (Store val addr _malign) = do
+  dumpMem 6 "store pre"
   valTerm          <- getTypedTerm val
   Typed _ addrTerm <- getTypedTerm addr
-  mutateMem_ $ \sbe mem -> memStore sbe mem valTerm addrTerm
+  mutateMem_ (\sbe mem -> memStore sbe mem valTerm addrTerm)
+  dumpMem 6 "store post"
 
 step (IfThenElse cond thenStmts elseStmts) = do
   b <- evalCond cond
@@ -529,7 +543,11 @@ eval (Alloca t msztv malign ) = do
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   let load sbe mem = memLoad sbe mem addrTerm
+
+  dumpMem 6 "load pre"
   Typed ty <$> withMem load
+    <* dumpMem 6 "load post"
+
 eval s@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr s)
 
 eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
@@ -655,16 +673,17 @@ withSBE' f = gets symBE >>= \sbe -> return (f sbe)
 
 withMem :: (Functor m, Monad m)
   => (SBE sbe -> SBEMemory sbe -> sbe a) -> Simulator sbe m a
-withMem f = gets memModel >>= withSBE . flip f
+withMem f = do
+  gets memModel >>= withSBE . flip f
 
 mutateMem :: (Functor m, MonadIO m)
   => (SBE sbe -> SBEMemory sbe -> sbe (a, SBEMemory sbe)) -> Simulator sbe m a
 mutateMem f = do
-  m0 <-gets memModel
-  whenVerbosity (>=6) $ dbugM "mutateMem pre:" >> dumpMem m0
+  dumpMem 7 "mutateMem pre"
+  m0 <- gets memModel
   (r, m1) <- withSBE (`f` m0)
   modify $ \s -> s{ memModel = m1 }
-  whenVerbosity (>=6) $ dbugM "mutateMem post:" >> dumpMem m1
+  dumpMem 7 "mutateMem post"
   return r
 
 mutateMem_ :: (Functor m, MonadIO m, Functor sbe)
@@ -777,8 +796,12 @@ modifyCallFrameM = modifyPath . modifyCallFrame
 --------------------------------------------------------------------------------
 -- Debugging
 
-dumpMem :: (Functor m, Monad m) => SBEMemory sbe -> Simulator sbe m ()
-dumpMem mem = withSBE $ flip memDump mem
+dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
+dumpMem v msg =
+  whenVerbosity (>=v) $ do
+    dbugM $ msg ++ ":"
+    mem <- gets memModel
+    withSBE (`memDump` mem)
 
 dbugStep ::
   ( LogMonad m
