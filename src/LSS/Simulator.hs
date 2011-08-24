@@ -559,7 +559,8 @@ eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
 eval s@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr s)
 
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
-eval (Val _tv                ) = error "eval Val nyi"
+
+eval (Val tv) = getTypedTerm tv
 
 eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
   where
