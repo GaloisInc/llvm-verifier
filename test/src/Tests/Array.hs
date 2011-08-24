@@ -11,6 +11,7 @@ Point-of-contact : jstanley
 module Tests.Array (arrayTests) where
 
 import           Test.QuickCheck
+import           Test.QuickCheck.Monadic (run)
 import           Tests.Common
 import qualified Text.LLVM as L
 
@@ -21,7 +22,9 @@ arrayTests =
   , test 1 False "test-array-index-offset"    $ arrayOffsetIdx 1
   , test 1 False "test-array-1d-initializer"  $ arrayInit1D    1
   , test 1 False "test-array-2d-initializer"  $ arrayInit2D    1
-  , test 1 False "test-array-matmult4x4"      $ incomplete $ arrayMat4x4    1
+  , test 1 False "test-array-matmult4x4"      $ do
+      run $ putStrLn "Warning: test-array-matmult4x4 still using -hacked bitcode"
+      arrayMat4x4    1
   ]
   where
     arrayBaseIdx v        = t1 v "arr1" (Just 42)
@@ -30,7 +33,9 @@ arrayTests =
     arrayInit2D v         = t1 v "twodim_init" (Just 21)
     arrayMat4x4 v         = t2 v "matrix_mul_4x4" (Just 304)
     t1                    = mkNullaryTest "test-arrays.bc"
-    t2                    = mkNullaryTest "test-mat4x4.bc"
+-- uncomment when test-mat4x4.bc is being slurped properly
+--    t2                    = mkNullaryTest "test-mat4x4.bc"
+    t2                    = mkNullaryTest "test-mat4x4-hacked.bc"
     mkNullaryTest fn v nm = psk v . chkNullaryCInt32Fn v fn (L.Symbol nm)
 
 --------------------------------------------------------------------------------

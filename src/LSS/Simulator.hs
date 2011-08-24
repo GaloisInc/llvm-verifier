@@ -393,7 +393,8 @@ getGlobalPtrTerm key@(sym, _) = do
       cb <- gets codebase
       maybe err (either addGlobal addDef) (lookupSym sym cb)
   where
-    err = error "getGlobalPtrTerm: symbol resolution failed"
+    err = error $ "getGlobalPtrTerm: symbol resolution failed: "
+                  ++ show (L.ppSymbol sym)
 
     addDef def = do
       let argTys = map typedType $ sdArgs def
