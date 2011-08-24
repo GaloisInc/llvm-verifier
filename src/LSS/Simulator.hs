@@ -586,7 +586,7 @@ eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
     sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m (Typed L.Value)
     sizeof ty = Typed (L.PrimType (L.Integer 32)) <$> L.ValInteger <$> withLC (`llvmByteSizeOf` ty)
 
-    -- @baseOffset i ty p@ computes p + i * sizeof(ty)
+    -- @baseOffset i ty p@ computes @p + i * sizeof(ty)@
     baseOffset :: (MonadIO m, Functor m)
       => Typed SymValue -> L.Type -> SBETerm sbe
       -> Simulator sbe m (Typed (SBETerm sbe))
@@ -639,8 +639,7 @@ resizeTerms a b = do
          then conv a (L.iT wb) >>= \a' -> return (a', b)
          else return (a, b)
   where
-    -- TODO: Probably want signed ext or offer the caller a choice.
-    conv = termConv L.ZExt
+    conv = termConv L.SExt
 
 (&&&) :: (ConstantProjection (SBEClosedTerm sbe), Functor m, Monad m)
   => Simulator sbe m (SBETerm sbe)
