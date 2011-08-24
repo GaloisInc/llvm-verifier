@@ -108,7 +108,7 @@ data SymExpr
   -- TODO: See if type information is needed.
   | Conv LLVM.ConvOp (Typed SymValue) LLVM.Type
   | Alloca LLVM.Type (Maybe (Typed SymValue)) (Maybe Int)
-  | Load (Typed SymValue)
+  | Load (Typed SymValue) (Maybe LLVM.Align)
   | ICmp LLVM.ICmpOp (Typed SymValue) SymValue
   | FCmp LLVM.FCmpOp (Typed SymValue) SymValue
   -- | A copy of a value.
@@ -126,7 +126,7 @@ ppSymExpr (Arith op l r) = LLVM.ppArithOp op <+> ppTypedValue l <> comma <+> ppS
 ppSymExpr (Bit op l r) = LLVM.ppBitOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (Conv op l r) = LLVM.ppConvOp op <+> ppTypedValue l <> comma <+> LLVM.ppType r
 ppSymExpr (Alloca ty len align) = LLVM.ppAlloca ty len align
-ppSymExpr (Load ptr) = text "load" <+> ppTypedValue ptr
+ppSymExpr (Load ptr malign) = text "load" <+> ppTypedValue ptr <> LLVM.ppAlign malign
 ppSymExpr (ICmp op l r) = text "icmp" <+> LLVM.ppICmpOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (FCmp op l r) = text "fcmp" <+> LLVM.ppFCmpOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (Val v) = ppTypedValue v
@@ -188,7 +188,7 @@ data SymStmt
   -- | Assign result of instruction to register.
   | Assign Reg SymExpr
   -- | @Store v addr@ stores value @v@ in @addr@.
-  | Store (Typed SymValue) (Typed SymValue)
+  | Store (Typed SymValue) (Typed SymValue) (Maybe LLVM.Align)
   -- | Conditional execution.
   | IfThenElse SymCond [SymStmt] [SymStmt]
   -- | Print out an error message if we reach an unreachable.
@@ -216,7 +216,8 @@ ppSymStmt (PushPendingExecution c) = text "pushPendingExecution" <+> ppSymCond c
 ppSymStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
 ppSymStmt (AddPathConstraint c) = text "addPathConstraint" <+> ppSymCond c
 ppSymStmt (Assign v e) = ppReg v <+> char '=' <+> ppSymExpr e
-ppSymStmt (Store v addr) = text "store" <+> ppTypedValue v <> comma <+> ppTypedValue addr
+ppSymStmt (Store v addr malign) = text "store" <+> ppTypedValue v <> comma <+> ppTypedValue addr
+                                  <> LLVM.ppAlign malign
 ppSymStmt (IfThenElse c t f) =
   text "if" <+> ppSymCond c <> char '{'
     $+$ nest 2 (vcat (map ppSymStmt t))

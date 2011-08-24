@@ -218,17 +218,17 @@ liftBB lti phiMap bb = do
       impl (Effect (LLVM.Comment _):r) idx il = impl r idx il
       impl (stmt:rest) idx il =
         let s' = case stmt of
-                   Result r (LLVM.Arith op tpv1 v2)   -> Assign r (Arith op tpv1 v2)
-                   Result r (LLVM.Bit   op tpv1 v2)   -> Assign r (Bit   op tpv1 v2)
-                   Result r (LLVM.Conv  op tpv tp)    -> Assign r (Conv  op tpv tp)
-                   Result r (LLVM.Alloca tp mtpv mi)  -> Assign r (Alloca tp mtpv mi)
-                   Result r (LLVM.Load tpv)           -> Assign r (Load tpv)
-                   Effect   (LLVM.Store v addr)       -> Store v addr
-                   Result r (LLVM.ICmp op tpv1 v2)    -> Assign r (ICmp op tpv1 v2)
-                   Result r (LLVM.FCmp op tpv1 v2)    -> Assign r (FCmp op tpv1 v2)
-                   Result r (LLVM.GEP tp tpvl)        -> Assign r (GEP tp tpvl)
-                   Result r (LLVM.Select tpc tpv1 v2) -> Assign r (Select tpc tpv1 v2)
-                   Result r (LLVM.ExtractValue tpv i) -> Assign r (ExtractValue tpv i)
+                   Result r (LLVM.Arith op tpv1 v2)    -> Assign r (Arith op tpv1 v2)
+                   Result r (LLVM.Bit   op tpv1 v2)    -> Assign r (Bit   op tpv1 v2)
+                   Result r (LLVM.Conv  op tpv tp)     -> Assign r (Conv  op tpv tp)
+                   Result r (LLVM.Alloca tp mtpv mi)   -> Assign r (Alloca tp mtpv mi)
+                   Result r (LLVM.Load tpv malign)     -> Assign r (Load tpv malign)
+                   Effect   (LLVM.Store v addr malign) -> Store v addr malign
+                   Result r (LLVM.ICmp op tpv1 v2)     -> Assign r (ICmp op tpv1 v2)
+                   Result r (LLVM.FCmp op tpv1 v2)     -> Assign r (FCmp op tpv1 v2)
+                   Result r (LLVM.GEP tp tpvl)         -> Assign r (GEP tp tpvl)
+                   Result r (LLVM.Select tpc tpv1 v2)  -> Assign r (Select tpc tpv1 v2)
+                   Result r (LLVM.ExtractValue tpv i)  -> Assign r (ExtractValue tpv i)
                    Result r (LLVM.InsertValue tpv tpa i) -> Assign r (InsertValue tpv tpa i)
                    _ | null rest -> liftError $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt
                    _ -> liftError $

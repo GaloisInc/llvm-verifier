@@ -466,7 +466,7 @@ step (AddPathConstraint _cond) =
 
 step (Assign reg expr) = assign reg =<< eval expr
 
-step (Store val addr) = do
+step (Store val addr _malign) = do
   valTerm          <- getTypedTerm val
   Typed _ addrTerm <- getTypedTerm addr
   mutateMem_ $ \sbe mem -> memStore sbe mem valTerm addrTerm
@@ -526,11 +526,11 @@ eval (Alloca t msztv malign ) = do
 
   Typed (L.PtrTo t) <$> mutateMem alloca
 
-eval (Load tv@(Typed (L.PtrTo ty) _)) = do
+eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   let load sbe mem = memLoad sbe mem addrTerm
   Typed ty <$> withMem load
-eval s@(Load _) = error $ "Illegal load operand: " ++ show (ppSymExpr s)
+eval s@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr s)
 
 eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
