@@ -97,9 +97,19 @@ runCInt32Fn v bcFile sym cargs = do
     rv <- getProgramReturnValue
     return $ BitTermClosed . (,) be <$> rv
 
+-- possibly skip a test
 psk :: Int -> PropertyM IO () -> PropertyM IO ()
-psk v act = if (v > 0) then act else disabledWarn
-  where disabledWarn = run $ putStrLn "Warning: Next test is currently DISABLED!"
+psk v act = if (v > 0) then act else disabled
+
+disabled :: PropertyM IO ()
+disabled = do
+  run $ putStrLn $ "Warning: Next test is DISABLED! (will report success)"
+
+incomplete :: PropertyM IO () -> PropertyM IO ()
+incomplete act = do
+  run $ putStrLn $ "Warning: Next test is INCOMPLETE! (will report failure)"
+  act
+  assert False
 
 runMain :: Int -> FilePath -> Maybe Int32 -> PropertyM IO ()
 runMain v bc = psk v . chkNullaryCInt32Fn v bc (L.Symbol "main")

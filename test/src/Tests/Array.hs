@@ -21,13 +21,17 @@ arrayTests =
   , test 1 False "test-array-index-offset"    $ arrayOffsetIdx 1
   , test 1 False "test-array-1d-initializer"  $ arrayInit1D    1
   , test 1 False "test-array-2d-initializer"  $ arrayInit2D    1
+  , test 1 False "test-array-matmult4x4"      $ incomplete $ arrayMat4x4    1
   ]
   where
-    arrayBaseIdx v     = arraySimple v "arr1" (Just 42)
-    arrayOffsetIdx v   = arraySimple v "arr2" (Just 141)
-    arrayInit1D v      = arraySimple v "onedim_init" (Just 3)
-    arrayInit2D v      = arraySimple v "twodim_init" (Just 21)
-    arraySimple v name = psk v . chkNullaryCInt32Fn v "test-arrays.bc" (L.Symbol name)
+    arrayBaseIdx v        = t1 v "arr1" (Just 42)
+    arrayOffsetIdx v      = t1 v "arr2" (Just 141)
+    arrayInit1D v         = t1 v "onedim_init" (Just 3)
+    arrayInit2D v         = t1 v "twodim_init" (Just 21)
+    arrayMat4x4 v         = t2 v "matrix_mul_4x4" (Just 304)
+    t1                    = mkNullaryTest "test-arrays.bc"
+    t2                    = mkNullaryTest "test-mat4x4.bc"
+    mkNullaryTest fn v nm = psk v . chkNullaryCInt32Fn v fn (L.Symbol nm)
 
 --------------------------------------------------------------------------------
 -- Scratch
