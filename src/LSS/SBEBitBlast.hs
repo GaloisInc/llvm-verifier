@@ -14,11 +14,15 @@ Point-of-contact : atomb, jhendrix
 module LSS.SBEBitBlast
   ( module LSS.SBEInterface
   , module Data.LLVM.Memory
+  , BitBlastSBE
   , BitTerm
   , BitTermClosed(..)
   , sbeBitBlast
   , sbeBitBlastMem
   , liftSBEBitBlast
+  -- for testing only
+  , BitMemory
+  , BitIO
   ) where
 
 import           Control.Applicative       ((<$>))
@@ -682,6 +686,8 @@ newtype BitIO l a = BitIO { liftSBEBitBlast :: IO a }
 type instance SBETerm (BitIO l)       = BitTerm l
 type instance SBEClosedTerm (BitIO l) = BitTermClosed l
 type instance SBEMemory (BitIO l)     = BitMemory l
+
+type BitBlastSBE l = SBE (BitIO l)
 
 sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
   => LLVMContext -> BitEngine l -> SBE (BitIO l)

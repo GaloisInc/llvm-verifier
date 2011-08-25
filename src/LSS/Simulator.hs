@@ -29,8 +29,11 @@ module LSS.Simulator
   ( module LSS.Execution.Codebase
   , callDefine
   , getProgramReturnValue
+  , prettyTermSBE
   , runSimulator
-  , withSBE -- Exported so we can construct argument values.
+  , withSBE  -- Exported so we can construct argument values.
+  -- for testing
+  , dbugTerm
   )
 where
 
@@ -459,7 +462,7 @@ step (MergePostDominator pdid cond) = do
                      &&& boolTerm True {- tmp: typecheck &&& -}
     HasConstValue{} -> error "path constraint addition: HasConstValue nyi"
 
-  pretty <- withSBE' $ \sbe -> prettyTermD sbe newPC
+  pretty <- prettyTermSBE newPC
   dbugM' 5 $ "New path constraint is: " ++ render pretty
 
   -- Merge the current path into the merged state for the current merge frame
@@ -797,6 +800,9 @@ modifyCallFrameM = modifyPath . modifyCallFrame
 --------------------------------------------------------------------------------
 -- Debugging
 
+prettyTermSBE :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m Doc
+prettyTermSBE t = withSBE' $ \sbe -> prettyTermD sbe t
+
 dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
 dumpMem v msg =
   whenVerbosity (>=v) $ do
@@ -829,9 +835,7 @@ dbugStep stmt = do
   dumpCtrlStk' 5
 
 dbugTerm :: (MonadIO m, Functor m) => String -> SBETerm sbe -> Simulator sbe m ()
-dbugTerm desc t = do
-  pretty <- render <$> withSBE' (\sbe -> prettyTermD sbe t)
-  dbugM $ desc ++ ": " ++ pretty
+dbugTerm desc t = dbugM =<< ((++) (desc ++ ": ")) . render <$> prettyTermSBE t
 
 dbugTypedTerm :: (MonadIO m, Functor m) => String -> Typed (SBETerm sbe) -> Simulator sbe m ()
 dbugTypedTerm desc (Typed ty t) =

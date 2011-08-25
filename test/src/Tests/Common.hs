@@ -14,11 +14,12 @@ import           LSS.Simulator
 import           System.FilePath
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
-import           Text.LLVM               ((=:))
-import           Verinf.Symbolic.Common  (ConstantProjection(..))
-import           Verinf.Symbolic.Common  (Lit, createBitEngine)
-import qualified Test.QuickCheck.Test    as T
-import qualified Text.LLVM               as L
+import           Text.LLVM                     ((=:))
+import           Verinf.Symbolic.Common        (ConstantProjection(..), Lit, createBitEngine)
+import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
+import qualified Data.Vector.Storable          as LV
+import qualified Test.QuickCheck.Test          as T
+import qualified Text.LLVM                     as L
 
 newtype FailMsg = FailMsg String
 instance Show FailMsg where show (FailMsg s) = s
@@ -86,26 +87,46 @@ chkNullaryCInt32Fn v bcFile sym chkVal =
     =<< run (runCInt32Fn v bcFile sym [])
 
 runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe (BitTermClosed Lit))
-runCInt32Fn v bcFile sym cargs = do
+runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile $ \be -> do
+  args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
+  callDefine sym i32 $ map (\x -> i32 =: x) args
+  rv <- getProgramReturnValue
+  return $ BitTermClosed . (,) be <$> rv
+
+type StdBitEngine     = BitEngine Lit
+type StdBitBlastSim a = Simulator (BitIO Lit) IO a
+
+runBitBlastSim :: Int -> FilePath -> (StdBitEngine -> StdBitBlastSim a) -> IO a
+runBitBlastSim v bcFile act = do
+  (cb, be, lc, backend, mem) <- stdBitBlastInit bcFile
+  runSimulator cb lc backend mem stdBitBlastLift $ withVerbosity v (act be)
+
+stdBitBlastInit :: FilePath -> IO ( Codebase
+                                  , StdBitEngine
+                                  , LLVMContext
+                                  , BitBlastSBE Lit
+                                  , BitMemory Lit
+                                  )
+stdBitBlastInit bcFile = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
-
   let lc      = LLVMContext 32 (error "LLVM Context has no ident -> type alias map defined")
       backend = sbeBitBlast lc be
-      mem     = sbeBitBlastMem (ss, se) (cs, ce) (ds, de) (hs, he)
-                where
-                  defaultSz  = 2^(16 :: Int)
-                  ext st len = (st, st + len)
-                  (ss, se)   = ext 0 defaultSz
-                  (cs, ce)   = ext se defaultSz
-                  (ds, de)   = ext ce defaultSz
-                  (hs, he)   = ext de defaultSz
+  return (cb, be, lc, backend, stdTestMem)
 
-  runSimulator cb lc backend mem (SM . lift . liftSBEBitBlast) $ withVerbosity v $ do
-    args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
-    callDefine sym i32 $ map (\x -> i32 =: x) args
-    rv <- getProgramReturnValue
-    return $ BitTermClosed . (,) be <$> rv
+stdTestMem :: LV.Storable l => BitMemory l
+stdTestMem =
+  sbeBitBlastMem (ss, se) (cs, ce) (ds, de) (hs, he)
+  where
+    defaultSz  = 2^(16 :: Int)
+    ext st len = (st, st + len)
+    (ss, se)   = ext 0 defaultSz
+    (cs, ce)   = ext se defaultSz
+    (ds, de)   = ext ce defaultSz
+    (hs, he)   = ext de defaultSz
+
+stdBitBlastLift :: BitIO l a -> Simulator sbe IO a
+stdBitBlastLift = SM . lift . liftSBEBitBlast
 
 -- possibly skip a test
 psk :: Int -> PropertyM IO () -> PropertyM IO ()
