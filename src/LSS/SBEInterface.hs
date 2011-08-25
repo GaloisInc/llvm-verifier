@@ -94,13 +94,13 @@ data SBE m = SBE
     -- true and @f@ otherwise.
   , memMerge :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
-    -- identifiers @blocks@ to the memory @mem@ and returns a pointer to
+    -- labels @blocks@ to the memory @mem@ and returns a pointer to
     -- the definition, and updated memory.
     -- It is undefined to call this function with a symbol that has already
     -- been defined in the memory.
   , memAddDefine :: SBEMemory m
                  -> LLVM.Symbol
-                 -> [LLVM.Ident]
+                 -> [LLVM.BlockLabel]
                  -> m (SBETerm m, SBEMemory m)
     -- | @memInitGlobal mem data@ writes @data@ to a newly allocated region
     -- of memory. Returns a pointer to the region and updated memory.
@@ -109,7 +109,7 @@ data SBE m = SBE
                   -> m (SBETerm m, SBEMemory m)
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
-  , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
+  , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.BlockLabel -> m (SBETerm m)
     -- | @codeLookupDefine ptr@ returns the symbol at the given address.
     -- Lookup may fail if the pointer does not point to a symbol, or if
     -- the pointer is a symbolic value without a clear meaning.

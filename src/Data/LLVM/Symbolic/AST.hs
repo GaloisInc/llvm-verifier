@@ -28,7 +28,7 @@ module Data.LLVM.Symbolic.AST
   , ppSymExpr
   , ppSymStmt
   , symBlockID
-  , symBlockIdent
+  , symBlockLabel
   ) where
 
 import Data.Int
@@ -41,7 +41,7 @@ import Text.PrettyPrint.HughesPJ
 -- | A fake sentinel SymBlockID to represent a fictitious target block for after
 -- a normal return from a toplevel function invocation.
 entryRetNormalID :: SymBlockID
-entryRetNormalID = NamedBlock (LLVM.Ident "__galois_entry_ret_normal") (-1)
+entryRetNormalID = NamedBlock (LLVM.Named $ LLVM.Ident "__galois_entry_ret_normal") (-1)
 
 -- | Intersperse commas into document.
 commas :: [Doc] -> Doc
@@ -56,7 +56,7 @@ data SymBlockID
   -- post-dominator frames.
   = InitBlock
   -- | Identifier for blocks derived from LLVM blocks.
-  | NamedBlock !(LLVM.Ident) !Int
+  | NamedBlock !(LLVM.BlockLabel) !Int
   deriving (Eq, Ord, Show)
 
 -- | Return init symbolic block id.
@@ -65,17 +65,17 @@ initSymBlockID = InitBlock
 
 -- | Create new block id for block with given name and unique integer.
 -- The first block is for the entry point to the LLVM block.
-symBlockID :: LLVM.Ident -> Int -> SymBlockID
+symBlockID :: LLVM.BlockLabel -> Int -> SymBlockID
 symBlockID i = NamedBlock i
 
-symBlockIdent :: SymBlockID -> Maybe LLVM.Ident
-symBlockIdent (NamedBlock i _) = Just i
-symBlockIdent _                = Nothing
+symBlockLabel :: SymBlockID -> Maybe LLVM.BlockLabel
+symBlockLabel (NamedBlock i _) = Just i
+symBlockLabel _                = Nothing
 
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc
 ppSymBlockID InitBlock = text "init"
-ppSymBlockID (NamedBlock i n) = LLVM.ppIdent i <> char '.' <> int n
+ppSymBlockID (NamedBlock b n) = LLVM.ppLabel b <> char '.' <> int n
 
 -- | Identies a named value in a function.
 -- TODO: Figure out if LLVM.Ident is the right type and if this can be

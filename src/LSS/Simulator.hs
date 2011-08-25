@@ -399,7 +399,7 @@ getGlobalPtrTerm key@(sym, _) = do
     addDef def = do
       let argTys = map typedType $ sdArgs def
           fty    = L.FunTy (sdRetType def) argTys (sdVarArgs def)
-          idl    = nub $ mapMaybe symBlockIdent $ M.keys (sdBody def)
+          idl    = nub $ mapMaybe symBlockLabel $ M.keys (sdBody def)
       ins fty $ \sbe mem -> memAddDefine sbe mem sym idl
 
     addGlobal g = do

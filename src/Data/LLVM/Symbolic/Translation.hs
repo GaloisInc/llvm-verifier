@@ -53,7 +53,7 @@ mkLTI = LTI
 -- jumping to @bb@.  Entries are stored so that post-dominators visited
 -- later are earlier in the list (e.g., the last entry is the immediate
 -- post-dominator).
-ltiPostDominators :: LLVMTranslationInfo -> LLVM.Ident -> [LLVM.Ident]
+ltiPostDominators :: LLVMTranslationInfo -> LLVM.BlockLabel -> [LLVM.BlockLabel]
 ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) =
   case lookup aid (CFG.pdoms cfg) of
     Nothing   -> []
@@ -61,7 +61,7 @@ ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) =
 
 -- | @ltiIsImmediatePostDominator lti bb n@ returns true if @n@ is the immediate
 -- post-dominator of @bb@.
-ltiIsImmediatePostDominator :: LLVMTranslationInfo -> LLVM.Ident -> LLVM.Ident -> Bool
+ltiIsImmediatePostDominator :: LLVMTranslationInfo -> LLVM.BlockLabel -> LLVM.BlockLabel -> Bool
 ltiIsImmediatePostDominator (LTI cfg) (CFG.asId cfg -> aid) (CFG.asId cfg -> bid) =
   case CFG.ipdom cfg aid of
     Nothing    -> False
@@ -71,7 +71,7 @@ ltiIsImmediatePostDominator (LTI cfg) (CFG.asId cfg -> aid) (CFG.asId cfg -> bid
 -- jumping from @bb@ to @n@.  Entries are stored so that post-dominators
 -- visited later are earlier in the list (e.g., the last entry is the
 -- immediate post-dominator).
-ltiNewPostDominators :: LLVMTranslationInfo -> LLVM.Ident -> LLVM.Ident -> [LLVM.Ident]
+ltiNewPostDominators :: LLVMTranslationInfo -> LLVM.BlockLabel -> LLVM.BlockLabel -> [LLVM.BlockLabel]
 ltiNewPostDominators lti a b = ltiPostDominators lti b L.\\ ltiPostDominators lti a
 
 -- Block generator Monad {{{1
@@ -86,7 +86,7 @@ defineBlock sbid stmts = modify (mkSymBlock sbid stmts:)
 
 -- Phi instruction parsing {{{1
 
-type PhiInstr = (LLVM.Ident, LLVM.Type, Map LLVM.Ident LLVM.Value)
+type PhiInstr = (LLVM.Ident, LLVM.Type, Map LLVM.BlockLabel LLVM.Value)
 
 -- Define init block that pushes post dominator frames then jumps to first
 -- block.
@@ -97,7 +97,7 @@ parsePhiStmts sl =
   , let valMap = Map.fromList [(b, v) | (v,b) <- vals]]
 
 -- | Maps LLVM Blocks to associated phi instructions.
-blockPhiMap :: [CFG.BB] -> Map LLVM.Ident [PhiInstr]
+blockPhiMap :: [CFG.BB] -> Map LLVM.BlockLabel [PhiInstr]
 blockPhiMap blocks =
   Map.fromList
     [ (l, parsePhiStmts sl)
@@ -111,7 +111,7 @@ blockPhiMap blocks =
 --   * The current block must ensure that the correct post-dominator merge frames are added.
 --   * The current block must set the phi value registers.
 liftBB :: LLVMTranslationInfo -- ^ Translation information from analysis
-       -> Map LLVM.Ident [PhiInstr] -- ^ Maps block identifiers to phi instructions for block.
+       -> Map LLVM.BlockLabel [PhiInstr] -- ^ Maps block identifiers to phi instructions for block.
        -> CFG.BB -- ^ Basic block to generate.
        -> BlockGenerator ()
 liftBB lti phiMap bb = do
@@ -121,7 +121,7 @@ liftBB lti phiMap bb = do
       -- | Returns set block instructions for jumping to a particular target.
       -- This includes setting the current block and executing any phi
       -- instructions.
-      phiInstrs :: LLVM.Ident -> [SymStmt]
+      phiInstrs :: LLVM.BlockLabel -> [SymStmt]
       phiInstrs tgt =
           [ Assign r (Val Typed { typedType = tp, typedValue = val })
             | (r, tp, valMap) <- phiMap Map.! tgt
@@ -140,7 +140,7 @@ liftBB lti phiMap bb = do
       --       Clear current execution
       --     Else
       --       Set current block in state to branch target.
-      brSymInstrs :: LLVM.Ident -> [SymStmt]
+      brSymInstrs :: LLVM.BlockLabel -> [SymStmt]
       brSymInstrs tgt =
         SetCurrentBlock (symBlockID tgt 0) : phiInstrs tgt ++
           (if ltiIsImmediatePostDominator lti llvmId tgt

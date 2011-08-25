@@ -121,7 +121,7 @@ data Storage l
   = SBranch (Storage l) (Storage l) -- ^ Branch falseBranch trueBranch
   | SValue (LV.Vector l) -- ^ SValue validBit definedBit value
   | SDefine LLVM.Symbol -- ^ Memory value for function definition.
-  | SBlock LLVM.Symbol LLVM.Ident -- ^ Memory value for block within function.
+  | SBlock LLVM.Symbol LLVM.BlockLabel -- ^ Memory value for block within function.
   | SUninitialized -- ^ A memory byte that has not been initialized by LLVM.
   | SUnallocated -- ^ A memory section that has not been allocated to the program.
 
@@ -146,10 +146,10 @@ ppStorage be = impl 0 Nothing
                                        in impl ra (Just $ impl la mdoc f) t
     impl a (Just doc) (SValue v)     = item doc a (prettyLV be v)
     impl a (Just doc) (SDefine sym)  = item doc a $ LLVM.ppSymbol sym
-    impl a (Just doc) (SBlock s i)   = item doc a
+    impl a (Just doc) (SBlock s l)   = item doc a
                                        $ LLVM.ppSymbol s
                                          <> char '/'
-                                         <> LLVM.ppIdent i
+                                         <> LLVM.ppLabel l
     impl a (Just doc) SUninitialized = item doc a $ text "uninitialized"
     impl _ (Just doc) SUnallocated   = doc
     item doc addr desc               = doc $+$ integer addr <> colon <+> desc
@@ -301,7 +301,7 @@ data BitMemory l = BitMemory {
     -- | Maximum address for code pointers.
   , bmCodeEnd :: Addr
     -- | Maps (def,block) pairs to associated address.
-  , bmCodeBlockMap :: Map (LLVM.Symbol,LLVM.Ident) Addr
+  , bmCodeBlockMap :: Map (LLVM.Symbol,LLVM.BlockLabel) Addr
     -- | Address for initial global data pointers (and constants)
   , bmDataAddr :: Addr
     -- | Maximum address for data pointers.
@@ -547,9 +547,9 @@ bmMemAddDefine :: (Eq l, LV.Storable l)
                 -> BitEngine l -- ^ Bit engine for literals.
                 -> BitMemory l -- ^ Memory
                 -> LLVM.Symbol -- ^ Definition
-                -> [LLVM.Ident] -- ^ Identifiers for blocks
+                -> [LLVM.BlockLabel] -- ^ Labels for blocks
                 -> (BitTerm l, BitMemory l)
-bmMemAddDefine lc be m def idl
+bmMemAddDefine lc be m def labs
     | newCodeAddr > bmCodeEnd m
     = bmError "Not enough space in code memory to allocate new definition."
     | otherwise
@@ -560,16 +560,16 @@ bmMemAddDefine lc be m def idl
           , bmCodeBlockMap =
               foldl insertAddr
                     (bmCodeBlockMap m)
-                    (idl `zip` [1..bbcnt])
+                    (labs `zip` [1..bbcnt])
           }
       )
-  where bbcnt = toInteger (length idl)
+  where bbcnt = toInteger (length labs)
         newSpaceReq = 1 + bbcnt
         codeAddr = bmCodeAddr m
         newCodeAddr = codeAddr + newSpaceReq
         insertAddr bmap (bb,idx) = Map.insert (def,bb) (codeAddr + idx) bmap
         updateAddr a | a == codeAddr = SDefine def
-                     | otherwise     = SBlock def (idl !! fromInteger (a - codeAddr - 1))
+                     | otherwise     = SBlock def (labs !! fromInteger (a - codeAddr - 1))
         newStorage = setBytes (llvmAddrWidthBits lc) codeAddr newCodeAddr updateAddr (bmStorage m)
 
 bmCodeBlockAddress :: (Eq l, LV.Storable l)
@@ -577,7 +577,7 @@ bmCodeBlockAddress :: (Eq l, LV.Storable l)
                    -> BitEngine l -- ^ Bit engine for literals.
                    -> BitMemory l -- ^ Memory
                    -> LLVM.Symbol -- ^ Definition
-                   -> LLVM.Ident -- ^ Block identifier
+                   -> LLVM.BlockLabel -- ^ Block label
                    -> BitTerm l
 bmCodeBlockAddress lc be m d b = do
   case Map.lookup (d,b) (bmCodeBlockMap m) of
