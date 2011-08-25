@@ -45,9 +45,12 @@ data SBE m = SBE
     -- value @n@
     termInt  :: Int -> Integer -> m (SBETerm m)
 
+    -- | @freshInt w@ creates a term representing a symbolic @w@-bit value
+  , freshInt :: Int -> m (SBETerm m)
+
     -- | @termBool b@ creates a term representing the constant boolean
     -- (1-bit) value @b@
-  , termBool :: Bool   -> m (SBETerm m)
+  , termBool :: Bool -> m (SBETerm m)
 
   -- | @termArray ts@ creates a term representing an array with element terms
   -- @ts@ (which must be nonempty)

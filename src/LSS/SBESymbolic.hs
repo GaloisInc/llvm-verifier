@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : atomb
 -}
 
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module LSS.SBESymbolic
@@ -30,7 +31,9 @@ type instance SBEMemory S.SymbolicMonad     = S.SymbolicTerm
 sbeSymbolic :: SBE S.SymbolicMonad
 sbeSymbolic = SBE
   { termInt  = \w v -> return . S.mkCInt (S.Wx w) . fromIntegral $ v
+  , freshInt = nyi "freshInt"
   , termBool = return . S.mkCBool
+  , termArray = nyi "termArray"
   , applyIte = S.applyIte
   , applyICmp = \op -> case op of
                          LLVM.Ieq -> S.applyEq
@@ -55,19 +58,27 @@ sbeSymbolic = SBE
                           _ -> error $
                                "unsupported arithmetic op: " ++
                                show op
+  , applyConv = nyi "applyConv"
+  , termWidth = nyi "termWidth"
   , closeTerm = id
   , prettyTermD = S.prettyTermD
-  , memLoad = \_mem _ptr -> return undefined
-  , memStore = \_mem _val _ptr -> return undefined
-  , memMerge = \_t _mem _mem' -> return undefined
-  , memAddDefine = \_mem _sym _id -> return (undefined, undefined)
-  , codeBlockAddress = \_mem _s _b -> return undefined
-  , codeLookupDefine = \_mem _t -> return undefined
-  , stackAlloca = \_mem _eltTp _n _a -> return undefined
-  , stackPushFrame = \_mem -> return undefined
-  , stackPopFrame = \_mem -> return undefined
-  , writeAiger = \_f _t -> return undefined
+  , memDump = nyi "memDump"
+  , memLoad = nyi "memLoad "
+  , memStore = nyi "memStore "
+  , memMerge = nyi "memMerge "
+  , memAddDefine = nyi "memAddDefine "
+  , memInitGlobal = nyi "memInitGlobal"
+  , codeBlockAddress = nyi "codeBlockAddress "
+  , codeLookupDefine = nyi "codeLookupDefine "
+  , stackAlloca = nyi "stackAlloca "
+  , stackPushFrame = nyi "stackPushFrame "
+  , stackPopFrame = nyi "stackPopFrame "
+  , memCopy = nyi "memCopy"
+  , writeAiger = nyi "writeAiger "
   }
+  where
+    nyi :: forall a. String -> a
+    nyi msg = error $ unwords ["SBESymbolic:", msg, "not yet supported"]
 
 liftSBESymbolic :: S.SymbolicMonad a -> IO a
 liftSBESymbolic = S.runSymbolic

@@ -695,6 +695,7 @@ sbeBitBlast lc be = sbe
   where
     sbe = SBE
           { termInt          = (return . BitTerm) `c2` beVectorFromInt be
+          , freshInt         = BitIO . fmap BitTerm . beInputVector be
           , termBool         = return . BitTerm . LV.singleton . beLitFromBool be
           , termArray        = return . BitTerm . termArrayImpl
           , applyIte         = bitIte be
@@ -702,7 +703,7 @@ sbeBitBlast lc be = sbe
           , applyBitwise     = bitBitwise be
           , applyArith       = bitArith be
           , applyConv        = bitConv be
-          , termWidth        = \(BitTerm bv) -> fromIntegral (LV.length bv)
+          , termWidth        = fromIntegral . LV.length . btVector
           , closeTerm        = BitTermClosed . (,) be
           , prettyTermD      = S.prettyTermD . closeTerm sbe
           , memDump          = BitIO . bmDump be True

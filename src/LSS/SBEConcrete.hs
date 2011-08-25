@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : atomb
 -}
 
+{-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -34,7 +35,9 @@ concBool = SBEConcrete . fromIntegral . fromEnum
 sbeConcrete :: SBE SBEConcrete
 sbeConcrete = SBE
   { termInt  = const (SBEConcrete . fromIntegral)
+  , freshInt = nyi "freshInt "
   , termBool = concBool
+  , termArray = nyi "termArray"
   , applyIte = \a b c -> SBEConcrete $ if a == 0 then b else c
   , applyICmp  = \op a b ->
                    case op of
@@ -58,19 +61,27 @@ sbeConcrete = SBE
                               _ -> error $
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
+  , applyConv        = nyi "applyConv"
+  , termWidth        = nyi "termWidth"
   , closeTerm        = id
   , prettyTermD      = S.prettyTermD
-  , memLoad          = \_mem _ptr         -> undefined
-  , memStore         = \_mem _val _ptr    -> undefined
-  , memMerge         = \_t _mem _mem'     -> undefined
-  , memAddDefine     = \_mem _sym _id     -> undefined
-  , codeBlockAddress = \_mem _s _b        -> undefined
-  , codeLookupDefine = \_mem _t           -> undefined
-  , stackAlloca      = \_mem _eltTp _n _a -> undefined
-  , stackPushFrame   = \_mem              -> undefined
-  , stackPopFrame    = \_mem              -> undefined
-  , writeAiger       = \_f _t             -> undefined
+  , memDump          = nyi "memDump"
+  , memLoad          = nyi "memLoad"
+  , memStore         = nyi "memStore"
+  , memMerge         = nyi "memMerge"
+  , memAddDefine     = nyi "memAddDefine"
+  , memInitGlobal    = nyi "memInitGlobal"
+  , codeBlockAddress = nyi "codeBlockAddress"
+  , codeLookupDefine = nyi "codeLookupDefine"
+  , stackAlloca      = nyi "stackAlloca"
+  , stackPushFrame   = nyi "stackPushFrame"
+  , stackPopFrame    = nyi "stackPopFrame"
+  , memCopy          = nyi "memCopy"
+  , writeAiger       = nyi "writeAiger"
   }
+  where
+    nyi :: forall a. String -> a
+    nyi msg = error $ unwords ["SBESymbolic:", msg, "not yet supported"]
 
 liftSBEConcrete :: SBEConcrete a -> IO a
 liftSBEConcrete = return . runConcrete
