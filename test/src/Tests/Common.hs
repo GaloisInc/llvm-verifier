@@ -95,11 +95,15 @@ runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile $ \be -> do
 
 type StdBitEngine     = BitEngine Lit
 type StdBitBlastSim a = Simulator (BitIO Lit) IO a
+type StdBitBlastTest  = StdBitEngine -> StdBitBlastSim Bool
 
 runBitBlastSim :: Int -> FilePath -> (StdBitEngine -> StdBitBlastSim a) -> IO a
 runBitBlastSim v bcFile act = do
   (cb, be, lc, backend, mem) <- stdBitBlastInit bcFile
   runSimulator cb lc backend mem stdBitBlastLift $ withVerbosity v (act be)
+
+runBitBlastSimTest :: Int -> FilePath -> StdBitBlastTest-> PropertyM IO ()
+runBitBlastSimTest v bcFile = assert <=< run . runBitBlastSim v bcFile
 
 stdBitBlastInit :: FilePath -> IO ( Codebase
                                   , StdBitEngine

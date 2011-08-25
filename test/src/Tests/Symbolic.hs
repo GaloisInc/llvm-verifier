@@ -10,12 +10,10 @@ Point-of-contact : jstanley
 
 module Tests.Symbolic (symTests) where
 
-import           Control.Monad
 import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           LSS.Execution.Utils
 import           Test.QuickCheck
-import           Test.QuickCheck.Monadic
 import           Tests.Common
 import           Text.LLVM                     ((=:))
 import qualified Text.LLVM                     as L
@@ -27,9 +25,9 @@ symTests =
   ]
   where
     trivBranch v = psk v $ runSimple v trivBranchImpl
-    runSimple v  = assert <=< run . runBitBlastSim v "test-sym-simple.bc"
+    runSimple v  = runBitBlastSimTest v "test-sym-simple.bc"
 
-trivBranchImpl :: StdBitEngine -> StdBitBlastSim Bool
+trivBranchImpl :: StdBitBlastTest
 trivBranchImpl _be = do
   b <- withSBE $ \sbe -> termInt sbe 32 1
   callDefine (L.Symbol "trivial_branch") i32 [i32 =: b]
