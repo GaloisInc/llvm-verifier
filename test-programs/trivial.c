@@ -113,3 +113,11 @@ int matrix_mul_4x4()
 
   return c[3][3]; /* == 304 */
 }
+
+int trivial_branch(int b)
+{
+    if (b)
+        return 1;
+    else
+        return 0;
+}

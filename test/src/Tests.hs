@@ -10,6 +10,7 @@ import Test.QuickCheck.Test
 
 import Tests.PrimOps
 import Tests.Array
+import Tests.Symbolic
 
 main :: IO ()
 main = do
@@ -33,6 +34,7 @@ runTests chooseTest = do
     qcProps      = filter chooseTest allTests
     allTests     = [ ("PrimOps", primOpTests)
                    , ("Array", arrayTests)
+                   , ("Symbolic", symTests)
                    ]
 
 
