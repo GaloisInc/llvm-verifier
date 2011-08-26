@@ -74,14 +74,14 @@ runSimulator cb lc sbe mem lifter m =
 newSimState :: Codebase -> LLVMContext -> SBE sbe -> SBEMemory sbe -> LiftSBE sbe m -> State sbe m
 newSimState cb lc sbe mem lifter =
   State
-  { codebase    = cb
-  , llvmCtx     = lc
-  , symBE       = sbe
-  , memModel    = mem
-  , liftSymBE   = lifter
-  , ctrlStk     = emptyCtrlStk
-  , globalTerms = M.empty
-  , verbosity   = 1
+  { codebase     = cb
+  , llvmCtx      = lc
+  , symBE        = sbe
+  , initMemModel = mem
+  , liftSymBE    = lifter
+  , ctrlStk      = emptyCtrlStk
+  , globalTerms  = M.empty
+  , verbosity    = 1
   }
 
 callDefine ::
@@ -115,7 +115,8 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg args
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   banners' 5 $ show $ ppSymDefine def
-  path <- newPath $ CallFrame calleeSym $ bindArgs (sdArgs def) args
+
+  path <- newPath (CallFrame calleeSym $ bindArgs (sdArgs def) args) =<< initMem
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
@@ -143,6 +144,10 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg args
       | otherwise = err
           $ text "formal/actual type mismatch:"
             <+> L.ppType ft <+> text "vs." <+> L.ppType at
+
+    initMem = do
+      Just mf <- topMF <$> gets ctrlStk
+      if isExitFrame mf then gets initMemModel else getMem
 
 intrinsic :: (MonadIO m, Functor m, Functor sbe)
   => String -> [Typed (SBETerm sbe)] -> Simulator sbe m ()
@@ -214,7 +219,7 @@ popMemFrame = do
 
 -- | @popMergeFrame@ removes the top entry of the control stack; assumes
 -- that the control stack is nonempty.
-popMergeFrame :: Monad m => Simulator sbe m (MergeFrame (SBETerm sbe))
+popMergeFrame :: Monad m => Simulator sbe m (MF sbe)
 popMergeFrame = do
   s <- get
   let (mf, cs) = popMF (ctrlStk s)
@@ -222,7 +227,7 @@ popMergeFrame = do
   return mf
 
 -- | @pushMergeFrame mf@ pushes mf to the control stack
-pushMergeFrame :: Monad m => MergeFrame (SBETerm sbe) -> Simulator sbe m ()
+pushMergeFrame :: Monad m => MF sbe -> Simulator sbe m ()
 pushMergeFrame = modifyCS . pushMF
 
 assign :: (Functor m, Monad m)
@@ -247,7 +252,7 @@ addPathConstraint ::
   , Functor m
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => Path (SBETerm sbe) -> SymCond -> Simulator sbe m (Path (SBETerm sbe))
+  => Path sbe -> SymCond -> Simulator sbe m (Path sbe)
 addPathConstraint p TrueSymCond         = return p
 addPathConstraint p c@(HasConstValue v i) = do
   Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (L.iT 1 =: v)
@@ -274,17 +279,15 @@ clearCurrentExecution = do
       -- We still have pending paths, so only remove the current path.
       pushMergeFrame $ snd $ popPending top
 
-
 mergeReturn :: (LogMonad m, Functor m, MonadIO m, Functor sbe)
   => Maybe (Typed SymValue)
   -> Simulator sbe m ()
 mergeReturn mtv = do
   mtop <- topMF <$> gets ctrlStk
-  case mtop of
-    Just ReturnFrame{} -> return ()
-    Just _             -> error "mergeReturn: expected return merge frame"
-    Nothing            -> error "mergeReturn: empty control stack"
-
+  top  <- case mtop of
+            Just rf@ReturnFrame{} -> return rf
+            Just _                -> error "mergeReturn: expected return merge frame"
+            Nothing               -> error "mergeReturn: empty control stack"
   case mtv of
     Nothing -> return ()
     Just tv -> do
@@ -293,68 +296,68 @@ mergeReturn mtv = do
       modifyPath $ setReturnValue (Just $ typedValue rv)
 
   -- Merge the current path into the merged state for the current merge frame.
-  p <- getPath' "mergeReturn"
-  modifyMF $ modifyMergedState $ mergePaths p
-
   popMemFrame
+  p       <- getPath' "mergeReturn"
+  mmerged <- mergePaths p (getMergedState top)
+  modifyMF $ setMergedState mmerged
 
-  dbugM' 5 $ "After mergeReturn, but before clearCurrentExecution:"
-  dumpCtrlStk' 5
+--   dbugM' 5 $ "After mergeReturn, but before clearCurrentExecution:"
+--   dumpCtrlStk' 5
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
-mergeMFs :: (MonadIO m)
-  => MergeFrame (SBETerm sbe)
-  -> MergeFrame (SBETerm sbe)
-  -> Simulator sbe m (MergeFrame (SBETerm sbe))
-
--- Source frame is a return frame
-mergeMFs src@ReturnFrame{} dst = do
-  let Just p = getMergedState src -- NB: src /must/ have a merged state.
-
-  case dst of
-    ExitFrame{} -> do
-      -- Merge src's merged state with dst's merged state
-      let f Nothing = Just p
-          f ms      = mergePaths p ms
-      return $ modifyMergedState f dst
+mergeMFs :: (MonadIO m, Functor m) => MF sbe -> MF sbe -> Simulator sbe m (MF sbe)
+mergeMFs src dst = do
+  case src of
     ReturnFrame{} -> do
-      case pathRetVal p of
-        Nothing -> return dst
-        Just rv -> do
-          -- Extract the return value from src's merged state and associate it
-          -- with src's return register name in the call frame of dst's current
-          -- path.
-          case rfRetReg src of
-            Nothing   -> error "mergeMFs: src return frame has RV but no return register"
-            Just rreg -> do
-              -- Associate the return value in src's merged state with src's
-              -- return register name in the caller's call frame.
-              return $ (`modifyPending` dst) $ \dstPath ->
-                let trv = typedAs rreg rv
-                    reg = typedValue rreg
-                in
-                  modifyCallFrame (setReg reg trv) dstPath
-    PostdomFrame{} -> do
-      error "mergeMFs: postdom dst frame nyi"
-
--- Source frame is a postdom frame
-mergeMFs src@PostdomFrame{} dst = do
-  let Just p = getMergedState src -- NB: src /must/ have a merged state.
-  if isExitFrame dst
-    then error "mergeMFs: postdom MF => exit MF is not allowed"
-    else
-      return $ (`modifyPending` dst) $ const p
-
-mergeMFs _ _ = error "mergeMFs: unsupported source merge frame type"
+      case dst of
+        ExitFrame{} -> do
+          -- Exit frames have no pending paths and represent the program termination
+          -- point, so merge src's merged state with dst's merge state.
+          (`setMergedState` dst) <$> mergePaths srcMerged (getMergedState dst)
+        ReturnFrame{} -> do
+          -- In both cases, we dump up our merged state over dst's current path,
+          -- being careful to pick up a few pieces of data (execution context --
+          -- since the dst is a return MF, we need to retain its call frame and
+          -- current block).
+          case pathRetVal srcMerged of
+            Nothing -> rfReplace id
+            Just rv -> case rfRetReg src of
+              Nothing   -> error "mergeMFs: src return frame has RV but no ret reg"
+              Just rreg -> rfReplace $ setReg (typedValue rreg) (typedAs rreg rv)
+          where
+            rfReplace mutCF = modifyDstPath $ \dstPath ->
+              srcMerged{ pathCallFrame = mutCF (pathCallFrame dstPath)
+                       , pathCB        = pathCB dstPath
+                       }
+        PostdomFrame{} -> do
+          error "mergeMFs: postdom dst frame nyi"
+    PostdomFrame{}
+      |isExitFrame dst -> error "mergeMFs: postdom MF => exit MF is not allowed"
+      | otherwise      -> modifyDstPath (const srcMerged)
+    _ -> error "mergeMFs: unsupported source merge frame type"
+  where
+    modifyDstPath  = return . (`modifyPending` dst)
+    Just srcMerged = getMergedState src -- NB: src /must/ have a merged state.
 
 -- | @mergePaths p1 p2@ merges path p1 into path p2, which may be empty; when p2
--- does is empty, this function produces p1 as the merged path. Yields Nothing
--- if merging fails.
-mergePaths :: Path term -> Maybe (Path term) -> Maybe (Path term)
+-- is empty, this function merely p1 as the merged path. Yields Nothing if
+-- merging fails.
+mergePaths :: (MonadIO m, Functor m)
+  => Path sbe -> Maybe (Path sbe) -> Simulator sbe m (Maybe (Path sbe))
 -- TODO: We'll need a better explanation for merge failure than "Nothing"; see
 -- precondition violation explanation datatype in JSS, for example.
-mergePaths _p1 (Just _p2) = error "real path merging nyi"
-mergePaths p1 Nothing     = Just p1
+mergePaths p1 Nothing   = do
+  return $ Just p1
+mergePaths _p1 (Just _p2) = do
+  -- HERE
+  error "real path early term"
+--   sbe <- gets symBE
+--   dbugM $ "p1=\n" ++ show (ppPath sbe p1)
+--   dbugM "p1 memory model:"
+--   withSBE (`memDump` (pathMem p1))
+--   dbugM $ "p2=\n" ++ show (ppPath sbe p2)
+--   dbugM "p2 memory model:"
+--   withSBE (`memDump` (pathMem p2))
 
 -- | getTypedTerm' in the context of the current call frame
 getTypedTerm :: (Functor m, MonadIO m)
@@ -366,7 +369,7 @@ getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 -- a call frame is only required for identifier lookup, and may be omitted for
 -- other types of values.
 getTypedTerm' :: (Functor m, MonadIO m, term ~ SBETerm sbe)
-  => Maybe (CallFrame (SBETerm sbe)) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+  => Maybe (CF sbe) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
@@ -464,22 +467,24 @@ step (PushPostDominatorFrame pdid) = do
 
 step (MergePostDominator pdid cond) = do
   mtop <- topMF <$> gets ctrlStk
-  case mtop of
-    Just (PostdomFrame _ _ lab)
-      | lab == pdid -> return ()
-      | otherwise   -> error "merge postdom: top pdom frame has unexpected block ID"
-    Just _          -> error "merge postdom: expected postdom merge frame"
-    Nothing         -> error "merge postdom: empty control stack"
+  top <-
+    case mtop of
+      (Just t@(PostdomFrame _ _ lab))
+        | lab == pdid -> return t
+        | otherwise   -> error "merge postdom: top pdom frame has unexpected block ID"
+      Just _          -> error "merge postdom: expected postdom merge frame"
+      Nothing         -> error "merge postdom: empty control stack"
 
   p <- getPath' "step MergePostDominator"
 
   -- Construct the new path constraint for the current path
-  newp <- addPathConstraint p cond
+  newp   <- addPathConstraint p cond
   pretty <- prettyTermSBE (pc $ pathConstraints newp)
   dbugM' 5 $ "New path constraint is: " ++ render pretty
 
   -- Merge the current path into the merged state for the current merge frame
-  modifyMF $ modifyMergedState $ mergePaths newp
+  mmerged <- mergePaths newp (getMergedState top)
+  modifyMF $ setMergedState mmerged
 
 step MergeReturnVoidAndClear = mergeReturn Nothing >> clearCurrentExecution
 
@@ -504,11 +509,11 @@ step (AddPathConstraint cond) = do
 step (Assign reg expr) = assign reg =<< eval expr
 
 step (Store val addr _malign) = do
-  dumpMem 6 "store pre"
+  whenVerbosity (<=6) $ dumpMem 6 "store pre"
   valTerm          <- getTypedTerm val
   Typed _ addrTerm <- getTypedTerm addr
   mutateMem_ (\sbe mem -> memStore sbe mem valTerm addrTerm)
-  dumpMem 6 "store post"
+  whenVerbosity (<=6) $ dumpMem 6 "store post"
 
 step (IfThenElse cond thenStmts elseStmts) = do
   b <- evalCond cond
@@ -692,18 +697,31 @@ withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
 withSBE' f = gets symBE >>= \sbe -> return (f sbe)
 
+-- @getMem@ yields the memory model of the current path, or, if the current path
+-- does not exist, yields the initial memory model.
+getMem :: (Functor m, Monad m) => Simulator sbe m (SBEMemory sbe)
+getMem = pathMem <$> getPath' "getMem"
+
+-- @setMem@ sets the memory model in the current path, which must exist.
+setMem :: (Functor m, Monad m) => SBEMemory sbe -> Simulator sbe m ()
+setMem mem = do
+  mp <- getPath
+  case mp of
+    Nothing -> error "setMem: no current path"
+    _       -> modifyPath $ \p -> p{ pathMem = mem }
+
+-- @withMem@ performs the given action on the memory as provided by @getMem@.
 withMem :: (Functor m, Monad m)
   => (SBE sbe -> SBEMemory sbe -> sbe a) -> Simulator sbe m a
-withMem f = do
-  gets memModel >>= withSBE . flip f
+withMem f = getMem >>= withSBE . flip f
 
 mutateMem :: (Functor m, MonadIO m)
   => (SBE sbe -> SBEMemory sbe -> sbe (a, SBEMemory sbe)) -> Simulator sbe m a
 mutateMem f = do
   dumpMem 7 "mutateMem pre"
-  m0 <- gets memModel
+  m0 <- getMem
   (r, m1) <- withSBE (`f` m0)
-  modify $ \s -> s{ memModel = m1 }
+  setMem m1
   dumpMem 7 "mutateMem post"
   return r
 
@@ -767,10 +785,11 @@ entryRsltReg :: Reg
 entryRsltReg = L.Ident "__galois_final_rslt"
 
 newPath :: (Functor m, Monad m)
-  => CallFrame (SBETerm sbe) -> Simulator sbe m (Path (SBETerm sbe))
-newPath cf = Path cf Nothing Nothing (Just initSymBlockID)
-               <$> Constraint []
-               <$> boolTerm True
+  => CF sbe -> SBEMemory sbe -> Simulator sbe m (Path sbe)
+newPath cf mem = do
+  true <- boolTerm True
+  return $ Path cf Nothing Nothing (Just initSymBlockID) mem
+             (Constraint [] true)
 
 boolTerm :: (Functor m, Monad m) => Bool -> Simulator sbe m (SBETerm sbe)
 boolTerm = withSBE . flip termBool
@@ -779,15 +798,21 @@ boolTerm = withSBE . flip termBool
 -- that the control stack is empty or the top entry of the control stack has no
 -- pending paths recorded.
 getPath :: (Functor m, Monad m)
-  => Simulator sbe m (Maybe (Path (SBETerm sbe)))
-getPath = topPendingPath <$> gets ctrlStk
+  => Simulator sbe m (Maybe (Path sbe))
+getPath = do
+  mmf <- topMF <$> gets ctrlStk
+  return $ case mmf of
+             Nothing -> Nothing
+             Just mf
+               | isExitFrame mf -> Nothing
+               | otherwise      -> topPending mf
 
 -- | Obtain the first pending path in the topmost merge frame; runtime error if
 -- the control the control stack is empty or the top entry of the control stack
 -- has no pending paths recorded.  The string parameter appears in the error if
 -- it is raised.
 getPath' :: (Functor m, Monad m)
-  => String -> Simulator sbe m (Path (SBETerm sbe))
+  => String -> Simulator sbe m (Path sbe)
 getPath' desc = do
   mp <- getPath
   case mp of
@@ -796,32 +821,27 @@ getPath' desc = do
 
 -- | Obtain the call frame of the current path; runtime error if the control
 -- stack is empty or if there is no current path.
-getCallFrame :: (Functor m, Monad m) => Simulator sbe m (CallFrame (SBETerm sbe))
+getCallFrame :: (Functor m, Monad m) => Simulator sbe m (CF sbe)
 getCallFrame = pathCallFrame <$> getPath' "getCallFrame"
 
-withCallFrame :: Path term -> (CallFrame term -> a) -> a
-withCallFrame (pathCallFrame -> cf) f = f cf
-
 -- | Manipulate the control stack
-modifyCS :: Monad m
-  => (CtrlStk (SBETerm sbe) -> CtrlStk (SBETerm sbe)) -> Simulator sbe m ()
+modifyCS :: Monad m => (CS sbe -> CS sbe) -> Simulator sbe m ()
 modifyCS f = modify $ \s -> s{ ctrlStk = f (ctrlStk s) }
 
 -- | Manipulate the current merge frame (i.e., the top control stack entry)
 modifyMF :: (Monad m)
-  => (MergeFrame (SBETerm sbe) -> MergeFrame (SBETerm sbe))
+  => (MF sbe -> MF sbe)
   -> Simulator sbe m ()
 modifyMF f = modifyCS $ \cs -> let (mf, cs') = popMF cs in pushMF (f mf) cs'
 
 -- | Manipulate the current path (i.e., the first pending path in topmost
 -- control stack entry)
 modifyPath :: (Functor m , Monad m)
-  => (Path (SBETerm sbe) -> Path (SBETerm sbe)) -> Simulator sbe m ()
+  => (Path sbe -> Path sbe) -> Simulator sbe m ()
 modifyPath f = modifyCS $ \cs ->
   let (p, cs') = popPendingPath cs in pushPendingPath (f p) cs'
 
-modifyCallFrameM :: (Functor m, Monad m)
-  => (CallFrame (SBETerm sbe) -> CallFrame (SBETerm sbe)) -> Simulator sbe m ()
+modifyCallFrameM :: (Functor m, Monad m) => (CF sbe -> CF sbe) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
 --------------------------------------------------------------------------------
@@ -834,7 +854,7 @@ dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
 dumpMem v msg =
   whenVerbosity (>=v) $ do
     dbugM $ msg ++ ":"
-    mem <- gets memModel
+    mem <- getMem
     withSBE (`memDump` mem)
 
 dbugStep ::
@@ -872,4 +892,3 @@ _nowarn_unused :: a
 _nowarn_unused = undefined
   (dbugTerm undefined undefined :: Simulator IO IO ())
   (dbugTypedTerm undefined undefined :: Simulator IO IO ())
-

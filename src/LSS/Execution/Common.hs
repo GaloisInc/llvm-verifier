@@ -41,48 +41,55 @@ newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
 type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))
+type CS sbe        = CtrlStk (SBETerm sbe) (SBEMemory sbe)
+type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
+type Path sbe      = Path' (SBETerm sbe) (SBEMemory sbe)
+type CF sbe        = CallFrame (SBETerm sbe)
 
 -- | Symbolic simulator state
 data State sbe m = State
-  { codebase     :: Codebase              -- ^ LLVM code, post-transformation to sym ast
-  , llvmCtx      :: LLVMContext           -- ^ Memory alignment and type aliasing info
-  , symBE        :: SBE sbe               -- ^ Symbolic backend interface
-  , memModel     :: SBEMemory sbe         -- ^ The SBE's LLVM memory model
-  , liftSymBE    :: LiftSBE sbe m         -- ^ Lift SBE operations into the Simulator monad
-  , ctrlStk      :: CtrlStk (SBETerm sbe) -- ^ Control stack for tracking merge points
-  , globalTerms  :: GlobalMap sbe         -- ^ Global ptr terms
-  , verbosity    :: Int                   -- ^ Verbosity level
+  { codebase     :: Codebase      -- ^ LLVM code, post-transformation to sym ast
+  , llvmCtx      :: LLVMContext   -- ^ Memory alignment and type aliasing info
+  , symBE        :: SBE sbe       -- ^ Symbolic backend interface
+  , initMemModel :: SBEMemory sbe -- ^ The SBE's initially-provided LLVM memory
+                                  -- model; mutated models are carried in path
+                                  -- states.
+  , liftSymBE    :: LiftSBE sbe m -- ^ Lift SBE operations into the Simulator monad
+  , ctrlStk      :: CS sbe        -- ^ Control stack for tracking merge points
+  , globalTerms  :: GlobalMap sbe -- ^ Global ptr terms
+  , verbosity    :: Int           -- ^ Verbosity level
   }
 
-data CtrlStk term = CtrlStk { mergeFrames :: [MergeFrame term] }
+data CtrlStk term mem = CtrlStk { mergeFrames :: [MergeFrame term mem] }
 
 -- | There are three types of merge frames: (1) postdominator frames, which are
 -- typical intraprocedural merge points and correspond to basic blocks which are
 -- immediate postdominators of earlier-executing basic blocks; (2) return
 -- frames, which capture points immediately following function calls; and (3)
 -- exit frames, which represent program exit points.
-data MergeFrame term
+data MergeFrame term mem
   = ExitFrame
-    { _mergedState  :: Maybe (Path term)
+    { _mergedState  :: Maybe (Path' term mem)
     , programRetVal :: Maybe term
     }
   | PostdomFrame
-    { _mergedState :: Maybe (Path term)
-    , _pending     :: [Path term]
+    { _mergedState :: Maybe (Path' term mem)
+    , _pending     :: [Path' term mem]
     , pdfLabel     :: SymBlockID
     }
   | ReturnFrame
-    { rfRetReg        :: Maybe (L.Typed Reg) -- ^ Register to store return value (if any)
-    , rfNormalLabel   :: SymBlockID          -- ^ Label for normal path
-    , _normalState    :: Maybe (Path term)   -- ^ Merged state after function call return
-    , _exceptLabel    :: Maybe SymBlockID    -- ^ Label for exception path
-    , _exceptionState :: Maybe (Path term)   -- ^ Merged exception state after function call return
-    , _pending        :: [Path term]
+    { rfRetReg        :: Maybe (L.Typed Reg)     -- ^ Register to store return value (if any)
+    , rfNormalLabel   :: SymBlockID              -- ^ Label for normal path
+    , _normalState    :: Maybe (Path' term mem ) -- ^ Merged state after function call return
+    , _exceptLabel    :: Maybe SymBlockID        -- ^ Label for exception path
+    , _exceptionState :: Maybe (Path' term mem)  -- ^ Merged exception state
+                                                 -- after function call return
+    , _pending        :: [Path' term mem]
     }
 
 -- | Captures all symbolic execution state for a unique control-flow path (as
 -- specified by the recorded path constraints)
-data Path term = Path
+data Path' term mem = Path
   { pathCallFrame   :: CallFrame term     -- ^ The top call frame of the dynamic
                                           -- call stack along this path
   , pathRetVal      :: Maybe term         -- ^ The return value along this path
@@ -94,6 +101,7 @@ data Path term = Path
                                           -- otherwise
   , pathCB          :: Maybe SymBlockID   -- ^ The currently-executing basic
                                           -- block along this path, if any.
+  , pathMem         :: mem                -- ^ The memory model along this path
   , pathConstraints :: Constraint term    -- ^ The constraints necessary for
                                           -- execution of this path
   }
@@ -125,11 +133,11 @@ instance (Monad m, Functor m) => Applicative (Simulator sbe m) where
 -----------------------------------------------------------------------------------------
 -- Pretty printing
 
-ppCtrlStk :: SBE sbe -> CtrlStk (SBETerm sbe) -> Doc
+ppCtrlStk :: SBE sbe -> CS sbe -> Doc
 ppCtrlStk sbe (CtrlStk mfs) =
   hang (text "CS" <+> lbrace) 2 (vcat (map (ppMergeFrame sbe) mfs)) $+$ rbrace
 
-ppMergeFrame :: SBE sbe -> MergeFrame (SBETerm sbe) -> Doc
+ppMergeFrame :: SBE sbe -> MF sbe -> Doc
 ppMergeFrame sbe mf = case mf of
   ExitFrame mp mrv ->
     text "MF(Exit):"
@@ -161,14 +169,17 @@ ppMergeFrame sbe mf = case mf of
       $+$ nest 2 (if null pps then text "(none)" else vcat (map (ppPath sbe) pps))
 
 ppCallFrame :: SBE sbe -> CallFrame (SBETerm sbe) -> Doc
-ppCallFrame sbe (CallFrame sym regMap) =
-  text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (ppRegMap sbe regMap)
+ppCallFrame sbe (CallFrame _sym regMap) =
+  --text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (ppRegMap sbe regMap)
+  if M.null regMap then PP.empty else text "Locals:" $+$ nest 2 (ppRegMap sbe regMap)
 
-
-ppPath :: SBE sbe -> Path (SBETerm sbe) -> Doc
-ppPath sbe (Path cf mrv _mexc mcb (Constraint conds pathConstraint)) =
+ppPath :: SBE sbe -> Path sbe -> Doc
+ppPath sbe (Path cf mrv _mexc mcb _mem (Constraint conds pathConstraint)) =
   text "Path"
-  <>  brackets (maybe (text "none") ppSymBlockID mcb)
+  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
+                 <> char '/'
+                 <> maybe (text "none") ppSymBlockID mcb
+               )
   <>  colon
   <+> ( parens
           $ text "PC:"
