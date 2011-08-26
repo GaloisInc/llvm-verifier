@@ -291,7 +291,6 @@ mergeReturn mtv = do
   case mtv of
     Nothing -> return ()
     Just tv -> do
-      -- Set the return value in the current path
       rv <- getTypedTerm tv
       modifyPath $ setReturnValue (Just $ typedValue rv)
 
@@ -334,7 +333,7 @@ mergeMFs src dst = do
     PostdomFrame{}
       |isExitFrame dst -> error "mergeMFs: postdom MF => exit MF is not allowed"
       | otherwise      -> modifyDstPath (const srcMerged)
-    _ -> error "mergeMFs: unsupported source merge frame type"
+    ExitFrame{} -> error "mergeMFs: exit frames can not be merge sources"
   where
     modifyDstPath  = return . (`modifyPending` dst)
     Just srcMerged = getMergedState src -- NB: src /must/ have a merged state.
