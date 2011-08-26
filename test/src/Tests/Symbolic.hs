@@ -21,7 +21,7 @@ import qualified Text.LLVM                     as L
 symTests :: [(Args, Property)]
 symTests =
   [
-    test 1 False "test-trivial-divergent-branch" $ incomplete $ trivBranch 7
+    test 1 False "test-trivial-divergent-branch" $ trivBranch 0
   ]
   where
     trivBranch v = psk v $ runSimple v trivBranchImpl
