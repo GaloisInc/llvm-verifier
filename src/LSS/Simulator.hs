@@ -234,11 +234,28 @@ setCurrentBlockM :: (Functor m, Monad m) => SymBlockID -> Simulator sbe m ()
 setCurrentBlockM bid = modifyPath (setCurrentBlock bid)
 
 getCurrentBlockM :: (Functor m, Monad m) => Simulator sbe m SymBlockID
-getCurrentBlockM = do
-  mp <- getPath
-  case mp of
-    Nothing -> error "getCurrentBlock: no current path"
-    Just p  -> maybe (error "getCurrentBlock: no current block") return (pathCB p)
+getCurrentBlockM =
+  maybe (error "getCurrentBlock: no current block") id
+    <$> pathCB
+    <$> getPath' "getCurrentBlockM"
+
+-- @addPathConstraint p c@ adds the given condition @c@ to the path constraint
+-- of the @p@; note that any idents are deref'd in the context of @p@'s call
+-- frame.  This function does not modify any simulator state.
+addPathConstraint ::
+  ( MonadIO m
+  , Functor m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Path (SBETerm sbe) -> SymCond -> Simulator sbe m (Path (SBETerm sbe))
+addPathConstraint p TrueSymCond         = return p
+addPathConstraint p c@(HasConstValue v i) = do
+  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (L.iT 1 =: v)
+  Typed _ it <- getTypedTerm' Nothing (L.iT 1 =: L.ValInteger i)
+  let Constraint conds oldPC = pathConstraints p
+  newPC      <- return oldPC
+                  &&& withSBE (\sbe -> applyICmp sbe L.Ieq vt it)
+  return p{ pathConstraints = Constraint (conds ++ [c]) newPC }
 
 -- | @clearCurrentExecution@ clears the current pending path from the top merge
 -- frame; then, if no pending paths remain, it merges the top merge frame with
@@ -276,7 +293,7 @@ mergeReturn mtv = do
       modifyPath $ setReturnValue (Just $ typedValue rv)
 
   -- Merge the current path into the merged state for the current merge frame.
-  Just p <- getPath
+  p <- getPath' "mergeReturn"
   modifyMF $ modifyMergedState $ mergePaths p
 
   popMemFrame
@@ -442,7 +459,7 @@ step (PushInvokeFrame _fn _args _mres _e) =
   error "PushInvokeFrame nyi"
 
 step (PushPostDominatorFrame pdid) = do
-  Just p <- getPath
+  p <- getPath' "step PushPostDominatorFrame"
   pushMergeFrame $ pushPending p $ emptyPdomFrame pdid
 
 step (MergePostDominator pdid cond) = do
@@ -454,31 +471,35 @@ step (MergePostDominator pdid cond) = do
     Just _          -> error "merge postdom: expected postdom merge frame"
     Nothing         -> error "merge postdom: empty control stack"
 
-  Just p <- getPath
+  p <- getPath' "step MergePostDominator"
 
   -- Construct the new path constraint for the current path
-  newPC  <- case cond of
-    TrueSymCond -> return (pathConstraints p)
-                     &&& boolTerm True {- tmp: typecheck &&& -}
-    HasConstValue{} -> error "path constraint addition: HasConstValue nyi"
-
-  pretty <- prettyTermSBE newPC
+  newp <- addPathConstraint p cond
+  pretty <- prettyTermSBE (pc $ pathConstraints newp)
   dbugM' 5 $ "New path constraint is: " ++ render pretty
 
   -- Merge the current path into the merged state for the current merge frame
-  modifyMF $ modifyMergedState $ mergePaths p{ pathConstraints = newPC }
+  modifyMF $ modifyMergedState $ mergePaths newp
 
 step MergeReturnVoidAndClear = mergeReturn Nothing >> clearCurrentExecution
 
 step (MergeReturnAndClear rslt) = mergeReturn (Just rslt) >> clearCurrentExecution
 
-step (PushPendingExecution _cond) =
-  error "PushPendingExecution nyi"
+step (PushPendingExecution cond) = pushMergeFrame =<< ppe =<< popMergeFrame
+  where
+    -- Make the current path a pending execution in the top-most merge frame,
+    -- with the additional path constraint 'cond'.
+    ppe mf = do
+      let (p, mf') = popPending mf
+      divergent <- addPathConstraint p cond
+      return (pushPending p . pushPending divergent $ mf')
 
 step (SetCurrentBlock bid) = setCurrentBlockM bid
 
-step (AddPathConstraint _cond) =
-  error "AddPathConstraint nyi"
+step (AddPathConstraint cond) = do
+  p     <- getPath' "step AddPathConstraint"
+  newp  <- addPathConstraint p cond
+  modifyPath $ const newp
 
 step (Assign reg expr) = assign reg =<< eval expr
 
@@ -747,7 +768,9 @@ entryRsltReg = L.Ident "__galois_final_rslt"
 
 newPath :: (Functor m, Monad m)
   => CallFrame (SBETerm sbe) -> Simulator sbe m (Path (SBETerm sbe))
-newPath cf = Path cf Nothing Nothing (Just initSymBlockID) <$> boolTerm True
+newPath cf = Path cf Nothing Nothing (Just initSymBlockID)
+               <$> Constraint []
+               <$> boolTerm True
 
 boolTerm :: (Functor m, Monad m) => Bool -> Simulator sbe m (SBETerm sbe)
 boolTerm = withSBE . flip termBool
@@ -759,14 +782,22 @@ getPath :: (Functor m, Monad m)
   => Simulator sbe m (Maybe (Path (SBETerm sbe)))
 getPath = topPendingPath <$> gets ctrlStk
 
+-- | Obtain the first pending path in the topmost merge frame; runtime error if
+-- the control the control stack is empty or the top entry of the control stack
+-- has no pending paths recorded.  The string parameter appears in the error if
+-- it is raised.
+getPath' :: (Functor m, Monad m)
+  => String -> Simulator sbe m (Path (SBETerm sbe))
+getPath' desc = do
+  mp <- getPath
+  case mp of
+    Nothing -> error $ desc ++ ": no current path (getPath')"
+    Just p  -> return p
+
 -- | Obtain the call frame of the current path; runtime error if the control
 -- stack is empty or if there is no current path.
 getCallFrame :: (Functor m, Monad m) => Simulator sbe m (CallFrame (SBETerm sbe))
-getCallFrame = do
-  mp <- getPath
-  case mp of
-    Nothing -> error "getCallFrame: no current path"
-    Just p  -> return $ pathCallFrame p
+getCallFrame = pathCallFrame <$> getPath' "getCallFrame"
 
 withCallFrame :: Path term -> (CallFrame term -> a) -> a
 withCallFrame (pathCallFrame -> cf) f = f cf

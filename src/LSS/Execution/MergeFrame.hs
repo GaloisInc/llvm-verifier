@@ -40,6 +40,7 @@ module LSS.Execution.MergeFrame
   , modifyCallFrame
   , setCurrentBlock
   , setReturnValue
+  , pc
   )
 
 where
@@ -191,3 +192,7 @@ finalizeExit (ExitFrame _ Just{})      = error "finalizeExitFrame: frame already
 finalizeExit ef@(ExitFrame Nothing _)  = ef
 finalizeExit (ExitFrame (Just mrgd) _) = ExitFrame Nothing $ pathRetVal mrgd
 finalizeExit _                         = error "finalizeExitFrame: non-exit frame"
+
+pc :: Constraint term -> term
+pc (Constraint _ t) = t
+

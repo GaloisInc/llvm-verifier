@@ -12,6 +12,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE ViewPatterns               #-}
 {-# OPTIONS_GHC -fno-warn-orphans       #-}
 
 module LSS.Execution.Common where
@@ -93,9 +94,13 @@ data Path term = Path
                                           -- otherwise
   , pathCB          :: Maybe SymBlockID   -- ^ The currently-executing basic
                                           -- block along this path, if any.
-  , pathConstraints :: term               -- ^ The constraints necessary for
+  , pathConstraints :: Constraint term    -- ^ The constraints necessary for
                                           -- execution of this path
   }
+
+-- Carry a list of SymConds for pretty-printing; useful when symbolic term
+-- contents are not visible.
+data Constraint term = Constraint [SymCond] term
 
 type RegMap term = M.Map Reg (Typed term)
 
@@ -161,10 +166,19 @@ ppCallFrame sbe (CallFrame sym regMap) =
 
 
 ppPath :: SBE sbe -> Path (SBETerm sbe) -> Doc
-ppPath sbe (Path cf mrv _mexc mcb pathConstraint) =
+ppPath sbe (Path cf mrv _mexc mcb (Constraint conds pathConstraint)) =
   text "Path"
   <>  brackets (maybe (text "none") ppSymBlockID mcb)
-  <>  colon <+> (parens $ text "Constraint:" <+> prettyTermD sbe pathConstraint)
+  <>  colon
+  <+> ( parens
+          $ text "PC:"
+            <+> prettyTermD sbe pathConstraint
+            <+> ( if null conds
+                    then PP.empty
+                    else text "SCs:"
+                         <+> (hcat $ punctuate comma $ map ppSymCond conds)
+                )
+      )
   $+$ nest 2 ( text "Return value:"
                <+> maybe (parens . text $ "not set") (prettyTermD sbe) mrv
              )

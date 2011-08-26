@@ -23,16 +23,16 @@ module Data.LLVM.Symbolic.Translation
   , testTranslate
   ) where
 
-import Control.Monad.State.Strict
-import Data.Map (Map)
-import qualified Data.LLVM.CFG as CFG
-import qualified Data.List as L
-import qualified Data.Map as Map
-import qualified Text.LLVM.AST as LLVM
-import Text.LLVM.AST (Stmt'(..), Stmt, Typed (..))
-import Text.PrettyPrint.HughesPJ
-
-import Data.LLVM.Symbolic.AST
+import           Control.Monad.State.Strict
+import           Data.LLVM.Symbolic.AST
+import           Data.Map                   (Map)
+import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
+import           Text.PrettyPrint.HughesPJ
+import qualified Control.Exception          as CE
+import qualified Data.LLVM.CFG              as CFG
+import qualified Data.List                  as L
+import qualified Data.Map                   as Map
+import qualified Text.LLVM                  as LLVM
 
 -- Utility {{{1
 
@@ -187,7 +187,8 @@ liftBB lti phiMap bb = do
       impl [Effect (LLVM.Jump tgt)] idx il = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
-      impl [Effect (LLVM.Br Typed { typedValue = c } tgt1 tgt2)] idx il = do
+      impl [Effect (LLVM.Br (Typed tc c) tgt1 tgt2)] idx il = do
+        CE.assert (tc == LLVM.iT 1) $ return ()
         let suspendSymBlockID = blockName (idx + 1)
         -- Define end of current block:
         --   If c is true:
