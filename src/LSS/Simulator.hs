@@ -497,12 +497,8 @@ step (IfThenElse cond thenStmts elseStmts) = do
     evalCond (HasConstValue v i) = do
       Typed t v' <- getTypedTerm (Typed i1 v)
       CE.assert (t == i1) $ return ()
-
-      mb <- fmap (fromIntegral . fromEnum)
-            <$> withSBE' (\sbe -> getBool $ closeTerm sbe v')
-      case mb of
-        Nothing -> error "non-bool or symbolic bool SymCond HasConstValue terms nyi"
-        Just b  -> return (i == b)
+      maybe False (==i) . fmap (fromIntegral . fromEnum)
+        <$> withSBE' (\sbe -> getBool $ closeTerm sbe v')
 
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
