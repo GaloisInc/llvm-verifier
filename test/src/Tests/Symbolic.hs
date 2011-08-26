@@ -21,7 +21,7 @@ import qualified Text.LLVM                     as L
 symTests :: [(Args, Property)]
 symTests =
   [
-    test 1 False "test-trivial-divergent-branch" $ incomplete $ trivBranch 1
+    test 1 False "test-trivial-divergent-branch" $ incomplete $ trivBranch 7
   ]
   where
     trivBranch v = psk v $ runSimple v trivBranchImpl
@@ -29,7 +29,7 @@ symTests =
 
 trivBranchImpl :: StdBitBlastTest
 trivBranchImpl _be = do
-  b <- withSBE $ \sbe -> termInt sbe 32 1
+  b <- withSBE $ \sbe -> freshInt sbe 32
   callDefine (L.Symbol "trivial_branch") i32 [i32 =: b]
   mrv <- getProgramReturnValue
   case mrv of
