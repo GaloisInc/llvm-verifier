@@ -105,11 +105,11 @@ int matrix_mul_4x4()
     }
   }
 
-/* c:
-/*     [ [ 34,  28,  22,  16  ] */
-/*       [ 178, 156, 134, 112 ] */
-/*       [ 322, 284, 246, 208 ] */
-/*       [ 466, 412, 358, 304 ] ] */
+/* c: [ [ 34,  28,  22,  16  ] 
+        [ 178, 156, 134, 112 ] 
+        [ 322, 284, 246, 208 ] 
+        [ 466, 412, 358, 304 ] ]
+*/
 
   return c[3][3]; /* == 304 */
 }
@@ -121,3 +121,18 @@ int trivial_branch(int b)
     else
         return 0;
 }
+
+int* sym_read_aux(int b, int* p, int* q)
+{
+    if (b)
+        return p;
+    else
+        return q;
+}
+
+int sym_read(int b) 
+{
+    int x = 42, y = 99;
+    return *sym_read_aux(b, &x, &y);
+}
+
