@@ -59,6 +59,7 @@ sbeSymbolic = SBE
                                "unsupported arithmetic op: " ++
                                show op
   , applyConv = nyi "applyConv"
+  , applyBNot = nyi "applyBNot"
   , termWidth = nyi "termWidth"
   , closeTerm = id
   , prettyTermD = S.prettyTermD

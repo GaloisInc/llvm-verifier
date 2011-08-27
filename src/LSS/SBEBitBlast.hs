@@ -678,6 +678,11 @@ bitConv be op (BitTerm x) (LLVM.PrimType (LLVM.Integer (fromIntegral -> w))) =
               _ -> bmError $ "Unsupported conv op: " ++ show op
 bitConv _ _ _ ty = bmError $ "Unsupported conv target type: " ++ show (LLVM.ppType ty)
 
+bitBNot :: (LV.Storable l, Eq l) =>
+           BitEngine l -> BitTerm l
+        -> BitIO l (BitTerm l)
+bitBNot be (BitTerm bv) = BitIO $ BitTerm <$> return (LV.map (beNeg be) bv)
+
 --  SBE Definition {{{1
 
 newtype BitIO l a = BitIO { liftSBEBitBlast :: IO a }
@@ -703,6 +708,7 @@ sbeBitBlast lc be = sbe
           , applyBitwise     = bitBitwise be
           , applyArith       = bitArith be
           , applyConv        = bitConv be
+          , applyBNot        = bitBNot be
           , termWidth        = fromIntegral . LV.length . btVector
           , closeTerm        = BitTermClosed . (,) be
           , prettyTermD      = S.prettyTermD . closeTerm sbe

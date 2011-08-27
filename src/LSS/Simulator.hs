@@ -9,10 +9,11 @@ Point-of-contact : jstanley
 -- 1: No output, the lowest verbosity level
 -- 2: Instruction trace only
 -- 3: (open)
--- 4: (open)
+-- 4: Path constraints on nontrivial path merges
 -- 5: Simulator internal state (control stack dump per instruction)
 -- 6: Memory model dump on load/store operations only (for nontrivial codes,
---    this generates a /lot/ of output)
+--    this generates a /lot/ of output).  Complete path dumps on nontrivial path
+--    merges.
 -- 7: Memory model dump pre/post every operation (for nontrivial codes, this
 --    generates a /lot/ of output -- now with more output than level 6!)
 
@@ -43,7 +44,7 @@ import           Data.Bits
 import           Data.Int
 import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
-import           Data.List
+import           Data.List                 hiding (union)
 import           Data.Maybe
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
@@ -53,7 +54,9 @@ import           LSS.SBEInterface
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..))
+import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
+import qualified Data.Foldable             as DF
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 
@@ -257,16 +260,23 @@ addPathConstraint p TrueSymCond         = return p
 addPathConstraint p c@(HasConstValue v i) = do
   Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (L.iT 1 =: v)
   Typed _ it <- getTypedTerm' Nothing (L.iT 1 =: L.ValInteger i)
-  let Constraint conds oldPC = pathConstraints p
+  let Constraint conds oldPC = pathConstraint p
   newPC      <- return oldPC
                   &&& withSBE (\sbe -> applyICmp sbe L.Ieq vt it)
-  return p{ pathConstraints = Constraint (conds ++ [c]) newPC }
+  let rslt = Constraint (conds `SCEAnd` SCAtom c) newPC
+  sbe <- gets symBE
+  dbugM' 5 $ "addPathConstraint: " ++ show (ppPC sbe rslt)
+  return p{ pathConstraint = rslt }
 
 -- | @clearCurrentExecution@ clears the current pending path from the top merge
 -- frame; then, if no pending paths remain, it merges the top merge frame with
 -- the merge frame beneath it on the control stack.
 clearCurrentExecution ::
-  (Functor m, MonadIO m)
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => Simulator sbe m ()
 clearCurrentExecution = do
   top <- popMergeFrame
@@ -279,7 +289,13 @@ clearCurrentExecution = do
       -- We still have pending paths, so only remove the current path.
       pushMergeFrame $ snd $ popPending top
 
-mergeReturn :: (LogMonad m, Functor m, MonadIO m, Functor sbe)
+mergeReturn ::
+  ( LogMonad m
+  , Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => Maybe (Typed SymValue)
   -> Simulator sbe m ()
 mergeReturn mtv = do
@@ -304,7 +320,13 @@ mergeReturn mtv = do
 --   dumpCtrlStk' 5
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
-mergeMFs :: (MonadIO m, Functor m) => MF sbe -> MF sbe -> Simulator sbe m (MF sbe)
+mergeMFs ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => MF sbe -> MF sbe -> Simulator sbe m (MF sbe)
 mergeMFs src dst = do
   case src of
     ReturnFrame{} -> do
@@ -341,22 +363,93 @@ mergeMFs src dst = do
 -- | @mergePaths p1 p2@ merges path p1 into path p2, which may be empty; when p2
 -- is empty, this function merely p1 as the merged path. Yields Nothing if
 -- merging fails.
-mergePaths :: (MonadIO m, Functor m)
+mergePaths ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => Path sbe -> Maybe (Path sbe) -> Simulator sbe m (Maybe (Path sbe))
 -- TODO: We'll need a better explanation for merge failure than "Nothing"; see
 -- precondition violation explanation datatype in JSS, for example.
 mergePaths p1 Nothing   = do
   return $ Just p1
-mergePaths _p1 (Just _p2) = do
-  -- HERE
-  error "real path early term"
---   sbe <- gets symBE
---   dbugM $ "p1=\n" ++ show (ppPath sbe p1)
---   dbugM "p1 memory model:"
---   withSBE (`memDump` (pathMem p1))
---   dbugM $ "p2=\n" ++ show (ppPath sbe p2)
---   dbugM "p2 memory model:"
---   withSBE (`memDump` (pathMem p2))
+mergePaths from (Just to) = do
+  CE.assert (pathCB from == pathCB to) $ return ()
+
+  let [(c1, m1), (c2, m2)] = (pathConstraint A.&&& pathMem) <$> [from, to]
+
+  whenVerbosity (>= 4) $ do
+    dbugM $ "Merging paths with constraints: "
+            ++ show ( let f = parens . ppSCExpr . symConds in
+                      f c1 <+> text "and" <+> f c2
+                    )
+    whenVerbosity (>= 6) $ do
+      ppPathM "from" from
+      ppPathM "to" to
+
+  mergedPath <- ( \cf rv mem pc ->
+                    to{ pathCallFrame  = cf
+                      , pathRetVal     = rv
+                      , pathMem        = mem
+                      , pathConstraint = pc
+                      }
+                )
+                  <$> mergeCFs
+                  <*> mergeRVs
+                  <*> mergeMems (pcTerm c1) m1 m2
+                  <*> mergePCs c1 c2
+
+  whenVerbosity (>=6) $ ppPathM "mergedPath" mergedPath
+  return (Just mergedPath)
+  where
+    infixl 5 <->
+    t <-> f = do
+--       (withSBE $ \sbe -> applyICmp sbe L.Ieq t f)>>= dbugTerm "eqt" DELETE_ME
+      meq <- withSBE  $ \sbe -> getBool . closeTerm sbe <$> applyICmp sbe L.Ieq t f
+--       dbugV "meq" meq
+      case meq of
+        Just True -> return t
+        _         -> withSBE $ \sbe ->
+                       applyIte sbe (pcTerm $ pathConstraint from) t f
+
+    mergeCFs = do
+      merged <- mergeMapsBy (regs from) (regs to) mergeV
+      return $ (pathCallFrame to){ frmRegs = merged }
+      where
+        regs = frmRegs . pathCallFrame
+
+    mergeRVs =
+      case (pathRetVal from, pathRetVal to) of
+        (Nothing, Nothing)   -> return Nothing
+        (Just frv, Just trv) -> Just <$> frv <-> trv
+        _                    -> error "merge precond viol: path missing rv"
+
+    mergeMems c a b = withSBE $ \sbe -> memMerge sbe c a b
+
+    mergePCs (Constraint scs1 c1) (Constraint scs2 c2) = do
+      Constraint (scs1 `SCEOr` scs2) <$> (return c1 ||| return c2)
+
+    mergeV _a@(Typed t1 v1) _b@(Typed t2 v2) = do
+      CE.assert (t1 == t2) $ return ()
+--       dbugTypedTerm "a" a
+--       dbugTypedTerm "b" b
+      Typed t1 <$> v1 <-> v2
+
+-- @mergeMapsBy from to act@ unions the @from@ and @to@ maps, combing common
+-- elements according to the monadic element-merging operation @act@.
+mergeMapsBy :: forall k m a. (Ord k, Functor m, Monad m)
+  => M.Map k a
+  -> M.Map k a
+  -> (a -> a -> m a)
+  -> m (M.Map k a)
+-- TODO: Move this to Verinf and reuse it in the Java path state merging
+mergeMapsBy from to act = union <$> merged
+  where
+    union prefer      = prefer `M.union` from `M.union` to -- left-biased
+    merged            = DF.foldrM f M.empty isect
+    f (k, v1, v2) acc = flip (M.insert k) acc <$> act v1 v2
+    isect             = M.intersectionWithKey (\k v1 v2 -> (k, v1, v2)) from to
 
 -- | getTypedTerm' in the context of the current call frame
 getTypedTerm :: (Functor m, MonadIO m)
@@ -477,9 +570,7 @@ step (MergePostDominator pdid cond) = do
   p <- getPath' "step MergePostDominator"
 
   -- Construct the new path constraint for the current path
-  newp   <- addPathConstraint p cond
-  pretty <- prettyTermSBE (pc $ pathConstraints newp)
-  dbugM' 5 $ "New path constraint is: " ++ render pretty
+  newp <- addPathConstraint p cond
 
   -- Merge the current path into the merged state for the current merge frame
   mmerged <- mergePaths newp (getMergedState top)
@@ -670,6 +761,7 @@ resizeTerms a b = do
   => Simulator sbe m (SBETerm sbe)
   -> Simulator sbe m (SBETerm sbe)
   -> Simulator sbe m (SBETerm sbe)
+infixr 3 &&&
 mx &&& my = do
    x <- mx
    xb <- withSBE' $ \sbe -> getBool (closeTerm sbe x)
@@ -683,6 +775,15 @@ mx &&& my = do
          Just True  -> return x
          Just False -> return y
          _          -> withSBE $ \sbe -> applyBitwise sbe L.And x y
+
+(|||) :: (ConstantProjection (SBEClosedTerm sbe), Functor m, Monad m)
+  => Simulator sbe m (SBETerm sbe)
+  -> Simulator sbe m (SBETerm sbe)
+  -> Simulator sbe m (SBETerm sbe)
+infixr 2 |||
+mx ||| my = do
+  let neg t = withSBE $ \sbe -> applyBNot sbe t
+  neg =<< ((neg =<< mx) &&& (neg =<< my))
 
 --------------------------------------------------------------------------------
 -- SBE lifters and helpers
@@ -788,7 +889,7 @@ newPath :: (Functor m, Monad m)
 newPath cf mem = do
   true <- boolTerm True
   return $ Path cf Nothing Nothing (Just initSymBlockID) mem
-             (Constraint [] true)
+             (Constraint (SCAtom TrueSymCond) true)
 
 boolTerm :: (Functor m, Monad m) => Bool -> Simulator sbe m (SBETerm sbe)
 boolTerm = withSBE . flip termBool
@@ -845,6 +946,12 @@ modifyCallFrameM = modifyPath . modifyCallFrame
 
 --------------------------------------------------------------------------------
 -- Debugging
+
+ppPathM :: (MonadIO m, Functor m) => String -> Path sbe -> Simulator sbe m ()
+ppPathM desc p = do
+  sbe <- gets symBE
+  dbugM $ desc ++ "\n" ++ show (ppPath sbe p)
+  withSBE (`memDump` (pathMem p))
 
 prettyTermSBE :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m Doc
 prettyTermSBE t = withSBE' $ \sbe -> prettyTermD sbe t

@@ -69,6 +69,9 @@ data SBE m = SBE
   , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyConv op v t@ performs LLVM conversion operation @op@
   , applyConv   :: LLVM.ConvOp -> SBETerm m -> LLVM.Type -> m (SBETerm m)
+    -- | @applyBNot @a@ performs negation of a boolean term
+  , applyBNot :: SBETerm m -> m (SBETerm m)
+
     ----------------------------------------------------------------------------
     -- Term miscellany
 

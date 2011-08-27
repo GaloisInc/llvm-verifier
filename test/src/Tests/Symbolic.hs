@@ -21,7 +21,7 @@ import qualified Text.LLVM                     as L
 symTests :: [(Args, Property)]
 symTests =
   [
-    test 1 False "test-trivial-divergent-branch" $ trivBranch 0
+    test 1 False "test-trivial-divergent-branch" $ trivBranch 1
   ]
   where
     trivBranch v = psk v $ runSimple v trivBranchImpl
@@ -35,6 +35,7 @@ trivBranchImpl _be = do
   case mrv of
     Just rv -> dbugTerm "rv" rv
     Nothing -> dbugM "No program return value"
+  dbugM $ "TODO: Generate AIG and check"
   return True
 
 --------------------------------------------------------------------------------

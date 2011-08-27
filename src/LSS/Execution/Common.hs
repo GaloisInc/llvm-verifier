@@ -102,13 +102,18 @@ data Path' term mem = Path
   , pathCB          :: Maybe SymBlockID   -- ^ The currently-executing basic
                                           -- block along this path, if any.
   , pathMem         :: mem                -- ^ The memory model along this path
-  , pathConstraints :: Constraint term    -- ^ The constraints necessary for
-                                          -- execution of this path
+  , pathConstraint  :: Constraint term    -- ^ The aggregated constraints
+                                          -- necessary for execution of this
+                                          -- path
   }
 
--- Carry a list of SymConds for pretty-printing; useful when symbolic term
+-- Carry aggregated symconds for pretty-printing; useful when symbolic term
 -- contents are not visible.
-data Constraint term = Constraint [SymCond] term
+data Constraint term = Constraint { symConds :: SCExpr, pcTerm :: term }
+data SCExpr
+  = SCAtom SymCond
+  | SCEAnd SCExpr SCExpr
+  | SCEOr SCExpr SCExpr
 
 type RegMap term = M.Map Reg (Typed term)
 
@@ -174,22 +179,14 @@ ppCallFrame sbe (CallFrame _sym regMap) =
   if M.null regMap then PP.empty else text "Locals:" $+$ nest 2 (ppRegMap sbe regMap)
 
 ppPath :: SBE sbe -> Path sbe -> Doc
-ppPath sbe (Path cf mrv _mexc mcb _mem (Constraint conds pathConstraint)) =
+ppPath sbe (Path cf mrv _mexc mcb _mem c) =
   text "Path"
   <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID mcb
                )
   <>  colon
-  <+> ( parens
-          $ text "PC:"
-            <+> prettyTermD sbe pathConstraint
-            <+> ( if null conds
-                    then PP.empty
-                    else text "SCs:"
-                         <+> (hcat $ punctuate comma $ map ppSymCond conds)
-                )
-      )
+  <+> (parens $ text "PC:" <+> ppPC sbe c)
   $+$ nest 2 ( text "Return value:"
                <+> maybe (parens . text $ "not set") (prettyTermD sbe) mrv
              )
@@ -205,6 +202,24 @@ ppRegMap sbe mp =
       maxLen         = foldr max 0 $ map (identLen . fst) as
       identLen       = length . show . L.ppIdent
       as             = M.toList mp
+
+ppPC :: SBE sbe -> Constraint (SBETerm sbe) -> Doc
+ppPC sbe (Constraint conds pc) =
+  prettyTermD sbe pc
+  <+> ( text "SCs:" <+> ppSCExpr conds
+      )
+
+ppSymConds :: [SymCond] -> Doc
+ppSymConds = hcat . punctuate comma . map ppSymCond
+
+ppSCExpr :: SCExpr -> Doc
+ppSCExpr (SCAtom sc)                      = ppSymCond sc
+ppSCExpr (SCEAnd (SCAtom TrueSymCond) b)  = ppSCExpr b
+ppSCExpr (SCEAnd a (SCAtom TrueSymCond))  = ppSCExpr a
+ppSCExpr (SCEAnd a b)                     = ppSCExpr a <+> text "&" <+> ppSCExpr b
+ppSCExpr (SCEOr a@(SCAtom TrueSymCond) _) = ppSCExpr a
+ppSCExpr (SCEOr _ b@(SCAtom TrueSymCond)) = ppSCExpr b
+ppSCExpr (SCEOr a b)                      = ppSCExpr a <+> text "|" <+> ppSCExpr b
 
 -----------------------------------------------------------------------------------------
 -- Debugging

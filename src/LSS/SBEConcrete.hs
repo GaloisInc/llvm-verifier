@@ -62,6 +62,7 @@ sbeConcrete = SBE
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
   , applyConv        = nyi "applyConv"
+  , applyBNot        = nyi "applyBNot"
   , termWidth        = nyi "termWidth"
   , closeTerm        = id
   , prettyTermD      = S.prettyTermD
@@ -81,7 +82,7 @@ sbeConcrete = SBE
   }
   where
     nyi :: forall a. String -> a
-    nyi msg = error $ unwords ["SBESymbolic:", msg, "not yet supported"]
+    nyi msg = error $ unwords ["SBEConcrete:", msg, "not yet supported"]
 
 liftSBEConcrete :: SBEConcrete a -> IO a
 liftSBEConcrete = return . runConcrete
