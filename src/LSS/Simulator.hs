@@ -372,8 +372,7 @@ mergePaths ::
   => Path sbe -> Maybe (Path sbe) -> Simulator sbe m (Maybe (Path sbe))
 -- TODO: We'll need a better explanation for merge failure than "Nothing"; see
 -- precondition violation explanation datatype in JSS, for example.
-mergePaths p1 Nothing   = do
-  return $ Just p1
+mergePaths p1 Nothing     = return $ Just p1
 mergePaths from (Just to) = do
   CE.assert (pathCB from == pathCB to) $ return ()
 

@@ -89,7 +89,7 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
         32            -> fromIntegral (fromIntegral v :: Int32)
         64            -> fromIntegral (fromIntegral v :: Int64)
         n | n < 8     -> fromIntegral (i8 v .&. (2 ^ n - 1))
-          | otherwise -> v
+          | otherwise -> v -- TODO: Truncation to length n
               -- error $ "BitTermClosed/getSVal: unsupported integer width " ++ show w
         where
           i8 :: Integer -> Int8
@@ -603,6 +603,14 @@ bmCodeLookupDefine lc be m (BitTerm a) = do
         Nothing -> Invalid
         Just d -> Result d
 
+-- Aiger operations {{{1
+
+evalAigerImpl :: (LV.Storable l, Eq l) =>
+                 BitEngine l -> [Bool] -> BitTerm l
+              -> BitIO l (BitTerm l)
+evalAigerImpl be inps (BitTerm t) = BitIO $ BitTerm <$> do
+  LV.map (beLitFromBool be) <$> beEvalAigV be (LV.fromList inps) t
+
 -- Arithmetic and logical operations {{{1
 
 bitIte :: (LV.Storable l, Eq l) =>
@@ -725,6 +733,7 @@ sbeBitBlast lc be = sbe
           , stackPopFrame    = return . bmStackPop lc
           , memCopy          = BitIO `c5` bmMemCopy lc be
           , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)
+          , evalAiger        = evalAigerImpl be
           }
 
     termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"

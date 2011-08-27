@@ -75,7 +75,8 @@ sbeSymbolic = SBE
   , stackPushFrame = nyi "stackPushFrame "
   , stackPopFrame = nyi "stackPopFrame "
   , memCopy = nyi "memCopy"
-  , writeAiger = nyi "writeAiger "
+  , writeAiger = nyi "writeAiger"
+  , evalAiger = nyi "evalAiger"
   }
   where
     nyi :: forall a. String -> a

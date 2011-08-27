@@ -79,6 +79,7 @@ sbeConcrete = SBE
   , stackPopFrame    = nyi "stackPopFrame"
   , memCopy          = nyi "memCopy"
   , writeAiger       = nyi "writeAiger"
+  , evalAiger        = nyi "evalAiger"
   }
   where
     nyi :: forall a. String -> a

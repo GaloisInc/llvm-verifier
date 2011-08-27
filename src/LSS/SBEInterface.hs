@@ -152,4 +152,8 @@ data SBE m = SBE
     -- | @writeAiger f t@ writes an AIG representation of @t@ into
     -- file @f@ in the Aiger format.
   , writeAiger :: String -> SBETerm m -> m ()
+
+    -- | @evalAiger inps t@ evaluates an AIG with the given concrete inputs;
+    -- result is always a concrete term.
+  , evalAiger :: [Bool] -> SBETerm m -> m (SBETerm m)
   }
