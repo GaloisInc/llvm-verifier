@@ -24,8 +24,13 @@ import qualified Text.LLVM                     as L
 newtype FailMsg = FailMsg String
 instance Show FailMsg where show (FailMsg s) = s
 
-i32 :: L.Type
+i8, i32, i64 :: L.Type
+i8  = L.iT 8
 i32 = L.iT 32
+i64 = L.iT 64
+
+padTy {- no peanuts, please -} :: Int -> L.Type
+padTy bytes = L.Array (fromIntegral bytes) i8
 
 supportDir :: FilePath
 supportDir = "test" </> "src" </> "support"
@@ -58,6 +63,10 @@ chkRslt _ Nothing Nothing
   = assert True
 chkRslt sym _ _
   = assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
+
+constTermEq :: ConstantProjection t => t -> Integer -> Bool
+constTermEq (getSVal -> Just v) = (==v)
+constTermEq _                   = const False
 
 chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
                -> Int
@@ -114,7 +123,7 @@ stdBitBlastInit :: FilePath -> IO ( Codebase
 stdBitBlastInit bcFile = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
-  let lc      = LLVMContext 32 (error "LLVM Context has no ident -> type alias map defined")
+  let lc      = LLVMContext 32 (`lookupAlias` cb)
       backend = sbeBitBlast lc be
   return (cb, be, lc, backend, stdTestMem)
 
