@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : atomb
 -}
 
+{-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -12,7 +13,6 @@ module LSS.SBEConcrete where
 
 import           Data.Bits
 import           LSS.SBEInterface
-import           Verinf.Symbolic.Common    (PrettyTerm(..))
 import qualified Text.LLVM.AST             as LLVM
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Verinf.Symbolic           as S
@@ -20,12 +20,14 @@ import qualified Verinf.Symbolic           as S
 --------------------------------------------------------------------------------
 -- Purely concrete backend
 
-instance PrettyTerm Integer where
+instance S.PrettyTerm Integer where
   prettyTermWithD = const PP.integer
 
 newtype SBEConcrete a = SBEConcrete { runConcrete :: a }
-type instance SBETerm SBEConcrete = Integer
-type instance SBEMemory SBEConcrete = () -- TODO
+
+type instance SBETerm SBEConcrete       = Integer
+type instance SBEClosedTerm SBEConcrete = Integer
+type instance SBEMemory SBEConcrete     = () -- TODO
 
 concBool :: Bool -> SBEConcrete Integer
 concBool = SBEConcrete . fromIntegral . fromEnum
@@ -33,7 +35,10 @@ concBool = SBEConcrete . fromIntegral . fromEnum
 sbeConcrete :: SBE SBEConcrete
 sbeConcrete = SBE
   { termInt  = const (SBEConcrete . fromIntegral)
+  , freshInt = nyi "freshInt "
   , termBool = concBool
+  , termArray = nyi "termArray"
+  , termDecomp = nyi "termDecomp"
   , applyIte = \a b c -> SBEConcrete $ if a == 0 then b else c
   , applyICmp  = \op a b ->
                    case op of
@@ -57,25 +62,29 @@ sbeConcrete = SBE
                               _ -> error $
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
-  , getBool = \term -> if term == 0
-                       then SBEConcrete $ Just False
-                       else if term == 1
-                            then SBEConcrete $ Just True
-                            else SBEConcrete $ Nothing
-  , memInitMemory = SBEConcrete undefined
-  , memAlloca = \_mem _eltType _len _a -> SBEConcrete undefined
-  , memLoad = \_mem _ptr -> SBEConcrete undefined
-  , memStore = \_mem _val _ptr -> SBEConcrete undefined
-  , memMerge = \_t _mem _mem' -> SBEConcrete undefined
-  , memAddDefine = \_mem _sym _id -> SBEConcrete (undefined, undefined)
-  , codeBlockAddress = \_mem _s _b -> SBEConcrete undefined
-  , codeLookupDefine = \_mem _t -> SBEConcrete undefined
-  , stackAlloca = \_mem _eltTp _n _a -> SBEConcrete undefined
-  , stackPushFrame = \_mem -> SBEConcrete undefined
-  , stackPopFrame = \_mem -> SBEConcrete undefined
-  , writeAiger = \_f _t ->
-                 error "Aiger creation not supported in concrete backend"
+  , applyConv        = nyi "applyConv"
+  , applyBNot        = nyi "applyBNot"
+  , termWidth        = nyi "termWidth"
+  , closeTerm        = id
+  , prettyTermD      = S.prettyTermD
+  , memDump          = nyi "memDump"
+  , memLoad          = nyi "memLoad"
+  , memStore         = nyi "memStore"
+  , memMerge         = nyi "memMerge"
+  , memAddDefine     = nyi "memAddDefine"
+  , memInitGlobal    = nyi "memInitGlobal"
+  , codeBlockAddress = nyi "codeBlockAddress"
+  , codeLookupDefine = nyi "codeLookupDefine"
+  , stackAlloca      = nyi "stackAlloca"
+  , stackPushFrame   = nyi "stackPushFrame"
+  , stackPopFrame    = nyi "stackPopFrame"
+  , memCopy          = nyi "memCopy"
+  , writeAiger       = nyi "writeAiger"
+  , evalAiger        = nyi "evalAiger"
   }
+  where
+    nyi :: forall a. String -> a
+    nyi msg = error $ unwords ["SBEConcrete:", msg, "not yet supported"]
 
 liftSBEConcrete :: SBEConcrete a -> IO a
 liftSBEConcrete = return . runConcrete

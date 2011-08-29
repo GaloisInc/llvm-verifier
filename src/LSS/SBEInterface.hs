@@ -11,7 +11,7 @@ Point-of-contact : jstanley
 
 module LSS.SBEInterface where
 
-import qualified Verinf.Symbolic as S
+import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM.AST   as LLVM
 
 -- | SBETerm yields the type used to represent terms in particular SBE interface
@@ -34,14 +34,36 @@ data PartialResult r
   = Result r -- ^ The result of the operation.
   | Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed.
+  deriving Show
 
 data SBE m = SBE
-  { -- | @termInt w n@ creates a term representing the constant @w@-bit
+  {
+    ----------------------------------------------------------------------------
+    -- Term creation, operators
+
+    -- | @termInt w n@ creates a term representing the constant @w@-bit
     -- value @n@
     termInt  :: Int -> Integer -> m (SBETerm m)
+
+    -- | @freshInt w@ creates a term representing a symbolic @w@-bit value
+  , freshInt :: Int -> m (SBETerm m)
+
     -- | @termBool b@ creates a term representing the constant boolean
     -- (1-bit) value @b@
-  , termBool :: Bool   -> m (SBETerm m)
+  , termBool :: Bool -> m (SBETerm m)
+
+    -- | @termArray ts@ creates a term representing an array with element terms
+    -- @ts@ (which must be nonempty).  A term list containing with
+    -- heterogenously-sized terms is permitted.
+  , termArray :: [SBETerm m] -> m (SBETerm m)
+
+    -- | @termDecomp tys t@ decomposes the given term into @(length tys)@ terms,
+    --  with each taking their type from the corresponding element of @tys@.
+  , termDecomp :: [LLVM.Type] -> SBETerm m -> m [LLVM.Typed (SBETerm m)]
+
+    ----------------------------------------------------------------------------
+    -- Term operator application
+
     -- | @applyIte a b c@ creates an if-then-else term
   , applyIte    :: SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyICmp op a b@ performs LLVM integer comparison @op@
@@ -50,8 +72,25 @@ data SBE m = SBE
   , applyBitwise :: LLVM.BitOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
   , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
-    -- | @getBool@ returns the value of a concrete boolean term
-  , getBool :: S.ConstantProjection (SBEClosedTerm m) => SBETerm m -> m (Maybe Bool)
+    -- | @applyConv op v t@ performs LLVM conversion operation @op@
+  , applyConv   :: LLVM.ConvOp -> SBETerm m -> LLVM.Type -> m (SBETerm m)
+    -- | @applyBNot @a@ performs negation of a boolean term
+  , applyBNot :: SBETerm m -> m (SBETerm m)
+
+    ----------------------------------------------------------------------------
+    -- Term miscellany
+
+    -- | Yields the width of the given term in bits
+  , termWidth   :: SBETerm m -> Integer
+  , closeTerm   :: SBETerm m -> SBEClosedTerm m
+  , prettyTermD :: SBETerm m -> Doc
+
+    ----------------------------------------------------------------------------
+    -- Memory model interface
+
+    -- | @memDump h@ prints the contents of the memory model
+  , memDump :: SBEMemory m -> m ()
+
     -- | @memLoad h ptr@ returns the value in the given location in memory.
   , memLoad :: SBEMemory m
             -> LLVM.Typed (SBETerm m)
@@ -66,20 +105,25 @@ data SBE m = SBE
     -- true and @f@ otherwise.
   , memMerge :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
-    -- identifiers @blocks@ to the memory @mem@ and returns a pointer to
+    -- labels @blocks@ to the memory @mem@ and returns a pointer to
     -- the definition, and updated memory.
     -- It is undefined to call this function with a symbol that has already
     -- been defined in the memory.
   , memAddDefine :: SBEMemory m
                  -> LLVM.Symbol
-                 -> [LLVM.Ident]
+                 -> [LLVM.BlockLabel]
                  -> m (SBETerm m, SBEMemory m)
+    -- | @memInitGlobal mem data@ writes @data@ to a newly allocated region
+    -- of memory. Returns a pointer to the region and updated memory.
+  , memInitGlobal :: SBEMemory m
+                  -> LLVM.Typed (SBETerm m)
+                  -> m (SBETerm m, SBEMemory m)
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
-  , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.Ident -> m (SBETerm m)
+  , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.BlockLabel -> m (SBETerm m)
     -- | @codeLookupDefine ptr@ returns the symbol at the given address.
     -- Lookup may fail if the pointer does not point to a symbol, or if
-    -- the pointer is a symbolic vlaue without a clear meaning.
+    -- the pointer is a symbolic value without a clear meaning.
     -- TODO: Consider moving this function to the symbolic simulator.
   , codeLookupDefine :: SBEMemory m -> SBETerm m -> m (PartialResult LLVM.Symbol)
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
@@ -97,7 +141,24 @@ data SBE m = SBE
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
+    -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
+    -- both of which must be aligned according to @align@ and must refer to
+    -- non-overlapping regions.
+  , memCopy :: SBEMemory m
+            -> SBETerm m -- ^ Destination pointer
+            -> SBETerm m -- ^ Source pointer
+            -> SBETerm m -- ^ Number of bytes to copy
+            -> SBETerm m -- ^ Alignment in bytes
+            -> m (SBEMemory m)
+
+    ----------------------------------------------------------------------------
+    -- Output functions
+
     -- | @writeAiger f t@ writes an AIG representation of @t@ into
     -- file @f@ in the Aiger format.
   , writeAiger :: String -> SBETerm m -> m ()
+
+    -- | @evalAiger inps t@ evaluates an AIG with the given concrete inputs;
+    -- result is always a concrete term.
+  , evalAiger :: [Bool] -> SBETerm m -> m (SBETerm m)
   }

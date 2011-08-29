@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : atomb
 -}
 
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module LSS.SBESymbolic
@@ -22,14 +23,18 @@ import LSS.SBEInterface
 --------------------------------------------------------------------------------
 -- Word-level symbolic backend
 
-type instance SBETerm S.SymbolicMonad = S.SymbolicTerm
-type instance SBEMemory S.SymbolicMonad = S.SymbolicTerm
+type instance SBETerm S.SymbolicMonad       = S.SymbolicTerm
+type instance SBEClosedTerm S.SymbolicMonad = S.SymbolicTerm
+type instance SBEMemory S.SymbolicMonad     = S.SymbolicTerm
 
 -- | Symbolic interface with all operations at the word level.
 sbeSymbolic :: SBE S.SymbolicMonad
 sbeSymbolic = SBE
   { termInt  = \w v -> return . S.mkCInt (S.Wx w) . fromIntegral $ v
+  , freshInt = nyi "freshInt"
   , termBool = return . S.mkCBool
+  , termArray = nyi "termArray"
+  , termDecomp = nyi "termDecomp"
   , applyIte = S.applyIte
   , applyICmp = \op -> case op of
                          LLVM.Ieq -> S.applyEq
@@ -54,18 +59,29 @@ sbeSymbolic = SBE
                           _ -> error $
                                "unsupported arithmetic op: " ++
                                show op
-  , getBool = return . S.getBool
-  , memLoad = \_mem _ptr -> return undefined
-  , memStore = \_mem _val _ptr -> return undefined
-  , memMerge = \_t _mem _mem' -> return undefined
-  , memAddDefine = \_mem _sym _id -> return (undefined, undefined)
-  , codeBlockAddress = \_mem _s _b -> return undefined
-  , codeLookupDefine = \_mem _t -> return undefined
-  , stackAlloca = \_mem _eltTp _n _a -> return undefined
-  , stackPushFrame = \_mem -> return undefined
-  , stackPopFrame = \_mem -> return undefined
-  , writeAiger = \_f _t -> return undefined
+  , applyConv = nyi "applyConv"
+  , applyBNot = nyi "applyBNot"
+  , termWidth = nyi "termWidth"
+  , closeTerm = id
+  , prettyTermD = S.prettyTermD
+  , memDump = nyi "memDump"
+  , memLoad = nyi "memLoad "
+  , memStore = nyi "memStore "
+  , memMerge = nyi "memMerge "
+  , memAddDefine = nyi "memAddDefine "
+  , memInitGlobal = nyi "memInitGlobal"
+  , codeBlockAddress = nyi "codeBlockAddress "
+  , codeLookupDefine = nyi "codeLookupDefine "
+  , stackAlloca = nyi "stackAlloca "
+  , stackPushFrame = nyi "stackPushFrame "
+  , stackPopFrame = nyi "stackPopFrame "
+  , memCopy = nyi "memCopy"
+  , writeAiger = nyi "writeAiger"
+  , evalAiger = nyi "evalAiger"
   }
+  where
+    nyi :: forall a. String -> a
+    nyi msg = error $ unwords ["SBESymbolic:", msg, "not yet supported"]
 
 liftSBESymbolic :: S.SymbolicMonad a -> IO a
 liftSBESymbolic = S.runSymbolic

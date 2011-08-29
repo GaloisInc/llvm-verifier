@@ -23,16 +23,16 @@ module Data.LLVM.Symbolic.Translation
   , testTranslate
   ) where
 
-import Control.Monad.State.Strict
-import Data.Map (Map)
-import qualified Data.LLVM.CFG as CFG
-import qualified Data.List as L
-import qualified Data.Map as Map
-import qualified Text.LLVM.AST as LLVM
-import Text.LLVM.AST (Stmt'(..), Stmt, Typed (..))
-import Text.PrettyPrint.HughesPJ
-
-import Data.LLVM.Symbolic.AST
+import           Control.Monad.State.Strict
+import           Data.LLVM.Symbolic.AST
+import           Data.Map                   (Map)
+import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
+import           Text.PrettyPrint.HughesPJ
+import qualified Control.Exception          as CE
+import qualified Data.LLVM.CFG              as CFG
+import qualified Data.List                  as L
+import qualified Data.Map                   as Map
+import qualified Text.LLVM                  as LLVM
 
 -- Utility {{{1
 
@@ -53,7 +53,7 @@ mkLTI = LTI
 -- jumping to @bb@.  Entries are stored so that post-dominators visited
 -- later are earlier in the list (e.g., the last entry is the immediate
 -- post-dominator).
-ltiPostDominators :: LLVMTranslationInfo -> LLVM.Ident -> [LLVM.Ident]
+ltiPostDominators :: LLVMTranslationInfo -> LLVM.BlockLabel -> [LLVM.BlockLabel]
 ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) =
   case lookup aid (CFG.pdoms cfg) of
     Nothing   -> []
@@ -61,7 +61,7 @@ ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) =
 
 -- | @ltiIsImmediatePostDominator lti bb n@ returns true if @n@ is the immediate
 -- post-dominator of @bb@.
-ltiIsImmediatePostDominator :: LLVMTranslationInfo -> LLVM.Ident -> LLVM.Ident -> Bool
+ltiIsImmediatePostDominator :: LLVMTranslationInfo -> LLVM.BlockLabel -> LLVM.BlockLabel -> Bool
 ltiIsImmediatePostDominator (LTI cfg) (CFG.asId cfg -> aid) (CFG.asId cfg -> bid) =
   case CFG.ipdom cfg aid of
     Nothing    -> False
@@ -71,7 +71,7 @@ ltiIsImmediatePostDominator (LTI cfg) (CFG.asId cfg -> aid) (CFG.asId cfg -> bid
 -- jumping from @bb@ to @n@.  Entries are stored so that post-dominators
 -- visited later are earlier in the list (e.g., the last entry is the
 -- immediate post-dominator).
-ltiNewPostDominators :: LLVMTranslationInfo -> LLVM.Ident -> LLVM.Ident -> [LLVM.Ident]
+ltiNewPostDominators :: LLVMTranslationInfo -> LLVM.BlockLabel -> LLVM.BlockLabel -> [LLVM.BlockLabel]
 ltiNewPostDominators lti a b = ltiPostDominators lti b L.\\ ltiPostDominators lti a
 
 -- Block generator Monad {{{1
@@ -86,7 +86,7 @@ defineBlock sbid stmts = modify (mkSymBlock sbid stmts:)
 
 -- Phi instruction parsing {{{1
 
-type PhiInstr = (LLVM.Ident, LLVM.Type, Map LLVM.Ident LLVM.Value)
+type PhiInstr = (LLVM.Ident, LLVM.Type, Map LLVM.BlockLabel LLVM.Value)
 
 -- Define init block that pushes post dominator frames then jumps to first
 -- block.
@@ -97,7 +97,7 @@ parsePhiStmts sl =
   , let valMap = Map.fromList [(b, v) | (v,b) <- vals]]
 
 -- | Maps LLVM Blocks to associated phi instructions.
-blockPhiMap :: [CFG.BB] -> Map LLVM.Ident [PhiInstr]
+blockPhiMap :: [CFG.BB] -> Map LLVM.BlockLabel [PhiInstr]
 blockPhiMap blocks =
   Map.fromList
     [ (l, parsePhiStmts sl)
@@ -111,7 +111,7 @@ blockPhiMap blocks =
 --   * The current block must ensure that the correct post-dominator merge frames are added.
 --   * The current block must set the phi value registers.
 liftBB :: LLVMTranslationInfo -- ^ Translation information from analysis
-       -> Map LLVM.Ident [PhiInstr] -- ^ Maps block identifiers to phi instructions for block.
+       -> Map LLVM.BlockLabel [PhiInstr] -- ^ Maps block identifiers to phi instructions for block.
        -> CFG.BB -- ^ Basic block to generate.
        -> BlockGenerator ()
 liftBB lti phiMap bb = do
@@ -121,7 +121,7 @@ liftBB lti phiMap bb = do
       -- | Returns set block instructions for jumping to a particular target.
       -- This includes setting the current block and executing any phi
       -- instructions.
-      phiInstrs :: LLVM.Ident -> [SymStmt]
+      phiInstrs :: LLVM.BlockLabel -> [SymStmt]
       phiInstrs tgt =
           [ Assign r (Val Typed { typedType = tp, typedValue = val })
             | (r, tp, valMap) <- phiMap Map.! tgt
@@ -140,7 +140,7 @@ liftBB lti phiMap bb = do
       --       Clear current execution
       --     Else
       --       Set current block in state to branch target.
-      brSymInstrs :: LLVM.Ident -> [SymStmt]
+      brSymInstrs :: LLVM.BlockLabel -> [SymStmt]
       brSymInstrs tgt =
         SetCurrentBlock (symBlockID tgt 0) : phiInstrs tgt ++
           (if ltiIsImmediatePostDominator lti llvmId tgt
@@ -164,7 +164,7 @@ liftBB lti phiMap bb = do
       -- * Process rest of instructions.
       -- * TODO: Handle invoke instructions
       impl (Result reg (LLVM.Call _b tp v tpvl):r) idx il = do
-        let res = case (LLVM.elimPtrTo >=> LLVM.elimFunTy) tp of
+        let res = case LLVM.elimFunPtr tp of
                     -- NB: The LLVM bitcode parser always types call
                     -- instructions with the full ptr-to-fun type in order to
                     -- present a consistent form that also handles varargs.  We
@@ -187,7 +187,8 @@ liftBB lti phiMap bb = do
       impl [Effect (LLVM.Jump tgt)] idx il = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
-      impl [Effect (LLVM.Br Typed { typedValue = c } tgt1 tgt2)] idx il = do
+      impl [Effect (LLVM.Br (Typed tc c) tgt1 tgt2)] idx il = do
+        CE.assert (tc == LLVM.iT 1) $ return ()
         let suspendSymBlockID = blockName (idx + 1)
         -- Define end of current block:
         --   If c is true:
@@ -218,17 +219,17 @@ liftBB lti phiMap bb = do
       impl (Effect (LLVM.Comment _):r) idx il = impl r idx il
       impl (stmt:rest) idx il =
         let s' = case stmt of
-                   Result r (LLVM.Arith op tpv1 v2)   -> Assign r (Arith op tpv1 v2)
-                   Result r (LLVM.Bit   op tpv1 v2)   -> Assign r (Bit   op tpv1 v2)
-                   Result r (LLVM.Conv  op tpv tp)    -> Assign r (Conv  op tpv tp)
-                   Result r (LLVM.Alloca tp mtpv mi)  -> Assign r (Alloca tp mtpv mi)
-                   Result r (LLVM.Load tpv)           -> Assign r (Load tpv)
-                   Effect   (LLVM.Store a v)          -> Store a v
-                   Result r (LLVM.ICmp op tpv1 v2)    -> Assign r (ICmp op tpv1 v2)
-                   Result r (LLVM.FCmp op tpv1 v2)    -> Assign r (FCmp op tpv1 v2)
-                   Result r (LLVM.GEP tp tpvl)        -> Assign r (GEP tp tpvl)
-                   Result r (LLVM.Select tpc tpv1 v2) -> Assign r (Select tpc tpv1 v2)
-                   Result r (LLVM.ExtractValue tpv i) -> Assign r (ExtractValue tpv i)
+                   Result r (LLVM.Arith op tpv1 v2)    -> Assign r (Arith op tpv1 v2)
+                   Result r (LLVM.Bit   op tpv1 v2)    -> Assign r (Bit   op tpv1 v2)
+                   Result r (LLVM.Conv  op tpv tp)     -> Assign r (Conv  op tpv tp)
+                   Result r (LLVM.Alloca tp mtpv mi)   -> Assign r (Alloca tp mtpv mi)
+                   Result r (LLVM.Load tpv malign)     -> Assign r (Load tpv malign)
+                   Effect   (LLVM.Store v addr malign) -> Store v addr malign
+                   Result r (LLVM.ICmp op tpv1 v2)     -> Assign r (ICmp op tpv1 v2)
+                   Result r (LLVM.FCmp op tpv1 v2)     -> Assign r (FCmp op tpv1 v2)
+                   Result r (LLVM.GEP tp tpvl)         -> Assign r (GEP tp tpvl)
+                   Result r (LLVM.Select tpc tpv1 v2)  -> Assign r (Select tpc tpv1 v2)
+                   Result r (LLVM.ExtractValue tpv i)  -> Assign r (ExtractValue tpv i)
                    Result r (LLVM.InsertValue tpv tpa i) -> Assign r (InsertValue tpv tpa i)
                    _ | null rest -> liftError $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt
                    _ -> liftError $
@@ -255,6 +256,7 @@ liftDefine d =
    in SymDefine {
           sdName = LLVM.defName d
         , sdArgs = LLVM.defArgs d
+        , sdVarArgs = LLVM.defVarArgs d
         , sdRetType = LLVM.defRetType d
         , sdBody = Map.fromList [ (sbId b,b) | b <- symBlocks ]
         }

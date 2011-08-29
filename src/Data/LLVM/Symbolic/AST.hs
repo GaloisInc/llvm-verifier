@@ -28,6 +28,7 @@ module Data.LLVM.Symbolic.AST
   , ppSymExpr
   , ppSymStmt
   , symBlockID
+  , symBlockLabel
   ) where
 
 import Data.Int
@@ -40,7 +41,7 @@ import Text.PrettyPrint.HughesPJ
 -- | A fake sentinel SymBlockID to represent a fictitious target block for after
 -- a normal return from a toplevel function invocation.
 entryRetNormalID :: SymBlockID
-entryRetNormalID = NamedBlock (LLVM.Ident "__galois_entry_ret_normal") (-1)
+entryRetNormalID = NamedBlock (LLVM.Named $ LLVM.Ident "__galois_entry_ret_normal") (-1)
 
 -- | Intersperse commas into document.
 commas :: [Doc] -> Doc
@@ -55,7 +56,7 @@ data SymBlockID
   -- post-dominator frames.
   = InitBlock
   -- | Identifier for blocks derived from LLVM blocks.
-  | NamedBlock !(LLVM.Ident) !Int
+  | NamedBlock !(LLVM.BlockLabel) !Int
   deriving (Eq, Ord, Show)
 
 -- | Return init symbolic block id.
@@ -64,13 +65,17 @@ initSymBlockID = InitBlock
 
 -- | Create new block id for block with given name and unique integer.
 -- The first block is for the entry point to the LLVM block.
-symBlockID :: LLVM.Ident -> Int -> SymBlockID
+symBlockID :: LLVM.BlockLabel -> Int -> SymBlockID
 symBlockID i = NamedBlock i
+
+symBlockLabel :: SymBlockID -> Maybe LLVM.BlockLabel
+symBlockLabel (NamedBlock i _) = Just i
+symBlockLabel _                = Nothing
 
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc
 ppSymBlockID InitBlock = text "init"
-ppSymBlockID (NamedBlock i n) = LLVM.ppIdent i <> char '.' <> int n
+ppSymBlockID (NamedBlock b n) = LLVM.ppLabel b <> char '.' <> int n
 
 -- | Identies a named value in a function.
 -- TODO: Figure out if LLVM.Ident is the right type and if this can be
@@ -103,7 +108,7 @@ data SymExpr
   -- TODO: See if type information is needed.
   | Conv LLVM.ConvOp (Typed SymValue) LLVM.Type
   | Alloca LLVM.Type (Maybe (Typed SymValue)) (Maybe Int)
-  | Load (Typed SymValue)
+  | Load (Typed SymValue) (Maybe LLVM.Align)
   | ICmp LLVM.ICmpOp (Typed SymValue) SymValue
   | FCmp LLVM.FCmpOp (Typed SymValue) SymValue
   -- | A copy of a value.
@@ -121,7 +126,7 @@ ppSymExpr (Arith op l r) = LLVM.ppArithOp op <+> ppTypedValue l <> comma <+> ppS
 ppSymExpr (Bit op l r) = LLVM.ppBitOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (Conv op l r) = LLVM.ppConvOp op <+> ppTypedValue l <> comma <+> LLVM.ppType r
 ppSymExpr (Alloca ty len align) = LLVM.ppAlloca ty len align
-ppSymExpr (Load ptr) = text "load" <+> ppTypedValue ptr
+ppSymExpr (Load ptr malign) = text "load" <+> ppTypedValue ptr <> LLVM.ppAlign malign
 ppSymExpr (ICmp op l r) = text "icmp" <+> LLVM.ppICmpOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (FCmp op l r) = text "fcmp" <+> LLVM.ppFCmpOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (Val v) = ppTypedValue v
@@ -182,8 +187,8 @@ data SymStmt
   | AddPathConstraint SymCond
   -- | Assign result of instruction to register.
   | Assign Reg SymExpr
-  -- | @Store addr v@ stores value @v@ in @addr@.
-  | Store (Typed SymValue) (Typed SymValue)
+  -- | @Store v addr@ stores value @v@ in @addr@.
+  | Store (Typed SymValue) (Typed SymValue) (Maybe LLVM.Align)
   -- | Conditional execution.
   | IfThenElse SymCond [SymStmt] [SymStmt]
   -- | Print out an error message if we reach an unreachable.
@@ -211,7 +216,8 @@ ppSymStmt (PushPendingExecution c) = text "pushPendingExecution" <+> ppSymCond c
 ppSymStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
 ppSymStmt (AddPathConstraint c) = text "addPathConstraint" <+> ppSymCond c
 ppSymStmt (Assign v e) = ppReg v <+> char '=' <+> ppSymExpr e
-ppSymStmt (Store addr v) = text "store" <+> ppTypedValue addr <> comma <+> ppTypedValue v
+ppSymStmt (Store v addr malign) = text "store" <+> ppTypedValue v <> comma <+> ppTypedValue addr
+                                  <> LLVM.ppAlign malign
 ppSymStmt (IfThenElse c t f) =
   text "if" <+> ppSymCond c <> char '{'
     $+$ nest 2 (vcat (map ppSymStmt t))
@@ -233,6 +239,7 @@ ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (map ppSymStmt (sbStmts 
 data SymDefine = SymDefine {
          sdName :: LLVM.Symbol
        , sdArgs :: [Typed Reg]
+       , sdVarArgs :: Bool
        , sdRetType :: LLVM.Type
        , sdBody :: Map SymBlockID SymBlock
        }

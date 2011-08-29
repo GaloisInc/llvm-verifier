@@ -11,9 +11,15 @@ Point-of-contact : jstanley
 
 module LSS.Execution.Codebase
   ( Codebase(..)
-  , loadCodebase
-  , lookupDefine
   , dumpSymDefine
+  , loadCodebase
+  , lookupAlias
+  , lookupAlias'
+  , lookupDefine
+  , lookupDefine'
+  , lookupGlobal
+  , lookupGlobal'
+  , lookupSym
   )
 
 where
@@ -33,10 +39,12 @@ import qualified Text.LLVM                      as LLVM
 -- or not we invoke the llvm linker ourselves in order to do this is something
 -- that we can resolve later).
 
-type GlobalNameMap = M.Map LLVM.Symbol SymDefine
+type GlobalNameMap = M.Map LLVM.Symbol (Either LLVM.Global SymDefine)
+type TypeAliasMap  = M.Map LLVM.Ident LLVM.Type
 
 data Codebase = Codebase {
     cbGlobalNameMap :: GlobalNameMap
+  , cbTypeAliasMap   :: TypeAliasMap
   }
 
 -- For now, only take a single bytecode file argument and assume that the world
@@ -47,10 +55,20 @@ loadCodebase bcFile = do
   case eab of
     Left msg  -> err msg
     Right mdl -> do
---       putStrLn $ "mdl = " ++ show (LLVM.ppModule mdl)
-      let xlt d = M.insert (LLVM.defName d) (liftDefine d)
-          cb    = Codebase
-                  { cbGlobalNameMap = foldr xlt M.empty (LLVM.modDefines mdl) }
+      let ins0 d = M.insert (LLVM.defName d) (Right $ liftDefine d)
+          ins1 g = M.insert (LLVM.globalSym g) (Left g)
+          ins2 d = M.insert (LLVM.typeName d) (LLVM.typeValue d)
+          m1     = foldr ins0 M.empty (LLVM.modDefines mdl)
+          m2     = foldr ins1 m1 (LLVM.modGlobals mdl)
+          m3     = foldr ins2 M.empty (LLVM.modTypes mdl)
+          cb     = Codebase { cbGlobalNameMap = m2
+                            , cbTypeAliasMap  = m3
+                            }
+--       putStrLn $ "mdl = \n" ++ show (LLVM.ppModule mdl)
+--       putStrLn $ "types = \n" ++ show (LLVM.modTypes mdl)
+--       putStrLn $ "globals = \n" ++ show (map LLVM.ppGlobal (LLVM.modGlobals mdl))
+--       putStrLn $ "xlated = \n" ++ (unlines $ map (show . ppSymDefine) (M.elems (cbGlobalNameMap cb)))
+--       putStrLn "--"
       return cb
   where
     parse   = BS.readFile >=> BC.parseBitCode
@@ -58,9 +76,38 @@ loadCodebase bcFile = do
               ++ show (nest 2 (vcat $ map text $ lines msg))
 
 lookupDefine :: LLVM.Symbol -> Codebase -> SymDefine
-lookupDefine s cb = case M.lookup s (cbGlobalNameMap cb) of
-  Nothing -> error $ "Failed to locate " ++ show s ++ " in code base."
+lookupDefine sym cb = case lookupDefine' sym cb of
+  Nothing -> error $ "Failed to locate define "
+                     ++ show (LLVM.ppSymbol sym) ++ " in code base."
   Just sd -> sd
+
+lookupDefine' :: LLVM.Symbol -> Codebase -> Maybe SymDefine
+lookupDefine' sym cb = case M.lookup sym (cbGlobalNameMap cb) of
+  Just (Right sd) -> Just sd
+  _               -> Nothing
+
+lookupGlobal :: LLVM.Symbol -> Codebase -> LLVM.Global
+lookupGlobal sym cb = case lookupGlobal' sym cb of
+  Nothing -> error $ "Failed to locate global "
+                     ++ show (LLVM.ppSymbol sym) ++ " in code base."
+  Just g  -> g
+
+lookupGlobal' :: LLVM.Symbol -> Codebase -> Maybe LLVM.Global
+lookupGlobal' sym cb = case M.lookup sym (cbGlobalNameMap cb) of
+  Just (Left g) -> Just g
+  _             -> Nothing
+
+lookupSym :: LLVM.Symbol -> Codebase -> Maybe (Either LLVM.Global SymDefine)
+lookupSym sym = M.lookup sym . cbGlobalNameMap
+
+lookupAlias :: LLVM.Ident -> Codebase -> LLVM.Type
+lookupAlias ident cb = case lookupAlias' ident cb of
+  Nothing -> error $ "Failed to locate type alias named "
+                     ++ show (LLVM.ppIdent ident) ++ " in code base"
+  Just t  -> t
+
+lookupAlias' :: LLVM.Ident -> Codebase -> Maybe (LLVM.Type)
+lookupAlias' ident cb = M.lookup ident (cbTypeAliasMap cb)
 
 dumpSymDefine :: MonadIO m => m Codebase -> String -> m ()
 dumpSymDefine getCB sym = getCB >>= \cb ->

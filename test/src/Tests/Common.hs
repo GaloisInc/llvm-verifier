@@ -1,13 +1,36 @@
+{-# LANGUAGE ViewPatterns #-}
+
 module Tests.Common where
 
-import Control.Monad
-import Test.QuickCheck
-import Test.QuickCheck.Monadic
-import qualified Test.QuickCheck.Test as T
-import System.FilePath
+import           Control.Applicative
+import           Control.Monad
+import           Control.Monad.Trans
+import           Data.Int
+import           LSS.Execution.Codebase
+import           LSS.Execution.Common
+import           LSS.Execution.Utils
+import           LSS.SBEBitBlast
+import           LSS.Simulator
+import           System.FilePath
+import           Test.QuickCheck
+import           Test.QuickCheck.Monadic
+import           Text.LLVM                     ((=:))
+import           Verinf.Symbolic.Common        (ConstantProjection(..), Lit, createBitEngine)
+import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
+import qualified Data.Vector.Storable          as LV
+import qualified Test.QuickCheck.Test          as T
+import qualified Text.LLVM                     as L
 
 newtype FailMsg = FailMsg String
 instance Show FailMsg where show (FailMsg s) = s
+
+i8, i32, i64 :: L.Type
+i8  = L.iT 8
+i32 = L.iT 32
+i64 = L.iT 64
+
+padTy {- no peanuts, please -} :: Int -> L.Type
+padTy bytes = L.Array (fromIntegral bytes) i8
 
 supportDir :: FilePath
 supportDir = "test" </> "src" </> "support"
@@ -31,3 +54,108 @@ runTests tests = do
   if all T.isSuccess results
     then putStrLn "All tests successful."
     else putStrLn "One or more tests failed."
+
+chkRslt :: ConstantProjection t => L.Symbol -> Maybe Integer -> Maybe t -> PropertyM IO ()
+chkRslt _ (Just chk) (Just (getSVal -> Just v))
+  | v == chk  = assert True
+  | otherwise = assertMsg False $ "Expected " ++ show chk ++ ", got " ++ show v
+chkRslt _ Nothing Nothing
+  = assert True
+chkRslt sym _ _
+  = assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
+
+constTermEq :: ConstantProjection t => t -> Integer -> Bool
+constTermEq (getSVal -> Just v) = (==v)
+constTermEq _                   = const False
+
+chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
+               -> Int
+               -> FilePath
+               -> L.Symbol
+               -> (Int32 -> Int32 -> Maybe Int32)
+               -> PropertyM IO ()
+chkBinCInt32Fn mgen v bcFile sym chkOp = do
+  forAllM (maybe arbitrary id mgen) $ \(x,y) -> do
+    chkRslt sym (fromIntegral <$> x `chkOp` y)
+      =<< run (runCInt32Fn v bcFile sym [x, y])
+
+chkUnaryCInt32Fn :: Maybe (Gen Int32)
+                 -> Int
+                 -> FilePath
+                 -> L.Symbol
+                 -> (Int32 -> Maybe Int32)
+                 -> PropertyM IO ()
+chkUnaryCInt32Fn mgen v bcFile sym chkOp =
+  forAllM (maybe arbitrary id mgen) $ \x -> do
+    chkRslt sym (fromIntegral <$> chkOp x)
+      =<< run (runCInt32Fn v bcFile sym [x])
+
+chkNullaryCInt32Fn :: Int -> FilePath -> L.Symbol -> Maybe Int32 -> PropertyM IO ()
+chkNullaryCInt32Fn v bcFile sym chkVal =
+  chkRslt sym (fromIntegral <$> chkVal)
+    =<< run (runCInt32Fn v bcFile sym [])
+
+runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe (BitTermClosed Lit))
+runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile $ \be -> do
+  args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
+  callDefine sym i32 $ map (\x -> i32 =: x) args
+  rv <- getProgramReturnValue
+  return $ BitTermClosed . (,) be <$> rv
+
+type StdBitEngine     = BitEngine Lit
+type StdBitBlastSim a = Simulator (BitIO Lit) IO a
+type StdBitBlastTest  = StdBitEngine -> StdBitBlastSim Bool
+
+runBitBlastSim :: Int -> FilePath -> (StdBitEngine -> StdBitBlastSim a) -> IO a
+runBitBlastSim v bcFile act = do
+  (cb, be, lc, backend, mem) <- stdBitBlastInit bcFile
+  runSimulator cb lc backend mem stdBitBlastLift $ withVerbosity v (act be)
+
+runBitBlastSimTest :: Int -> FilePath -> StdBitBlastTest-> PropertyM IO ()
+runBitBlastSimTest v bcFile = assert <=< run . runBitBlastSim v bcFile
+
+stdBitBlastInit :: FilePath -> IO ( Codebase
+                                  , StdBitEngine
+                                  , LLVMContext
+                                  , BitBlastSBE Lit
+                                  , BitMemory Lit
+                                  )
+stdBitBlastInit bcFile = do
+  cb <- loadCodebase $ supportDir </> bcFile
+  be <- createBitEngine
+  let lc      = LLVMContext 32 (`lookupAlias` cb)
+      backend = sbeBitBlast lc be
+  return (cb, be, lc, backend, stdTestMem)
+
+stdTestMem :: LV.Storable l => BitMemory l
+stdTestMem =
+  sbeBitBlastMem (ss, se) (cs, ce) (ds, de) (hs, he)
+  where
+    defaultSz  = 2^(16 :: Int)
+    ext st len = (st, st + len)
+    (ss, se)   = ext 0 defaultSz
+    (cs, ce)   = ext se defaultSz
+    (ds, de)   = ext ce defaultSz
+    (hs, he)   = ext de defaultSz
+
+stdBitBlastLift :: BitIO l a -> Simulator sbe IO a
+stdBitBlastLift = SM . lift . liftSBEBitBlast
+
+-- possibly skip a test
+psk :: Int -> PropertyM IO () -> PropertyM IO ()
+psk v act = if (v > 0) then act else disabled
+
+disabled :: PropertyM IO ()
+disabled = do
+  run $ putStrLn $ "Warning: Next test is DISABLED! (will report success)"
+
+incomplete :: PropertyM IO () -> PropertyM IO ()
+incomplete act = do
+  run $ putStrLn $ "Warning: Next test is INCOMPLETE! (will report failure)"
+  act
+  assert False
+
+runMain :: Int -> FilePath -> Maybe Int32 -> PropertyM IO ()
+runMain v bc = psk v . chkNullaryCInt32Fn v bc (L.Symbol "main")
+
+
