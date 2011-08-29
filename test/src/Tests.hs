@@ -9,6 +9,8 @@ import Test.QuickCheck
 import Test.QuickCheck.Test
 
 import Tests.PrimOps
+import Tests.Aggregates
+import Tests.Symbolic
 
 main :: IO ()
 main = do
@@ -31,7 +33,10 @@ runTests chooseTest = do
     noOfSelected = length qcProps
     qcProps      = filter chooseTest allTests
     allTests     = [ ("PrimOps", primOpTests)
+                   , ("Aggregates", aggTests)
+                   , ("Symbolic", symTests)
                    ]
+
 
 
 

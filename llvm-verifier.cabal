@@ -25,6 +25,10 @@ Flag build-lss
   description: Build the LSS command-line tool
   default: False
 
+flag build-utils
+  description: Build auxiliary command-line executables
+  default: True
+
 library
   if !flag(build-library)
     buildable: False
@@ -43,9 +47,9 @@ library
     , mtl
     , pretty
     , transformers
+    , template-haskell
     , vector
     , Verinf
-
 
   hs-source-dirs: src
 
@@ -57,8 +61,13 @@ library
   other-modules:
     LSS.SBEInterface
     LSS.SBEBitBlast
+-- Keep these compiling even though they're not used at the moment
+    LSS.SBEConcrete 
+    LSS.SBESymbolic
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
+  if os(darwin)
+    GHC-options: -optl-Wl,-dead_strip
 
 -- executable lss
 --   if !flag(build-lss)
@@ -93,7 +102,6 @@ executable Tests
   hs-source-dirs : src test/src
 
   GHC-options: -O2 -Wall -fno-ignore-asserts
-
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
@@ -109,3 +117,29 @@ executable Tests
     , pretty
     , transformers
     , vector
+
+executable bcdump
+  if !flag(build-utils)
+    buildable: False
+
+  main-is        : Main_bcdump.hs
+  hs-source-dirs : src
+
+  GHC-options: -O2 -Wall -fno-ignore-asserts
+  if os(darwin)
+    GHC-options: -optl-Wl,-dead_strip
+
+  build-depends:
+      base >= 4
+    , bytestring
+    , containers
+    , filepath
+    , llvm-pretty
+    , pretty
+    , mtl
+    , Verinf
+    , directory
+    , process
+
+  
+
