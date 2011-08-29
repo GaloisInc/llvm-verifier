@@ -33,8 +33,10 @@ module LSS.Simulator
   , prettyTermSBE
   , runSimulator
   , withSBE  -- Exported so we can construct argument values.
+  , withSBE'
   -- for testing
   , dbugTerm
+  , dbugM
   )
 where
 
@@ -478,6 +480,18 @@ getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
     valTerms <- mapM (getTypedTerm' mfrm) (Typed ety <$> es)
     Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue valTerms))
 
+getTypedTerm' mfrm (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
+  = do
+--   dbugM "getTypedTerm struct"
+--   dbugM "fldTys = "
+--   dbugM $ show $ vcat $ map L.ppType fldTys
+--   dbugM "fldVals = "
+--   dbugM $ show $ vcat $ map (L.ppTyped L.ppValue) fldTVs
+
+  fldTerms <- mapM (getTypedTerm' mfrm) fldTVs
+--  mapM_ (dbugTypedTerm "fldTerm") fldTerms
+  Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue fldTerms))
+
 getTypedTerm' _ (Typed _ (L.ValSymbol sym))
   = getGlobalPtrTerm (sym, Nothing)
 
@@ -489,6 +503,12 @@ getTypedTerm' mfrm (Typed _ (L.ValConstExpr ce))
 
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
   = return $ lkupIdent i frm
+
+getTypedTerm' _mfrm (Typed ty L.ValUndef)
+  = do
+  szBytes <- fromIntegral <$> withLC (`llvmByteSizeOf` ty)
+  Typed ty <$> withSBE (\sbe -> termInt sbe (szBytes * 8) 0)
+
 getTypedTerm' mfrm tv@(Typed t v)
   = do
   sbe <- gets symBE
@@ -625,7 +645,11 @@ step Unwind
 -- Symbolic expression evaluation
 
 -- | @eval expr@ evaluates @expr@ via the symbolic backend
-eval :: (Functor m, MonadIO m)
+eval ::
+  ( Functor m
+  , MonadIO m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
 
 eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
@@ -647,13 +671,17 @@ eval (Conv L.BitCast tv ty) =
 
 eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr s)
 
-eval (Alloca t msztv malign ) = do
-  szt <- case msztv of
-           Nothing   -> getTypedTerm (i32const 1)
-           Just sztv -> getTypedTerm sztv
-  let alloca sbe m = stackAlloca sbe m t szt (maybe 0 lg malign)
-
-  Typed (L.PtrTo t) <$> mutateMem alloca
+eval (Alloca ty msztv malign ) = do
+  (_n, nt) <- case msztv of
+    Nothing  -> ((,) 1) <$> getTypedTerm (i32const 1)
+    Just ntv -> do
+      nt <- getTypedTerm ntv
+      mn <- withSBE' (\sbe -> getSVal (closeTerm sbe $ typedValue nt))
+      case mn of
+        Nothing -> error "alloca only supports concrete element counts"
+        Just n  -> return (n, nt)
+  let alloca sbe m = stackAlloca sbe m ty nt (maybe 0 lg malign)
+  Typed (L.PtrTo ty) <$> mutateMem alloca
 
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
@@ -678,15 +706,15 @@ eval (Val tv) = getTypedTerm tv
 
 eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
   where
-    impl :: (MonadIO m, Functor m)
-         => [Typed SymValue]
-         -> Typed (SBETerm sbe)
-         -> Simulator sbe m (Typed (SBETerm sbe))
-
     impl [] (Typed referentTy ptrVal) = do
-      -- Truncate the final pointer value down to the target's address width
+      -- Truncate the final pointer value down to the target's address width, as
+      -- needed.
       addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
-      Typed (L.PtrTo referentTy) <$> termConv L.Trunc ptrVal (L.iT addrWidth)
+      ptrWidth  <- fromIntegral <$> withSBE' (`termWidth` ptrVal)
+      Typed (L.PtrTo referentTy) <$> do
+        if addrWidth < ptrWidth
+          then termConv L.Trunc ptrVal (L.iT addrWidth)
+          else return ptrVal
 
     impl (idx:idxs) (Typed (L.PtrTo referentTy) ptrVal) = do
       impl idxs =<< baseOffset idx referentTy ptrVal
@@ -694,12 +722,33 @@ eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
     impl (idx:idxs) (Typed (L.Array _len elemTy) ptrVal) = do
       impl idxs =<< baseOffset idx elemTy ptrVal
 
-    impl _ tv = do
-      dbugTypedTerm "tv" tv
-      error $ "GEP: support for aggregate type NYI: " ++ show (typedType tv)
+    impl (idx : idxs) (Typed (L.Struct fldTys) ptrVal) = do
+--       forM_ fldTys $ \fld -> dbugM $ "fld: " ++ show fld
 
-    sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m (Typed L.Value)
-    sizeof ty = Typed (L.PrimType (L.Integer 32)) <$> L.ValInteger <$> withLC (`llvmByteSizeOf` ty)
+      Typed _ idxTerm <- getTypedTerm idx
+      (skipFlds, head -> fldTy) <- do
+        midxVal <- withSBE' (\sbe -> getSVal (closeTerm sbe idxTerm))
+        case midxVal of
+          Nothing -> error "eval GEP: Failed to obtain value for GEP index"
+          Just n  -> return $ splitAt (fromIntegral n) fldTys
+
+--       dbugV "idx" idx
+--       dbugV "skipFlds" skipFlds
+--       dbugV "idxs" idxs
+
+      newPtrVal <- Typed fldTy <$> foldM addSz ptrVal skipFlds
+--       dbugTypedTerm "newPtrVal" newPtrVal
+
+      impl idxs newPtrVal
+
+    impl idxs (Typed (L.Alias ident) v) = do
+      impl idxs =<< (`Typed` v) <$> withLC (\lc -> llvmLookupAlias lc ident)
+
+    impl _ tv = do
+--       dbugTypedTerm "tv" tv
+      error $ "GEP: support for aggregate type NYI: "
+              ++ show (L.ppType (typedType tv))
+              ++ " : " ++ show (typedType tv)
 
     -- @baseOffset i ty p@ computes @p + i * sizeof(ty)@
     baseOffset :: (MonadIO m, Functor m)
@@ -709,6 +758,9 @@ eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
       Typed _ idxTerm <- getTypedTerm idx
       Typed _ szTerm  <- getTypedTerm =<< sizeof referentTy
       Typed referentTy <$> saxpy idxTerm szTerm ptrVal
+
+    -- @addSz p ty@ computes @p + sizeof(ty)
+    addSz p ty = termAdd p . typedValue =<< getTypedTerm =<< sizeof ty
 
 eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
 eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
@@ -745,8 +797,8 @@ resizeTerms :: (MonadIO m, Functor m)
   -> SBETerm sbe
   -> Simulator sbe m (SBETerm sbe, SBETerm sbe)
 resizeTerms a b = do
-  wa <- fromIntegral <$> withSBE' (\sbe -> termWidth sbe a)
-  wb <- fromIntegral <$> withSBE' (\sbe -> termWidth sbe b)
+  wa <- fromIntegral <$> withSBE' (`termWidth` a)
+  wb <- fromIntegral <$> withSBE' (`termWidth` b)
   if wa > wb
     then conv b (L.iT wa) >>= \b' -> return (a, b')
     else
@@ -833,6 +885,10 @@ withLC f = f <$> gets llvmCtx
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m (Typed L.Value)
+sizeof ty = Typed (L.PrimType (L.Integer 32))
+              <$> L.ValInteger <$> withLC (`llvmByteSizeOf` ty)
 
 lg :: (Ord a, Bits a) => a -> a
 lg = genericLength . takeWhile (>0) . drop 1 . iterate (`shiftR` 1)

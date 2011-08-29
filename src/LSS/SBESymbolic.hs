@@ -34,6 +34,7 @@ sbeSymbolic = SBE
   , freshInt = nyi "freshInt"
   , termBool = return . S.mkCBool
   , termArray = nyi "termArray"
+  , termDecomp = nyi "termDecomp"
   , applyIte = S.applyIte
   , applyICmp = \op -> case op of
                          LLVM.Ieq -> S.applyEq

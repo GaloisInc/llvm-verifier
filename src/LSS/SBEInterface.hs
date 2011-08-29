@@ -52,9 +52,14 @@ data SBE m = SBE
     -- (1-bit) value @b@
   , termBool :: Bool -> m (SBETerm m)
 
-  -- | @termArray ts@ creates a term representing an array with element terms
-  -- @ts@ (which must be nonempty)
+    -- | @termArray ts@ creates a term representing an array with element terms
+    -- @ts@ (which must be nonempty).  A term list containing with
+    -- heterogenously-sized terms is permitted.
   , termArray :: [SBETerm m] -> m (SBETerm m)
+
+    -- | @termDecomp tys t@ decomposes the given term into @(length tys)@ terms,
+    --  with each taking their type from the corresponding element of @tys@.
+  , termDecomp :: [LLVM.Type] -> SBETerm m -> m [LLVM.Typed (SBETerm m)]
 
     ----------------------------------------------------------------------------
     -- Term operator application
@@ -75,7 +80,7 @@ data SBE m = SBE
     ----------------------------------------------------------------------------
     -- Term miscellany
 
-    -- | Yields the bitwidth of the given term in bytes
+    -- | Yields the width of the given term in bits
   , termWidth   :: SBETerm m -> Integer
   , closeTerm   :: SBETerm m -> SBEClosedTerm m
   , prettyTermD :: SBETerm m -> Doc

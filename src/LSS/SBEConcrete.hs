@@ -38,6 +38,7 @@ sbeConcrete = SBE
   , freshInt = nyi "freshInt "
   , termBool = concBool
   , termArray = nyi "termArray"
+  , termDecomp = nyi "termDecomp"
   , applyIte = \a b c -> SBEConcrete $ if a == 0 then b else c
   , applyICmp  = \op a b ->
                    case op of

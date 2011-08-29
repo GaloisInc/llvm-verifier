@@ -37,7 +37,7 @@ primOpTests =
   , test  1  False "test-call-voidrty"     $ testCallVR     1
   , test  1  False "test-call-simple"      $ testCallSimple 1
   , test  1  False "test-ptr-simple"       $ testPtrSimple  1
-  , test  1  False "test-call-exit"        $ incomplete $ testCallExit   1
+  , test  1  False "test-call-exit"        $ testCallExit   0
   ]
   where
     -- The 'v' parameter to all of these tests controls the verbosity; a

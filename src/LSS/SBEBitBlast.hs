@@ -32,6 +32,7 @@ import           Control.Monad.IO.Class
 import           Data.Bits
 import           Data.Int
 import           Data.LLVM.Memory
+import           Data.List
 import           Data.Map                  (Map)
 import           Debug.Trace
 import           LSS.Execution.Utils
@@ -426,21 +427,28 @@ bmStackAlloca lc be bm eltTp typedCnt a =
                   bmError $ "Symbolic number of elements requested with alloca;"
                                ++ " when current implementation only supports concrete"
                 Just (_,v) -> v
+        -- @nm x y@ computes the next multiple m of y s.t. m >= y
+        nm x y = ((y + x - 1) `div` x) * x
         -- Stack pointer adjusted to alignment boundary.
         errorMsg = bmError "Stack limit exceeded in alloca."
+        -- Pad up to the end of the aligned region; we do this because any
+        -- global data that gets copied into this space will be padded to this
+        -- size by LLVM.
+        padBytes = fromIntegral $ nm (2 ^ a :: Int) sz - sz
+                   where sz = fromIntegral (eltSize * cnt)
         -- Get result pointer
         -- Get new bit memory.
         (res,newStorage,newAddr)
           | bmStackGrowsUp bm =
-              let alignedAddr = alignUp (bmStackAddr bm) a
-                  newStackAddr = alignedAddr + eltSize * cnt
+              let alignedAddr  = alignUp (bmStackAddr bm) a
+                  newStackAddr = alignedAddr + eltSize * cnt + padBytes
               in if newStackAddr > bmStackEnd bm
                    then errorMsg
                    else ( alignedAddr
                         , uninitRegion lc alignedAddr newStackAddr (bmStorage bm)
                         , newStackAddr)
           | otherwise =
-              let sz = eltSize * cnt
+              let sz = eltSize * cnt + padBytes
                   alignedAddr = alignDn (bmStackAddr bm - sz) a
                in if alignedAddr < bmStackEnd bm
                     then errorMsg
@@ -711,6 +719,7 @@ sbeBitBlast lc be = sbe
           , freshInt         = BitIO . fmap BitTerm . beInputVector be
           , termBool         = return . BitTerm . LV.singleton . beLitFromBool be
           , termArray        = return . BitTerm . termArrayImpl
+          , termDecomp       = termDecompImpl lc be
           , applyIte         = bitIte be
           , applyICmp        = bitICmp be
           , applyBitwise     = bitBitwise be
@@ -738,6 +747,22 @@ sbeBitBlast lc be = sbe
 
     termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"
     termArrayImpl ts = foldr1 (LV.++) (map btVector ts)
+
+termDecompImpl :: (LV.Storable l, Eq l) =>
+                  LLVMContext -> BitEngine l -> [LLVM.Type] -> BitTerm l
+               -> BitIO l [LLVM.Typed (BitTerm l)]
+termDecompImpl lc _be tys0 (BitTerm t)
+  | sum (map llvmBitSizeOf tys0) /= LV.length t
+  = error "termDecompImpl: sum of type sizes must equal bitvector length"
+  | otherwise
+  = BitIO $ return $ unfoldr slice (t, tys0)
+  where
+    llvmBitSizeOf ty = fromIntegral $ llvmByteSizeOf lc ty `shiftL` 3
+    slice (bv, [])       = assert (LV.null bv) Nothing
+    slice (bv, (ty:tys)) = Just (bt $ LV.take sz bv, (LV.drop sz bv, tys))
+      where
+        bt = LLVM.Typed ty . BitTerm
+        sz = llvmBitSizeOf ty
 
 type Range t = (t,t)
 

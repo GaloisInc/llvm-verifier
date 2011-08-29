@@ -47,4 +47,3 @@ banners' lvl = whenVerbosity (>=lvl) . banners
 
 safeHead :: [a] -> Maybe a
 safeHead = listToMaybe
-
