@@ -33,13 +33,17 @@ module LSS.Simulator
   , getProgramFinalMem
   , prettyTermSBE
   , runSimulator
-  , withSBE  -- Exported so we can construct argument values.
+  , withSBE
   , withSBE'
   -- * Memory operations
   , alloca
+  , sizeof
+  , mutateMem_
   -- for testing
   , dbugTerm
+  , dbugTypedTerm
   , dbugM
+  , dumpMem
   )
 where
 
@@ -128,7 +132,7 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   = do
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
-  banners' 5 $ show $ ppSymDefine def
+--   banners' 5 $ show $ ppSymDefine def
 
   path <- newPath (CallFrame calleeSym M.empty) =<< initMem
   modifyCS $ pushPendingPath path
@@ -505,27 +509,10 @@ getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
 
 getTypedTerm' mfrm (Typed ty@(L.Array len ety@(L.PrimType L.Integer{})) (L.ValString str))
   = do
-  charTerms <- mapM (getTypedTerm' mfrm)
-               $ ( map toChar
-                   $ let q = unescape str
-                     in
-                       CE.assert (length q == fromIntegral len) q
-                 )
+  charTerms <- mapM (getTypedTerm' mfrm) $ map toChar str
   Typed ty <$> withSBE (\sbe -> termArray sbe $ map typedValue charTerms)
   where
     toChar   = Typed ety . L.ValInteger . fromIntegral . fromEnum
-    -- TODO: imo, parser should unescape this since it's giving us a Haskell
-    -- string?
-    unescape = unfoldr f
-      where
-        f []              = Nothing
-        f ('\\':d1:d2:cs) = let h = case readHex (d1:d2:[]) of
-                                      [(x, "")] -> toEnum x
-                                      _         -> err
-                            in
-                              Just (h, cs)
-        f (c:cs)          = Just (c, cs)
-        err = error "Failed to parse hex string in cstring constant"
 
 getTypedTerm' mfrm (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
   = do
@@ -706,7 +693,9 @@ eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
 eval s@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
 
-eval (Bit _op _tv1 _v2) = error "eval Bit nyi"
+eval (Bit op tv1@(Typed t _) v2) = do
+  [x, y] <- map typedValue <$> mapM getTypedTerm [tv1, typedType tv1 =: v2]
+  Typed t <$> withSBE (\sbe -> applyBitwise sbe op x y)
 
 eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{})) = do
   Typed t x <- getTypedTerm tv
@@ -885,8 +874,7 @@ withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
 withSBE' f = gets symBE >>= \sbe -> return (f sbe)
 
--- @getMem@ yields the memory model of the current path, or, if the current path
--- does not exist, yields the initial memory model.
+-- @getMem@ yields the memory model of the current path, which must exist.
 getMem :: (Functor m, Monad m) => Simulator sbe m (SBEMemory sbe)
 getMem = pathMem <$> getPath' "getMem"
 
@@ -976,8 +964,11 @@ resolveCallee callee = case callee of
    err msg = return $ Left $ "resolveCallee: " ++ msg
 
 lkupIdent :: L.Ident -> CallFrame term -> Typed term
-lkupIdent i = flip (M.!) i . frmRegs
-
+lkupIdent i (frmRegs -> regs) = maybe err id $ M.lookup i regs
+  where
+    err = error $ "lkupIdent failure: "
+                ++ show (L.ppIdent i)
+                ++ " is not in regmap of given call frame."
 runStmts ::
   ( LogMonad m
   , Functor m

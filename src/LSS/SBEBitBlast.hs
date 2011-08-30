@@ -77,8 +77,11 @@ instance (Eq l, LV.Storable l) => S.PrettyTerm (BitTermClosed l) where
     where
       cvt x = parens (integer x)
               <+> if x >= 0
-                  then parens (text "0x" <> text (showHex x ""))
-                  else empty
+                  then hex x
+                  else case getUVal ct of
+                         Nothing -> empty
+                         Just u  -> hex u
+      hex x = parens $ text "0x" <> text (showHex x "")
 
 instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
   getSVal (BitTermClosed (be, t)) =
