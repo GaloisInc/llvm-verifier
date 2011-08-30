@@ -1,4 +1,4 @@
-all : trivial_bug.ll trivial.ll trivial-opt.ll multiexit.ll multiexit-opt.ll branch.ll branch-opt.ll alloc.ll alloc-opt.ll exception.ll exception-opt.ll openssl/aes_test
+all : trivial.ll trivial-opt.ll multiexit.ll multiexit-opt.ll branch.ll branch-opt.ll alloc.ll alloc-opt.ll exception.ll exception-opt.ll openssl/aes_test
 
 # NB: We only emit .dot files for unoptimized CFGs
 

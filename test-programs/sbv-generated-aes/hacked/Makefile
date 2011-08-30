@@ -21,6 +21,8 @@ aes128BlockEncrypt_driver: aes128BlockEncrypt.o aes128BlockEncrypt_driver.o
 	${CC} ${CCFLAGS} $^ -o $@
 
 aes128BlockEncrypt_driver_llvm: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.bc
+	llvm-dis aes128BlockEncrypt.bc
+	llvm-dis aes128BlockEncrypt_driver.bc
 	llvm-ld -v -disable-opt -native $^ -o $@
 
 clean:
