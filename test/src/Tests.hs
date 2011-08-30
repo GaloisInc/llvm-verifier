@@ -11,6 +11,7 @@ import Test.QuickCheck.Test
 import Tests.PrimOps
 import Tests.Aggregates
 import Tests.Symbolic
+import Tests.IO
 
 main :: IO ()
 main = do
@@ -35,6 +36,7 @@ runTests chooseTest = do
     allTests     = [ ("PrimOps", primOpTests)
                    , ("Aggregates", aggTests)
                    , ("Symbolic", symTests)
+                   , ("I/O", ioTests)
                    ]
 
 

@@ -133,9 +133,17 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
     Just (Redirect calleeSym') ->
       callDefine' normalRetID calleeSym' mreg genOrArgs
     Just (Override f) -> do
-      dbugM "override case"
       args <- either id return genOrArgs
-      f calleeSym mreg args
+      r <- f calleeSym mreg args
+      case (mreg, r) of
+        (Just reg, Just rv) ->
+          modifyPath $ \path ->
+            path { pathCallFrame = setReg
+                                   (typedValue reg)
+                                   (typedAs reg rv)
+                                   (pathCallFrame path)
+                 }
+        (_, _) -> return ()
     Nothing -> runNormalSymbol normalRetID calleeSym mreg genOrArgs
 
 runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)

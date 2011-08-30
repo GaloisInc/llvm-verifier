@@ -133,7 +133,7 @@ type OverrideHandler sbe m
   =  L.Symbol              -- ^ Callee symbol
   -> Maybe (Typed Reg)     -- ^ Callee return register
   -> [Typed (SBETerm sbe)] -- ^ Callee argumenxblitts
-  -> Simulator sbe m ()
+  -> Simulator sbe m (Maybe (SBETerm sbe))
 
 -- | An override may specify a function to run within the simulator,
 -- or alternatively a symbol to look up and execute in its place.
