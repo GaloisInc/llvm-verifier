@@ -134,7 +134,9 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
     Just (Redirect calleeSym') ->
       callDefine' normalRetID calleeSym' mreg genOrArgs
     Just (Override f) -> do
-      args <- either id return genOrArgs
+      let args = case genOrArgs of
+               Left{}      -> error "internal: ArgsGen use for override"
+               Right args' -> args'
       r <- f calleeSym mreg args
       case (mreg, r) of
         (Just reg, Just rv) ->
