@@ -133,6 +133,7 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
     Just (Redirect calleeSym') ->
       callDefine' normalRetID calleeSym' mreg genOrArgs
     Just (Override f) -> do
+      dbugM "override case"
       args <- either id return genOrArgs
       f calleeSym mreg args
     Nothing -> runNormalSymbol normalRetID calleeSym mreg genOrArgs
@@ -379,9 +380,9 @@ mergeMFs src dst = do
           (`setMergedState` dst) <$> mergePaths srcMerged (getMergedState dst)
         ReturnFrame{} -> do
           -- In both cases, we dump up our merged state over dst's current path,
-          -- being careful to pick up a few pieces of data (execution context --
-          -- since the dst is a return MF, we need to retain its call frame and
-          -- current block).
+          -- being careful to pick up a few pieces of data from dst (execution
+          -- context and return value -- since the dst is a return MF, we need
+          -- to retain its call frame, current block).
           case pathRetVal srcMerged of
             Nothing -> rfReplace id
             Just rv -> case rfRetReg src of
@@ -391,6 +392,7 @@ mergeMFs src dst = do
             rfReplace mutCF = modifyDstPath $ \dstPath ->
               srcMerged{ pathCallFrame = mutCF (pathCallFrame dstPath)
                        , pathCB        = pathCB dstPath
+                       , pathRetVal    = pathRetVal dstPath
                        }
         PostdomFrame{} -> do
           error "mergeMFs: postdom dst frame nyi"
