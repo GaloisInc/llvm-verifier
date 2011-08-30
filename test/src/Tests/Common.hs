@@ -9,7 +9,6 @@ import           Data.Int
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
-import           LSS.Overrides                 (registerStandardOverrides)
 import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           System.FilePath
@@ -99,8 +98,7 @@ chkNullaryCInt32Fn v bcFile sym chkVal =
 runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe (BitTermClosed Lit))
 runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile $ \be -> do
   args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
-  callDefine sym i32 (do registerStandardOverrides
-                         return $ map ((=:) i32) args)
+  callDefine sym i32 (return $ map ((=:) i32) args)
   rv <- getProgramReturnValue
   return $ BitTermClosed . (,) be <$> rv
 

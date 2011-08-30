@@ -25,6 +25,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 module LSS.Simulator
   ( module LSS.Execution.Codebase
@@ -33,7 +34,6 @@ module LSS.Simulator
   , getProgramFinalMem
   , prettyTermSBE
   , runSimulator
-  , registerOverride
   , withSBE  -- Exported so we can construct argument values.
   , withSBE'
   -- * Memory operations
@@ -109,7 +109,8 @@ callDefine ::
   -> ArgsGen sbe m -- ^ Callee argument generator
   -> Simulator sbe m ()
 callDefine calleeSym t argsGen = do
-  callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left argsGen)
+  let gen = registerStandardOverrides >> argsGen
+  callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left gen)
   run
 
 callDefine' ::(MonadIO m, Functor m, Functor sbe)
@@ -1153,3 +1154,27 @@ _nowarn_unused :: a
 _nowarn_unused = undefined
   (dbugTerm undefined undefined :: Simulator IO IO ())
   (dbugTypedTerm undefined undefined :: Simulator IO IO ())
+
+
+--------------------------------------------------------------------------------
+-- Standard overrides
+
+i8, i32, voidTy, strTy :: L.Type
+i8 = L.PrimType (L.Integer 8)
+i32 = L.PrimType (L.Integer 32)
+voidTy = L.PrimType L.Void
+strTy = L.PtrTo i8
+
+registerStandardOverrides :: (Functor m, Monad m, MonadIO m) =>
+                             Simulator sbe m ()
+registerStandardOverrides = do
+  -- TODO: stub! Should be replaced with something useful.
+  registerOverride "exit" voidTy [i32] False $
+    Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing
+  -- TODO: causes printing, but not in the same format as real printf
+  registerOverride "printf" i32 [strTy] True $
+    Override $ \_sym _rty args ->
+      do mapM_ (dbugTerm "Printf") (map typedValue args)
+         r <- withSBE $ \sbe -> termInt sbe 32 0
+         return (Just r)
+
