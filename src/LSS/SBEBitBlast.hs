@@ -230,7 +230,7 @@ storeByte be mem new ptr = impl mem (LV.length ptr) (beTrue be)
         impl (SBlock d b) _ _ =
           bmError $ "Attempt to store to address that may point to block " ++ show b ++ " in " ++ show d ++ "."
         impl SUnallocated _ _ =
-          bmError $ "Attempt to store to address that is invalid."
+          bmError $ "Attempt to store to address that is invalid: " ++ show (prettyLV be ptr)
 
 storeBytes :: (Eq l, LV.Storable l)
            => BitEngine l

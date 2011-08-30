@@ -9,7 +9,7 @@ CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer
 all: aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm
 
 %.bc: %.c
-	clang -c $< -o $@
+	clang -emit-llvm -c $< -o $@
 
 aes128BlockEncrypt.o: aes128BlockEncrypt.c aes128BlockEncrypt.h
 	${CC} ${CCFLAGS} -c $< -o $@
@@ -21,10 +21,7 @@ aes128BlockEncrypt_driver: aes128BlockEncrypt.o aes128BlockEncrypt_driver.o
 	${CC} ${CCFLAGS} $^ -o $@
 
 aes128BlockEncrypt_driver_llvm: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.bc
-	${CC} -o $@ $^
+	llvm-ld -v -disable-opt -native $^ -o $@
 
 clean:
-	rm -f *.o *.bc
-
-veryclean: clean
-	rm -f aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm
+	rm -f *.o *.bc aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm

@@ -57,6 +57,11 @@ typedef struct A
   char y;
 } A;
 
+typedef struct B
+{ int num;
+  char msg[6];
+} B;
+
 A struct_test() 
 {
     A a;
@@ -67,6 +72,25 @@ A struct_test()
     b.x = a.x;
     
     return b;
+}
+
+int struct_test_two_aux(B* bs) 
+{
+    int sum = 0;
+    for (int i = 0; i < 3; ++i)
+        sum += bs[0].num;
+    return sum;
+}
+
+int struct_test_two()
+{
+    B x = { .num = 0, .msg = "fredd" };
+    B rest[3];
+    for (int i = 0; i < 3; ++i) {
+        rest[i] = x;
+        rest[i].num += 1;
+    }
+    return (1+2+3) == struct_test_two_aux(rest);
 }
 
 int twodim()

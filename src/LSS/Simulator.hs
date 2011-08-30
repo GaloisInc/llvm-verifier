@@ -53,6 +53,7 @@ import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
+import           Numeric                   (readHex)
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..))
@@ -475,10 +476,34 @@ getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
 
 getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
   = do
-    CE.assert (ety == ety') $ return ()
-    CE.assert (fromIntegral len == length es) $ return ()
-    valTerms <- mapM (getTypedTerm' mfrm) (Typed ety <$> es)
-    Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue valTerms))
+  CE.assert (ety == ety') $ return ()
+  CE.assert (fromIntegral len == length es) $ return ()
+  valTerms <- mapM (getTypedTerm' mfrm) (Typed ety <$> es)
+  Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue valTerms))
+
+getTypedTerm' mfrm (Typed ty@(L.Array len ety@(L.PrimType L.Integer{})) (L.ValString str))
+  = do
+  charTerms <- mapM (getTypedTerm' mfrm)
+               $ ( map toChar
+                   $ let q = unescape str
+                     in
+                       CE.assert (length q == fromIntegral len) q
+                 )
+  Typed ty <$> withSBE (\sbe -> termArray sbe $ map typedValue charTerms)
+  where
+    toChar   = Typed ety . L.ValInteger . fromIntegral . fromEnum
+    -- TODO: imo, parser should unescape this since it's giving us a Haskell
+    -- datatype...
+    unescape = unfoldr f
+      where
+        f []              = Nothing
+        f ('\\':d1:d2:cs) = let h = case readHex (d1:d2:[]) of
+                                      [(x, "")] -> toEnum x
+                                      _         -> err
+                            in
+                              Just (h, cs)
+        f (c:cs)          = Just (c, cs)
+        err = error "Failed to parse hex string in cstring constant"
 
 getTypedTerm' mfrm (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
   = do
