@@ -29,7 +29,7 @@ i8  = L.iT 8
 i32 = L.iT 32
 i64 = L.iT 64
 
-padTy {- no peanuts, please -} :: Int -> L.Type
+padTy :: Int -> L.Type
 padTy bytes = L.Array (fromIntegral bytes) i8
 
 supportDir :: FilePath
@@ -98,7 +98,7 @@ chkNullaryCInt32Fn v bcFile sym chkVal =
 runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe (BitTermClosed Lit))
 runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile $ \be -> do
   args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
-  callDefine sym i32 $ map (\x -> i32 =: x) args
+  callDefine sym i32 (return $ map ((=:) i32) args)
   rv <- getProgramReturnValue
   return $ BitTermClosed . (,) be <$> rv
 
