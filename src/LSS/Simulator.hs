@@ -30,10 +30,13 @@ module LSS.Simulator
   ( module LSS.Execution.Codebase
   , callDefine
   , getProgramReturnValue
+  , getProgramFinalMem
   , prettyTermSBE
   , runSimulator
   , withSBE  -- Exported so we can construct argument values.
   , withSBE'
+  -- * Memory operations
+  , alloca
   -- for testing
   , dbugTerm
   , dbugM
@@ -90,6 +93,8 @@ newSimState cb lc sbe mem lifter =
   , verbosity    = 1
   }
 
+type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
+
 callDefine ::
   ( LogMonad m
   , MonadIO m
@@ -97,24 +102,27 @@ callDefine ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => L.Symbol              -- ^ Callee symbol
-  -> L.Type                -- ^ Callee return type
-  -> [Typed (SBETerm sbe)] -- ^ Callee argumenxblitts
+  => L.Symbol     -- ^ Callee symbol
+  -> L.Type       -- ^ Callee return type
+  -> ArgsGen sbe m -- ^ Callee argument generator
   -> Simulator sbe m ()
-callDefine calleeSym t args = do
-  callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) args
+callDefine calleeSym t argsGen = do
+  callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left argsGen)
   run
 
 callDefine' ::(MonadIO m, Functor m, Functor sbe)
-  => SymBlockID            -- ^ Normal call return block id
-  -> L.Symbol              -- ^ Callee symbol
-  -> Maybe (Typed Reg)     -- ^ Callee return type and result register
-  -> [Typed (SBETerm sbe)] -- ^ Callee arguments
+  => SymBlockID        -- ^ Normal call return block id
+  -> L.Symbol          -- ^ Callee symbol
+  -> Maybe (Typed Reg) -- ^ Callee return type and result register
+  -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m ()
-callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg args
+callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   | isPrefixOf "llvm." calleeName
   = do
   CE.assert (isNothing mreg) $ return ()
+  let args = case genOrArgs of
+               Left{}      -> error "internal: ArgsGen use for intrinsic"
+               Right args' -> args'
   intrinsic calleeName args
   | otherwise
   = do
@@ -122,10 +130,16 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg args
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   banners' 5 $ show $ ppSymDefine def
 
-  path <- newPath (CallFrame calleeSym $ bindArgs (sdArgs def) args) =<< initMem
+  path <- newPath (CallFrame calleeSym M.empty) =<< initMem
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
+
+  args <- case genOrArgs of
+            Left gen   -> gen
+            Right args -> return args
+
+  modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs (sdArgs def) args }
   pushMemFrame
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
@@ -172,8 +186,16 @@ getProgramReturnValue :: (Monad m, Functor m)
 getProgramReturnValue = do
   (top, _) <- popMF <$> gets ctrlStk
   case top of
-    ExitFrame _ mrv -> return mrv
-    _               -> error "getProgramReturnValue: program not yet terminated"
+    ExitFrame _ mrv _ -> return mrv
+    _                 -> error "getProgramReturnValue: program not yet terminated"
+
+getProgramFinalMem :: (Monad m, Functor m)
+  => Simulator sbe m (Maybe (SBEMemory sbe))
+getProgramFinalMem = do
+  (top, _) <- popMF <$> gets ctrlStk
+  case top of
+    ExitFrame _ _ mm -> return mm
+    _                -> error "getProgramFinalMem: program not yet terminated"
 
 run ::
   ( LogMonad m
@@ -493,7 +515,7 @@ getTypedTerm' mfrm (Typed ty@(L.Array len ety@(L.PrimType L.Integer{})) (L.ValSt
   where
     toChar   = Typed ety . L.ValInteger . fromIntegral . fromEnum
     -- TODO: imo, parser should unescape this since it's giving us a Haskell
-    -- datatype...
+    -- string?
     unescape = unfoldr f
       where
         f []              = Nothing
@@ -592,7 +614,7 @@ step (PushCallFrame callee args mres) = do
   case eab of
     Left msg        -> error $ "PushCallFrame: " ++ msg
     Right calleeSym -> callDefine' cb calleeSym mres
-                         =<< mapM getTypedTerm args
+                         =<< Right <$> mapM getTypedTerm args
 
 step (PushInvokeFrame _fn _args _mres _e) =
   error "PushInvokeFrame nyi"
@@ -696,17 +718,7 @@ eval (Conv L.BitCast tv ty) =
 
 eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr s)
 
-eval (Alloca ty msztv malign ) = do
-  (_n, nt) <- case msztv of
-    Nothing  -> ((,) 1) <$> getTypedTerm (i32const 1)
-    Just ntv -> do
-      nt <- getTypedTerm ntv
-      mn <- withSBE' (\sbe -> getSVal (closeTerm sbe $ typedValue nt))
-      case mn of
-        Nothing -> error "alloca only supports concrete element counts"
-        Just n  -> return (n, nt)
-  let alloca sbe m = stackAlloca sbe m ty nt (maybe 0 lg malign)
-  Typed (L.PtrTo ty) <$> mutateMem alloca
+eval (Alloca ty msztv malign ) = alloca ty msztv malign
 
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
@@ -907,6 +919,30 @@ mutateMem_ f = mutateMem (\sbe mem -> ((,) ()) <$> f sbe mem) >> return ()
 
 withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
 withLC f = f <$> gets llvmCtx
+
+--------------------------------------------------------------------------------
+-- Memory operation helpers
+
+alloca ::
+  ( MonadIO m
+  , Functor m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Type
+  -> Maybe (Typed L.Value)
+  -> Maybe Int
+  -> Simulator sbe m (Typed (SBETerm sbe))
+alloca ty msztv malign = do
+  (_n, nt) <- case msztv of
+    Nothing  -> ((,) 1) <$> getTypedTerm (i32const 1)
+    Just ntv -> do
+      nt <- getTypedTerm ntv
+      mn <- withSBE' (\sbe -> getSVal (closeTerm sbe $ typedValue nt))
+      case mn of
+        Nothing -> error "alloca only supports concrete element counts"
+        Just n  -> return (n, nt)
+  let alloca' sbe m = stackAlloca sbe m ty nt (maybe 0 lg malign)
+  Typed (L.PtrTo ty) <$> mutateMem alloca'
 
 --------------------------------------------------------------------------------
 -- Misc utility functions

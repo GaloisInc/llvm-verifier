@@ -132,14 +132,14 @@ modifyMergedState f mf = setMergedState (f (getMergedState mf)) mf
 -- frames, this function yields the merged state for normal function call
 -- return.
 getMergedState :: MergeFrame term mem -> Maybe (Path' term mem)
-getMergedState (ExitFrame ms _ )          = ms
+getMergedState (ExitFrame ms _ _)         = ms
 getMergedState (PostdomFrame ms _ _)      = ms
 getMergedState (ReturnFrame _ _ ms _ _ _) = ms
 
 -- | Sets the merged state in the given merge frame; in the case of return merge
 -- frames, this function sets the merged state for normal function call return.
 setMergedState :: Maybe (Path' term mem) -> MergeFrame term mem -> MergeFrame term mem
-setMergedState ms (ExitFrame _ mrv)              = ExitFrame ms mrv
+setMergedState ms (ExitFrame _ mrv mm)           = ExitFrame ms mrv mm
 setMergedState ms (PostdomFrame _ ps bid)        = PostdomFrame ms ps bid
 setMergedState ms (ReturnFrame rr nl _ el es ps) = ReturnFrame rr nl ms el es ps
 
@@ -186,15 +186,15 @@ emptyReturnFrame :: MergeFrame term mem
 emptyReturnFrame = ReturnFrame Nothing initSymBlockID Nothing Nothing Nothing []
 
 emptyExitFrame :: MergeFrame term mem
-emptyExitFrame = ExitFrame Nothing Nothing
+emptyExitFrame = ExitFrame Nothing Nothing Nothing
 
 emptyPdomFrame :: SymBlockID -> MergeFrame term mem
 emptyPdomFrame = PostdomFrame Nothing []
 
 finalizeExit :: MergeFrame term mem -> MergeFrame term mem
-finalizeExit (ExitFrame _ Just{})      = error "finalizeExitFrame: frame already finalized"
-finalizeExit ef@(ExitFrame Nothing _)  = ef
-finalizeExit (ExitFrame (Just mrgd) _) = ExitFrame Nothing $ pathRetVal mrgd
-finalizeExit _                         = error "finalizeExitFrame: non-exit frame"
+finalizeExit (ExitFrame _ Just{} _)      = error "finalizeExitFrame: frame already finalized"
+finalizeExit ef@(ExitFrame Nothing _ _)  = ef
+finalizeExit (ExitFrame (Just mrgd) _ _) = ExitFrame Nothing (pathRetVal mrgd) (Just $ pathMem mrgd)
+finalizeExit _                           = error "finalizeExitFrame: non-exit frame"
 
 

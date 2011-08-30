@@ -30,3 +30,10 @@ incr:
 exit:
   ret i32 %r1
 }
+define void @ptrarg(i32* %p) nounwind ssp {
+  %1 = alloca i32*, align 8
+  store i32* %p, i32** %1, align 8
+  %2 = load i32** %1, align 8
+  store i32 42, i32* %2
+  ret void
+}

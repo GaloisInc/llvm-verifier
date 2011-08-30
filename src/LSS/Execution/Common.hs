@@ -51,9 +51,8 @@ data State sbe m = State
   { codebase     :: Codebase      -- ^ LLVM code, post-transformation to sym ast
   , llvmCtx      :: LLVMContext   -- ^ Memory alignment and type aliasing info
   , symBE        :: SBE sbe       -- ^ Symbolic backend interface
-  , initMemModel :: SBEMemory sbe -- ^ The SBE's initially-provided LLVM memory
-                                  -- model; mutated models are carried in path
-                                  -- states.
+  , initMemModel :: SBEMemory sbe -- ^ The SBE's initial LLVM memory model;
+                                  -- mutated models are carried in path states.
   , liftSymBE    :: LiftSBE sbe m -- ^ Lift SBE operations into the Simulator monad
   , ctrlStk      :: CS sbe        -- ^ Control stack for tracking merge points
   , globalTerms  :: GlobalMap sbe -- ^ Global ptr terms
@@ -71,6 +70,7 @@ data MergeFrame term mem
   = ExitFrame
     { _mergedState  :: Maybe (Path' term mem)
     , programRetVal :: Maybe term
+    , programMem    :: Maybe mem
     }
   | PostdomFrame
     { _mergedState :: Maybe (Path' term mem)
@@ -144,12 +144,16 @@ ppCtrlStk sbe (CtrlStk mfs) =
 
 ppMergeFrame :: SBE sbe -> MF sbe -> Doc
 ppMergeFrame sbe mf = case mf of
-  ExitFrame mp mrv ->
+  ExitFrame mp mrv mm ->
     text "MF(Exit):"
     $+$ mpath "no merged state set" mp
     $+$ nest 2 ( maybe (parens $ text "no return value set")
                        (\rv -> text "Return value:" <+> prettyTermD sbe rv)
                        mrv
+               )
+    $+$ nest 2 ( maybe (parens $ text "no final memory set")
+                       (const $ parens $ text "final mem set")
+                       mm
                )
   PostdomFrame p pps bid ->
     text "MF(Pdom|" <>  ppSymBlockID bid <> text "):"
