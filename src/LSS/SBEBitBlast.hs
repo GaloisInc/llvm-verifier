@@ -125,6 +125,17 @@ sliceIntoBytes v =
    V.map (\i -> LV.slice (i `shiftL` 3) 8 v) (V.enumFromN 0 (byteSize v))
 
 -- | Tree-based data structure for representing value of bytes in memory.
+-- The height of the storage tree is equal to the address width of
+-- pointers in memory.  Leaves in the tree correspond to either:
+-- * Single bytes
+-- * The address of a LLVM definition.
+-- * The address of a LLVM basic block
+-- * An uninitalized, but allocated byte.
+-- * An unallocated block of @2^n@ bytes.
+-- Interior nodes are branches @SBranch f t@ that correspond to the value
+-- of bits beneath that tree.  The top-most branch corresponds to the
+-- branch for the most-significant bits, while lower branches correspond
+-- to the less significant bites.
 data Storage l
   = SBranch (Storage l) (Storage l) -- ^ Branch falseBranch trueBranch
   | SValue (LV.Vector l) -- ^ SValue validBit definedBit value
@@ -558,12 +569,12 @@ bmMemInitGlobal lc be m (LLVM.Typed ty (BitTerm gd))
     newSpaceReq = llvmByteSizeOf lc ty
 
 bmMemAddDefine :: (Eq l, LV.Storable l)
-                => LLVMContext
-                -> BitEngine l -- ^ Bit engine for literals.
-                -> BitMemory l -- ^ Memory
-                -> LLVM.Symbol -- ^ Definition
-                -> [LLVM.BlockLabel] -- ^ Labels for blocks
-                -> (BitTerm l, BitMemory l)
+               => LLVMContext
+               -> BitEngine l -- ^ Bit engine for literals.
+               -> BitMemory l -- ^ Memory
+               -> LLVM.Symbol -- ^ Definition
+               -> [LLVM.BlockLabel] -- ^ Labels for blocks
+               -> (BitTerm l, BitMemory l)
 bmMemAddDefine lc be m def labs
     | newCodeAddr > bmCodeEnd m
     = bmError "Not enough space in code memory to allocate new definition."
@@ -817,7 +828,7 @@ sbeBitBlastMem stack code gdata heap
 
 testSBEBitBlast :: IO ()
 testSBEBitBlast = do
-  let lc = LLVMContext 4 undefined
+  let lc = LLVMContext 5 undefined
   be <- createBitEngine
   let sbe = sbeBitBlast lc be
   let m0 = sbeBitBlastMem (0x10,0x0) (0x0,0x0) (0x0, 0x0) (0x0,0x0)
