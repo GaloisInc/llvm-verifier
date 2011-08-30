@@ -33,6 +33,7 @@ module LSS.Simulator
   , getProgramFinalMem
   , prettyTermSBE
   , runSimulator
+  , registerOverride
   , withSBE  -- Exported so we can construct argument values.
   , withSBE'
   -- * Memory operations
@@ -90,6 +91,7 @@ newSimState cb lc sbe mem lifter =
   , liftSymBE    = lifter
   , ctrlStk      = emptyCtrlStk
   , globalTerms  = M.empty
+  , overrides    = M.empty
   , verbosity    = 1
   }
 
@@ -126,8 +128,23 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   intrinsic calleeName args
   | otherwise
   = do
+  override <- M.lookup calleeSym <$> gets overrides
+  case override of
+    Just (Redirect calleeSym') ->
+      callDefine' normalRetID calleeSym' mreg genOrArgs
+    Just (Override f) -> do
+      args <- either id return genOrArgs
+      f calleeSym mreg args
+    Nothing -> runNormalSymbol normalRetID calleeSym mreg genOrArgs
+
+runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)
+  => SymBlockID            -- ^ Normal call return block id
+  -> L.Symbol              -- ^ Callee symbol
+  -> Maybe (Typed Reg)     -- ^ Callee return type and result register
+  -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
+  -> Simulator sbe m ()
+runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   def  <- lookupDefine calleeSym <$> gets codebase
-  dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   banners' 5 $ show $ ppSymDefine def
 
   path <- newPath (CallFrame calleeSym M.empty) =<< initMem
@@ -566,7 +583,7 @@ getTypedTerm' mfrm tv@(Typed t v)
 
 getGlobalPtrTerm :: (Functor m, MonadIO m)
   => (L.Symbol, Maybe [L.Type]) -> Simulator sbe m (Typed (SBETerm sbe))
-getGlobalPtrTerm key@(sym, _) = do
+getGlobalPtrTerm key@(sym, tys) = do
   mt <- M.lookup key <$> gets globalTerms
   case mt of
     Just t  -> return t
@@ -575,7 +592,7 @@ getGlobalPtrTerm key@(sym, _) = do
       maybe err (either addGlobal addDef) (lookupSym sym cb)
   where
     err = error $ "getGlobalPtrTerm: symbol resolution failed: "
-                  ++ show (L.ppSymbol sym)
+                  ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
 
     addDef def = do
       let argTys = map typedType $ sdArgs def
@@ -1059,6 +1076,18 @@ modifyPath f = modifyCS $ \cs ->
 
 modifyCallFrameM :: (Functor m, Monad m) => (CF sbe -> CF sbe) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
+
+registerOverride :: (Functor m, Monad m, MonadIO m) =>
+                    L.Symbol -> L.Type -> [L.Type] -> Bool
+                 -> Override sbe m
+                 -> Simulator sbe m ()
+registerOverride sym retTy argTys va handler = do
+  t <- mutateMem $ \sbe mem -> memAddDefine sbe mem sym []
+  let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
+  modify $ \s -> s { overrides = M.insert sym handler (overrides s)
+                   , globalTerms =
+                       M.insert (sym, Just argTys) t' (globalTerms s)
+                   }
 
 --------------------------------------------------------------------------------
 -- Debugging
