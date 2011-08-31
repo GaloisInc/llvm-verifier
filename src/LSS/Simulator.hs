@@ -61,7 +61,8 @@ import           LSS.SBEInterface
 import           Numeric                   (readHex)
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
-import           Verinf.Symbolic.Common    (ConstantProjection(..))
+import           Verinf.Symbolic.Common    (ConstantProjection(..),
+                                            intToBoolSeq)
 import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
 import qualified Data.Foldable             as DF
@@ -737,7 +738,12 @@ eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
 eval s@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
 
-eval (Bit _op _tv1 _v2) = error "eval Bit nyi"
+eval (Bit op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
+  Typed t1 x <- getTypedTerm (Typed t v1)
+  Typed t2 y <- getTypedTerm (Typed t v2)
+  CE.assert (t == t1 && t == t2) $ return ()
+  Typed t <$> withSBE (\sbe -> applyBitwise sbe op x y)
+eval s@Bit{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
 
 eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{})) = do
   Typed t x <- getTypedTerm tv
@@ -1220,4 +1226,27 @@ registerStandardOverrides = do
                termInt sbe 32 (fromIntegral $ length resString)
           return (Just r)
         _ -> error "printf called with no arguments"
+  registerOverride "freshInt" i32 [i32] False $
+    Override $ \_sym _rty _args -> do
+      t <- withSBE (flip freshInt 32)
+      return $ Just t
+  registerOverride "writeIntAiger" voidTy [i32, strTy] False $
+    Override $ \_sym _rty args ->
+      case args of
+        [t, fptr] -> do
+          file <- loadString fptr
+          withSBE $ \sbe -> writeAiger sbe file (typedValue t)
+          return Nothing
+        _ -> error "writeIntAiger called with the wrong number of arguments"
+  registerOverride "evalIntAiger" i32 [i32, i32] False $
+    Override $ \_sym _rty args ->
+      case args of
+        [t, v] -> do
+          mv <- withSBE' $ \sbe -> termConst . closeTerm sbe . typedValue $ v
+          case mv of
+            Just v' -> Just <$>
+                       (withSBE $ \sbe ->
+                        evalAiger sbe (intToBoolSeq v') (typedValue t))
+            Nothing -> error "value given to evalIntAiger not constant"
+        _ -> error "evalIntAiger called with the wrong number of arguments"
 
