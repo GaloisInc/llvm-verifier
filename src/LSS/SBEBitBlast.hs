@@ -39,7 +39,9 @@ import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Numeric                   (showHex)
 import           Text.PrettyPrint.HughesPJ
-import           Verinf.Symbolic.Common    (ConstantProjection(..), createBitEngine)
+import           Verinf.Symbolic.Common    (ConstantProjection(..),
+                                            createBitEngine,
+                                            CValue(..))
 import           Verinf.Symbolic.Lit
 import qualified Data.Map                  as Map
 import qualified Data.Vector               as V
@@ -105,7 +107,11 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
                               1 -> toEnum (fromIntegral v) :: Bool
                               _ -> error "BitTermClosed/getBool: term bit width not 1"
 
-  termConst = error "ConstantProjection (BitTermClosed): termConst BitTerm nyi"
+  -- TODO: this isn't a complete implementation
+  termConst (BitTermClosed (be, t)) =
+    case beVectorToMaybeInt be (btVector t) of
+      Nothing     -> Nothing
+      Just (w, v) -> Just (CInt (fromIntegral w) v)
 
   isConst = error "ConstantProjection (BitTermClosed): isConst BitTerm nyi"
 
