@@ -38,7 +38,7 @@ aggTests =
     structArray v         = psk v $ runStruct v structArrayImpl
     t1                    = mkNullaryTest "test-arrays.bc"
     t2                    = mkNullaryTest "test-mat4x4.bc"
-    runStruct v           = runBitBlastSimTest v "test-structs.bc"
+    runStruct v           = runBitBlastSimTest v "test-structs.bc" defaultSEH
     mkNullaryTest fn v nm = psk v . chkNullaryCInt32Fn v fn (L.Symbol nm)
 
 structInitAccessImpl :: StdBitBlastTest
