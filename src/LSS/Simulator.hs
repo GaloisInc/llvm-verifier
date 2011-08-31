@@ -29,6 +29,7 @@ Point-of-contact : jstanley
 module LSS.Simulator
   ( module LSS.Execution.Codebase
   , callDefine
+  , defaultSEH
   , getProgramReturnValue
   , getProgramFinalMem
   , prettyTermSBE
@@ -40,10 +41,12 @@ module LSS.Simulator
   , sizeof
   , mutateMem_
   -- for testing
+  , withLC
   , dbugTerm
   , dbugTypedTerm
   , dbugM
   , dumpMem
+  , getMem
   )
 where
 
@@ -60,7 +63,7 @@ import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
-import           Numeric                   (readHex)
+import           Numeric
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..))
@@ -76,16 +79,24 @@ runSimulator :: (Functor m, MonadIO m)
   -> SBE sbe               -- ^ A symbolic backend
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
   -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
+  -> SEH sbe m             -- ^ Simulation event handlers (use defaultSEH if no
+                           -- event handling is needed)
   -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
-runSimulator cb lc sbe mem lifter m =
-  evalStateT (runSM (setup >> m)) (newSimState cb lc sbe mem lifter)
+runSimulator cb lc sbe mem lifter seh m =
+  evalStateT (runSM (setup >> m)) (newSimState cb lc sbe mem lifter seh)
   where
     setup = do
       modifyCS $ pushMF emptyExitFrame
 
-newSimState :: Codebase -> LLVMContext -> SBE sbe -> SBEMemory sbe -> LiftSBE sbe m -> State sbe m
-newSimState cb lc sbe mem lifter =
+newSimState :: Codebase
+            -> LLVMContext
+            -> SBE sbe
+            -> SBEMemory sbe
+            -> LiftSBE sbe m
+            -> SEH sbe m
+            -> State sbe m
+newSimState cb lc sbe mem lifter seh =
   State
   { codebase     = cb
   , llvmCtx      = lc
@@ -95,6 +106,7 @@ newSimState cb lc sbe mem lifter =
   , ctrlStk      = emptyCtrlStk
   , globalTerms  = M.empty
   , verbosity    = 1
+  , evHandlers   = seh
   }
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
@@ -132,7 +144,6 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   = do
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
---   banners' 5 $ show $ ppSymDefine def
 
   path <- newPath (CallFrame calleeSym M.empty) =<< initMem
   modifyCS $ pushPendingPath path
@@ -345,9 +356,6 @@ mergeReturn mtv = do
   mmerged <- mergePaths p (getMergedState top)
   modifyMF $ setMergedState mmerged
 
---   dbugM' 5 $ "After mergeReturn, but before clearCurrentExecution:"
---   dumpCtrlStk' 5
-
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
 mergeMFs ::
   ( MonadIO m
@@ -509,21 +517,16 @@ getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
 
 getTypedTerm' mfrm (Typed ty@(L.Array len ety@(L.PrimType L.Integer{})) (L.ValString str))
   = do
+  lc <- gets llvmCtx
+  CE.assert (llvmByteSizeOf lc ty == fromIntegral (length str)) $ return ()
   charTerms <- mapM (getTypedTerm' mfrm) $ map toChar str
   Typed ty <$> withSBE (\sbe -> termArray sbe $ map typedValue charTerms)
   where
-    toChar   = Typed ety . L.ValInteger . fromIntegral . fromEnum
+    toChar = Typed ety . L.ValInteger . fromIntegral . fromEnum
 
 getTypedTerm' mfrm (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
   = do
---   dbugM "getTypedTerm struct"
---   dbugM "fldTys = "
---   dbugM $ show $ vcat $ map L.ppType fldTys
---   dbugM "fldVals = "
---   dbugM $ show $ vcat $ map (L.ppTyped L.ppValue) fldTVs
-
   fldTerms <- mapM (getTypedTerm' mfrm) fldTVs
---  mapM_ (dbugTypedTerm "fldTerm") fldTerms
   Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue fldTerms))
 
 getTypedTerm' _ (Typed _ (L.ValSymbol sym))
@@ -571,8 +574,11 @@ getGlobalPtrTerm key@(sym, _) = do
       ins fty $ \sbe mem -> memAddDefine sbe mem sym idl
 
     addGlobal g = do
+      cb1 onMkGlobTerm g
       cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
-      ins (L.globalType g) $ \sbe mem -> memInitGlobal sbe mem cdata
+      cb2 onPreGlobInit g cdata
+      ins (L.globalType g) (\sbe mem -> memInitGlobal sbe mem cdata)
+        <* cb2 onPostGlobInit g cdata
 
     ins ty act = do
       t <- Typed (L.PtrTo ty) <$> mutateMem act
@@ -709,12 +715,10 @@ eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExp
 
 eval (Alloca ty msztv malign ) = alloca ty msztv malign
 
-eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
+eval s@(Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
-  let load sbe mem = memLoad sbe mem addrTerm
-
   dumpMem 6 "load pre"
-  Typed ty <$> withMem load
+  Typed ty <$> withMem (\sbe mem -> memLoad sbe mem addrTerm)
     <* dumpMem 6 "load post"
 
 eval s@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr s)
@@ -749,8 +753,6 @@ eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
       impl idxs =<< baseOffset idx elemTy ptrVal
 
     impl (idx : idxs) (Typed (L.Struct fldTys) ptrVal) = do
---       forM_ fldTys $ \fld -> dbugM $ "fld: " ++ show fld
-
       Typed _ idxTerm <- getTypedTerm idx
       (skipFlds, head -> fldTy) <- do
         midxVal <- withSBE' (\sbe -> getSVal (closeTerm sbe idxTerm))
@@ -909,6 +911,25 @@ withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
 withLC f = f <$> gets llvmCtx
 
 --------------------------------------------------------------------------------
+-- Callbacks
+
+cb1 :: (Functor m, Monad m)
+  => (SEH sbe m -> a -> Simulator sbe m ()) -> a -> Simulator sbe m ()
+cb1 f x   = join $ gets (f . evHandlers) <*> pure x
+
+cb2 :: (Functor m, Monad m)
+  => (SEH sbe m -> a -> b -> Simulator sbe m ()) -> a -> b -> Simulator sbe m ()
+cb2 f x y = join $ gets (f . evHandlers) <*> pure x <*> pure y
+
+defaultSEH :: Monad m => SEH sbe m
+defaultSEH = SEH
+               (\_   -> return ())
+               (\_   -> return ())
+               (\_   -> return ())
+               (\_ _ -> return ())
+               (\_ _ -> return ())
+
+--------------------------------------------------------------------------------
 -- Memory operation helpers
 
 alloca ::
@@ -1058,7 +1079,7 @@ ppPathM :: (MonadIO m, Functor m) => String -> Path sbe -> Simulator sbe m ()
 ppPathM desc p = do
   sbe <- gets symBE
   dbugM $ desc ++ "\n" ++ show (ppPath sbe p)
-  withSBE (`memDump` (pathMem p))
+  withSBE (\sbe' -> memDump sbe' (pathMem p) Nothing)
 
 prettyTermSBE :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m Doc
 prettyTermSBE t = withSBE' $ \sbe -> prettyTermD sbe t
@@ -1068,7 +1089,7 @@ dumpMem v msg =
   whenVerbosity (>=v) $ do
     dbugM $ msg ++ ":"
     mem <- getMem
-    withSBE (`memDump` mem)
+    withSBE (\sbe -> memDump sbe mem Nothing)
 
 dbugStep ::
   ( LogMonad m

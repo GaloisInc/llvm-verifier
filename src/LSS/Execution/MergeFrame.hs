@@ -192,7 +192,7 @@ emptyPdomFrame :: SymBlockID -> MergeFrame term mem
 emptyPdomFrame = PostdomFrame Nothing []
 
 finalizeExit :: MergeFrame term mem -> MergeFrame term mem
-finalizeExit (ExitFrame _ Just{} _)      = error "finalizeExitFrame: frame already finalized"
+finalizeExit (ExitFrame _ Just{} Just{}) = error "finalizeExitFrame: frame already finalized"
 finalizeExit ef@(ExitFrame Nothing _ _)  = ef
 finalizeExit (ExitFrame (Just mrgd) _ _) = ExitFrame Nothing (pathRetVal mrgd) (Just $ pathMem mrgd)
 finalizeExit _                           = error "finalizeExitFrame: non-exit frame"

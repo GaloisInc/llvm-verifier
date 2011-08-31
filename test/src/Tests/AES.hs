@@ -11,24 +11,23 @@ Point-of-contact : jstanley
 module Tests.AES (aesTests) where
 
 import           Control.Applicative
-import           LSS.Execution.Common
 import           LSS.SBEInterface
-import           LSS.SBEBitBlast
 import           LSS.Simulator
-import           Text.LLVM            ((=:), Typed(..), typedValue)
+import           Text.LLVM              ((=:), Typed(..), typedValue)
 import           Test.QuickCheck
 import           Tests.Common
-import qualified Data.Map             as M
-import qualified Text.LLVM            as L
+import qualified Text.LLVM              as L
+
+import LSS.Execution.Debugging
 
 aesTests :: [(Args, Property)]
 aesTests =
   [
-    test 1 False "test-aes128-concrete"        $ aes128Concrete 6
+    test 1 False "test-aes128-concrete"        $ aes128Concrete 1
   ]
   where
     aes128Concrete v = psk v $ runAES v aes128ConcreteImpl
-    runAES v         = runBitBlastSimTest v "aes128BlockEncrypt.bc"
+    runAES v         = runBitBlastSimTest v "aes128BlockEncrypt.bc" sanityChecks
 
 aes128ConcreteImpl :: StdBitBlastTest
 aes128ConcreteImpl _be = do
@@ -36,16 +35,9 @@ aes128ConcreteImpl _be = do
     ptptr  <- initArr ptVals
     keyptr <- initArr keyVals
     ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
-
-    dumpMem 1 "aes128 args init"
-    dbugTerm "ptptr" (ptptr)
-    dbugTerm "keyptr" (keyptr)
-
     return $ map (i32p =:) [ptptr, keyptr, ctptr]
-
-  error "early term"
-
-  return True
+  -- error "aes early term"
+  return False
   where
     initArr xs = do
        arr <- withSBE $ \s -> termArray s =<< mapM (termInt s 32) xs

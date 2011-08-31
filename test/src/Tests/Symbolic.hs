@@ -29,7 +29,7 @@ symTests =
   where
     trivBranch v = psk v $ runSimple v trivBranchImpl
     trivSymRd  v = psk v $ runSimple v trivSymRdImpl
-    runSimple v  = runBitBlastSimTest v "test-sym-simple.bc"
+    runSimple v  = runBitBlastSimTest v "test-sym-simple.bc" defaultSEH
 
 trivBranchImpl :: StdBitBlastTest
 trivBranchImpl _be = do

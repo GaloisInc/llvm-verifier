@@ -57,6 +57,7 @@ data State sbe m = State
   , ctrlStk      :: CS sbe        -- ^ Control stack for tracking merge points
   , globalTerms  :: GlobalMap sbe -- ^ Global ptr terms
   , verbosity    :: Int           -- ^ Verbosity level
+  , evHandlers   :: SEH sbe m     -- ^ Simulation event handlers
   }
 
 data CtrlStk term mem = CtrlStk { mergeFrames :: [MergeFrame term mem] }
@@ -105,6 +106,21 @@ data Path' term mem = Path
   , pathConstraint  :: Constraint term    -- ^ The aggregated constraints
                                           -- necessary for execution of this
                                           -- path
+  }
+
+-- Simulation event handlers, useful for debugging nontrivial codes.
+data SEH sbe m = SEH
+  {
+    -- | Invoked before each instruction executes
+    onPreStep      :: SymStmt  -> Simulator sbe m ()
+    -- | Invoked after each instruction executes
+  , onPostStep     :: SymStmt  -> Simulator sbe m ()
+    -- | Invoked before construction of a global term value
+  , onMkGlobTerm   :: L.Global -> Simulator sbe m ()
+    -- | Invoked before memory model initialization of global data
+  , onPreGlobInit  :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
+    -- | Invoked after memory model initialization of global data
+  , onPostGlobInit :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
   }
 
 -- Carry aggregated symconds for pretty-printing; useful when symbolic term
