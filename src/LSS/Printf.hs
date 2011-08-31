@@ -24,5 +24,5 @@ symPrintf s args =
   where f :: Printer -> Arg -> Printer
         f p a = case p of
                   Printer p' -> case a of
-                                 Arg a' -> Printer (p' a')
+                                  Arg a' -> Printer (p' a')
 

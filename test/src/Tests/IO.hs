@@ -20,3 +20,12 @@ ioTests =
   where
     testPrintf v = runMain v "test-call-printf.bc" (Just 3)
     testPrintfStr v = runMain v "test-printf-str.bc" (Just 8)
+
+--------------------------------------------------------------------------------
+-- Scratch
+
+_nowarn :: a
+_nowarn = undefined main
+
+main :: IO ()
+main = runTests ioTests

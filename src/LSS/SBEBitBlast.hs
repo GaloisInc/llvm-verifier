@@ -23,6 +23,8 @@ module LSS.SBEBitBlast
   -- for testing only
   , BitMemory
   , BitIO
+  , bmDataAddr
+  , bmDataEnd
   ) where
 
 import           Control.Applicative       ((<$>))
@@ -79,8 +81,11 @@ instance (Eq l, LV.Storable l) => S.PrettyTerm (BitTermClosed l) where
     where
       cvt x = parens (integer x)
               <+> if x >= 0
-                  then parens (text "0x" <> text (showHex x ""))
-                  else empty
+                  then hex x
+                  else case getUVal ct of
+                         Nothing -> empty
+                         Just u  -> hex u
+      hex x = parens $ text "0x" <> text (showHex x "")
 
 instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
   getSVal (BitTermClosed (be, t)) =
@@ -128,6 +133,17 @@ sliceIntoBytes v =
    V.map (\i -> LV.slice (i `shiftL` 3) 8 v) (V.enumFromN 0 (byteSize v))
 
 -- | Tree-based data structure for representing value of bytes in memory.
+-- The height of the storage tree is equal to the address width of
+-- pointers in memory.  Leaves in the tree correspond to either:
+-- * Single bytes
+-- * The address of a LLVM definition.
+-- * The address of a LLVM basic block
+-- * An uninitalized, but allocated byte.
+-- * An unallocated block of @2^n@ bytes.
+-- Interior nodes are branches @SBranch f t@ that correspond to the value
+-- of bits beneath that tree.  The top-most branch corresponds to the
+-- branch for the most-significant bits, while lower branches correspond
+-- to the less significant bits.
 data Storage l
   = SBranch (Storage l) (Storage l) -- ^ Branch falseBranch trueBranch
   | SValue (LV.Vector l) -- ^ SValue validBit definedBit value
@@ -147,23 +163,32 @@ ppStorageShow _ SUnallocated = text "SUnallocated"
 
 -- A "sparse" pretty printer for the Storage type; skips unallocated regions and
 -- shows addresses explicitly.
+
 ppStorage :: (Eq l, LV.Storable l) => BitEngine l -> Storage l -> Doc
-ppStorage be = impl 0 Nothing
+ppStorage = ppStorage' Nothing
+
+ppStorage' :: (Eq l, LV.Storable l) => Maybe [Range Addr] -> BitEngine l -> Storage l -> Doc
+ppStorage' mranges be = impl 0 Nothing
   where
     impl _ Nothing SUnallocated      = text "empty memory"
     impl a Nothing s                 = impl a (Just empty) s
     impl a mdoc (SBranch f t)        = let la = a `shiftL` 1
                                            ra = la `setBit` 0
                                        in impl ra (Just $ impl la mdoc f) t
-    impl a (Just doc) (SValue v)     = item doc a (prettyLV be v)
-    impl a (Just doc) (SDefine sym)  = item doc a $ LLVM.ppSymbol sym
-    impl a (Just doc) (SBlock s l)   = item doc a
-                                       $ LLVM.ppSymbol s
-                                         <> char '/'
-                                         <> LLVM.ppLabel l
-    impl a (Just doc) SUninitialized = item doc a $ text "uninitialized"
+    impl a (Just doc) (SValue v)     = whenInRange a $ item doc a (prettyLV be v)
+    impl a (Just doc) (SDefine sym)  = whenInRange a $ item doc a $ LLVM.ppSymbol sym
+    impl a (Just doc) (SBlock s l)   = whenInRange a
+                                       $ item doc a
+                                         $ LLVM.ppSymbol s
+                                           <> char '/'
+                                           <> LLVM.ppLabel l
+    impl a (Just doc) SUninitialized = whenInRange a $ item doc a $ text "uninitialized"
     impl _ (Just doc) SUnallocated   = doc
     item doc addr desc               = doc $+$ integer addr <> colon <+> desc
+
+    whenInRange a doc = case mranges of
+      Nothing     -> doc
+      Just ranges -> if inRangeAny a ranges then doc else empty
 
 mergeStorage :: (Eq l, LV.Storable l) => BitEngine l -> l -> Storage l -> Storage l -> IO (Storage l)
 mergeStorage be c x y = impl x y
@@ -364,8 +389,9 @@ alignDn addr i = addr .&. (complement mask)
 bmError :: String -> a
 bmError = error
 
-bmDump :: (Eq l, LV.Storable l) => BitEngine l -> Bool -> BitMemory l -> IO ()
-bmDump be sparse bm = do
+bmDump :: (Eq l, LV.Storable l)
+  => BitEngine l -> Bool -> BitMemory l -> Maybe [Range Addr] -> IO ()
+bmDump be sparse bm mranges = do
   banners $ render $
     text "Memory Model Dump"
     $+$ text "Stack Range:" <+> text (show (bmStackAddr bm, bmStackEnd bm))
@@ -373,7 +399,7 @@ bmDump be sparse bm = do
     $+$ text "Data Range:" <+> text (show (bmDataAddr bm, bmDataEnd bm))
     $+$ text "Frame pointers:" <+> text (show (bmStackFrames bm))
     $+$ text "Storage:"
-    $+$ (if sparse then ppStorage else ppStorageShow) be (bmStorage bm)
+    $+$ (if sparse then ppStorage' mranges else ppStorageShow) be (bmStorage bm)
 
 bmLoad :: (Eq l, LV.Storable l)
        => LLVMContext
@@ -382,7 +408,8 @@ bmLoad :: (Eq l, LV.Storable l)
        -> LLVM.Typed (BitTerm l)
        -> IO (BitTerm l)
 bmLoad lc be bm ptr
-  | LV.length ptrVal /= llvmAddrWidthBits lc = bmError "internal: Illegal pointer given to load"
+  | LV.length ptrVal /= llvmAddrWidthBits lc =
+      bmError $ "internal: Illegal pointer given to load: address width mismatch"
   | otherwise =
       case resolveType lc (LLVM.typedType ptr) of
         LLVM.PtrTo tp -> do
@@ -561,12 +588,12 @@ bmMemInitGlobal lc be m (LLVM.Typed ty (BitTerm gd))
     newSpaceReq = llvmByteSizeOf lc ty
 
 bmMemAddDefine :: (Eq l, LV.Storable l)
-                => LLVMContext
-                -> BitEngine l -- ^ Bit engine for literals.
-                -> BitMemory l -- ^ Memory
-                -> LLVM.Symbol -- ^ Definition
-                -> [LLVM.BlockLabel] -- ^ Labels for blocks
-                -> (BitTerm l, BitMemory l)
+               => LLVMContext
+               -> BitEngine l -- ^ Bit engine for literals.
+               -> BitMemory l -- ^ Memory
+               -> LLVM.Symbol -- ^ Definition
+               -> [LLVM.BlockLabel] -- ^ Labels for blocks
+               -> (BitTerm l, BitMemory l)
 bmMemAddDefine lc be m def labs
     | newCodeAddr > bmCodeEnd m
     = bmError "Not enough space in code memory to allocate new definition."
@@ -735,7 +762,7 @@ sbeBitBlast lc be = sbe
           , termWidth        = fromIntegral . LV.length . btVector
           , closeTerm        = BitTermClosed . (,) be
           , prettyTermD      = S.prettyTermD . closeTerm sbe
-          , memDump          = BitIO . bmDump be True
+          , memDump          = BitIO `c2` bmDump be True
           , memLoad          = BitIO `c2` bmLoad lc be
           , memStore         = BitIO `c3` bmStore lc be
           , memMerge         = BitIO `c3` bmMerge be
@@ -788,6 +815,11 @@ end = snd
 decreasing :: Ord i => Range i -> Bool
 decreasing (x,y) = x > y
 
+-- | @inRangeAny a rs@ returns true if @a@ is in any of the ranges given in
+-- | @rs@.  Ranges are open on the high end.
+inRangeAny :: Addr -> [Range Addr] -> Bool
+inRangeAny a = not . null . filter (\(lo,hi) -> lo <= a && a < hi)
+
 sbeBitBlastMem :: LV.Storable l
                => (Addr, Addr) -- ^ Stack start and end address
                -> (Addr, Addr) -- ^ Code start and end address
@@ -820,7 +852,7 @@ sbeBitBlastMem stack code gdata heap
 
 testSBEBitBlast :: IO ()
 testSBEBitBlast = do
-  let lc = LLVMContext 4 undefined
+  let lc = LLVMContext 5 undefined
   be <- createBitEngine
   let sbe = sbeBitBlast lc be
   let m0 = sbeBitBlastMem (0x10,0x0) (0x0,0x0) (0x0, 0x0) (0x0,0x0)

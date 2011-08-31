@@ -31,7 +31,7 @@ symTests =
     trivBranch v = psk v $ runSimple v trivBranchImpl
     trivSymRd  v = psk v $ runSimple v trivSymRdImpl
     trivFreshInt v = psk v $ runMain v "test-fresh.bc" (Just 16)
-    runSimple v  = runBitBlastSimTest v "test-sym-simple.bc"
+    runSimple v  = runBitBlastSimTest v "test-sym-simple.bc" defaultSEH
 
 trivBranchImpl :: StdBitBlastTest
 trivBranchImpl _be = do

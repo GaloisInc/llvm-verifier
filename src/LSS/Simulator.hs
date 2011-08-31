@@ -30,17 +30,24 @@ Point-of-contact : jstanley
 module LSS.Simulator
   ( module LSS.Execution.Codebase
   , callDefine
+  , defaultSEH
   , getProgramReturnValue
   , getProgramFinalMem
   , prettyTermSBE
   , runSimulator
-  , withSBE  -- Exported so we can construct argument values.
+  , withSBE
   , withSBE'
   -- * Memory operations
   , alloca
+  , sizeof
+  , mutateMem_
   -- for testing
+  , withLC
   , dbugTerm
+  , dbugTypedTerm
   , dbugM
+  , dumpMem
+  , getMem
   )
 where
 
@@ -58,7 +65,6 @@ import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
 import           LSS.Printf
 import           LSS.SBEInterface
-import           Numeric                   (readHex)
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..),
@@ -77,16 +83,24 @@ runSimulator :: (Functor m, MonadIO m)
   -> SBE sbe               -- ^ A symbolic backend
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
   -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
+  -> SEH sbe m             -- ^ Simulation event handlers (use defaultSEH if no
+                           -- event handling is needed)
   -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
-runSimulator cb lc sbe mem lifter m =
-  evalStateT (runSM (setup >> m)) (newSimState cb lc sbe mem lifter)
+runSimulator cb lc sbe mem lifter seh m =
+  evalStateT (runSM (setup >> m)) (newSimState cb lc sbe mem lifter seh)
   where
     setup = do
       modifyCS $ pushMF emptyExitFrame
 
-newSimState :: Codebase -> LLVMContext -> SBE sbe -> SBEMemory sbe -> LiftSBE sbe m -> State sbe m
-newSimState cb lc sbe mem lifter =
+newSimState :: Codebase
+            -> LLVMContext
+            -> SBE sbe
+            -> SBEMemory sbe
+            -> LiftSBE sbe m
+            -> SEH sbe m
+            -> State sbe m
+newSimState cb lc sbe mem lifter seh =
   State
   { codebase     = cb
   , llvmCtx      = lc
@@ -97,6 +111,7 @@ newSimState cb lc sbe mem lifter =
   , globalTerms  = M.empty
   , overrides    = M.empty
   , verbosity    = 1
+  , evHandlers   = seh
   }
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
@@ -161,7 +176,7 @@ runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)
   -> Simulator sbe m ()
 runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   def  <- lookupDefine calleeSym <$> gets codebase
-  banners' 5 $ show $ ppSymDefine def
+  dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
 
   path <- newPath (CallFrame calleeSym M.empty) =<< initMem
   modifyCS $ pushPendingPath path
@@ -374,9 +389,6 @@ mergeReturn mtv = do
   mmerged <- mergePaths p (getMergedState top)
   modifyMF $ setMergedState mmerged
 
---   dbugM' 5 $ "After mergeReturn, but before clearCurrentExecution:"
---   dumpCtrlStk' 5
-
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
 mergeMFs ::
   ( MonadIO m
@@ -510,7 +522,11 @@ mergeMapsBy from to act = union <$> merged
     isect             = M.intersectionWithKey (\k v1 v2 -> (k, v1, v2)) from to
 
 -- | getTypedTerm' in the context of the current call frame
-getTypedTerm :: (Functor m, MonadIO m)
+getTypedTerm ::
+  ( Functor m
+  , MonadIO m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 
@@ -518,7 +534,11 @@ getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 -- identifier lookup in the regmap of the given call frame as needed.  Note that
 -- a call frame is only required for identifier lookup, and may be omitted for
 -- other types of values.
-getTypedTerm' :: (Functor m, MonadIO m, term ~ SBETerm sbe)
+getTypedTerm' ::
+  ( Functor m
+  , MonadIO m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => Maybe (CF sbe) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
@@ -537,40 +557,18 @@ getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
   valTerms <- mapM (getTypedTerm' mfrm) (Typed ety <$> es)
   Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue valTerms))
 
-getTypedTerm' mfrm (Typed ty@(L.Array len ety@(L.PrimType L.Integer{})) (L.ValString str))
+getTypedTerm' mfrm (Typed ty@(L.Array _len ety@(L.PrimType L.Integer{})) (L.ValString str))
   = do
-  charTerms <- mapM (getTypedTerm' mfrm)
-               $ ( map toChar
-                   $ let q = unescape str
-                     in
-                       CE.assert (length q == fromIntegral len) q
-                 )
+  lc <- gets llvmCtx
+  CE.assert (llvmByteSizeOf lc ty == fromIntegral (length str)) $ return ()
+  charTerms <- mapM (getTypedTerm' mfrm) $ map toChar str
   Typed ty <$> withSBE (\sbe -> termArray sbe $ map typedValue charTerms)
   where
-    toChar   = Typed ety . L.ValInteger . fromIntegral . fromEnum
-    -- TODO: imo, parser should unescape this since it's giving us a Haskell
-    -- string?
-    unescape = unfoldr f
-      where
-        f []              = Nothing
-        f ('\\':d1:d2:cs) = let h = case readHex (d1:d2:[]) of
-                                      [(x, "")] -> toEnum x
-                                      _         -> err
-                            in
-                              Just (h, cs)
-        f (c:cs)          = Just (c, cs)
-        err = error "Failed to parse hex string in cstring constant"
+    toChar = Typed ety . L.ValInteger . fromIntegral . fromEnum
 
 getTypedTerm' mfrm (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
   = do
---   dbugM "getTypedTerm struct"
---   dbugM "fldTys = "
---   dbugM $ show $ vcat $ map L.ppType fldTys
---   dbugM "fldVals = "
---   dbugM $ show $ vcat $ map (L.ppTyped L.ppValue) fldTVs
-
   fldTerms <- mapM (getTypedTerm' mfrm) fldTVs
---  mapM_ (dbugTypedTerm "fldTerm") fldTerms
   Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue fldTerms))
 
 getTypedTerm' _ (Typed _ (L.ValSymbol sym))
@@ -578,6 +576,8 @@ getTypedTerm' _ (Typed _ (L.ValSymbol sym))
 
 getTypedTerm' mfrm (Typed _ (L.ValConstExpr ce))
   = case ce of
+      L.ConstGEP _inbounds (splitAt 1 -> ((head -> ptr), idxs)) ->
+        evalGEP (GEP ptr idxs)
       L.ConstConv L.BitCast tv t ->
         Typed t . typedValue <$> getTypedTerm' mfrm tv
       _ -> error $ "getTypedTerm: ConstExpr eval nyi : " ++ show ce
@@ -598,7 +598,11 @@ getTypedTerm' mfrm tv@(Typed t v)
           ++ show (parens $ text $ show tv)
           ++ show ("mfrm = " ++ show (ppCallFrame sbe <$> mfrm))
 
-getGlobalPtrTerm :: (Functor m, MonadIO m)
+getGlobalPtrTerm ::
+  ( Functor m
+  , MonadIO m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => (L.Symbol, Maybe [L.Type]) -> Simulator sbe m (Typed (SBETerm sbe))
 getGlobalPtrTerm key@(sym, tys) = do
   mt <- M.lookup key <$> gets globalTerms
@@ -618,8 +622,11 @@ getGlobalPtrTerm key@(sym, tys) = do
       ins fty $ \sbe mem -> memAddDefine sbe mem sym idl
 
     addGlobal g = do
+      cb1 onMkGlobTerm g
       cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
-      ins (L.globalType g) $ \sbe mem -> memInitGlobal sbe mem cdata
+      cb2 onPreGlobInit g cdata
+      ins (L.globalType g) (\sbe mem -> memInitGlobal sbe mem cdata)
+        <* cb2 onPostGlobInit g cdata
 
     ins ty act = do
       t <- Typed (L.PtrTo ty) <$> mutateMem act
@@ -738,49 +745,43 @@ eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
-eval s@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
-
-eval (Bit op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
-  Typed t1 x <- getTypedTerm (Typed t v1)
-  Typed t2 y <- getTypedTerm (Typed t v2)
-  CE.assert (t == t1 && t == t2) $ return ()
+eval e@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr e)
+eval (Bit op tv1@(Typed t _) v2) = do
+  [x, y] <- map typedValue <$> mapM getTypedTerm [tv1, typedType tv1 =: v2]
   Typed t <$> withSBE (\sbe -> applyBitwise sbe op x y)
-eval s@Bit{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
-
 eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{})) = do
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
-
-eval (Conv L.BitCast tv ty) =
-  Typed ty . typedValue <$> getTypedTerm tv
-
-eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr s)
-
+eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
+eval e@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr e)
 eval (Alloca ty msztv malign ) = alloca ty msztv malign
-
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
-  let load sbe mem = memLoad sbe mem addrTerm
-
   dumpMem 6 "load pre"
-  Typed ty <$> withMem load
+  Typed ty <$> withMem (\sbe mem -> memLoad sbe mem addrTerm)
     <* dumpMem 6 "load post"
-
-eval s@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr s)
-
+eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
 eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
-eval s@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr s)
-
+eval e@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr e)
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
+eval (Val tv)                  = getTypedTerm tv
+eval e@GEP{}                   = evalGEP e
+eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
+eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
+eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 
-eval (Val tv) = getTypedTerm tv
-
-eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
+evalGEP ::
+  ( MonadIO m
+  , Functor m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
+evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
   where
     impl [] (Typed referentTy ptrVal) = do
       -- Truncate the final pointer value down to the target's address width, as
@@ -799,35 +800,25 @@ eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
       impl idxs =<< baseOffset idx elemTy ptrVal
 
     impl (idx : idxs) (Typed (L.Struct fldTys) ptrVal) = do
---       forM_ fldTys $ \fld -> dbugM $ "fld: " ++ show fld
-
       Typed _ idxTerm <- getTypedTerm idx
       (skipFlds, head -> fldTy) <- do
         midxVal <- withSBE' (\sbe -> getSVal (closeTerm sbe idxTerm))
         case midxVal of
           Nothing -> error "eval GEP: Failed to obtain value for GEP index"
           Just n  -> return $ splitAt (fromIntegral n) fldTys
-
---       dbugV "idx" idx
---       dbugV "skipFlds" skipFlds
---       dbugV "idxs" idxs
-
       newPtrVal <- Typed fldTy <$> foldM addSz ptrVal skipFlds
---       dbugTypedTerm "newPtrVal" newPtrVal
-
       impl idxs newPtrVal
 
     impl idxs (Typed (L.Alias ident) v) = do
       impl idxs =<< (`Typed` v) <$> withLC (\lc -> llvmLookupAlias lc ident)
 
     impl _ tv = do
---       dbugTypedTerm "tv" tv
       error $ "GEP: support for aggregate type NYI: "
               ++ show (L.ppType (typedType tv))
               ++ " : " ++ show (typedType tv)
 
     -- @baseOffset i ty p@ computes @p + i * sizeof(ty)@
-    baseOffset :: (MonadIO m, Functor m)
+    baseOffset :: (MonadIO m, Functor m, ConstantProjection (SBEClosedTerm sbe))
       => Typed SymValue -> L.Type -> SBETerm sbe
       -> Simulator sbe m (Typed (SBETerm sbe))
     baseOffset idx referentTy ptrVal = do
@@ -837,10 +828,7 @@ eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
 
     -- @addSz p ty@ computes @p + sizeof(ty)
     addSz p ty = termAdd p . typedValue =<< getTypedTerm =<< sizeof ty
-
-eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
-eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
-eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
+evalGEP e = error $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
 
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
@@ -924,8 +912,7 @@ withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
 withSBE' f = gets symBE >>= \sbe -> return (f sbe)
 
--- @getMem@ yields the memory model of the current path, or, if the current path
--- does not exist, yields the initial memory model.
+-- @getMem@ yields the memory model of the current path, which must exist.
 getMem :: (Functor m, Monad m) => Simulator sbe m (SBEMemory sbe)
 getMem = pathMem <$> getPath' "getMem"
 
@@ -958,6 +945,25 @@ mutateMem_ f = mutateMem (\sbe mem -> ((,) ()) <$> f sbe mem) >> return ()
 
 withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
 withLC f = f <$> gets llvmCtx
+
+--------------------------------------------------------------------------------
+-- Callbacks
+
+cb1 :: (Functor m, Monad m)
+  => (SEH sbe m -> a -> Simulator sbe m ()) -> a -> Simulator sbe m ()
+cb1 f x   = join $ gets (f . evHandlers) <*> pure x
+
+cb2 :: (Functor m, Monad m)
+  => (SEH sbe m -> a -> b -> Simulator sbe m ()) -> a -> b -> Simulator sbe m ()
+cb2 f x y = join $ gets (f . evHandlers) <*> pure x <*> pure y
+
+defaultSEH :: Monad m => SEH sbe m
+defaultSEH = SEH
+               (\_   -> return ())
+               (\_   -> return ())
+               (\_   -> return ())
+               (\_ _ -> return ())
+               (\_ _ -> return ())
 
 --------------------------------------------------------------------------------
 -- Memory operation helpers
@@ -1015,8 +1021,11 @@ resolveCallee callee = case callee of
    err msg = return $ Left $ "resolveCallee: " ++ msg
 
 lkupIdent :: L.Ident -> CallFrame term -> Typed term
-lkupIdent i = flip (M.!) i . frmRegs
-
+lkupIdent i (frmRegs -> regs) = maybe err id $ M.lookup i regs
+  where
+    err = error $ "lkupIdent failure: "
+                ++ show (L.ppIdent i)
+                ++ " is not in regmap of given call frame."
 runStmts ::
   ( LogMonad m
   , Functor m
@@ -1118,7 +1127,7 @@ ppPathM :: (MonadIO m, Functor m) => String -> Path sbe -> Simulator sbe m ()
 ppPathM desc p = do
   sbe <- gets symBE
   dbugM $ desc ++ "\n" ++ show (ppPath sbe p)
-  withSBE (`memDump` (pathMem p))
+  withSBE (\sbe' -> memDump sbe' (pathMem p) Nothing)
 
 prettyTermSBE :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m Doc
 prettyTermSBE t = withSBE' $ \sbe -> prettyTermD sbe t
@@ -1128,7 +1137,7 @@ dumpMem v msg =
   whenVerbosity (>=v) $ do
     dbugM $ msg ++ ":"
     mem <- getMem
-    withSBE (`memDump` mem)
+    withSBE (\sbe -> memDump sbe mem Nothing)
 
 dbugStep ::
   ( LogMonad m

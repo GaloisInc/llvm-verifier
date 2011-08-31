@@ -88,8 +88,9 @@ data SBE m = SBE
     ----------------------------------------------------------------------------
     -- Memory model interface
 
-    -- | @memDump h@ prints the contents of the memory model
-  , memDump :: SBEMemory m -> m ()
+    -- | @memDump h@ prints the contents of the memory model; the first
+    -- parameter optionally constrains address ranges.
+  , memDump :: SBEMemory m -> Maybe [(Integer, Integer)] -> m ()
 
     -- | @memLoad h ptr@ returns the value in the given location in memory.
   , memLoad :: SBEMemory m
