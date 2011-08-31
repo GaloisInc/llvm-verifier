@@ -62,7 +62,9 @@ import           Numeric                   (readHex)
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..),
+                                            CValue(..),
                                             intToBoolSeq)
+
 import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
 import qualified Data.Foldable             as DF
@@ -1173,7 +1175,8 @@ loadString :: (Functor m, Monad m, ConstantProjection (SBEClosedTerm sbe)) =>
 loadString ptr =
   case typedType ptr of
     L.PtrTo (L.PrimType (L.Integer 8)) -> do
-      -- Load ptr, ptr+1, until null, convert each into char, assemble into list
+      -- Load ptr, ptr+1, until zero byte, convert each into char,
+      -- assemble into list
       cs <- go ptr
       return . map (toEnum . fromEnum) . catMaybes $ cs
       where go addr = do
@@ -1199,13 +1202,31 @@ loadString ptr =
     ty -> error $ "loading string with invalid type: " ++
                   show (L.ppType ty)
 
+termToArg :: (Functor m, Monad m,
+              ConstantProjection (SBEClosedTerm sbe)) =>
+             L.Typed (SBETerm sbe) -> Simulator sbe m Arg
+termToArg term = do
+  mc <- withSBE' $ flip closeTerm (typedValue term)
+  case (typedType term, termConst mc) of
+    (L.PrimType (L.Integer 8), Just (CInt 8 n)) ->
+      return $ Arg (fromInteger n :: Int8)
+    (L.PrimType (L.Integer 16), Just (CInt 16 n)) ->
+      return $ Arg (fromInteger n :: Int16)
+    (L.PrimType (L.Integer 32), Just (CInt 32 n)) ->
+      return $ Arg (fromInteger n :: Int32)
+    (L.PrimType (L.Integer 64), Just (CInt 64 n)) ->
+      return $ Arg (fromInteger n :: Int64)
+    (L.PtrTo (L.PrimType (L.Integer 8)), _) ->
+       Arg <$> loadString term
+    _ -> error "failed to convert term to printf argument"
+
 i8, i32, voidTy, strTy :: L.Type
 i8 = L.PrimType (L.Integer 8)
 i32 = L.PrimType (L.Integer 32)
 voidTy = L.PrimType L.Void
 strTy = L.PtrTo i8
 
-registerStandardOverrides :: (Functor m, Monad m, MonadIO m,
+registerStandardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                               ConstantProjection (SBEClosedTerm sbe)) =>
                              Simulator sbe m ()
 registerStandardOverrides = do
@@ -1218,9 +1239,7 @@ registerStandardOverrides = do
         (fmtPtr : rest) -> do
           fmtStr <- loadString fmtPtr
           --dbugM $ "Format string: " ++ fmtStr
-          resString <- withSBE' $ \sbe ->
-                       symPrintf fmtStr $
-                       map (termToArg . closeTerm sbe . typedValue) rest
+          resString <- symPrintf fmtStr <$> mapM termToArg rest
           liftIO $ putStrLn resString
           r <- withSBE $ \sbe ->
                termInt sbe 32 (fromIntegral $ length resString)
