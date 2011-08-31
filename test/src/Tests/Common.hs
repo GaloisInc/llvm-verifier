@@ -25,6 +25,7 @@ newtype FailMsg = FailMsg String
 instance Show FailMsg where show (FailMsg s) = s
 
 i8, i32, i64 :: L.Type
+i1  = L.iT 1
 i8  = L.iT 8
 i32 = L.iT 32
 i64 = L.iT 64
@@ -96,7 +97,7 @@ chkNullaryCInt32Fn v bcFile sym chkVal =
     =<< run (runCInt32Fn v bcFile sym [])
 
 runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe (BitTermClosed Lit))
-runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile $ \be -> do
+runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile defaultSEH $ \be -> do
   args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
   callDefine sym i32 (return $ map ((=:) i32) args)
   rv <- getProgramReturnValue
@@ -105,14 +106,15 @@ runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile $ \be -> do
 type StdBitEngine     = BitEngine Lit
 type StdBitBlastSim a = Simulator (BitIO Lit) IO a
 type StdBitBlastTest  = StdBitEngine -> StdBitBlastSim Bool
+type StdBitBlastSEH   = SEH (BitIO Lit) IO
 
-runBitBlastSim :: Int -> FilePath -> (StdBitEngine -> StdBitBlastSim a) -> IO a
-runBitBlastSim v bcFile act = do
+runBitBlastSim :: Int -> FilePath -> StdBitBlastSEH -> (StdBitEngine -> StdBitBlastSim a) -> IO a
+runBitBlastSim v bcFile seh act = do
   (cb, be, lc, backend, mem) <- stdBitBlastInit bcFile
-  runSimulator cb lc backend mem stdBitBlastLift $ withVerbosity v (act be)
+  runSimulator cb lc backend mem stdBitBlastLift seh $ withVerbosity v (act be)
 
-runBitBlastSimTest :: Int -> FilePath -> StdBitBlastTest-> PropertyM IO ()
-runBitBlastSimTest v bcFile = assert <=< run . runBitBlastSim v bcFile
+runBitBlastSimTest :: Int -> FilePath -> StdBitBlastSEH -> StdBitBlastTest-> PropertyM IO ()
+runBitBlastSimTest v bcFile seh = assert <=< run . runBitBlastSim v bcFile seh
 
 stdBitBlastInit :: FilePath -> IO ( Codebase
                                   , StdBitEngine

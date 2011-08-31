@@ -64,7 +64,8 @@ primOpTests =
     testCallVR v      = runMain v "test-call-voidrty.bc" Nothing
     testCallSimple v  = runMain v "test-call-simple.bc" (Just 1)
     testPtrSimple v   = runMain v "test-ptr-simple.bc" (Just 99)
-    testSetupPtrArg v = psk v $ runBitBlastSimTest v "test-primops.bc" testSetupPtrArgImpl
+    testSetupPtrArg v = psk v $ runBitBlastSimTest v "test-primops.bc"
+                                  defaultSEH testSetupPtrArgImpl
     testCallExit v    = runMain v "test-call-exit.bc" (Just 0)
 
     add, mul, idiv, irem :: Int32 -> Int32 -> Int32
