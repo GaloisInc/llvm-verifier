@@ -11,11 +11,13 @@ Point-of-contact : jstanley
 module Tests.AES (aesTests) where
 
 import           Control.Applicative
+import           Data.Maybe
 import           LSS.SBEInterface
 import           LSS.Simulator
 import           Text.LLVM              ((=:), Typed(..), typedValue)
 import           Test.QuickCheck
 import           Tests.Common
+import           Verinf.Symbolic.Common    (ConstantProjection(..))
 import qualified Text.LLVM              as L
 
 import LSS.Execution.Debugging
@@ -23,7 +25,7 @@ import LSS.Execution.Debugging
 aesTests :: [(Args, Property)]
 aesTests =
   [
-    test 1 False "test-aes128-concrete"        $ aes128Concrete 1
+    test 1 False "test-aes128-concrete" $ aes128Concrete 1
   ]
   where
     aes128Concrete v = psk v $ runAES v aes128ConcreteImpl
@@ -36,8 +38,14 @@ aes128ConcreteImpl _be = do
     keyptr <- initArr keyVals
     ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
     return $ map (i32p =:) [ptptr, keyptr, ctptr]
-  -- error "aes early term"
-  return False
+
+  Just mem <- getProgramFinalMem
+  ctptr  <- Typed (L.PtrTo arrayTy) <$> withSBE (\sbe -> termInt sbe 32 (32 {- ct array base ptr value -}))
+  ctarr  <- withSBE $ \sbe -> memLoad sbe mem ctptr
+  let getVal sbe = typedValue . fmap (fromJust . getUVal . closeTerm sbe)
+  ctVals <- withSBE $ \sbe ->
+              map (getVal sbe) <$> termDecomp sbe (replicate 4 i32) ctarr
+  return (ctVals == ctChks)
   where
     initArr xs = do
        arr <- withSBE $ \s -> termArray s =<< mapM (termInt s 32) xs
@@ -49,6 +57,7 @@ aes128ConcreteImpl _be = do
     voidTy  = L.PrimType L.Void
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]
     keyVals = [0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f]
+    ctChks  = [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]
 
 --------------------------------------------------------------------------------
 -- Scratch
