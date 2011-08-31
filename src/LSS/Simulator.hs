@@ -1249,6 +1249,25 @@ registerStandardOverrides = do
     Override $ \_sym _rty _args -> do
       t <- withSBE (flip freshInt 32)
       return $ Just t
+  registerOverride "freshIntArray" (L.PtrTo i32) [i32, i32] False $
+    Override $ \_sym _rty args ->
+      case args of
+        [sizeTm, _] -> do
+          msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
+          case msize of
+            Just size -> do
+              let sz = fromIntegral size
+                  sz32 = fromIntegral size
+                  ty = L.Array sz32 i32
+                  sizeVal = undefined
+              arrPtr <- typedValue <$> alloca i32 (Just sizeVal) Nothing
+              elts <- replicateM sz (withSBE $ flip freshInt 32)
+              arrTm <- withSBE $ \sbe -> termArray sbe elts
+              let typedArrTm = Typed ty arrTm
+              mutateMem_ (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
+              return (Just arrPtr)
+            Nothing -> error "freshIntArray called with symbolic size"
+        _ -> error "freshIntArray called with the wrong number of arguments"
   registerOverride "writeIntAiger" voidTy [i32, strTy] False $
     Override $ \_sym _rty args ->
       case args of
@@ -1257,6 +1276,22 @@ registerStandardOverrides = do
           withSBE $ \sbe -> writeAiger sbe file (typedValue t)
           return Nothing
         _ -> error "writeIntAiger called with the wrong number of arguments"
+  registerOverride "writeIntArrayAiger" voidTy [L.PtrTo i32, i32, strTy] False $
+    Override $ \_sym _rty args ->
+      case args of
+        [tptr, sizeTm, fptr] -> do
+          msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
+          case msize of
+            Just size -> do
+              arrTm <- withMem $ \sbe mem ->
+                       let sz = fromIntegral size in
+                       memLoad sbe mem (Typed (L.Array sz i32) (typedValue tptr))
+              file <- loadString fptr
+              withSBE $ \sbe -> writeAiger sbe file arrTm
+              return Nothing
+            Nothing -> error "writeIntArrayAiger called with symbolic size"
+        _ -> error
+             "writeIntArrayAiger called with the wrong number of arguments"
   registerOverride "evalIntAiger" i32 [i32, i32] False $
     Override $ \_sym _rty args ->
       case args of
@@ -1268,4 +1303,3 @@ registerStandardOverrides = do
                         evalAiger sbe (intToBoolSeq v') (typedValue t))
             Nothing -> error "value given to evalIntAiger not constant"
         _ -> error "evalIntAiger called with the wrong number of arguments"
-
