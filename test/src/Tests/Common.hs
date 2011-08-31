@@ -24,7 +24,7 @@ import qualified Text.LLVM                     as L
 newtype FailMsg = FailMsg String
 instance Show FailMsg where show (FailMsg s) = s
 
-i8, i32, i64 :: L.Type
+i1, i8, i32, i64 :: L.Type
 i1  = L.iT 1
 i8  = L.iT 8
 i32 = L.iT 32

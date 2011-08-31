@@ -42,7 +42,7 @@ primOpTests =
   , test  1  False "test-call-simple"      $ testCallSimple  1
   , test  1  False "test-ptr-simple"       $ testPtrSimple   1
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
-  , test  1  False "test-call-exit"        $ testCallExit    0
+  , test  1  False "test-call-exit"        $ testCallExit    1
   ]
   where
     -- The 'v' parameter to all of these tests controls the verbosity; a
@@ -66,7 +66,7 @@ primOpTests =
     testPtrSimple v   = runMain v "test-ptr-simple.bc" (Just 99)
     testSetupPtrArg v = psk v $ runBitBlastSimTest v "test-primops.bc"
                                   defaultSEH testSetupPtrArgImpl
-    testCallExit v    = runMain v "test-call-exit.bc" (Just 0)
+    testCallExit v    = runMain v "test-call-exit.bc" (Just 1)
 
     add, mul, idiv, irem :: Int32 -> Int32 -> Int32
     add               = (+)
