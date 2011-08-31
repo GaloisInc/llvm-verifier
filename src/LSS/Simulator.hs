@@ -56,6 +56,7 @@ import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
+import           LSS.Printf
 import           LSS.SBEInterface
 import           Numeric                   (readHex)
 import           Text.LLVM                 (Typed(..), (=:))
@@ -1161,22 +1162,62 @@ _nowarn_unused = undefined
 --------------------------------------------------------------------------------
 -- Standard overrides
 
+loadString :: (Functor m, Monad m, ConstantProjection (SBEClosedTerm sbe)) =>
+              L.Typed (SBETerm sbe) -> Simulator sbe m String
+loadString ptr =
+  case typedType ptr of
+    L.PtrTo (L.PrimType (L.Integer 8)) -> do
+      -- Load ptr, ptr+1, until null, convert each into char, assemble into list
+      cs <- go ptr
+      return . map (toEnum . fromEnum) . catMaybes $ cs
+      where go addr = do
+              t <- withMem $ \sbe mem -> memLoad sbe mem addr
+              c <- withSBE' $ \sbe -> getUVal $ closeTerm sbe t
+              one <- withSBE $ \sbe ->
+                     termInt sbe (fromIntegral $ termWidth sbe (typedValue addr)) 1
+              addr' <- withSBE $ \sbe -> applyArith sbe L.Add (typedValue addr) one
+              case c of
+                Nothing -> return []
+                Just 0  -> return []
+                _       -> (c:) <$> go (typedAs addr addr')
+    L.Array n (L.PrimType (L.Integer 8)) -> do
+      -- Split term into pieces, convert each to char, assemble into list
+      -- Is this actually a case that ever occurs?
+      let n' :: Int
+          n' = toEnum $ fromEnum n
+      elts <- withSBE $ \sbe ->
+              termDecomp sbe (take n' $ repeat i8) (typedValue ptr)
+      vals <- withSBE' $ \sbe ->
+              mapMaybe (getUVal . closeTerm sbe . typedValue) elts
+      return $ map (toEnum . fromEnum) vals
+    ty -> error $ "loading string with invalid type: " ++
+                  show (L.ppType ty)
+
 i8, i32, voidTy, strTy :: L.Type
 i8 = L.PrimType (L.Integer 8)
 i32 = L.PrimType (L.Integer 32)
 voidTy = L.PrimType L.Void
 strTy = L.PtrTo i8
 
-registerStandardOverrides :: (Functor m, Monad m, MonadIO m) =>
+registerStandardOverrides :: (Functor m, Monad m, MonadIO m,
+                              ConstantProjection (SBEClosedTerm sbe)) =>
                              Simulator sbe m ()
 registerStandardOverrides = do
   -- TODO: stub! Should be replaced with something useful.
   registerOverride "exit" voidTy [i32] False $
     Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing
-  -- TODO: causes printing, but not in the same format as real printf
   registerOverride "printf" i32 [strTy] True $
     Override $ \_sym _rty args ->
-      do mapM_ (dbugTerm "Printf") (map typedValue args)
-         r <- withSBE $ \sbe -> termInt sbe 32 0
-         return (Just r)
+      case args of
+        (fmtPtr : rest) -> do
+          fmtStr <- loadString fmtPtr
+          --dbugM $ "Format string: " ++ fmtStr
+          resString <- withSBE' $ \sbe ->
+                       symPrintf fmtStr $
+                       map (termToArg . closeTerm sbe . typedValue) rest
+          liftIO $ putStrLn resString
+          r <- withSBE $ \sbe ->
+               termInt sbe 32 (fromIntegral $ length resString)
+          return (Just r)
+        _ -> error "printf called with no arguments"
 

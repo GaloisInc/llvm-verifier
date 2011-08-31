@@ -17,4 +17,4 @@ ioTests =
     test  1  False "printf"              $ testPrintf    1
   ]
   where
-    testPrintf v = runMain v "test-call-printf.bc" (Just 0)
+    testPrintf v = runMain v "test-call-printf.bc" (Just 3)
