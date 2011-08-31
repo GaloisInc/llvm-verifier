@@ -113,6 +113,10 @@ newSimState cb lc sbe mem lifter seh =
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
 
+-- | External entry point for a function call.  The argument generator is used
+-- to create actuals passed to the function, and the return value is those
+-- arguments.  In the case when no arguments created or invoking
+-- intrinsics/overrides, the return value will always be the empty list.
 callDefine ::
   ( LogMonad m
   , MonadIO m
@@ -123,18 +127,18 @@ callDefine ::
   => L.Symbol     -- ^ Callee symbol
   -> L.Type       -- ^ Callee return type
   -> ArgsGen sbe m -- ^ Callee argument generator
-  -> Simulator sbe m ()
+  -> Simulator sbe m [Typed (SBETerm sbe)]
 callDefine calleeSym t argsGen = do
   let gen = registerStandardOverrides >> argsGen
   callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left gen)
-  run
+    <* run
 
 callDefine' ::(MonadIO m, Functor m, Functor sbe)
   => SymBlockID        -- ^ Normal call return block id
   -> L.Symbol          -- ^ Callee symbol
   -> Maybe (Typed Reg) -- ^ Callee return type and result register
   -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
-  -> Simulator sbe m ()
+  -> Simulator sbe m [Typed (SBETerm sbe)]
 callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   | isPrefixOf "llvm." calleeName
   = do
@@ -143,6 +147,7 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
                Left{}      -> error "internal: ArgsGen use for intrinsic"
                Right args' -> args'
   intrinsic calleeName args
+  return []
   | otherwise
   = do
   override <- M.lookup calleeSym <$> gets overrides
@@ -163,6 +168,7 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
                                    (pathCallFrame path)
                  }
         (_, _) -> return ()
+      return []
     Nothing -> runNormalSymbol normalRetID calleeSym mreg genOrArgs
 
 runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)
@@ -170,7 +176,7 @@ runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)
   -> L.Symbol              -- ^ Callee symbol
   -> Maybe (Typed Reg)     -- ^ Callee return type and result register
   -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
-  -> Simulator sbe m ()
+  -> Simulator sbe m [Typed (SBETerm sbe)]
 runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
@@ -186,6 +192,7 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
 
   modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs (sdArgs def) args }
   pushMemFrame
+  return args
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
@@ -649,10 +656,11 @@ step ClearCurrentExecution =
 step (PushCallFrame callee args mres) = do
   cb  <- getCurrentBlockM
   eab <- resolveCallee callee
-  case eab of
-    Left msg        -> error $ "PushCallFrame: " ++ msg
-    Right calleeSym -> callDefine' cb calleeSym mres
-                         =<< Right <$> mapM getTypedTerm args
+  _ <- case eab of
+         Left msg        -> error $ "PushCallFrame: " ++ msg
+         Right calleeSym -> callDefine' cb calleeSym mres
+                              =<< Right <$> mapM getTypedTerm args
+  return ()
 
 step (PushInvokeFrame _fn _args _mres _e) =
   error "PushInvokeFrame nyi"
