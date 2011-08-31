@@ -519,7 +519,11 @@ mergeMapsBy from to act = union <$> merged
     isect             = M.intersectionWithKey (\k v1 v2 -> (k, v1, v2)) from to
 
 -- | getTypedTerm' in the context of the current call frame
-getTypedTerm :: (Functor m, MonadIO m)
+getTypedTerm ::
+  ( Functor m
+  , MonadIO m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 
@@ -527,7 +531,11 @@ getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 -- identifier lookup in the regmap of the given call frame as needed.  Note that
 -- a call frame is only required for identifier lookup, and may be omitted for
 -- other types of values.
-getTypedTerm' :: (Functor m, MonadIO m, term ~ SBETerm sbe)
+getTypedTerm' ::
+  ( Functor m
+  , MonadIO m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => Maybe (CF sbe) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
@@ -565,6 +573,8 @@ getTypedTerm' _ (Typed _ (L.ValSymbol sym))
 
 getTypedTerm' mfrm (Typed _ (L.ValConstExpr ce))
   = case ce of
+      L.ConstGEP _inbounds (splitAt 1 -> ((head -> ptr), idxs)) ->
+        evalGEP (GEP ptr idxs)
       L.ConstConv L.BitCast tv t ->
         Typed t . typedValue <$> getTypedTerm' mfrm tv
       _ -> error $ "getTypedTerm: ConstExpr eval nyi : " ++ show ce
@@ -585,7 +595,11 @@ getTypedTerm' mfrm tv@(Typed t v)
           ++ show (parens $ text $ show tv)
           ++ show ("mfrm = " ++ show (ppCallFrame sbe <$> mfrm))
 
-getGlobalPtrTerm :: (Functor m, MonadIO m)
+getGlobalPtrTerm ::
+  ( Functor m
+  , MonadIO m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => (L.Symbol, Maybe [L.Type]) -> Simulator sbe m (Typed (SBETerm sbe))
 getGlobalPtrTerm key@(sym, tys) = do
   mt <- M.lookup key <$> gets globalTerms
@@ -728,44 +742,43 @@ eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
-eval s@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr s)
-
+eval e@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr e)
 eval (Bit op tv1@(Typed t _) v2) = do
   [x, y] <- map typedValue <$> mapM getTypedTerm [tv1, typedType tv1 =: v2]
   Typed t <$> withSBE (\sbe -> applyBitwise sbe op x y)
-
 eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{})) = do
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
-
-eval (Conv L.BitCast tv ty) =
-  Typed ty . typedValue <$> getTypedTerm tv
-
-eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr s)
-
+eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
+eval e@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr e)
 eval (Alloca ty msztv malign ) = alloca ty msztv malign
-
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
   Typed ty <$> withMem (\sbe mem -> memLoad sbe mem addrTerm)
     <* dumpMem 6 "load post"
-
-eval s@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr s)
-
+eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
 eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
-eval s@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr s)
-
+eval e@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr e)
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
+eval (Val tv)                  = getTypedTerm tv
+eval e@GEP{}                   = evalGEP e
+eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
+eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
+eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 
-eval (Val tv) = getTypedTerm tv
-
-eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
+evalGEP ::
+  ( MonadIO m
+  , Functor m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
+evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
   where
     impl [] (Typed referentTy ptrVal) = do
       -- Truncate the final pointer value down to the target's address width, as
@@ -790,27 +803,19 @@ eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
         case midxVal of
           Nothing -> error "eval GEP: Failed to obtain value for GEP index"
           Just n  -> return $ splitAt (fromIntegral n) fldTys
-
---       dbugV "idx" idx
---       dbugV "skipFlds" skipFlds
---       dbugV "idxs" idxs
-
       newPtrVal <- Typed fldTy <$> foldM addSz ptrVal skipFlds
---       dbugTypedTerm "newPtrVal" newPtrVal
-
       impl idxs newPtrVal
 
     impl idxs (Typed (L.Alias ident) v) = do
       impl idxs =<< (`Typed` v) <$> withLC (\lc -> llvmLookupAlias lc ident)
 
     impl _ tv = do
---       dbugTypedTerm "tv" tv
       error $ "GEP: support for aggregate type NYI: "
               ++ show (L.ppType (typedType tv))
               ++ " : " ++ show (typedType tv)
 
     -- @baseOffset i ty p@ computes @p + i * sizeof(ty)@
-    baseOffset :: (MonadIO m, Functor m)
+    baseOffset :: (MonadIO m, Functor m, ConstantProjection (SBEClosedTerm sbe))
       => Typed SymValue -> L.Type -> SBETerm sbe
       -> Simulator sbe m (Typed (SBETerm sbe))
     baseOffset idx referentTy ptrVal = do
@@ -820,10 +825,7 @@ eval (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
 
     -- @addSz p ty@ computes @p + sizeof(ty)
     addSz p ty = termAdd p . typedValue =<< getTypedTerm =<< sizeof ty
-
-eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
-eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
-eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
+evalGEP e = error $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
 
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers

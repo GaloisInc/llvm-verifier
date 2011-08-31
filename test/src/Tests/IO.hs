@@ -13,8 +13,16 @@ import           Tests.Common
 
 ioTests :: [(Args, Property)]
 ioTests =
-  [
-    test  1  False "printf"              $ testPrintf    1
+  [ test 1 False "printf" $ testPrintf 1
   ]
   where
     testPrintf v = runMain v "test-call-printf.bc" (Just 3)
+
+--------------------------------------------------------------------------------
+-- Scratch
+
+_nowarn :: a
+_nowarn = undefined main
+
+main :: IO ()
+main = runTests ioTests
