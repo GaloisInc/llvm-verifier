@@ -8,10 +8,11 @@ import System.Exit
 import Test.QuickCheck
 import Test.QuickCheck.Test
 
-import Tests.AES
+-- import Tests.AES
 import Tests.Aggregates
 import Tests.PrimOps
 import Tests.Symbolic
+import Tests.IO
 
 main :: IO ()
 main = do
@@ -37,6 +38,7 @@ runTests chooseTest = do
                    , ("Aggregates", aggTests)
                    , ("Symbolic", symTests)
 --                   , ("AES", aesTests)
+                   , ("I/O", ioTests)
                    ]
 
 

@@ -25,6 +25,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 module LSS.Simulator
   ( module LSS.Execution.Codebase
@@ -62,8 +63,8 @@ import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
+import           LSS.Printf
 import           LSS.SBEInterface
-import           Numeric
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..))
@@ -105,6 +106,7 @@ newSimState cb lc sbe mem lifter seh =
   , liftSymBE    = lifter
   , ctrlStk      = emptyCtrlStk
   , globalTerms  = M.empty
+  , overrides    = M.empty
   , verbosity    = 1
   , evHandlers   = seh
   }
@@ -123,7 +125,8 @@ callDefine ::
   -> ArgsGen sbe m -- ^ Callee argument generator
   -> Simulator sbe m ()
 callDefine calleeSym t argsGen = do
-  callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left argsGen)
+  let gen = registerStandardOverrides >> argsGen
+  callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left gen)
   run
 
 callDefine' ::(MonadIO m, Functor m, Functor sbe)
@@ -142,6 +145,33 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   intrinsic calleeName args
   | otherwise
   = do
+  override <- M.lookup calleeSym <$> gets overrides
+  case override of
+    Just (Redirect calleeSym') ->
+      callDefine' normalRetID calleeSym' mreg genOrArgs
+    Just (Override f) -> do
+      let args = case genOrArgs of
+               Left{}      -> error "internal: ArgsGen use for override"
+               Right args' -> args'
+      r <- f calleeSym mreg args
+      case (mreg, r) of
+        (Just reg, Just rv) ->
+          modifyPath $ \path ->
+            path { pathCallFrame = setReg
+                                   (typedValue reg)
+                                   (typedAs reg rv)
+                                   (pathCallFrame path)
+                 }
+        (_, _) -> return ()
+    Nothing -> runNormalSymbol normalRetID calleeSym mreg genOrArgs
+
+runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)
+  => SymBlockID            -- ^ Normal call return block id
+  -> L.Symbol              -- ^ Callee symbol
+  -> Maybe (Typed Reg)     -- ^ Callee return type and result register
+  -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
+  -> Simulator sbe m ()
+runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
 
@@ -374,9 +404,9 @@ mergeMFs src dst = do
           (`setMergedState` dst) <$> mergePaths srcMerged (getMergedState dst)
         ReturnFrame{} -> do
           -- In both cases, we dump up our merged state over dst's current path,
-          -- being careful to pick up a few pieces of data (execution context --
-          -- since the dst is a return MF, we need to retain its call frame and
-          -- current block).
+          -- being careful to pick up a few pieces of data from dst (execution
+          -- context and return value -- since the dst is a return MF, we need
+          -- to retain its call frame, current block).
           case pathRetVal srcMerged of
             Nothing -> rfReplace id
             Just rv -> case rfRetReg src of
@@ -386,6 +416,7 @@ mergeMFs src dst = do
             rfReplace mutCF = modifyDstPath $ \dstPath ->
               srcMerged{ pathCallFrame = mutCF (pathCallFrame dstPath)
                        , pathCB        = pathCB dstPath
+                       , pathRetVal    = pathRetVal dstPath
                        }
         PostdomFrame{} -> do
           error "mergeMFs: postdom dst frame nyi"
@@ -515,7 +546,7 @@ getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
   valTerms <- mapM (getTypedTerm' mfrm) (Typed ety <$> es)
   Typed ty <$> withSBE (\sbe -> termArray sbe (map typedValue valTerms))
 
-getTypedTerm' mfrm (Typed ty@(L.Array len ety@(L.PrimType L.Integer{})) (L.ValString str))
+getTypedTerm' mfrm (Typed ty@(L.Array _len ety@(L.PrimType L.Integer{})) (L.ValString str))
   = do
   lc <- gets llvmCtx
   CE.assert (llvmByteSizeOf lc ty == fromIntegral (length str)) $ return ()
@@ -556,7 +587,7 @@ getTypedTerm' mfrm tv@(Typed t v)
 
 getGlobalPtrTerm :: (Functor m, MonadIO m)
   => (L.Symbol, Maybe [L.Type]) -> Simulator sbe m (Typed (SBETerm sbe))
-getGlobalPtrTerm key@(sym, _) = do
+getGlobalPtrTerm key@(sym, tys) = do
   mt <- M.lookup key <$> gets globalTerms
   case mt of
     Just t  -> return t
@@ -565,7 +596,7 @@ getGlobalPtrTerm key@(sym, _) = do
       maybe err (either addGlobal addDef) (lookupSym sym cb)
   where
     err = error $ "getGlobalPtrTerm: symbol resolution failed: "
-                  ++ show (L.ppSymbol sym)
+                  ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
 
     addDef def = do
       let argTys = map typedType $ sdArgs def
@@ -715,7 +746,7 @@ eval s@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExp
 
 eval (Alloca ty msztv malign ) = alloca ty msztv malign
 
-eval s@(Load tv@(Typed (L.PtrTo ty) _) _malign) = do
+eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
   Typed ty <$> withMem (\sbe mem -> memLoad sbe mem addrTerm)
@@ -1072,6 +1103,18 @@ modifyPath f = modifyCS $ \cs ->
 modifyCallFrameM :: (Functor m, Monad m) => (CF sbe -> CF sbe) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
+registerOverride :: (Functor m, Monad m, MonadIO m) =>
+                    L.Symbol -> L.Type -> [L.Type] -> Bool
+                 -> Override sbe m
+                 -> Simulator sbe m ()
+registerOverride sym retTy argTys va handler = do
+  t <- mutateMem $ \sbe mem -> memAddDefine sbe mem sym []
+  let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
+  modify $ \s -> s { overrides = M.insert sym handler (overrides s)
+                   , globalTerms =
+                       M.insert (sym, Just argTys) t' (globalTerms s)
+                   }
+
 --------------------------------------------------------------------------------
 -- Debugging
 
@@ -1126,3 +1169,67 @@ _nowarn_unused :: a
 _nowarn_unused = undefined
   (dbugTerm undefined undefined :: Simulator IO IO ())
   (dbugTypedTerm undefined undefined :: Simulator IO IO ())
+
+
+--------------------------------------------------------------------------------
+-- Standard overrides
+
+loadString :: (Functor m, Monad m, ConstantProjection (SBEClosedTerm sbe)) =>
+              L.Typed (SBETerm sbe) -> Simulator sbe m String
+loadString ptr =
+  case typedType ptr of
+    L.PtrTo (L.PrimType (L.Integer 8)) -> do
+      -- Load ptr, ptr+1, until null, convert each into char, assemble into list
+      cs <- go ptr
+      return . map (toEnum . fromEnum) . catMaybes $ cs
+      where go addr = do
+              t <- withMem $ \sbe mem -> memLoad sbe mem addr
+              c <- withSBE' $ \sbe -> getUVal $ closeTerm sbe t
+              one <- withSBE $ \sbe ->
+                     termInt sbe (fromIntegral $ termWidth sbe (typedValue addr)) 1
+              addr' <- withSBE $ \sbe -> applyArith sbe L.Add (typedValue addr) one
+              case c of
+                Nothing -> return []
+                Just 0  -> return []
+                _       -> (c:) <$> go (typedAs addr addr')
+    L.Array n (L.PrimType (L.Integer 8)) -> do
+      -- Split term into pieces, convert each to char, assemble into list
+      -- Is this actually a case that ever occurs?
+      let n' :: Int
+          n' = toEnum $ fromEnum n
+      elts <- withSBE $ \sbe ->
+              termDecomp sbe (take n' $ repeat i8) (typedValue ptr)
+      vals <- withSBE' $ \sbe ->
+              mapMaybe (getUVal . closeTerm sbe . typedValue) elts
+      return $ map (toEnum . fromEnum) vals
+    ty -> error $ "loading string with invalid type: " ++
+                  show (L.ppType ty)
+
+i8, i32, voidTy, strTy :: L.Type
+i8 = L.PrimType (L.Integer 8)
+i32 = L.PrimType (L.Integer 32)
+voidTy = L.PrimType L.Void
+strTy = L.PtrTo i8
+
+registerStandardOverrides :: (Functor m, Monad m, MonadIO m,
+                              ConstantProjection (SBEClosedTerm sbe)) =>
+                             Simulator sbe m ()
+registerStandardOverrides = do
+  -- TODO: stub! Should be replaced with something useful.
+  registerOverride "exit" voidTy [i32] False $
+    Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing
+  registerOverride "printf" i32 [strTy] True $
+    Override $ \_sym _rty args ->
+      case args of
+        (fmtPtr : rest) -> do
+          fmtStr <- loadString fmtPtr
+          --dbugM $ "Format string: " ++ fmtStr
+          resString <- withSBE' $ \sbe ->
+                       symPrintf fmtStr $
+                       map (termToArg . closeTerm sbe . typedValue) rest
+          liftIO $ putStrLn resString
+          r <- withSBE $ \sbe ->
+               termInt sbe 32 (fromIntegral $ length resString)
+          return (Just r)
+        _ -> error "printf called with no arguments"
+

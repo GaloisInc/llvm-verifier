@@ -45,6 +45,7 @@ type CS sbe        = CtrlStk (SBETerm sbe) (SBEMemory sbe)
 type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
 type Path sbe      = Path' (SBETerm sbe) (SBEMemory sbe)
 type CF sbe        = CallFrame (SBETerm sbe)
+type OvrMap sbe m  = M.Map L.Symbol (Override sbe m)
 
 -- | Symbolic simulator state
 data State sbe m = State
@@ -56,6 +57,7 @@ data State sbe m = State
   , liftSymBE    :: LiftSBE sbe m -- ^ Lift SBE operations into the Simulator monad
   , ctrlStk      :: CS sbe        -- ^ Control stack for tracking merge points
   , globalTerms  :: GlobalMap sbe -- ^ Global ptr terms
+  , overrides    :: OvrMap sbe m  -- ^ Function override table
   , verbosity    :: Int           -- ^ Verbosity level
   , evHandlers   :: SEH sbe m     -- ^ Simulation event handlers
   }
@@ -139,6 +141,21 @@ data CallFrame term = CallFrame
   , frmRegs    :: RegMap term
   }
   deriving Show
+
+-- | A handler for a function override. This gets the function symbol
+-- as an argumetn so that one function can potentially be used to
+-- override multiple symbols.
+type OverrideHandler sbe m
+  =  L.Symbol              -- ^ Callee symbol
+  -> Maybe (Typed Reg)     -- ^ Callee return register
+  -> [Typed (SBETerm sbe)] -- ^ Callee argumenxblitts
+  -> Simulator sbe m (Maybe (SBETerm sbe))
+
+-- | An override may specify a function to run within the simulator,
+-- or alternatively a symbol to look up and execute in its place.
+data Override sbe m
+  = Override (OverrideHandler sbe m)
+  | Redirect L.Symbol
 
 --------------------------------------------------------------------------------
 -- Misc typeclass instances
