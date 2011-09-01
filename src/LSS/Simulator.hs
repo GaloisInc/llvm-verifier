@@ -1259,11 +1259,15 @@ termToArg term = do
       return $ Arg (fromInteger n :: Int64)
     (L.PtrTo (L.PrimType (L.Integer 8)), _) ->
        Arg <$> loadString term
-    _ -> error "failed to convert term to printf argument"
+    _ -> Arg <$> withSBE' (show . flip prettyTermD (typedValue term))
 
 termIntS :: (Functor m, Monad m, Integral a) =>
             Int -> a -> Simulator sbe m (SBETerm sbe)
 termIntS w n = withSBE $ \sbe -> termInt sbe w (fromIntegral n)
+
+isSymbolic :: (ConstantProjection (SBEClosedTerm sbe)) =>
+              SBE sbe -> L.Typed (SBETerm sbe) -> Bool
+isSymbolic sbe = not . isJust . termConst . closeTerm sbe . typedValue
 
 printfHandler :: (Functor m, Monad m, MonadIO m,
                   ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1272,7 +1276,9 @@ printfHandler = Override $ \_sym _rty args ->
   case args of
     (fmtPtr : rest) -> do
       fmtStr <- loadString fmtPtr
-      resString <- symPrintf fmtStr <$> mapM termToArg rest
+      isSym <- withSBE' isSymbolic
+      let fmtStr' = formatAsStrings fmtStr (map isSym rest)
+      resString <- symPrintf fmtStr' <$> mapM termToArg rest
       liftIO $ putStrLn resString
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
@@ -1301,8 +1307,8 @@ freshIntArray n = Override $ \_sym _rty args ->
           -- TODO: Handle 'cond' result
           cond <- mutateMem (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
           return (Just arrPtr)
-        Nothing -> error "fresh_uint_array called with symbolic size"
-    _ -> error "fresh_uint_array: wrong number of arguments"
+        Nothing -> error "fresh_array_uint called with symbolic size"
+    _ -> error "fresh_array_uint: wrong number of arguments"
 
 writeIntAiger :: (Functor m, Monad m,
                   ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1313,7 +1319,7 @@ writeIntAiger = Override $ \_sym _rty args ->
       file <- loadString fptr
       withSBE $ \sbe -> writeAiger sbe file (typedValue t)
       return Nothing
-    _ -> error "write_uint_aiger: wrong number of arguments"
+    _ -> error "write_aiger_uint: wrong number of arguments"
 
 writeIntArrayAiger :: (Functor m, Monad m,
                        ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1332,9 +1338,9 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
           withSBE $ \sbe -> writeAiger sbe file arrTm
           return Nothing
 
-        Nothing -> error "write_uint_array_aiger called with symbolic size"
-    _ -> error "write_uint_array_aiger: wrong number of arguments"
-  where go _one _addr 0  = return []
+        Nothing -> error "write_aiger_array_uint called with symbolic size"
+    _ -> error "write_aiger_array_uint: wrong number of arguments"
+  where go _one _addr 0 = return []
         go one addr size = do
           -- TODO: Handle 'cond' result
           (cond,t) <- withMem $ \sbe mem -> memLoad sbe mem addr
@@ -1356,20 +1362,22 @@ standardOverrides =
   , ("fresh_uint16", i16, [i16], False, freshInt' 16)
   , ("fresh_uint32", i32, [i32], False, freshInt' 32)
   , ("fresh_uint64", i64, [i64], False, freshInt' 64)
-  , ("fresh_uint8_array",   i8p, [i32,  i8], False, freshIntArray 8)
-  , ("fresh_uint16_array", i16p, [i32, i16], False, freshIntArray 16)
-  , ("fresh_uint32_array", i32p, [i32, i32], False, freshIntArray 32)
-  , ("fresh_uint64_array", i64p, [i32, i64], False, freshIntArray 64)
-  , ("write_uint8_aiger",  voidTy, [i8,  strTy], False, writeIntAiger)
-  , ("write_uint16_aiger", voidTy, [i16, strTy], False, writeIntAiger)
-  , ("write_uint32_aiger", voidTy, [i32, strTy], False, writeIntAiger)
-  , ("write_uint64_aiger", voidTy, [i64, strTy], False, writeIntAiger)
-  , ("write_uint8_array_aiger", voidTy, [i8p, i32, strTy], False,
+  , ("fresh_array_uint8",   i8p, [i32,  i8], False, freshIntArray 8)
+  , ("fresh_array_uint16", i16p, [i32, i16], False, freshIntArray 16)
+  , ("fresh_array_uint32", i32p, [i32, i32], False, freshIntArray 32)
+  , ("fresh_array_uint64", i64p, [i32, i64], False, freshIntArray 64)
+  , ("write_aiger_uint8",  voidTy, [i8,  strTy], False, writeIntAiger)
+  , ("write_aiger_uint16", voidTy, [i16, strTy], False, writeIntAiger)
+  , ("write_aiger_uint32", voidTy, [i32, strTy], False, writeIntAiger)
+  , ("write_aiger_uint64", voidTy, [i64, strTy], False, writeIntAiger)
+  , ("write_aiger_array_uint8", voidTy, [i8p, i32, strTy], False,
      writeIntArrayAiger i8)
-  , ("write_uint16_array_aiger", voidTy, [i16p, i32, strTy], False,
+  , ("write_aiger_array_uint16", voidTy, [i16p, i32, strTy], False,
      writeIntArrayAiger i16)
-  , ("write_uint32_array_aiger", voidTy, [i32p, i32, strTy], False,
+  , ("write_aiger_array_uint32", voidTy, [i32p, i32, strTy], False,
      writeIntArrayAiger i32)
+  , ("write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
+     writeIntArrayAiger i64)
   ]
 
 registerOverride' :: (MonadIO m, Functor m, Functor sbe) =>
@@ -1383,7 +1391,7 @@ registerStandardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
 registerStandardOverrides = do
   mapM_ registerOverride' standardOverrides
   -- TODO: this is bogus, because it assumes 32 bits of input.
-  registerOverride "eval_uint32_aiger" i32 [i32, i32] False $
+  registerOverride "eval_aiger_uint32" i32 [i32, i32] False $
     Override $ \_sym _rty args ->
       case args of
         [t, v] -> do
@@ -1393,4 +1401,4 @@ registerStandardOverrides = do
                        (withSBE $ \sbe ->
                         evalAiger sbe (intToBoolSeq v') (typedValue t))
             Nothing -> error "value given to eval_int32_aiger not constant"
-        _ -> error "eval_int32_aiger: wrong number of arguments"
+        _ -> error "eval_aiger_int32: wrong number of arguments"
