@@ -113,7 +113,7 @@ testSetupPtrArgImpl be = do
     Nothing  -> return False
     Just mem -> do
       p <- L.Typed (L.PtrTo i32) <$> withSBE (\sbe -> termInt sbe 32 0)
-      r <- withSBE $ \sbe -> memLoad sbe mem p
+      (cond, r) <- withSBE $ \sbe -> memLoad sbe mem p
       return $ BitTermClosed (be, r) `constTermEq` 42
 
 --------------------------------------------------------------------------------

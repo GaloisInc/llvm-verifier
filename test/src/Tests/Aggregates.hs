@@ -14,7 +14,6 @@ import           LSS.LLVMUtils
 import           LSS.SBEInterface
 import           LSS.SBEBitBlast
 import           LSS.Simulator
-import           LSS.LLVMUtils
 import           Test.QuickCheck
 import           Tests.Common
 import qualified Text.LLVM        as L
