@@ -1384,6 +1384,10 @@ overrideByAddr = Override $ \_sym _rty args ->
       return Nothing
     _ -> error "override_function_by_addr: wrong number of arguments"
 
+nyiOverride :: Override sbe m
+nyiOverride = Override $ \sym _rty _args ->
+  error $ "override niy: " ++ show (L.ppSymbol sym)
+
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                       ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1414,6 +1418,14 @@ standardOverrides =
      writeIntArrayAiger i32)
   , ("write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
      writeIntArrayAiger i64)
+  , ("eval_aiger_uint8",   i8, [i8,  i8p], False, nyiOverride)
+  , ("eval_aiger_uint16", i16, [i16, i8p], False, nyiOverride)
+  , ("eval_aiger_uint32", i32, [i32, i8p], False, nyiOverride)
+  , ("eval_aiger_uint64", i64, [i64, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint8",   i8p, [i8p,  i32, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint16", i16p, [i16p, i32, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint32", i32p, [i32p, i32, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint64", i64p, [i64p, i32, i8p], False, nyiOverride)
   , ("override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
   , ("override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)
