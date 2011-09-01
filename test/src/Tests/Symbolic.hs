@@ -11,6 +11,7 @@ Point-of-contact : jstanley
 module Tests.Symbolic (symTests) where
 
 import           Control.Monad
+import           LSS.LLVMUtils
 import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           Test.QuickCheck

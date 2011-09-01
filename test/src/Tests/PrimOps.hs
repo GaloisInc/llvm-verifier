@@ -14,6 +14,7 @@ import           Control.Applicative
 import           Data.Int
 import           Data.Maybe
 import           Data.Word
+import           LSS.LLVMUtils
 import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           Test.QuickCheck

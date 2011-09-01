@@ -10,6 +10,7 @@ Point-of-contact : jstanley
 
 module Tests.Aggregates (aggTests) where
 
+import           LSS.LLVMUtils
 import           LSS.SBEInterface
 import           LSS.SBEBitBlast
 import           LSS.Simulator
