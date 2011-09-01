@@ -33,20 +33,19 @@ aesTests =
 
 aes128ConcreteImpl :: StdBitBlastTest
 aes128ConcreteImpl _be = do
-  callDefine (L.Symbol "aes128BlockEncrypt") voidTy $ do
-    ptptr  <- initArr ptVals
-    keyptr <- initArr keyVals
-    ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
-    return $ map (i32p =:) [ptptr, keyptr, ctptr]
-
+  [_, _, typedValue -> ctRawPtr] <-
+    callDefine (L.Symbol "aes128BlockEncrypt") voidTy $ do
+      ptptr  <- initArr ptVals
+      keyptr <- initArr keyVals
+      ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
+      return $ map (i32p =:) [ptptr, keyptr, ctptr]
   Just mem <- getProgramFinalMem
-  ctptr  <- Typed (L.PtrTo arrayTy) <$> withSBE (\sbe -> termInt sbe 32 (32 {- ct array base ptr value -}))
-  ctarr  <- withSBE $ \sbe -> memLoad sbe mem ctptr
-  let getVal sbe = typedValue . fmap (fromJust . getUVal . closeTerm sbe)
-  ctVals <- withSBE $ \sbe ->
-              map (getVal sbe) <$> termDecomp sbe (replicate 4 i32) ctarr
+  ctarr  <- withSBE $ \sbe -> memLoad sbe mem (Typed (L.PtrTo arrayTy) ctRawPtr)
+  ctVals <- withSBE $ \sbe -> map (getVal sbe)
+                                <$> termDecomp sbe (replicate 4 i32) ctarr
   return (ctVals == ctChks)
   where
+    getVal sbe = typedValue . fmap (fromJust . getUVal . closeTerm sbe)
     initArr xs = do
        arr <- withSBE $ \s -> termArray s =<< mapM (termInt s 32) xs
        p   <- typedValue <$> alloca arrayTy Nothing (Just 4)
