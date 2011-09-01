@@ -1259,11 +1259,15 @@ termToArg term = do
       return $ Arg (fromInteger n :: Int64)
     (L.PtrTo (L.PrimType (L.Integer 8)), _) ->
        Arg <$> loadString term
-    _ -> error "failed to convert term to printf argument"
+    _ -> Arg <$> withSBE' (show . flip prettyTermD (typedValue term))
 
 termIntS :: (Functor m, Monad m, Integral a) =>
             Int -> a -> Simulator sbe m (SBETerm sbe)
 termIntS w n = withSBE $ \sbe -> termInt sbe w (fromIntegral n)
+
+isSymbolic :: (ConstantProjection (SBEClosedTerm sbe)) =>
+              SBE sbe -> L.Typed (SBETerm sbe) -> Bool
+isSymbolic sbe = not . isJust . termConst . closeTerm sbe . typedValue
 
 printfHandler :: (Functor m, Monad m, MonadIO m,
                   ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1272,7 +1276,9 @@ printfHandler = Override $ \_sym _rty args ->
   case args of
     (fmtPtr : rest) -> do
       fmtStr <- loadString fmtPtr
-      resString <- symPrintf fmtStr <$> mapM termToArg rest
+      isSym <- withSBE' isSymbolic
+      let fmtStr' = formatAsStrings fmtStr (map isSym rest)
+      resString <- symPrintf fmtStr' <$> mapM termToArg rest
       liftIO $ putStrLn resString
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
