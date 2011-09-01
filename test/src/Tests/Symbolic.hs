@@ -11,9 +11,9 @@ Point-of-contact : jstanley
 module Tests.Symbolic (symTests) where
 
 import           Control.Monad
+import           LSS.LLVMUtils
 import           LSS.SBEBitBlast
 import           LSS.Simulator
-import           LSS.LLVMUtils
 import           Test.QuickCheck
 import           Tests.Common
 import           Text.LLVM              ((=:))
@@ -23,15 +23,17 @@ import qualified Text.LLVM              as L
 symTests :: [(Args, Property)]
 symTests =
   [
-    test 1 False "test-trivial-divergent-branch" $ trivBranch 5
---     -- symbolic reads not yet supported, so this is currently disabled
---   , test 1 False "test-trivial-symbolic-read"    $ trivSymRd 0
---   , test 1 False "test-trivial-fresh-int"        $ trivFreshInt 1
+    test 1 False "test-trivial-divergent-branch" $ trivBranch 1
+    -- symbolic reads not yet supported, so this is currently disabled
+  , test 1 False "test-trivial-symbolic-read"    $ trivSymRd 0
+  , test 1 False "test-trivial-fresh-int"        $ trivFreshInt 1
+  , test 1 False "test-trivial-fresh-array"      $ trivFreshArr 1
   ]
   where
     trivBranch v = psk v $ runSimple v trivBranchImpl
     trivSymRd  v = psk v $ runSimple v trivSymRdImpl
     trivFreshInt v = psk v $ runMain v "test-fresh.bc" (Just 16)
+    trivFreshArr v = psk v $ runMain v "test-fresh-array.bc" (Just 0)
     runSimple v  = runBitBlastSimTest v "test-sym-simple.bc" defaultSEH
 
 trivBranchImpl :: StdBitBlastTest
