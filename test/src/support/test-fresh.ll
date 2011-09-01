@@ -16,14 +16,14 @@ define i32 @main() nounwind ssp {
   store i32 %4, i32* %y, align 4
   %5 = load i32* %y, align 4
   %6 = getelementptr inbounds [15 x i8]* @.str, i32 0, i32 0
-  call void @write_uint32_aiger(i32 %5, i8* %6)
+  call void @write_aiger_uint32(i32 %5, i8* %6)
   %7 = load i32* %y, align 4
-  %8 = call i32 @eval_uint32_aiger(i32 %7, i32 22)
+  %8 = call i32 @eval_aiger_uint32(i32 %7, i32 22)
   ret i32 %8
 }
 
 declare i32 @fresh_uint32(i32)
 
-declare void @write_uint32_aiger(i32, i8*)
+declare void @write_aiger_uint32(i32, i8*)
 
-declare i32 @eval_uint32_aiger(i32, i32)
+declare i32 @eval_aiger_uint32(i32, i32)

@@ -9,7 +9,7 @@ define i32 @main() nounwind ssp {
   %x = alloca i32*, align 8
   %i = alloca i32, align 4
   store i32 0, i32* %1
-  %2 = call i32* @fresh_uint32_array(i32 10, i32 22)
+  %2 = call i32* @fresh_array_uint32(i32 10, i32 22)
   store i32* %2, i32** %x, align 8
   store i32 0, i32* %i, align 4
   br label %3
@@ -37,10 +37,10 @@ define i32 @main() nounwind ssp {
 
 ; <label>:16                                      ; preds = %3
   %17 = load i32** %x, align 8
-  call void @write_uint32_array_aiger(i32* %17, i32 10, i8* getelementptr inbounds ([21 x i8]* @.str, i32 0, i32 0))
+  call void @write_aiger_array_uint32(i32* %17, i32 10, i8* getelementptr inbounds ([21 x i8]* @.str, i32 0, i32 0))
   ret i32 0
 }
 
-declare i32* @fresh_uint32_array(i32, i32)
+declare i32* @fresh_array_uint32(i32, i32)
 
-declare void @write_uint32_array_aiger(i32*, i32, i8*)
+declare void @write_aiger_array_uint32(i32*, i32, i8*)
