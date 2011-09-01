@@ -26,11 +26,13 @@ symTests =
     -- symbolic reads not yet supported, so this is currently disabled
   , test 1 False "test-trivial-symbolic-read"    $ trivSymRd 0
   , test 1 False "test-trivial-fresh-int"        $ trivFreshInt 1
+  , test 1 False "test-trivial-fresh-array"      $ trivFreshArr 1
   ]
   where
     trivBranch v = psk v $ runSimple v trivBranchImpl
     trivSymRd  v = psk v $ runSimple v trivSymRdImpl
     trivFreshInt v = psk v $ runMain v "test-fresh.bc" (Just 16)
+    trivFreshArr v = psk v $ runMain v "test-fresh-array.bc" (Just 0)
     runSimple v  = runBitBlastSimTest v "test-sym-simple.bc" defaultSEH
 
 trivBranchImpl :: StdBitBlastTest
