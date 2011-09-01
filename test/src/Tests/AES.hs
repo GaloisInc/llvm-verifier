@@ -12,6 +12,7 @@ module Tests.AES (aesTests) where
 
 import           Control.Applicative
 import           Data.Maybe
+import           LSS.LLVMUtils
 import           LSS.SBEInterface
 import           LSS.Simulator
 import           Text.LLVM              ((=:), Typed(..), typedValue)
@@ -51,9 +52,7 @@ aes128ConcreteImpl _be = do
        p   <- typedValue <$> alloca arrayTy Nothing (Just 4)
        mutateMem_ $ \s m -> memStore s m (arrayTy =: arr) p
        return p
-    i32p    = L.PtrTo i32
     arrayTy = L.Array 4 i32
-    voidTy  = L.PrimType L.Void
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]
     keyVals = [0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f]
     ctChks  = [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]

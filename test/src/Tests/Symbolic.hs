@@ -13,6 +13,7 @@ module Tests.Symbolic (symTests) where
 import           Control.Monad
 import           LSS.SBEBitBlast
 import           LSS.Simulator
+import           LSS.LLVMUtils
 import           Test.QuickCheck
 import           Tests.Common
 import           Text.LLVM              ((=:))
@@ -22,10 +23,10 @@ import qualified Text.LLVM              as L
 symTests :: [(Args, Property)]
 symTests =
   [
-    test 1 False "test-trivial-divergent-branch" $ trivBranch 1
-    -- symbolic reads not yet supported, so this is currently disabled
-  , test 1 False "test-trivial-symbolic-read"    $ trivSymRd 0
-  , test 1 False "test-trivial-fresh-int"        $ trivFreshInt 1
+    test 1 False "test-trivial-divergent-branch" $ trivBranch 5
+--     -- symbolic reads not yet supported, so this is currently disabled
+--   , test 1 False "test-trivial-symbolic-read"    $ trivSymRd 0
+--   , test 1 False "test-trivial-fresh-int"        $ trivFreshInt 1
   ]
   where
     trivBranch v = psk v $ runSimple v trivBranchImpl
@@ -36,7 +37,7 @@ symTests =
 trivBranchImpl :: StdBitBlastTest
 trivBranchImpl _be = do
   b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine (L.Symbol "trivial_branch") i32 $ return [i32 =: b]
+  callDefine_ (L.Symbol "trivial_branch") i32 $ return [i32 =: b]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
@@ -51,7 +52,7 @@ trivBranchImpl _be = do
 trivSymRdImpl :: StdBitBlastTest
 trivSymRdImpl _be = do
   b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine (L.Symbol "sym_read") i32 $ return [i32 =: b]
+  callDefine_ (L.Symbol "sym_read") i32 $ return [i32 =: b]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False

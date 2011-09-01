@@ -499,9 +499,7 @@ mergePaths from (Just to) = do
   where
     infixl 5 <->
     t <-> f = do
---       (withSBE $ \sbe -> applyICmp sbe L.Ieq t f)>>= dbugTerm "eqt" DELETE_ME
       meq <- withSBE  $ \sbe -> getBool . closeTerm sbe <$> applyICmp sbe L.Ieq t f
---       dbugV "meq" meq
       case meq of
         Just True -> return t
         _         -> withSBE $ \sbe ->
@@ -924,6 +922,9 @@ infixr 2 |||
 mx ||| my = do
   let neg t = withSBE $ \sbe -> applyBNot sbe t
   neg =<< ((neg =<< mx) &&& (neg =<< my))
+
+-- ^ FIX above: You need to mux the path constraints together with the
+-- condition; it's not simply the OR.
 
 --------------------------------------------------------------------------------
 -- SBE lifters and helpers

@@ -12,11 +12,11 @@ import           Control.Monad.Trans
 import           Data.Bits
 import           Data.Maybe
 import           LSS.Execution.Common
+import           LSS.LLVMUtils
 import           LSS.SBEInterface
 import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           Text.LLVM              (Typed(..), typedValue)
-import           Tests.Common
 import           Verinf.Symbolic.Common (ConstantProjection(..), Lit)
 import qualified Control.Exception      as CE
 import qualified Text.LLVM              as L

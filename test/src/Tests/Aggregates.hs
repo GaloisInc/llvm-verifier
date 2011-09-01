@@ -13,6 +13,7 @@ module Tests.Aggregates (aggTests) where
 import           LSS.SBEInterface
 import           LSS.SBEBitBlast
 import           LSS.Simulator
+import           LSS.LLVMUtils
 import           Test.QuickCheck
 import           Tests.Common
 import qualified Text.LLVM        as L
@@ -43,7 +44,7 @@ aggTests =
 
 structInitAccessImpl :: StdBitBlastTest
 structInitAccessImpl be = do
-  callDefine (L.Symbol "struct_test") i64 (return [])
+  callDefine_ (L.Symbol "struct_test") i64 (return [])
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
@@ -56,7 +57,7 @@ structInitAccessImpl be = do
 
 structArrayImpl :: StdBitBlastTest
 structArrayImpl be = do
-  callDefine (L.Symbol "struct_test_two") i32 (return [])
+  callDefine_ (L.Symbol "struct_test_two") i32 (return [])
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
