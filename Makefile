@@ -7,6 +7,9 @@ all:
 lss: 
 	cabal-dev install . ../Verinf $(ABC) $(LLVM_PRETTY) --flags='-build-library -build-tests -build-utils'
 
+utils: 
+	cabal-dev install . ../Verinf $(ABC) $(LLVM_PRETTY) --flags='-build-lss -build-library -build-tests'
+
 test: all
 	dist/build/Tests/Tests
 
