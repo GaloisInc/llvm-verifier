@@ -1279,7 +1279,7 @@ printfHandler = Override $ \_sym _rty args ->
       isSym <- withSBE' isSymbolic
       let fmtStr' = formatAsStrings fmtStr (map isSym rest)
       resString <- symPrintf fmtStr' <$> mapM termToArg rest
-      liftIO $ putStrLn resString
+      liftIO $ putStr resString
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
 
