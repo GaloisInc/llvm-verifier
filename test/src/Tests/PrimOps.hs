@@ -14,6 +14,7 @@ import           Control.Applicative
 import           Data.Int
 import           Data.Maybe
 import           Data.Word
+import           LSS.LLVMUtils
 import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           Test.QuickCheck
@@ -102,7 +103,7 @@ chkArithBitEngineFn w s op fn = do
 
 testSetupPtrArgImpl :: StdBitBlastTest
 testSetupPtrArgImpl be = do
-  callDefine (L.Symbol "ptrarg") (L.PrimType L.Void) $ do
+  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) $ do
     p <- alloca i32 Nothing (Just 8)
     return [p]
   mrv <- getProgramReturnValue

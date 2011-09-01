@@ -94,7 +94,7 @@ chkNullaryCInt32Fn v bcFile sym chkVal =
 runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> IO (Maybe (BitTermClosed Lit))
 runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile defaultSEH $ \be -> do
   args <- withSBE $ \sbe -> mapM (termInt sbe 32 . fromIntegral) cargs
-  callDefine sym i32 (return $ map ((=:) i32) args)
+  callDefine_ sym i32 (return $ map ((=:) i32) args)
   rv <- getProgramReturnValue
   return $ BitTermClosed . (,) be <$> rv
 
