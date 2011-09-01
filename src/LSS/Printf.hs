@@ -3,6 +3,8 @@ Module           : $Header$
 Description      : Printf-style formatting for symbolic terms
 Stability        : provisional
 Point-of-contact : atomb
+
+Based on suggestions from emertens.
 -}
 
 {-# LANGUAGE ExistentialQuantification #-}
@@ -10,10 +12,7 @@ Point-of-contact : atomb
 
 module LSS.Printf where
 
-import Data.Int
 import Text.Printf
-
-import Verinf.Symbolic.Common (ConstantProjection(..), CValue(..))
 
 data Printer = Printer (forall a. PrintfType a => a)
 data Arg = forall a. PrintfArg a => Arg a
@@ -27,11 +26,3 @@ symPrintf s args =
                   Printer p' -> case a of
                                   Arg a' -> Printer (p' a')
 
-termToArg :: (ConstantProjection a) => a -> Arg
-termToArg a =
-  case termConst a of
-    (Just (CInt 8 n))  -> Arg (fromInteger n :: Int8)
-    (Just (CInt 16 n)) -> Arg (fromInteger n :: Int16)
-    (Just (CInt 32 n)) -> Arg (fromInteger n :: Int32)
-    (Just (CInt 64 n)) -> Arg (fromInteger n :: Int64)
-    _ -> error "failed to convert term to printf argument"
