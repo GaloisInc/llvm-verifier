@@ -39,7 +39,7 @@ symTests =
 trivBranchImpl :: StdBitBlastTest
 trivBranchImpl _be = do
   b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine (L.Symbol "trivial_branch") i32 $ return [i32 =: b]
+  callDefine_ (L.Symbol "trivial_branch") i32 $ return [i32 =: b]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
@@ -54,7 +54,7 @@ trivBranchImpl _be = do
 trivSymRdImpl :: StdBitBlastTest
 trivSymRdImpl _be = do
   b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine (L.Symbol "sym_read") i32 $ return [i32 =: b]
+  callDefine_ (L.Symbol "sym_read") i32 $ return [i32 =: b]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
