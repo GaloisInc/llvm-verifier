@@ -1,9 +1,9 @@
-int freshInt(int def);
-void writeIntAiger(int v, char *file);
-int evalIntAiger(int x, int input);
+int fresh_uint32(int def);
+void write_uint32_aiger(int v, char *file);
+int eval_uint32_aiger(int x, int input);
 int main() {
-    int x = freshInt(22);
+    int x = fresh_uint32(22);
     int y = x & 0x12345678;
-    writeIntAiger(y, "test-fresh.aig");
-    return evalIntAiger(y, 22);
+    write_uint32_aiger(y, "test-fresh.aig");
+    return eval_uint32_aiger(y, 22);
 }

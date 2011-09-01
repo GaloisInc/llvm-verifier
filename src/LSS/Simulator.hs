@@ -63,6 +63,7 @@ import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
+import           LSS.LLVMUtils
 import           LSS.Printf
 import           LSS.SBEInterface
 import           Text.LLVM                 (Typed(..), (=:))
@@ -1229,11 +1230,66 @@ termToArg term = do
        Arg <$> loadString term
     _ -> error "failed to convert term to printf argument"
 
-i8, i32, voidTy, strTy :: L.Type
-i8 = L.PrimType (L.Integer 8)
-i32 = L.PrimType (L.Integer 32)
-voidTy = L.PrimType L.Void
-strTy = L.PtrTo i8
+termIntS :: (Functor m, Monad m, Integral a) =>
+            Int -> a -> Simulator sbe m (SBETerm sbe)
+termIntS w n = withSBE $ \sbe -> termInt sbe w (fromIntegral n)
+
+printfOverride :: (Functor m, Monad m, MonadIO m,
+                   ConstantProjection (SBEClosedTerm sbe)) =>
+                  Override sbe m
+printfOverride =
+    Override $ \_sym _rty args ->
+      case args of
+        (fmtPtr : rest) -> do
+          fmtStr <- loadString fmtPtr
+          --dbugM $ "Format string: " ++ fmtStr
+          resString <- symPrintf fmtStr <$> mapM termToArg rest
+          liftIO $ putStrLn resString
+          r <- termIntS 32 (length resString)
+          return (Just r)
+        _ -> error "printf called with no arguments"
+
+freshIntOverride :: (Functor m, Monad m) => Int -> Override sbe m
+freshIntOverride n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
+
+freshIntArrayOverride :: (Functor m, Monad m, MonadIO m, Functor sbe,
+                          ConstantProjection (SBEClosedTerm sbe)) =>
+                         Int -> Override sbe m
+freshIntArrayOverride n =
+  Override $ \_sym _rty args ->
+    case args of
+      [sizeTm, _] -> do
+        msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
+        case msize of
+          Just size -> do
+            let sz = fromIntegral size
+                sz32 = fromIntegral size
+                ety = intn . toEnum . fromEnum $ n
+                ty = L.Array sz32 ety
+                sizeVal = undefined
+            arrPtr <- typedValue <$> alloca ety (Just sizeVal) Nothing
+            elts <- replicateM sz (withSBE $ flip freshInt n)
+            arrTm <- withSBE $ \sbe -> termArray sbe elts
+            let typedArrTm = Typed ty arrTm
+            mutateMem_ (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
+            return (Just arrPtr)
+          Nothing -> error "fresh_uint_array called with symbolic size"
+      _ -> error "fresh_uint_array called with the wrong number of arguments"
+
+writeIntAiger :: (Functor m, Monad m,
+                  ConstantProjection (SBEClosedTerm sbe)) =>
+                 Override sbe m
+writeIntAiger =
+  Override $ \_sym _rty args ->
+    case args of
+      [t, fptr] -> do
+        file <- loadString fptr
+        withSBE $ \sbe -> writeAiger sbe file (typedValue t)
+        return Nothing
+      _ -> error "write_uint_aiger called with the wrong number of arguments"
+
+nyiOverride :: Override sbe m
+nyiOverride = Override $ \sym _ _ -> error $ "nyi: " ++ show (L.ppSymbol sym)
 
 registerStandardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                               ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1242,50 +1298,28 @@ registerStandardOverrides = do
   -- TODO: stub! Should be replaced with something useful.
   registerOverride "exit" voidTy [i32] False $
     Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing
-  registerOverride "printf" i32 [strTy] True $
-    Override $ \_sym _rty args ->
-      case args of
-        (fmtPtr : rest) -> do
-          fmtStr <- loadString fmtPtr
-          --dbugM $ "Format string: " ++ fmtStr
-          resString <- symPrintf fmtStr <$> mapM termToArg rest
-          liftIO $ putStrLn resString
-          r <- withSBE $ \sbe ->
-               termInt sbe 32 (fromIntegral $ length resString)
-          return (Just r)
-        _ -> error "printf called with no arguments"
-  registerOverride "freshInt" i32 [i32] False $
-    Override $ \_sym _rty _args -> do
-      t <- withSBE (flip freshInt 32)
-      return $ Just t
-  registerOverride "freshIntArray" (L.PtrTo i32) [i32, i32] False $
-    Override $ \_sym _rty args ->
-      case args of
-        [sizeTm, _] -> do
-          msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
-          case msize of
-            Just size -> do
-              let sz = fromIntegral size
-                  sz32 = fromIntegral size
-                  ty = L.Array sz32 i32
-                  sizeVal = undefined
-              arrPtr <- typedValue <$> alloca i32 (Just sizeVal) Nothing
-              elts <- replicateM sz (withSBE $ flip freshInt 32)
-              arrTm <- withSBE $ \sbe -> termArray sbe elts
-              let typedArrTm = Typed ty arrTm
-              mutateMem_ (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
-              return (Just arrPtr)
-            Nothing -> error "freshIntArray called with symbolic size"
-        _ -> error "freshIntArray called with the wrong number of arguments"
-  registerOverride "writeIntAiger" voidTy [i32, strTy] False $
-    Override $ \_sym _rty args ->
-      case args of
-        [t, fptr] -> do
-          file <- loadString fptr
-          withSBE $ \sbe -> writeAiger sbe file (typedValue t)
-          return Nothing
-        _ -> error "writeIntAiger called with the wrong number of arguments"
-  registerOverride "writeIntArrayAiger" voidTy [L.PtrTo i32, i32, strTy] False $
+  registerOverride "printf" i32 [strTy] True printfOverride
+  registerOverride "fresh_uint8"   i8  [i8] False $ freshIntOverride  8
+  registerOverride "fresh_uint16" i16 [i16] False $ freshIntOverride 16
+  registerOverride "fresh_uint32" i32 [i32] False $ freshIntOverride 32
+  registerOverride "fresh_uint64" i64 [i64] False $ freshIntOverride 64
+  registerOverride "fresh_uint8_array"   i8p [i8,   i8] False $
+    freshIntArrayOverride 8
+  registerOverride "fresh_uint16_array" i16p [i16, i16] False $
+    freshIntArrayOverride 16
+  registerOverride "fresh_uint32_array" i32p [i32, i32] False $
+    freshIntArrayOverride 32
+  registerOverride "fresh_uint64_array" i64p [i64, i64] False $
+    freshIntArrayOverride 64
+  registerOverride "write_uint8_aiger"  voidTy [i8,  strTy] False writeIntAiger
+  registerOverride "write_uint16_aiger" voidTy [i16, strTy] False writeIntAiger
+  registerOverride "write_uint32_aiger" voidTy [i32, strTy] False writeIntAiger
+  registerOverride "write_uint64_aiger" voidTy [i64, strTy] False writeIntAiger
+  registerOverride "write_uint8_array_aiger" voidTy [i32p, i32, strTy] False $
+    nyiOverride
+  registerOverride "write_uint16_array_aiger" voidTy [i32p, i32, strTy] False $
+    nyiOverride
+  registerOverride "write_uint32_array_aiger" voidTy [i32p, i32, strTy] False $
     Override $ \_sym _rty args ->
       case args of
         [tptr, sizeTm, fptr] -> do
@@ -1298,10 +1332,11 @@ registerStandardOverrides = do
               file <- loadString fptr
               withSBE $ \sbe -> writeAiger sbe file arrTm
               return Nothing
-            Nothing -> error "writeIntArrayAiger called with symbolic size"
+            Nothing -> error "write_uint32_array_aiger called with symbolic size"
         _ -> error
-             "writeIntArrayAiger called with the wrong number of arguments"
-  registerOverride "evalIntAiger" i32 [i32, i32] False $
+             "write_uint32_array_aiger called with the wrong number of arguments"
+  -- TODO: this is bogus, because it assumes 32 bits of input.
+  registerOverride "eval_uint32_aiger" i32 [i32, i32] False $
     Override $ \_sym _rty args ->
       case args of
         [t, v] -> do
@@ -1310,5 +1345,5 @@ registerStandardOverrides = do
             Just v' -> Just <$>
                        (withSBE $ \sbe ->
                         evalAiger sbe (intToBoolSeq v') (typedValue t))
-            Nothing -> error "value given to evalIntAiger not constant"
-        _ -> error "evalIntAiger called with the wrong number of arguments"
+            Nothing -> error "value given to eval_int32_aiger not constant"
+        _ -> error "eval_int32_aiger called with the wrong number of arguments"
