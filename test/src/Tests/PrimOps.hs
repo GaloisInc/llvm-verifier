@@ -103,7 +103,7 @@ chkArithBitEngineFn w s op fn = do
 
 testSetupPtrArgImpl :: StdBitBlastTest
 testSetupPtrArgImpl be = do
-  callDefine (L.Symbol "ptrarg") (L.PrimType L.Void) $ do
+  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) $ do
     p <- alloca i32 Nothing (Just 8)
     return [p]
   mrv <- getProgramReturnValue
@@ -113,7 +113,7 @@ testSetupPtrArgImpl be = do
     Nothing  -> return False
     Just mem -> do
       p <- L.Typed (L.PtrTo i32) <$> withSBE (\sbe -> termInt sbe 32 0)
-      r <- withSBE $ \sbe -> memLoad sbe mem p
+      (cond, r) <- withSBE $ \sbe -> memLoad sbe mem p
       return $ BitTermClosed (be, r) `constTermEq` 42
 
 --------------------------------------------------------------------------------
