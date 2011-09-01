@@ -26,6 +26,7 @@ module Data.LLVM.Symbolic.Translation
 import           Control.Monad.State.Strict
 import           Data.LLVM.Symbolic.AST
 import           Data.Map                   (Map)
+import           LSS.LLVMUtils
 import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
 import           Text.PrettyPrint.HughesPJ
 import qualified Control.Exception          as CE
@@ -188,7 +189,7 @@ liftBB lti phiMap bb = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
       impl [Effect (LLVM.Br (Typed tc c) tgt1 tgt2)] idx il = do
-        CE.assert (tc == LLVM.iT 1) $ return ()
+        CE.assert (tc == i1) $ return ()
         let suspendSymBlockID = blockName (idx + 1)
         -- Define end of current block:
         --   If c is true:

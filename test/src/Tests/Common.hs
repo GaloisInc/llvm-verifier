@@ -9,6 +9,7 @@ import           Data.Int
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
+import           LSS.LLVMUtils
 import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           System.FilePath
@@ -23,12 +24,6 @@ import qualified Text.LLVM                     as L
 
 newtype FailMsg = FailMsg String
 instance Show FailMsg where show (FailMsg s) = s
-
-i1, i8, i32, i64 :: L.Type
-i1  = L.iT 1
-i8  = L.iT 8
-i32 = L.iT 32
-i64 = L.iT 64
 
 padTy :: Int -> L.Type
 padTy bytes = L.Array (fromIntegral bytes) i8

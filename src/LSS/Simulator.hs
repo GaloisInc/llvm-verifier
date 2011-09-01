@@ -29,10 +29,13 @@ Point-of-contact : jstanley
 
 module LSS.Simulator
   ( module LSS.Execution.Codebase
+  , Simulator (SM)
   , callDefine
+  , callDefine_
   , defaultSEH
   , getProgramReturnValue
   , getProgramFinalMem
+  , getTypedTerm'
   , prettyTermSBE
   , runSimulator
   , withSBE
@@ -117,6 +120,10 @@ newSimState cb lc sbe mem lifter seh =
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
 
+-- | External entry point for a function call.  The argument generator is used
+-- to create actuals passed to the function, and the return value is those
+-- arguments.  In the case when no arguments created or invoking
+-- intrinsics/overrides, the return value will always be the empty list.
 callDefine ::
   ( LogMonad m
   , MonadIO m
@@ -127,18 +134,31 @@ callDefine ::
   => L.Symbol     -- ^ Callee symbol
   -> L.Type       -- ^ Callee return type
   -> ArgsGen sbe m -- ^ Callee argument generator
-  -> Simulator sbe m ()
+  -> Simulator sbe m [Typed (SBETerm sbe)]
 callDefine calleeSym t argsGen = do
   let gen = registerStandardOverrides >> argsGen
   callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left gen)
-  run
+    <* run
+
+callDefine_ ::
+  ( LogMonad m
+  , MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Symbol     -- ^ Callee symbol
+  -> L.Type       -- ^ Callee return type
+  -> ArgsGen sbe m -- ^ Callee argument generator
+  -> Simulator sbe m ()
+callDefine_ c t ag = callDefine c t ag >> return ()
 
 callDefine' ::(MonadIO m, Functor m, Functor sbe)
   => SymBlockID        -- ^ Normal call return block id
   -> L.Symbol          -- ^ Callee symbol
   -> Maybe (Typed Reg) -- ^ Callee return type and result register
   -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
-  -> Simulator sbe m ()
+  -> Simulator sbe m [Typed (SBETerm sbe)]
 callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   | isPrefixOf "llvm." calleeName
   = do
@@ -147,6 +167,7 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
                Left{}      -> error "internal: ArgsGen use for intrinsic"
                Right args' -> args'
   intrinsic calleeName args
+  return []
   | otherwise
   = do
   override <- M.lookup calleeSym <$> gets overrides
@@ -167,6 +188,7 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
                                    (pathCallFrame path)
                  }
         (_, _) -> return ()
+      return []
     Nothing -> runNormalSymbol normalRetID calleeSym mreg genOrArgs
 
 runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)
@@ -174,7 +196,7 @@ runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)
   -> L.Symbol              -- ^ Callee symbol
   -> Maybe (Typed Reg)     -- ^ Callee return type and result register
   -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
-  -> Simulator sbe m ()
+  -> Simulator sbe m [Typed (SBETerm sbe)]
 runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
@@ -190,6 +212,7 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
 
   modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs (sdArgs def) args }
   pushMemFrame
+  return args
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
@@ -332,8 +355,8 @@ addPathConstraint ::
   => Path sbe -> SymCond -> Simulator sbe m (Path sbe)
 addPathConstraint p TrueSymCond         = return p
 addPathConstraint p c@(HasConstValue v i) = do
-  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (L.iT 1 =: v)
-  Typed _ it <- getTypedTerm' Nothing (L.iT 1 =: L.ValInteger i)
+  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (i1 =: v)
+  Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
   let Constraint conds oldPC = pathConstraint p
   newPC      <- return oldPC
                   &&& withSBE (\sbe -> applyICmp sbe L.Ieq vt it)
@@ -653,10 +676,11 @@ step ClearCurrentExecution =
 step (PushCallFrame callee args mres) = do
   cb  <- getCurrentBlockM
   eab <- resolveCallee callee
-  case eab of
-    Left msg        -> error $ "PushCallFrame: " ++ msg
-    Right calleeSym -> callDefine' cb calleeSym mres
-                         =<< Right <$> mapM getTypedTerm args
+  _ <- case eab of
+         Left msg        -> error $ "PushCallFrame: " ++ msg
+         Right calleeSym -> callDefine' cb calleeSym mres
+                              =<< Right <$> mapM getTypedTerm args
+  return ()
 
 step (PushInvokeFrame _fn _args _mres _e) =
   error "PushInvokeFrame nyi"
@@ -791,7 +815,7 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
       ptrWidth  <- fromIntegral <$> withSBE' (`termWidth` ptrVal)
       Typed (L.PtrTo referentTy) <$> do
         if addrWidth < ptrWidth
-          then termConv L.Trunc ptrVal (L.iT addrWidth)
+          then termConv L.Trunc ptrVal (intn addrWidth)
           else return ptrVal
 
     impl (idx:idxs) (Typed (L.PtrTo referentTy) ptrVal) = do
@@ -865,10 +889,10 @@ resizeTerms a b = do
   wa <- fromIntegral <$> withSBE' (`termWidth` a)
   wb <- fromIntegral <$> withSBE' (`termWidth` b)
   if wa > wb
-    then conv b (L.iT wa) >>= \b' -> return (a, b')
+    then conv b (intn wa) >>= \b' -> return (a, b')
     else
       if wb > wa
-         then conv a (L.iT wb) >>= \a' -> return (a', b)
+         then conv a (intn wb) >>= \a' -> return (a', b)
          else return (a, b)
   where
     conv = termConv L.SExt
@@ -980,7 +1004,7 @@ alloca ::
   -> Simulator sbe m (Typed (SBETerm sbe))
 alloca ty msztv malign = do
   (_n, nt) <- case msztv of
-    Nothing  -> ((,) 1) <$> getTypedTerm (i32const 1)
+    Nothing  -> ((,) 1) <$> getTypedTerm (int32const 1)
     Just ntv -> do
       nt <- getTypedTerm ntv
       mn <- withSBE' (\sbe -> getSVal (closeTerm sbe $ typedValue nt))
@@ -999,9 +1023,6 @@ sizeof ty = Typed (L.PrimType (L.Integer 32))
 
 lg :: (Ord a, Bits a) => a -> a
 lg = genericLength . takeWhile (>0) . drop 1 . iterate (`shiftR` 1)
-
-i32const :: Int32 -> Typed L.Value
-i32const x = L.iT 32 =: L.ValInteger (fromIntegral x)
 
 resolveCallee :: (MonadIO m, Functor m) => SymValue -> Simulator sbe m (Either String L.Symbol)
 resolveCallee callee = case callee of
@@ -1036,12 +1057,6 @@ runStmts ::
   )
   => [SymStmt] -> Simulator sbe m ()
 runStmts = mapM_ dbugStep
-
-i1 :: L.Type
-i1 = L.PrimType (L.Integer 1)
-
-typedAs :: Typed a -> b -> Typed b
-typedAs tv x = const x <$> tv
 
 setReg :: Reg -> Typed term -> CallFrame term -> CallFrame term
 setReg r v frm@(CallFrame _ regMap) = frm{ frmRegs = M.insert r v regMap }
