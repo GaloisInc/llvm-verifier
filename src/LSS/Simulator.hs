@@ -1267,7 +1267,7 @@ termIntS w n = withSBE $ \sbe -> termInt sbe w (fromIntegral n)
 
 isSymbolic :: (ConstantProjection (SBEClosedTerm sbe)) =>
               SBE sbe -> L.Typed (SBETerm sbe) -> Bool
-isSymbolic sbe = not . isJust . termConst . closeTerm sbe . typedValue
+isSymbolic sbe = not . isConst . closeTerm sbe . typedValue
 
 printfHandler :: (Functor m, Monad m, MonadIO m,
                   ConstantProjection (SBEClosedTerm sbe)) =>
