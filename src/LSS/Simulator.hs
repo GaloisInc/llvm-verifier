@@ -1199,18 +1199,6 @@ loadString ptr =
                 Nothing -> return []
                 Just 0  -> return []
                 _       -> (c:) <$> go (typedAs addr addr')
-        {-
-    L.Array n (L.PrimType (L.Integer 8)) -> do
-      -- Split term into pieces, convert each to char, assemble into list
-      -- Is this actually a case that ever occurs?
-      let n' :: Int
-          n' = toEnum $ fromEnum n
-      elts <- withSBE $ \sbe ->
-              termDecomp sbe (take n' $ repeat i8) (typedValue ptr)
-      vals <- withSBE' $ \sbe ->
-              mapMaybe (getUVal . closeTerm sbe . typedValue) elts
-      return $ map (toEnum . fromEnum) vals
-         -}
     ty -> error $ "loading string with invalid type: " ++
                   show (L.ppType ty)
 
@@ -1264,10 +1252,10 @@ freshIntArray n = Override $ \_sym _rty args ->
               sz32 = fromIntegral size
               ety = intn . toEnum . fromEnum $ n
               ty = L.Array sz32 ety
-              sizeVal = undefined
+              sizeVal = Typed i32 (L.ValInteger size)
           arrPtr <- typedValue <$> alloca ety (Just sizeVal) Nothing
           elts <- replicateM sz (withSBE $ flip freshInt n)
-          arrTm <- withSBE $ \sbe -> termArray sbe elts
+          arrTm <- withSBE $ flip termArray elts
           let typedArrTm = Typed ty arrTm
           mutateMem_ (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
           return (Just arrPtr)
@@ -1294,14 +1282,23 @@ writeIntArrayAiger ety = Override $ \_sym _rty args ->
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
       case msize of
         Just size -> do
-          arrTm <- withMem $ \sbe mem ->
-                   let sz = fromIntegral size in
-                   memLoad sbe mem (Typed (L.Array sz ety) (typedValue tptr))
+          one <- withSBE $ \sbe ->
+                 termInt sbe (fromIntegral $ termWidth sbe (typedValue tptr)) 1
+          bytes <- go one tptr size
+          arrTm <- withSBE $ flip termArray bytes
           file <- loadString fptr
           withSBE $ \sbe -> writeAiger sbe file arrTm
           return Nothing
+
         Nothing -> error "write_uint_array_aiger called with symbolic size"
     _ -> error "write_uint_array_aiger: wrong number of arguments"
+  where go one addr 0 = return []
+        go one addr size = do
+          t <- withMem $ \sbe mem -> memLoad sbe mem addr
+          addr' <- withSBE $ \sbe ->
+                   applyArith sbe L.Add (typedValue addr) one
+          (t:) <$> go one (typedAs addr addr') (size - 1)
+
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
@@ -1316,10 +1313,10 @@ standardOverrides =
   , ("fresh_uint16", i16, [i16], False, freshInt' 16)
   , ("fresh_uint32", i32, [i32], False, freshInt' 32)
   , ("fresh_uint64", i64, [i64], False, freshInt' 64)
-  , ("fresh_uint8_array",   i8p, [i8,   i8], False, freshIntArray 8)
-  , ("fresh_uint16_array", i16p, [i16, i16], False, freshIntArray 16)
+  , ("fresh_uint8_array",   i8p, [i32,  i8], False, freshIntArray 8)
+  , ("fresh_uint16_array", i16p, [i32, i16], False, freshIntArray 16)
   , ("fresh_uint32_array", i32p, [i32, i32], False, freshIntArray 32)
-  , ("fresh_uint64_array", i64p, [i64, i64], False, freshIntArray 64)
+  , ("fresh_uint64_array", i64p, [i32, i64], False, freshIntArray 64)
   , ("write_uint8_aiger",  voidTy, [i8,  strTy], False, writeIntAiger)
   , ("write_uint16_aiger", voidTy, [i16, strTy], False, writeIntAiger)
   , ("write_uint32_aiger", voidTy, [i32, strTy], False, writeIntAiger)
