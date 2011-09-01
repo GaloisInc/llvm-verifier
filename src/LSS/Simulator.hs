@@ -43,6 +43,7 @@ module LSS.Simulator
   -- * Memory operations
   , alloca
   , sizeof
+  , mutateMem
   , mutateMem_
   -- for testing
   , withLC
@@ -251,7 +252,9 @@ intrinsic intr args0 =
   where
     memcpy = do
       let [dst, src, len, align, _isvol] = map typedValue args0
-      mutateMem_ $ \sbe mem -> memCopy sbe mem dst src len align
+      -- TODO: Handle 'cond' result
+      cond <- mutateMem $ \sbe mem -> memCopy sbe mem dst src len align
+      return ()
 
 getProgramReturnValue :: (Monad m, Functor m)
   => Simulator sbe m (Maybe (SBETerm sbe))
@@ -351,6 +354,7 @@ addPathConstraint ::
   ( MonadIO m
   , Functor m
   , ConstantProjection (SBEClosedTerm sbe)
+  , Functor sbe
   )
   => Path sbe -> SymCond -> Simulator sbe m (Path sbe)
 addPathConstraint p TrueSymCond         = return p
@@ -547,18 +551,18 @@ mergeMapsBy from to act = union <$> merged
 getTypedTerm ::
   ( Functor m
   , MonadIO m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
 
 -- | Obtain the typed SBE term representation for the given LLVM value; performs
--- identifier lookup in the regmap of the given call frame as needed.  Note that
--- a call frame is only required for identifier lookup, and may be omitted for
--- other types of values.
+-- identifier lookup in the regmap of the given call frame as needed.
 getTypedTerm' ::
   ( Functor m
   , MonadIO m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => Maybe (CF sbe) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
@@ -623,6 +627,7 @@ getTypedTerm' mfrm tv@(Typed t v)
 getGlobalPtrTerm ::
   ( Functor m
   , MonadIO m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => (L.Symbol, Maybe [L.Type]) -> Simulator sbe m (Typed (SBETerm sbe))
@@ -641,15 +646,24 @@ getGlobalPtrTerm key@(sym, tys) = do
       let argTys = map typedType $ sdArgs def
           fty    = L.FunTy (sdRetType def) argTys (sdVarArgs def)
           idl    = nub $ mapMaybe symBlockLabel $ M.keys (sdBody def)
-      ins fty $ \sbe mem -> memAddDefine sbe mem sym idl
-
+      ins fty $ \sbe mem ->
+        maybe (error "Not enough space in code memory to allocate new definition.") id
+          <$> memAddDefine sbe mem sym idl
     addGlobal g = do
       cb1 onMkGlobTerm g
       cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
       cb2 onPreGlobInit g cdata
-      ins (L.globalType g) (\sbe mem -> memInitGlobal sbe mem cdata)
-        <* cb2 onPostGlobInit g cdata
-
+--       ins (L.globalType g) (\sbe mem -> memInitGlobal sbe mem cdata)
+--         <* cb2 onPostGlobInit g cdata
+      r <- ins (L.globalType g) $ \sbe mem -> do
+             maybe (error "Not enough space in data segment to allocate new global.") id
+               <$> memInitGlobal sbe mem cdata
+      cb2 onPostGlobInit g cdata
+      return r
+    ins :: (Functor m, MonadIO m)
+        => L.Type
+        -> (SBE sbe -> SBEMemory sbe -> sbe (SBETerm sbe, SBEMemory sbe))
+        -> Simulator sbe m (Typed (SBETerm sbe))
     ins ty act = do
       t <- Typed (L.PtrTo ty) <$> mutateMem act
       modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
@@ -732,7 +746,8 @@ step (Store val addr _malign) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
   valTerm          <- getTypedTerm val
   Typed _ addrTerm <- getTypedTerm addr
-  mutateMem_ (\sbe mem -> memStore sbe mem valTerm addrTerm)
+  -- TODO: Handle 'cond' result
+  cond <- mutateMem (\sbe mem -> memStore sbe mem valTerm addrTerm)
   whenVerbosity (<=6) $ dumpMem 6 "store post"
 
 step (IfThenElse cond thenStmts elseStmts) = do
@@ -760,6 +775,7 @@ eval ::
   ( Functor m
   , MonadIO m
   , ConstantProjection (SBEClosedTerm sbe)
+  , Functor sbe
   )
   => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
 
@@ -782,8 +798,9 @@ eval (Alloca ty msztv malign ) = alloca ty msztv malign
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
-  Typed ty <$> withMem (\sbe mem -> memLoad sbe mem addrTerm)
-    <* dumpMem 6 "load post"
+  -- TODO: Handle 'cond' result
+  (cond,v) <- withMem $ \sbe mem -> memLoad sbe mem addrTerm
+  return (Typed ty v) <* dumpMem 6 "load post"
 eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
 eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
@@ -801,6 +818,7 @@ eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 evalGEP ::
   ( MonadIO m
   , Functor m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
@@ -841,7 +859,12 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
               ++ " : " ++ show (typedType tv)
 
     -- @baseOffset i ty p@ computes @p + i * sizeof(ty)@
-    baseOffset :: (MonadIO m, Functor m, ConstantProjection (SBEClosedTerm sbe))
+    baseOffset ::
+      ( MonadIO m
+      , Functor m
+      , Functor sbe
+      , ConstantProjection (SBEClosedTerm sbe)
+      )
       => Typed SymValue -> L.Type -> SBETerm sbe
       -> Simulator sbe m (Typed (SBETerm sbe))
     baseOffset idx referentTy ptrVal = do
@@ -997,6 +1020,7 @@ defaultSEH = SEH
 alloca ::
   ( MonadIO m
   , Functor m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => L.Type
@@ -1004,16 +1028,14 @@ alloca ::
   -> Maybe Int
   -> Simulator sbe m (Typed (SBETerm sbe))
 alloca ty msztv malign = do
-  (_n, nt) <- case msztv of
-    Nothing  -> ((,) 1) <$> getTypedTerm (int32const 1)
-    Just ntv -> do
-      nt <- getTypedTerm ntv
-      mn <- withSBE' (\sbe -> getSVal (closeTerm sbe $ typedValue nt))
-      case mn of
-        Nothing -> error "alloca only supports concrete element counts"
-        Just n  -> return (n, nt)
-  let alloca' sbe m = stackAlloca sbe m ty nt (maybe 0 lg malign)
-  Typed (L.PtrTo ty) <$> mutateMem alloca'
+  nt <- case msztv of
+          Nothing  -> getTypedTerm (int32const 1)
+          Just ntv -> getTypedTerm ntv
+  let parseFn SASymbolicCountUnsupported = error "alloca only supports concrete element count"
+      parseFn (SAResult c t m') = ((c,t), m')
+  -- TODO: Handle 'cond' result
+  (cond,t) <- mutateMem $ \sbe m -> parseFn <$> stackAlloca sbe m ty nt (maybe 0 lg malign)
+  return (Typed (L.PtrTo ty) t)
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
@@ -1125,12 +1147,14 @@ modifyPath f = modifyCS $ \cs ->
 modifyCallFrameM :: (Functor m, Monad m) => (CF sbe -> CF sbe) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
-registerOverride :: (Functor m, Monad m, MonadIO m) =>
+registerOverride :: (Functor m, Monad m, Functor sbe, MonadIO m) =>
                     L.Symbol -> L.Type -> [L.Type] -> Bool
                  -> Override sbe m
                  -> Simulator sbe m ()
 registerOverride sym retTy argTys va handler = do
-  t <- mutateMem $ \sbe mem -> memAddDefine sbe mem sym []
+  t <- mutateMem $ \sbe mem ->
+         maybe (error "Not enough space in code memory to allocate new definition.") id
+           <$> memAddDefine sbe mem sym []
   let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
   modify $ \s -> s { overrides = M.insert sym handler (overrides s)
                    , globalTerms =
@@ -1206,7 +1230,8 @@ loadString ptr =
       cs <- go ptr
       return . map (toEnum . fromEnum) . catMaybes $ cs
       where go addr = do
-              t <- withMem $ \sbe mem -> memLoad sbe mem addr
+              -- TODO: Handle 'cond' result
+              (cond,t) <- withMem $ \sbe mem -> memLoad sbe mem addr
               c <- withSBE' $ \sbe -> getUVal $ closeTerm sbe t
               one <- withSBE $ \sbe ->
                      termInt sbe (fromIntegral $ termWidth sbe (typedValue addr)) 1
@@ -1273,7 +1298,8 @@ freshIntArray n = Override $ \_sym _rty args ->
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ flip termArray elts
           let typedArrTm = Typed ty arrTm
-          mutateMem_ (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
+          -- TODO: Handle 'cond' result
+          cond <- mutateMem (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
           return (Just arrPtr)
         Nothing -> error "fresh_uint_array called with symbolic size"
     _ -> error "fresh_uint_array: wrong number of arguments"
@@ -1310,7 +1336,8 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
     _ -> error "write_uint_array_aiger: wrong number of arguments"
   where go _one _addr 0  = return []
         go one addr size = do
-          t <- withMem $ \sbe mem -> memLoad sbe mem addr
+          -- TODO: Handle 'cond' result
+          (cond,t) <- withMem $ \sbe mem -> memLoad sbe mem addr
           addr' <- withSBE $ \sbe ->
                    applyArith sbe L.Add (typedValue addr) one
           (t:) <$> go one (typedAs addr addr') (size - 1)
@@ -1345,7 +1372,7 @@ standardOverrides =
      writeIntArrayAiger i32)
   ]
 
-registerOverride' :: (MonadIO m, Functor m) =>
+registerOverride' :: (MonadIO m, Functor m, Functor sbe) =>
                      OverrideEntry sbe m -> Simulator sbe m ()
 registerOverride' (sym, rty, atys, va, handler) =
   registerOverride sym rty atys va handler

@@ -49,7 +49,7 @@ sanityChecks = SEH
       sz  <- withLC (`llvmByteSizeOf` ty)
       -- Read back and check
       gstart <- withSBE $ \sbe -> termInt sbe 32 (bmDataAddr mem - sz)
-      gdata' <- withSBE $ \sbe -> memLoad sbe mem (Typed (L.PtrTo ty) gstart)
+      (cond, gdata') <- withSBE $ \sbe -> memLoad sbe mem (Typed (L.PtrTo ty) gstart)
       eq <- uval =<< (Typed i1 <$> withSBE (\sbe -> applyICmp sbe L.Ieq gdata gdata'))
       when (eq /= 1) $ do
         dbugM $ "onPostGlobInit assert failure on " ++ show (L.ppSymbol $ L.globalSym g)
