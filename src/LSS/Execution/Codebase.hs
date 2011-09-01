@@ -25,7 +25,6 @@ module LSS.Execution.Codebase
 where
 
 import qualified Control.Exception              as CE
-import           Control.Monad
 import           Control.Monad.Trans
 import           Data.LLVM.Symbolic.AST
 import           Data.LLVM.Symbolic.Translation
@@ -44,14 +43,17 @@ type TypeAliasMap  = M.Map LLVM.Ident LLVM.Type
 
 data Codebase = Codebase {
     cbGlobalNameMap :: GlobalNameMap
-  , cbTypeAliasMap   :: TypeAliasMap
+  , cbTypeAliasMap  :: TypeAliasMap
+  , cbBitcodeSize   :: Int
   }
 
 -- For now, only take a single bytecode file argument and assume that the world
 -- is linked together a priori.
 loadCodebase :: FilePath -> IO Codebase
 loadCodebase bcFile = do
-  eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
+  bs <- BS.readFile bcFile
+  let bsSz = BS.length bs
+  eab <- BC.parseBitCode bs `CE.catch` \(e :: CE.SomeException) -> err (show e)
   case eab of
     Left msg  -> err msg
     Right mdl -> do
@@ -63,6 +65,7 @@ loadCodebase bcFile = do
           m3     = foldr ins2 M.empty (LLVM.modTypes mdl)
           cb     = Codebase { cbGlobalNameMap = m2
                             , cbTypeAliasMap  = m3
+                            , cbBitcodeSize   = bsSz
                             }
 --       putStrLn $ "mdl = \n" ++ show (LLVM.ppModule mdl)
 --       putStrLn $ "types = \n" ++ show (LLVM.modTypes mdl)
@@ -71,7 +74,6 @@ loadCodebase bcFile = do
 --       putStrLn "--"
       return cb
   where
-    parse   = BS.readFile >=> BC.parseBitCode
     err msg = error $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
               ++ show (nest 2 (vcat $ map text $ lines msg))
 

@@ -29,10 +29,13 @@ Point-of-contact : jstanley
 
 module LSS.Simulator
   ( module LSS.Execution.Codebase
+  , Simulator (SM)
   , callDefine
+  , callDefine_
   , defaultSEH
   , getProgramReturnValue
   , getProgramFinalMem
+  , getTypedTerm'
   , prettyTermSBE
   , runSimulator
   , withSBE
@@ -136,6 +139,19 @@ callDefine calleeSym t argsGen = do
   let gen = registerStandardOverrides >> argsGen
   callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left gen)
     <* run
+
+callDefine_ ::
+  ( LogMonad m
+  , MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Symbol     -- ^ Callee symbol
+  -> L.Type       -- ^ Callee return type
+  -> ArgsGen sbe m -- ^ Callee argument generator
+  -> Simulator sbe m ()
+callDefine_ c t ag = callDefine c t ag >> return ()
 
 callDefine' ::(MonadIO m, Functor m, Functor sbe)
   => SymBlockID        -- ^ Normal call return block id
@@ -339,8 +355,8 @@ addPathConstraint ::
   => Path sbe -> SymCond -> Simulator sbe m (Path sbe)
 addPathConstraint p TrueSymCond         = return p
 addPathConstraint p c@(HasConstValue v i) = do
-  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (L.iT 1 =: v)
-  Typed _ it <- getTypedTerm' Nothing (L.iT 1 =: L.ValInteger i)
+  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (i1 =: v)
+  Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
   let Constraint conds oldPC = pathConstraint p
   newPC      <- return oldPC
                   &&& withSBE (\sbe -> applyICmp sbe L.Ieq vt it)
@@ -799,7 +815,7 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
       ptrWidth  <- fromIntegral <$> withSBE' (`termWidth` ptrVal)
       Typed (L.PtrTo referentTy) <$> do
         if addrWidth < ptrWidth
-          then termConv L.Trunc ptrVal (L.iT addrWidth)
+          then termConv L.Trunc ptrVal (intn addrWidth)
           else return ptrVal
 
     impl (idx:idxs) (Typed (L.PtrTo referentTy) ptrVal) = do
@@ -873,10 +889,10 @@ resizeTerms a b = do
   wa <- fromIntegral <$> withSBE' (`termWidth` a)
   wb <- fromIntegral <$> withSBE' (`termWidth` b)
   if wa > wb
-    then conv b (L.iT wa) >>= \b' -> return (a, b')
+    then conv b (intn wa) >>= \b' -> return (a, b')
     else
       if wb > wa
-         then conv a (L.iT wb) >>= \a' -> return (a', b)
+         then conv a (intn wb) >>= \a' -> return (a', b)
          else return (a, b)
   where
     conv = termConv L.SExt
@@ -988,7 +1004,7 @@ alloca ::
   -> Simulator sbe m (Typed (SBETerm sbe))
 alloca ty msztv malign = do
   (_n, nt) <- case msztv of
-    Nothing  -> ((,) 1) <$> getTypedTerm (i32const 1)
+    Nothing  -> ((,) 1) <$> getTypedTerm (int32const 1)
     Just ntv -> do
       nt <- getTypedTerm ntv
       mn <- withSBE' (\sbe -> getSVal (closeTerm sbe $ typedValue nt))
@@ -1007,9 +1023,6 @@ sizeof ty = Typed (L.PrimType (L.Integer 32))
 
 lg :: (Ord a, Bits a) => a -> a
 lg = genericLength . takeWhile (>0) . drop 1 . iterate (`shiftR` 1)
-
-i32const :: Int32 -> Typed L.Value
-i32const x = L.iT 32 =: L.ValInteger (fromIntegral x)
 
 resolveCallee :: (MonadIO m, Functor m) => SymValue -> Simulator sbe m (Either String L.Symbol)
 resolveCallee callee = case callee of
@@ -1044,12 +1057,6 @@ runStmts ::
   )
   => [SymStmt] -> Simulator sbe m ()
 runStmts = mapM_ dbugStep
-
-i1 :: L.Type
-i1 = L.PrimType (L.Integer 1)
-
-typedAs :: Typed a -> b -> Typed b
-typedAs tv x = const x <$> tv
 
 setReg :: Reg -> Typed term -> CallFrame term -> CallFrame term
 setReg r v frm@(CallFrame _ regMap) = frm{ frmRegs = M.insert r v regMap }
