@@ -1283,6 +1283,20 @@ printfHandler = Override $ \_sym _rty args ->
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
 
+allocaHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
+                  ConstantProjection (SBEClosedTerm sbe)) =>
+                 Override sbe m
+allocaHandler = Override $ \_sym _rty args ->
+  case args of
+    [sizeTm] -> do
+      msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
+      case msize of
+        Just size -> do
+          let sizeVal = Typed i32 (L.ValInteger size)
+          (Just . typedValue) <$> alloca i8 (Just sizeVal) Nothing
+        Nothing -> error "alloca: symbolic size not supported"
+    _ -> error "alloca: wrong number of arguments"
+
 freshInt' :: (Functor m, Monad m) => Int -> Override sbe m
 freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
 
@@ -1357,6 +1371,7 @@ standardOverrides =
   [ ("exit", voidTy, [i32], False,
      -- TODO: stub! Should be replaced with something useful.
      Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing)
+  , ("alloca", voidPtr, [i32], False, allocaHandler)
   , ("printf", i32, [strTy], True, printfHandler)
   , ("fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("fresh_uint16", i16, [i16], False, freshInt' 16)
