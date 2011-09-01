@@ -1362,6 +1362,27 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
                    applyArith sbe L.Add (typedValue addr) one
           (t:) <$> go one (typedAs addr addr') (size - 1)
 
+overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
+                   ConstantProjection (SBEClosedTerm sbe)) =>
+                  Override sbe m
+overrideByName = Override $ \_sym _rty args ->
+  case args of
+    [fromPtr, toPtr] -> do
+      _from <- loadString fromPtr
+      _to <- loadString toPtr
+      dbugM' 0 "overrideByName: nyi"
+      return Nothing
+    _ -> error "override_function_by_name: wrong number of arguments"
+
+overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
+                   ConstantProjection (SBEClosedTerm sbe)) =>
+                  Override sbe m
+overrideByAddr = Override $ \_sym _rty args ->
+  case args of
+    [_fromPtr, _toPtr] -> do
+      dbugM' 0 "overrideByAddr: nyi"
+      return Nothing
+    _ -> error "override_function_by_addr: wrong number of arguments"
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
@@ -1393,6 +1414,9 @@ standardOverrides =
      writeIntArrayAiger i32)
   , ("write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
      writeIntArrayAiger i64)
+  , ("override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
+  , ("override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
+     overrideByAddr)
   ]
 
 registerOverride' :: (MonadIO m, Functor m, Functor sbe) =>
