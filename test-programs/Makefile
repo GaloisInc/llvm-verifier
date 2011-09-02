@@ -3,14 +3,14 @@ all : trivial.ll trivial-opt.ll multiexit.ll multiexit-opt.ll branch.ll branch-o
 # NB: We only emit .dot files for unoptimized CFGs
 
 %.bc : %.cpp
-	clang -c -emit-llvm -o $@ $^
+	clang -m32 -c -emit-llvm -o $@ $^
 	opt -dot-cfg $@ > /dev/null
 
 %.o : %.c
-	clang -c -emit-llvm -o $@ $^
+	clang -m32 -c -emit-llvm -o $@ $^
 
 %.bc : %.c
-	clang -c -emit-llvm -o $@ $^
+	clang -m32 -c -emit-llvm -o $@ $^
 	opt -dot-cfg $@  > /dev/null
 
 %-opt.bc : %.bc

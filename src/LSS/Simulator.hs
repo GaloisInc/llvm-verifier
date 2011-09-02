@@ -870,7 +870,7 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
     baseOffset idx referentTy ptrVal = do
       Typed _ idxTerm <- getTypedTerm idx
       Typed _ szTerm  <- getTypedTerm =<< sizeof referentTy
-      Typed referentTy <$> saxpy idxTerm szTerm ptrVal
+      Typed referentTy <$> axpy idxTerm szTerm ptrVal
 
     -- @addSz p ty@ computes @p + sizeof(ty)
     addSz p ty = termAdd p . typedValue =<< getTypedTerm =<< sizeof ty
@@ -879,26 +879,39 @@ evalGEP e = error $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
 
-termAdd, termMul :: (Functor m, MonadIO m)
+-- termAdd, termMul :: (Functor m, MonadIO m)
+--   => SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
+-- termAdd x y = do
+--   (x', y') <- resizeTerms x y
+--   withSBE $ \sbe -> applyArith sbe L.Add x' y'
+-- termMul x y = do
+--   (x', y') <- resizeTerms x y
+--   withSBE $ \sbe -> applyArith sbe L.Mul x' y'
+
+-- -- @axpy a x y@ computes a * x + y, promoting terms to larger sizes as needed.
+-- axpy :: (Functor m, MonadIO m)
+--   => SBETerm sbe
+--   -> SBETerm sbe
+--   -> SBETerm sbe
+--   -> Simulator sbe m (SBETerm sbe)
+-- axpy a x y = termAdd y =<< termMul a x
+
+termAdd, termMul :: (Functor m, Monad m)
   => SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
-termAdd x y = do
-  (x', y') <- resizeTerms x y
-  withSBE $ \sbe -> applyArith sbe L.Add x' y'
-termMul x y = do
-  (x', y') <- resizeTerms x y
-  withSBE $ \sbe -> applyArith sbe L.Mul x' y'
+termAdd x y = withSBE $ \sbe -> applyArith sbe L.Add x y
+termMul x y = withSBE $ \sbe -> applyArith sbe L.Mul x y
 
-termConv :: (Functor m, Monad m)
-  => L.ConvOp -> SBETerm sbe -> L.Type -> Simulator sbe m (SBETerm sbe)
-termConv op x ty = withSBE $ \sbe -> applyConv sbe op x ty
-
--- @saxpy a x y@ computes a * x + y, promoting terms to larger sizes as needed.
-saxpy :: (Functor m, MonadIO m)
+-- @axpy a x y@ computes a * x + y, promoting terms to larger sizes as needed.
+axpy :: (Functor m, MonadIO m)
   => SBETerm sbe
   -> SBETerm sbe
   -> SBETerm sbe
   -> Simulator sbe m (SBETerm sbe)
-saxpy a x y = termAdd y =<< termMul a x
+axpy a x y = do
+  (a', x') <- resizeTerms a x
+  t        <- termMul a' x'
+  (t', y') <- resizeTerms t y
+  termAdd t' y'
 
 -- | @resizeTerms a b@ yields both arguments back after sign-extending the
 -- smaller of the two terms.
@@ -917,6 +930,10 @@ resizeTerms a b = do
          else return (a, b)
   where
     conv = termConv L.SExt
+
+termConv :: (Functor m, Monad m)
+  => L.ConvOp -> SBETerm sbe -> L.Type -> Simulator sbe m (SBETerm sbe)
+termConv op x ty = withSBE $ \sbe -> applyConv sbe op x ty
 
 (&&&) :: (ConstantProjection (SBEClosedTerm sbe), Functor m, Monad m)
   => Simulator sbe m (SBETerm sbe)
