@@ -620,9 +620,9 @@ getTypedTerm' mfrm tv@(Typed t v)
   = do
   sbe <- gets symBE
   error $ "getTypedTerm': unsupported value / call frame presence: "
-          ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
-          ++ show (parens $ text $ show tv)
-          ++ show ("mfrm = " ++ show (ppCallFrame sbe <$> mfrm))
+          ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
+          ++ "\n" ++ show (parens $ text $ show tv)
+          ++ "\nmfrm = " ++ show (ppCallFrame sbe <$> mfrm)
 
 getGlobalPtrTerm ::
   ( Functor m
