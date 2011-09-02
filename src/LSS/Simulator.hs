@@ -73,8 +73,7 @@ import           LSS.SBEInterface
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..),
-                                            CValue(..),
-                                            intToBoolSeq)
+                                            CValue(..))
 
 import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
@@ -1362,11 +1361,9 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
       case (msize, typedType tptr) of
         (Just size, L.PtrTo tgtTy) -> do
-          elemWidth <- withLC (`llvmByteSizeOf` tgtTy)
           ptrWidth <- withSBE' $ \sbe ->
                       fromIntegral $ termWidth sbe (typedValue tptr)
-          inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
-          elems <- go inc tptr size
+          elems <- loadArray ptrWidth tptr tgtTy size
           arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
           withSBE $ \sbe -> writeAiger sbe file arrTm
@@ -1375,12 +1372,43 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
           error "write_aiger_array_uint called with symbolic size"
         _ -> error "write_aiger_array_uint: invalid argument type"
     _ -> error "write_aiger_array_uint: wrong number of arguments"
-  where go _one _addr 0 = return []
-        go one addr size = do
-          -- TODO: Handle 'cond' result
-          (cond,t) <- load addr
-          addr' <- termAdd (typedValue addr) one
-          (t:) <$> go one (typedAs addr addr') (size - 1)
+
+loadArray :: (MonadIO m, Functor m) =>
+             Int
+          -> Typed (SBETerm sbe)
+          -> L.Type
+          -> Integer
+          -> Simulator sbe m [SBETerm sbe]
+loadArray ptrWidth ptr ety count = do
+  elemWidth <- withLC (`llvmByteSizeOf` ety)
+  inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
+  go inc ptr count
+    where go _one _addr 0 = return []
+          go one addr size = do
+            -- TODO: Handle 'cond' result
+            (cond,t) <- load addr
+            addr' <- termAdd (typedValue addr) one
+            (t:) <$> go one (typedAs addr addr') (size - 1)
+
+evalAigerOverride :: (Functor m, Monad m, MonadIO m,
+                      ConstantProjection (SBEClosedTerm sbe)) =>
+                     Override sbe m
+evalAigerOverride =
+  Override $ \_sym _rty args ->
+    case args of
+      [Typed _ tm, p@(Typed (L.PtrTo ety) ptm), Typed _ szTm] -> do
+        msz <- withSBE' $ \sbe -> getUVal . closeTerm sbe $ szTm
+        case msz of
+          Just sz -> do
+            ptrWidth <- withSBE' $ \sbe -> fromIntegral $ termWidth sbe ptm
+            elems <- loadArray ptrWidth p ety sz
+            ints <- mapM
+                    (\t -> withSBE' $ \sbe -> getUVal $ closeTerm sbe t)
+                    elems
+            let bools = map (not . (== 0)) $ catMaybes ints
+            Just <$> (withSBE $ \sbe -> evalAiger sbe bools tm)
+          Nothing -> error "eval_aiger: symbolic size not supported"
+      _ -> error "eval_aiger: wrong number of arguments"
 
 overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1439,10 +1467,10 @@ standardOverrides =
      writeIntArrayAiger i32)
   , ("write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
      writeIntArrayAiger i64)
-  , ("eval_aiger_uint8",   i8, [i8,  i8p], False, nyiOverride)
-  , ("eval_aiger_uint16", i16, [i16, i8p], False, nyiOverride)
-  , ("eval_aiger_uint32", i32, [i32, i8p], False, nyiOverride)
-  , ("eval_aiger_uint64", i64, [i64, i8p], False, nyiOverride)
+  , ("eval_aiger_uint8",   i8, [i8,  i8p], False, evalAigerOverride)
+  , ("eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
+  , ("eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
+  , ("eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
   , ("eval_aiger_array_uint8",   i8p, [i8p,  i32, i8p], False, nyiOverride)
   , ("eval_aiger_array_uint16", i16p, [i16p, i32, i8p], False, nyiOverride)
   , ("eval_aiger_array_uint32", i32p, [i32p, i32, i8p], False, nyiOverride)
@@ -1462,15 +1490,3 @@ registerStandardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                              Simulator sbe m ()
 registerStandardOverrides = do
   mapM_ registerOverride' standardOverrides
-  -- TODO: this is bogus, because it assumes 32 bits of input.
-  registerOverride "eval_aiger_uint32" i32 [i32, i32] False $
-    Override $ \_sym _rty args ->
-      case args of
-        [t, v] -> do
-          mv <- withSBE' $ \sbe -> termConst . closeTerm sbe . typedValue $ v
-          case mv of
-            Just v' -> Just <$>
-                       (withSBE $ \sbe ->
-                        evalAiger sbe (intToBoolSeq v') (typedValue t))
-            Nothing -> error "value given to eval_int32_aiger not constant"
-        _ -> error "eval_aiger_int32: wrong number of arguments"

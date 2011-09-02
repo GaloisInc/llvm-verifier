@@ -16,12 +16,12 @@ define i32 @main() nounwind ssp {
 
 ; <label>:3                                       ; preds = %13, %0
   %4 = load i32* %i, align 4
-  %5 = icmp slt i32 %4, 10
+  %5 = icmp ult i32 %4, 10
   br i1 %5, label %6, label %16
 
 ; <label>:6                                       ; preds = %3
   %7 = load i32* %i, align 4
-  %8 = sext i32 %7 to i64
+  %8 = zext i32 %7 to i64
   %9 = load i32** %x, align 8
   %10 = getelementptr inbounds i32* %9, i64 %8
   %11 = load i32* %10
@@ -31,7 +31,7 @@ define i32 @main() nounwind ssp {
 
 ; <label>:13                                      ; preds = %6
   %14 = load i32* %i, align 4
-  %15 = add nsw i32 %14, 1
+  %15 = add i32 %14, 1
   store i32 %15, i32* %i, align 4
   br label %3
 
