@@ -54,6 +54,20 @@ data StackAllocaResult t m
   -- does not support this.
   | SASymbolicCountUnsupported
 
+-- | Result returned by @heapAlloc@ (defined below). Currently
+-- isomorphic to StackAllocResult, but that might change.
+data HeapAllocResult t m
+  -- | @HAResult c p s m@ is returned when allocation succeeded. @c@
+  -- is a symbolic path constraint that the allocation must satisfy
+  -- for allocation to have succeeded, @m@ is the new memory state,
+  -- @s@ is the actual size allocated, and @p@ is a @ptr@ to the newly
+  -- allocated space. @c@ is false if the allocation failed due to
+  -- insufficient space.
+  = HAResult t t Integer m
+  -- | Returned if heapAlloc given a symbolic length and the
+  -- implementation does not support this.
+  | HASymbolicCountUnsupported
+
 data SBE m = SBE
   {
     ----------------------------------------------------------------------------
@@ -168,6 +182,14 @@ data SBE m = SBE
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
+    -- | @heapAlloc h tp i align@ allocates memory in the heap for the given
+    -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
+    -- byte boundary.
+  , heapAlloc :: SBEMemory m
+              -> LLVM.Type
+              -> LLVM.Typed (SBETerm m)
+              -> Int
+              -> m (HeapAllocResult (SBETerm m) (SBEMemory m))
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
     -- both of which must be aligned according to @align@ and must refer to
     -- non-overlapping regions.

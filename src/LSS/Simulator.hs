@@ -1021,7 +1021,7 @@ defaultSEH = SEH
 --------------------------------------------------------------------------------
 -- Memory operation helpers
 
-alloca ::
+alloca, malloc ::
   ( MonadIO m
   , Functor m
   , Functor sbe
@@ -1039,6 +1039,17 @@ alloca ty msztv malign = do
       parseFn (SAResult c t m') = ((c,t), m')
   -- TODO: Handle 'cond' result
   (cond,t) <- mutateMem $ \sbe m -> parseFn <$> stackAlloca sbe m ty nt (maybe 0 lg malign)
+  return (Typed (L.PtrTo ty) t)
+
+malloc ty msztv malign = do
+  nt <- case msztv of
+          Nothing  -> getTypedTerm (int32const 1)
+          Just ntv -> getTypedTerm ntv
+  let parseFn HASymbolicCountUnsupported = error "malloc only supports concrete element count"
+      parseFn (HAResult c t _sz m') = ((c,t), m')
+  -- TODO: Handle 'cond' result
+  -- TODO: Handle 'size' result
+  (cond,t) <- mutateMem $ \sbe m -> parseFn <$> heapAlloc sbe m ty nt (maybe 0 lg malign)
   return (Typed (L.PtrTo ty) t)
 
 --------------------------------------------------------------------------------
@@ -1287,17 +1298,21 @@ printfHandler = Override $ \_sym _rty args ->
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
 
-allocaHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
+allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
                   ConstantProjection (SBEClosedTerm sbe)) =>
-                 Override sbe m
-allocaHandler = Override $ \_sym _rty args ->
+                (L.Type
+                   -> Maybe (Typed L.Value)
+                   -> Maybe Int
+                   -> Simulator sbe m (Typed (SBETerm sbe)))
+             -> Override sbe m
+allocHandler fn = Override $ \_sym _rty args ->
   case args of
     [sizeTm] -> do
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
       case msize of
         Just size -> do
           let sizeVal = Typed i32 (L.ValInteger size)
-          (Just . typedValue) <$> alloca i8 (Just sizeVal) Nothing
+          (Just . typedValue) <$> fn i8 (Just sizeVal) Nothing
         Nothing -> error "alloca: symbolic size not supported"
     _ -> error "alloca: wrong number of arguments"
 
@@ -1402,7 +1417,8 @@ standardOverrides =
   [ ("exit", voidTy, [i32], False,
      -- TODO: stub! Should be replaced with something useful.
      Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing)
-  , ("alloca", voidPtr, [i32], False, allocaHandler)
+  , ("alloca", voidPtr, [i32], False, allocHandler alloca)
+  , ("malloc", voidPtr, [i32], False, allocHandler malloc)
   , ("printf", i32, [strTy], True, printfHandler)
   , ("fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("fresh_uint16", i16, [i16], False, freshInt' 16)
