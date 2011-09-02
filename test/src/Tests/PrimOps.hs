@@ -88,11 +88,10 @@ chkArithBitEngineFn :: (Integral a, Arbitrary a) =>
                        Int -> Bool -> L.ArithOp -> (a -> a -> a)
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
+  let lc = LLVMContext 32 $
+             error "LLVM Context has no ident -> type alias map defined"
   be <- run createBitEngine
-  let sbe = sbeBitBlast
-            (LLVMContext 32
-             (error "LLVM Context has no ident -> type alias map defined"))
-            be
+  let sbe = sbeBitBlast lc be (buddyMemModel lc be)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do
     let r = fn x y
         proj = if s then getSVal else getUVal

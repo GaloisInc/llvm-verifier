@@ -99,9 +99,9 @@ runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile defaultSEH $ \be -> do
   return $ BitTermClosed . (,) be <$> rv
 
 type StdBitEngine     = BitEngine Lit
-type StdBitBlastSim a = Simulator (BitIO Lit) IO a
+type StdBitBlastSim a = Simulator (BitIO (BitMemory Lit) Lit) IO a
 type StdBitBlastTest  = StdBitEngine -> StdBitBlastSim Bool
-type StdBitBlastSEH   = SEH (BitIO Lit) IO
+type StdBitBlastSEH   = SEH (BitIO (BitMemory Lit) Lit) IO
 
 runBitBlastSim :: Int -> FilePath -> StdBitBlastSEH -> (StdBitEngine -> StdBitBlastSim a) -> IO a
 runBitBlastSim v bcFile seh act = do
@@ -121,7 +121,8 @@ stdBitBlastInit bcFile = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
   let lc      = LLVMContext 32 (`lookupAlias` cb)
-      backend = sbeBitBlast lc be
+      mm      = buddyMemModel lc be
+      backend = sbeBitBlast lc be mm
   return (cb, be, lc, backend, stdTestMem)
 
 stdTestMem :: LV.Storable l => BitMemory l
@@ -135,7 +136,7 @@ stdTestMem =
     (ds, de)   = ext ce defaultSz
     (hs, he)   = ext de defaultSz
 
-stdBitBlastLift :: BitIO l a -> Simulator sbe IO a
+stdBitBlastLift :: BitIO (BitMemory l) l a -> Simulator sbe IO a
 stdBitBlastLift = SM . lift . liftSBEBitBlast
 
 -- possibly skip a test

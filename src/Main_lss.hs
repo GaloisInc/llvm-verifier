@@ -105,7 +105,9 @@ main = do
 runBitBlast :: Codebase -> [String] -> LSS -> SymDefine -> IO ()
 runBitBlast cb argv' args mainDef = do
   putStrLn $ "WARNING: Forcing 32-bit address width (TODO: parse target data and use that instead)"
-  sbe <- sbeBitBlast lc <$> createBitEngine
+  sbe <- do
+    be <- createBitEngine
+    return $ sbeBitBlast lc be (buddyMemModel lc be)
   runSimulator cb lc sbe mem (SM . lift . liftSBEBitBlast) defaultSEH $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
