@@ -1,0 +1,11 @@
+This directory contains a very simple script to build all of the central
+sources from dietlibc that will easily build and package them up into a
+single bitcode file. No attempt has been made so far to intelligently
+select which functions to include; we just include everything that
+builds without trouble.
+
+The version of dietlibc this was tested with can be found here:
+
+    http://www.kernel.org/pub/linux/libs/dietlibc/dietlibc-0.32.tar.bz2
+
+Note that dietlibc is licensed under the GPL.
