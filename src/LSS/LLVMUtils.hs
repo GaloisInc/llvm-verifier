@@ -23,9 +23,10 @@ i16p   = PtrTo i16
 i32p   = PtrTo i32
 i64p   = PtrTo i64
 
-voidTy, strTy :: Type
+voidTy, strTy, voidPtr :: Type
 voidTy = PrimType Void
 strTy  = i8p
+voidPtr = PtrTo voidTy
 
 charArrTy :: Int32 -> L.Type
 charArrTy len = L.Array len i8

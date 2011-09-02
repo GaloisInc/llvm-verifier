@@ -1284,7 +1284,7 @@ termIntS w n = withSBE $ \sbe -> termInt sbe w (fromIntegral n)
 
 isSymbolic :: (ConstantProjection (SBEClosedTerm sbe)) =>
               SBE sbe -> L.Typed (SBETerm sbe) -> Bool
-isSymbolic sbe = not . isJust . termConst . closeTerm sbe . typedValue
+isSymbolic sbe = not . isConst . closeTerm sbe . typedValue
 
 printfHandler :: (Functor m, Monad m, MonadIO m,
                   ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1296,9 +1296,23 @@ printfHandler = Override $ \_sym _rty args ->
       isSym <- withSBE' isSymbolic
       let fmtStr' = formatAsStrings fmtStr (map isSym rest)
       resString <- symPrintf fmtStr' <$> mapM termToArg rest
-      liftIO $ putStrLn resString
+      liftIO $ putStr resString
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
+
+allocaHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
+                  ConstantProjection (SBEClosedTerm sbe)) =>
+                 Override sbe m
+allocaHandler = Override $ \_sym _rty args ->
+  case args of
+    [sizeTm] -> do
+      msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
+      case msize of
+        Just size -> do
+          let sizeVal = Typed i32 (L.ValInteger size)
+          (Just . typedValue) <$> alloca i8 (Just sizeVal) Nothing
+        Nothing -> error "alloca: symbolic size not supported"
+    _ -> error "alloca: wrong number of arguments"
 
 freshInt' :: (Functor m, Monad m) => Int -> Override sbe m
 freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
@@ -1365,6 +1379,31 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
                    applyArith sbe L.Add (typedValue addr) one
           (t:) <$> go one (typedAs addr addr') (size - 1)
 
+overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
+                   ConstantProjection (SBEClosedTerm sbe)) =>
+                  Override sbe m
+overrideByName = Override $ \_sym _rty args ->
+  case args of
+    [fromPtr, toPtr] -> do
+      _from <- loadString fromPtr
+      _to <- loadString toPtr
+      dbugM' 0 "overrideByName: nyi"
+      return Nothing
+    _ -> error "override_function_by_name: wrong number of arguments"
+
+overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
+                   ConstantProjection (SBEClosedTerm sbe)) =>
+                  Override sbe m
+overrideByAddr = Override $ \_sym _rty args ->
+  case args of
+    [_fromPtr, _toPtr] -> do
+      dbugM' 0 "overrideByAddr: nyi"
+      return Nothing
+    _ -> error "override_function_by_addr: wrong number of arguments"
+
+nyiOverride :: Override sbe m
+nyiOverride = Override $ \sym _rty _args ->
+  error $ "override niy: " ++ show (L.ppSymbol sym)
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
@@ -1374,6 +1413,7 @@ standardOverrides =
   [ ("exit", voidTy, [i32], False,
      -- TODO: stub! Should be replaced with something useful.
      Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing)
+  , ("alloca", voidPtr, [i32], False, allocaHandler)
   , ("printf", i32, [strTy], True, printfHandler)
   , ("fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("fresh_uint16", i16, [i16], False, freshInt' 16)
@@ -1395,6 +1435,17 @@ standardOverrides =
      writeIntArrayAiger i32)
   , ("write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
      writeIntArrayAiger i64)
+  , ("eval_aiger_uint8",   i8, [i8,  i8p], False, nyiOverride)
+  , ("eval_aiger_uint16", i16, [i16, i8p], False, nyiOverride)
+  , ("eval_aiger_uint32", i32, [i32, i8p], False, nyiOverride)
+  , ("eval_aiger_uint64", i64, [i64, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint8",   i8p, [i8p,  i32, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint16", i16p, [i16p, i32, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint32", i32p, [i32p, i32, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint64", i64p, [i64p, i32, i8p], False, nyiOverride)
+  , ("override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
+  , ("override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
+     overrideByAddr)
   ]
 
 registerOverride' :: (MonadIO m, Functor m, Functor sbe) =>
