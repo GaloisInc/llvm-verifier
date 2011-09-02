@@ -1339,24 +1339,27 @@ writeIntAiger = Override $ \_sym _rty args ->
       return Nothing
     _ -> error "write_aiger_uint: wrong number of arguments"
 
-writeIntArrayAiger :: (Functor m, Monad m,
+writeIntArrayAiger :: (Functor m, Monad m, MonadIO m,
                        ConstantProjection (SBEClosedTerm sbe)) =>
                       L.Type -> Override sbe m
 writeIntArrayAiger _ety = Override $ \_sym _rty args ->
   case args of
     [tptr, sizeTm, fptr] -> do
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
-      case msize of
-        Just size -> do
-          one <- withSBE $ \sbe ->
-                 termInt sbe (fromIntegral $ termWidth sbe (typedValue tptr)) 1
-          bytes <- go one tptr size
-          arrTm <- withSBE $ flip termArray bytes
+      case (msize, typedType tptr) of
+        (Just size, L.PtrTo tgtTy) -> do
+          elemWidth <- withLC (`llvmByteSizeOf` tgtTy)
+          ptrWidth <- withSBE' $ \sbe ->
+                      fromIntegral $ termWidth sbe (typedValue tptr)
+          inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
+          elems <- go inc tptr size
+          arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
           withSBE $ \sbe -> writeAiger sbe file arrTm
           return Nothing
-
-        Nothing -> error "write_aiger_array_uint called with symbolic size"
+        (Nothing, _) ->
+          error "write_aiger_array_uint called with symbolic size"
+        _ -> error "write_aiger_array_uint: invalid argument type"
     _ -> error "write_aiger_array_uint: wrong number of arguments"
   where go _one _addr 0 = return []
         go one addr size = do
