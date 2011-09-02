@@ -804,7 +804,7 @@ eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
 eval (ICmp op (Typed t v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
   Typed t2 y <- getTypedTerm (Typed t v2)
-  CE.assert (t == t1 && t == t2 && (isIntegerType t || isPtrType t)) $ return ()
+  CE.assert (t == t1 && t == t2 && (isIntegerType t || L.isPointer t)) $ return ()
   Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val tv)                  = getTypedTerm tv
