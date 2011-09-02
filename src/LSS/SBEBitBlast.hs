@@ -664,7 +664,15 @@ bmHeapAlloc ptrWidth be bm eltSize (BitTerm cntVector) a =
   case beVectorToMaybeInt be cntVector of
     Nothing -> HASymbolicCountUnsupported
     Just (_, cnt) ->
-      let pwr = blockPower (cnt * eltSize)
+      let -- Get number requested.
+          -- @nm x y@ computes the next multiple m of y s.t. m >= y
+          nm x y = ((y + x - 1) `div` x) * x
+          -- Pad up to the end of the aligned region; we do this because any
+          -- global data that gets copied into this space will be padded to this
+          -- size by LLVM.
+          sz = eltSize * cnt
+          padBytes = nm (2 ^ a :: Integer) sz - sz
+          pwr = blockPower (sz + padBytes)
           size = 2 ^ pwr
           mres = allocBlock (bmFreeList bm) pwr
           false = BitTerm $ beVectorFromInt be 1 0
