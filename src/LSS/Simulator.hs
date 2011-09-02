@@ -807,6 +807,11 @@ eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
+eval (ICmp op (Typed t@(L.PtrTo _) v1) v2) = do
+  Typed t1 x <- getTypedTerm (Typed t v1)
+  Typed t2 y <- getTypedTerm (Typed t v2)
+  CE.assert (t == t1 && t == t2) $ return ()
+  Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
 eval e@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr e)
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val tv)                  = getTypedTerm tv
