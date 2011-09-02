@@ -133,8 +133,6 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
       Nothing     -> Nothing
       Just (w, v) -> Just (CInt (fromIntegral w) v)
 
-  isConst = error "ConstantProjection (BitTermClosed): isConst BitTerm nyi"
-
 prettyLV :: (Eq l, LV.Storable l) => BitEngine l -> LV.Vector l -> Doc
 prettyLV be bv = S.prettyTermWithD S.defaultPPConfig $ BitTermClosed (be, BitTerm bv)
 
