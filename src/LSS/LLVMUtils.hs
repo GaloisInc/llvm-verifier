@@ -41,3 +41,11 @@ cstring str =
 
 typedAs :: Typed a -> b -> Typed b
 typedAs tv x = const x <$> tv
+
+isIntegerType :: Type -> Bool
+isIntegerType (PrimType (Integer _)) = True
+isIntegerType _ = False
+
+isPtrType :: Type -> Bool
+isPtrType (PtrTo _) = True
+isPtrType _ = False
