@@ -24,7 +24,6 @@ symTests :: [(Args, Property)]
 symTests =
   [
     test 1 False "test-trivial-divergent-branch" $ trivBranch 1
-    -- symbolic reads not yet supported, so this is currently disabled
   , test 1 False "test-trivial-symbolic-read"    $ trivSymRd 1
   , test 1 False "test-trivial-fresh-int"        $ trivFreshInt 1
   , test 1 False "test-trivial-fresh-array"      $ trivFreshArr 1
