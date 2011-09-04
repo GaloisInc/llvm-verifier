@@ -30,6 +30,8 @@ Point-of-contact : jstanley
 module LSS.Simulator
   ( module LSS.Execution.Codebase
   , Simulator (SM)
+  , State(..)
+  , SEH(..)
   , callDefine
   , callDefine_
   , defaultSEH
@@ -57,7 +59,6 @@ where
 
 import           Control.Applicative
 import           Control.Monad.State       hiding (State)
-import           Data.Bits
 import           Data.Int
 import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
@@ -83,8 +84,8 @@ import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 
 runSimulator :: (Functor m, MonadIO m)
-  => Codebase              -- ^ Post-transform LLVM code
-  -> LLVMContext           -- ^ Memory alignment and type aliasing info
+  => Codebase              -- ^ Post-transform LLVM code, memory alignment, and
+                           -- type aliasing info
   -> SBE sbe               -- ^ A symbolic backend
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
   -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
@@ -92,23 +93,21 @@ runSimulator :: (Functor m, MonadIO m)
                            -- event handling is needed)
   -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
-runSimulator cb lc sbe mem lifter seh m =
-  evalStateT (runSM (setup >> m)) (newSimState cb lc sbe mem lifter seh)
+runSimulator cb sbe mem lifter seh m =
+  evalStateT (runSM (setup >> m)) (newSimState cb sbe mem lifter seh)
   where
     setup = do
       modifyCS $ pushMF emptyExitFrame
 
 newSimState :: Codebase
-            -> LLVMContext
             -> SBE sbe
             -> SBEMemory sbe
             -> LiftSBE sbe m
             -> SEH sbe m
             -> State sbe m
-newSimState cb lc sbe mem lifter seh =
+newSimState cb sbe mem lifter seh =
   State
   { codebase     = cb
-  , llvmCtx      = lc
   , symBE        = sbe
   , initMemModel = mem
   , liftSymBE    = lifter
@@ -137,7 +136,10 @@ callDefine ::
   -> ArgsGen sbe m -- ^ Callee argument generator
   -> Simulator sbe m [Typed (SBETerm sbe)]
 callDefine calleeSym t argsGen = do
-  let gen = registerStandardOverrides >> argsGen
+  let gen = do
+        registerStandardOverrides
+        cb0 onPostOverrideReg
+        argsGen
   callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left gen)
     <* run
 
@@ -585,8 +587,8 @@ getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
 
 getTypedTerm' mfrm (Typed ty@(L.Array _len ety@(L.PrimType L.Integer{})) (L.ValString str))
   = do
-  lc <- gets llvmCtx
-  CE.assert (llvmByteSizeOf lc ty == fromIntegral (length str)) $ return ()
+  lc <- gets (cbLLVMCtx . codebase)
+  CE.assert (llvmStoreSizeOf lc ty == fromIntegral (length str)) $ return ()
   charTerms <- mapM (getTypedTerm' mfrm) $ map toChar str
   Typed ty <$> withSBE (\sbe -> termArray sbe $ map typedValue charTerms)
   where
@@ -613,7 +615,7 @@ getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
 
 getTypedTerm' _mfrm (Typed ty L.ValUndef)
   = do
-  szBytes <- fromIntegral <$> withLC (`llvmByteSizeOf` ty)
+  szBytes <- fromIntegral <$> withLC (`llvmAllocSizeOf` ty)
   Typed ty <$> withSBE (\sbe -> termInt sbe (szBytes * 8) 0)
 
 getTypedTerm' mfrm tv@(Typed t v)
@@ -653,8 +655,6 @@ getGlobalPtrTerm key@(sym, tys) = do
       cb1 onMkGlobTerm g
       cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
       cb2 onPreGlobInit g cdata
---       ins (L.globalType g) (\sbe mem -> memInitGlobal sbe mem cdata)
---         <* cb2 onPostGlobInit g cdata
       r <- ins (L.globalType g) $ \sbe mem -> do
              maybe (error "Not enough space in data segment to allocate new global.") id
                <$> memInitGlobal sbe mem cdata
@@ -825,14 +825,7 @@ evalGEP ::
 evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
   where
     impl [] (Typed referentTy ptrVal) = do
-      -- Truncate the final pointer value down to the target's address width, as
-      -- needed.
-      addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
-      ptrWidth  <- fromIntegral <$> withSBE' (`termWidth` ptrVal)
-      Typed (L.PtrTo referentTy) <$> do
-        if addrWidth < ptrWidth
-          then termConv L.Trunc ptrVal (intn addrWidth)
-          else return ptrVal
+      return $ Typed (L.PtrTo referentTy) ptrVal
 
     impl (idx:idxs) (Typed (L.PtrTo referentTy) ptrVal) = do
       impl idxs =<< baseOffset idx referentTy ptrVal
@@ -858,6 +851,10 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
               ++ show (L.ppType (typedType tv))
               ++ " : " ++ show (typedType tv)
 
+    -- @addSz p ty@ computes @p + sizeof(ty)
+    addSz p ty = termAdd p . typedValue
+                   =<< promote =<< getTypedTerm =<< sizeof ty
+
     -- @baseOffset i ty p@ computes @p + i * sizeof(ty)@
     baseOffset ::
       ( MonadIO m
@@ -868,68 +865,29 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
       => Typed SymValue -> L.Type -> SBETerm sbe
       -> Simulator sbe m (Typed (SBETerm sbe))
     baseOffset idx referentTy ptrVal = do
-      Typed _ idxTerm <- getTypedTerm idx
-      Typed _ szTerm  <- getTypedTerm =<< sizeof referentTy
-      Typed referentTy <$> axpy idxTerm szTerm ptrVal
+      Typed _ idxTerm <- promote =<< getTypedTerm idx
+      Typed _ szTerm  <- promote =<< getTypedTerm =<< sizeof referentTy
+      Typed referentTy <$> (termAdd ptrVal =<< termMul idxTerm szTerm)
 
-    -- @addSz p ty@ computes @p + sizeof(ty)
-    addSz p ty = termAdd p . typedValue =<< getTypedTerm =<< sizeof ty
+    -- @promote x@ promotes integer value x to the target's pointer width
+    promote :: (MonadIO m, Functor m)
+      => Typed (SBETerm sbe) -> Simulator sbe m (Typed (SBETerm sbe))
+    promote x@(Typed (L.PrimType (L.Integer iw)) v1) = do
+      aw <- fromIntegral <$> withLC llvmAddrWidthBits
+      if aw > iw
+        then Typed (intn aw) <$> termConv L.ZExt v1 (intn aw)
+        else return x
+    promote _ = error "internal: promotion of non-integer value"
+
 evalGEP e = error $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
 
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
 
--- termAdd, termMul :: (Functor m, MonadIO m)
---   => SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
--- termAdd x y = do
---   (x', y') <- resizeTerms x y
---   withSBE $ \sbe -> applyArith sbe L.Add x' y'
--- termMul x y = do
---   (x', y') <- resizeTerms x y
---   withSBE $ \sbe -> applyArith sbe L.Mul x' y'
-
--- -- @axpy a x y@ computes a * x + y, promoting terms to larger sizes as needed.
--- axpy :: (Functor m, MonadIO m)
---   => SBETerm sbe
---   -> SBETerm sbe
---   -> SBETerm sbe
---   -> Simulator sbe m (SBETerm sbe)
--- axpy a x y = termAdd y =<< termMul a x
-
 termAdd, termMul :: (Functor m, Monad m)
   => SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
 termAdd x y = withSBE $ \sbe -> applyArith sbe L.Add x y
 termMul x y = withSBE $ \sbe -> applyArith sbe L.Mul x y
-
--- @axpy a x y@ computes a * x + y, promoting terms to larger sizes as needed.
-axpy :: (Functor m, MonadIO m)
-  => SBETerm sbe
-  -> SBETerm sbe
-  -> SBETerm sbe
-  -> Simulator sbe m (SBETerm sbe)
-axpy a x y = do
-  (a', x') <- resizeTerms a x
-  t        <- termMul a' x'
-  (t', y') <- resizeTerms t y
-  termAdd t' y'
-
--- | @resizeTerms a b@ yields both arguments back after sign-extending the
--- smaller of the two terms.
-resizeTerms :: (MonadIO m, Functor m)
-  => SBETerm sbe
-  -> SBETerm sbe
-  -> Simulator sbe m (SBETerm sbe, SBETerm sbe)
-resizeTerms a b = do
-  wa <- fromIntegral <$> withSBE' (`termWidth` a)
-  wb <- fromIntegral <$> withSBE' (`termWidth` b)
-  if wa > wb
-    then conv b (intn wa) >>= \b' -> return (a, b')
-    else
-      if wb > wa
-         then conv a (intn wb) >>= \a' -> return (a', b)
-         else return (a, b)
-  where
-    conv = termConv L.SExt
 
 termConv :: (Functor m, Monad m)
   => L.ConvOp -> SBETerm sbe -> L.Type -> Simulator sbe m (SBETerm sbe)
@@ -1010,10 +968,14 @@ mutateMem_ :: (Functor m, MonadIO m, Functor sbe)
 mutateMem_ f = mutateMem (\sbe mem -> ((,) ()) <$> f sbe mem) >> return ()
 
 withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
-withLC f = f <$> gets llvmCtx
+withLC f = f <$> gets (cbLLVMCtx . codebase)
 
 --------------------------------------------------------------------------------
 -- Callbacks
+
+cb0 :: (Functor m, Monad m)
+  => (SEH sbe m -> Simulator sbe m ()) -> Simulator sbe m ()
+cb0 f = join $ gets (f . evHandlers)
 
 cb1 :: (Functor m, Monad m)
   => (SEH sbe m -> a -> Simulator sbe m ()) -> a -> Simulator sbe m ()
@@ -1025,6 +987,7 @@ cb2 f x y = join $ gets (f . evHandlers) <*> pure x <*> pure y
 
 defaultSEH :: Monad m => SEH sbe m
 defaultSEH = SEH
+               (return ())
                (\_   -> return ())
                (\_   -> return ())
                (\_   -> return ())
@@ -1051,18 +1014,18 @@ alloca ty msztv malign = do
   let parseFn SASymbolicCountUnsupported = error "alloca only supports concrete element count"
       parseFn (SAResult c t m') = ((c,t), m')
   -- TODO: Handle 'cond' result
-  (cond,t) <- mutateMem $ \sbe m -> parseFn <$> stackAlloca sbe m ty nt (maybe 0 lg malign)
+  (cond,t) <- mutateMem $ \sbe m ->
+                parseFn <$> stackAlloca sbe m ty nt (maybe 0 lg malign)
   return (Typed (L.PtrTo ty) t)
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
+-- | Returns the a term representing the target-specific number of bytes
+-- required to store a value of the given type.
 sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m (Typed L.Value)
 sizeof ty = Typed (L.PrimType (L.Integer 32))
-              <$> L.ValInteger <$> withLC (`llvmByteSizeOf` ty)
-
-lg :: (Ord a, Bits a) => a -> a
-lg = genericLength . takeWhile (>0) . drop 1 . iterate (`shiftR` 1)
+              <$> L.ValInteger <$> withLC (`llvmAllocSizeOf` ty)
 
 resolveCallee :: (MonadIO m, Functor m) => SymValue -> Simulator sbe m (Either String L.Symbol)
 resolveCallee callee = case callee of

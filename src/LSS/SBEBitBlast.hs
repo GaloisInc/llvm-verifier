@@ -183,7 +183,7 @@ ppStorage' mranges be = impl 0 Nothing
                                            <> LLVM.ppLabel l
     impl a (Just doc) SUninitialized = whenInRange a $ item doc a $ text "uninitialized"
     impl _ (Just doc) SUnallocated   = doc
-    item doc addr desc               = doc $+$ integer addr <> colon <+> desc
+    item doc addr desc               = doc $+$ text (showHex addr "") <> colon <+> desc
 
     whenInRange a doc = case mranges of
       Nothing     -> doc
@@ -329,8 +329,6 @@ uninitRegion :: LLVMContext -> Addr -> Addr -> Storage l -> Storage l
 uninitRegion lc low high =
   setBytes (llvmAddrWidthBits lc) low high (\_ -> SUninitialized)
 
-type Addr = Integer
-
 -- Allocator and allocation {{{1
 
 -- | Free list maps each index i to the address of blocks with 2^i
@@ -420,12 +418,14 @@ bmDump :: (Eq l, LV.Storable l)
 bmDump be sparse bm mranges = do
   banners $ render $
     text "Memory Model Dump"
-    $+$ text "Stack Range:" <+> text (show (bmStackAddr bm, bmStackEnd bm))
-    $+$ text "Code Range:" <+> text (show (bmCodeAddr bm, bmCodeEnd bm))
-    $+$ text "Data Range:" <+> text (show (bmDataAddr bm, bmDataEnd bm))
+    $+$ text "Stack Range:" <+> text (h $ bmStackAddr bm) <> comma <+> text (h $ bmStackEnd bm)
+    $+$ text "Code Range:"  <+> text (h $ bmCodeAddr bm) <> comma <+> text (h $ bmCodeEnd bm)
+    $+$ text "Data Range:"  <+> text (h $ bmDataAddr bm) <> comma <+> text (h $ bmDataEnd bm)
     $+$ text "Frame pointers:" <+> text (show (bmStackFrames bm))
     $+$ text "Storage:"
     $+$ (if sparse then ppStorage' mranges else ppStorageShow) be (bmStorage bm)
+  where
+    h s = showHex s ""
 
 bmLoad :: (Eq l, LV.Storable l)
        => LLVMContext
@@ -435,11 +435,14 @@ bmLoad :: (Eq l, LV.Storable l)
        -> IO (BitTerm l, BitTerm l)
 bmLoad lc be bm ptr
   | LV.length ptrVal /= llvmAddrWidthBits lc =
-      bmError $ "internal: Illegal pointer given to load: address width mismatch"
+      bmError $ "internal: Illegal pointer given to load: "
+              ++ "address width mismatch ("
+              ++ show (LV.length ptrVal) ++ " vs. "
+              ++ show (llvmAddrWidthBits lc) ++ ")"
   | otherwise =
       case resolveType lc (LLVM.typedType ptr) of
         LLVM.PtrTo tp -> do
-          (c, bits) <- loadBytes be (bmStorage bm) ptrVal (llvmByteSizeOf lc tp)
+          (c, bits) <- loadBytes be (bmStorage bm) ptrVal (llvmStoreSizeOf lc tp)
           return ( BitTerm (LV.singleton c)
                  , BitTerm (loadPtr tp bits))
         _ -> bmError "Illegal type given to load"
@@ -458,7 +461,7 @@ bmStore :: (Eq l, LV.Storable l)
         -> IO (BitTerm l, BitMemory l)
 bmStore lc be bm v (BitTerm ptr) = do
   let BitTerm val = LLVM.typedValue v
-      bsz = llvmByteSizeOf lc (LLVM.typedType v)
+      bsz = llvmStoreSizeOf lc (LLVM.typedType v)
       extVal = case resolveType lc (LLVM.typedType v) of
                  -- Extend integer types to full width.
                  LLVM.PrimType (LLVM.Integer w) ->
@@ -481,15 +484,8 @@ bmStackAlloca lc be bm eltTp typedCnt a
   | BitTerm cntVector <- LLVM.typedValue typedCnt
   , Just (_,cnt) <- beVectorToMaybeInt be cntVector =
      let -- Number of bytes in element type.
-         eltSize = llvmByteSizeOf lc eltTp
+         eltSize = llvmAllocSizeOf lc eltTp
          -- Get number requested.
-         -- @nm x y@ computes the next multiple m of y s.t. m >= y
-         nm x y = ((y + x - 1) `div` x) * x
-         -- Pad up to the end of the aligned region; we do this because any
-         -- global data that gets copied into this space will be padded to this
-         -- size by LLVM.
-         padBytes = fromIntegral $ nm (2 ^ a :: Int) sz - sz
-                      where sz = fromIntegral (eltSize * cnt)
          mkRes c res newStorage newAddr =
            SAResult (BitTerm (LV.singleton (beLitFromBool be c)))
                     (BitTerm (beVectorFromInt be (llvmAddrWidthBits lc) res))
@@ -497,13 +493,13 @@ bmStackAlloca lc be bm eltTp typedCnt a
          -- Get new bit memory.
          r | bmStackGrowsUp bm =
                let alignedAddr  = alignUp (bmStackAddr bm) a
-                   newStackAddr = alignedAddr + eltSize * cnt + padBytes
+                   newStackAddr = alignedAddr + eltSize * cnt
                 in mkRes (newStackAddr <= bmStackEnd bm)
                          alignedAddr
                          (uninitRegion lc alignedAddr newStackAddr (bmStorage bm))
                          newStackAddr
            | otherwise =
-               let sz = eltSize * cnt + padBytes
+               let sz = eltSize * cnt
                    alignedAddr = alignDn (bmStackAddr bm - sz) a
                 in mkRes (alignedAddr >= bmStackEnd bm)
                          alignedAddr
@@ -609,7 +605,7 @@ bmMemInitGlobal lc be m (LLVM.Typed ty (BitTerm gd))
     width       = llvmAddrWidthBits lc
     dataAddr    = bmDataAddr m
     newDataAddr = dataAddr + newSpaceReq
-    newSpaceReq = llvmByteSizeOf lc ty
+    newSpaceReq = llvmAllocSizeOf lc ty
 
 bmMemAddDefine :: (Eq l, LV.Storable l)
                => LLVMContext
@@ -811,17 +807,16 @@ termDecompImpl :: (LV.Storable l, Eq l)
                -> BitTerm l
                -> [LLVM.Typed (BitTerm l)]
 termDecompImpl lc _be tys0 (BitTerm t)
-  | sum (map llvmBitSizeOf tys0) /= LV.length t
+  | sum (map (llvmMinBitSizeOf lc) tys0) /= fromIntegral (LV.length t)
   = error "termDecompImpl: sum of type sizes must equal bitvector length"
   | otherwise
   = unfoldr slice (t, tys0)
   where
-    llvmBitSizeOf ty = fromIntegral $ llvmByteSizeOf lc ty `shiftL` 3
     slice (bv, [])       = assert (LV.null bv) Nothing
     slice (bv, (ty:tys)) = Just (bt $ LV.take sz bv, (LV.drop sz bv, tys))
       where
         bt = LLVM.Typed ty . BitTerm
-        sz = llvmBitSizeOf ty
+        sz = fromIntegral $ llvmMinBitSizeOf lc ty
 
 type Range t = (t,t)
 
@@ -878,7 +873,9 @@ sbeBitBlastMem stack code gdata heap
 
 testSBEBitBlast :: IO ()
 testSBEBitBlast = do
-  let lc = LLVMContext 5 undefined
+  let lc = buildLLVMContext
+             (error "no type alias resolution defined")
+             []
   be <- createBitEngine
   let sbe = sbeBitBlast lc be
   let m0 = sbeBitBlastMem (0x10,0x0) (0x0,0x0) (0x0, 0x0) (0x0,0x0)

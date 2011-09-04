@@ -1,8 +1,10 @@
 module LSS.LLVMUtils where
 
 import           Control.Applicative
+import           Data.Bits
 import           Data.Char
 import           Data.Int
+import           Data.List
 import           Text.LLVM.AST
 import           Text.LLVM     ((=:))
 import qualified Text.LLVM     as L
@@ -41,3 +43,18 @@ cstring str =
 
 typedAs :: Typed a -> b -> Typed b
 typedAs tv x = const x <$> tv
+
+-- | @nextMultiple x y@ computes the next multiple m of x s.t. m >= y.  E.g.,
+-- nextMultiple 4 8 = 8 since 8 is a multiple of 8; nextMultiple 4 7 = 8;
+-- nextMultiple 8 6 = 16.
+nextMultiple :: Integral a => a -> a -> a
+nextMultiple x y = ((y + x - 1) `div` x) * x
+
+isPow2 :: Bits a => a -> Bool
+isPow2 x = x .&. (x-1) == 0
+
+nextPow2 :: (Ord a, Bits a, Integral a) => a -> a
+nextPow2 x = 2 ^ (lg x + 1)
+
+lg :: (Ord a, Bits a) => a -> a
+lg = genericLength . takeWhile (>0) . drop 1 . iterate (`shiftR` 1)

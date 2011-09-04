@@ -16,12 +16,12 @@ import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
+-- import           Verinf.Utils.LogMonad
 import qualified Text.LLVM        as L
 
 aggTests :: [(Args, Property)]
 aggTests =
-  [
-    test 1 False "test-array-index-base"       $ arrayBaseIdx     1
+  [ test 1 False "test-array-index-base"       $ arrayBaseIdx     1
   , test 1 False "test-array-index-offset"     $ arrayOffsetIdx   1
   , test 1 False "test-array-1d-initializer"   $ arrayInit1D      1
   , test 1 False "test-array-2d-initializer"   $ arrayInit2D      1

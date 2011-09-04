@@ -105,35 +105,28 @@ type StdBitBlastSEH   = SEH (BitIO Lit) IO
 
 runBitBlastSim :: Int -> FilePath -> StdBitBlastSEH -> (StdBitEngine -> StdBitBlastSim a) -> IO a
 runBitBlastSim v bcFile seh act = do
-  (cb, be, lc, backend, mem) <- stdBitBlastInit bcFile
-  runSimulator cb lc backend mem stdBitBlastLift seh $ withVerbosity v (act be)
+  (cb, be, backend, mem) <- stdBitBlastInit bcFile
+  runSimulator cb backend mem stdBitBlastLift seh $ withVerbosity v (act be)
 
 runBitBlastSimTest :: Int -> FilePath -> StdBitBlastSEH -> StdBitBlastTest-> PropertyM IO ()
 runBitBlastSimTest v bcFile seh = assert <=< run . runBitBlastSim v bcFile seh
 
 stdBitBlastInit :: FilePath -> IO ( Codebase
                                   , StdBitEngine
-                                  , LLVMContext
                                   , BitBlastSBE Lit
                                   , BitMemory Lit
                                   )
 stdBitBlastInit bcFile = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
-  let lc      = LLVMContext 32 (`lookupAlias` cb)
-      backend = sbeBitBlast lc be
-  return (cb, be, lc, backend, stdTestMem)
+  let backend = sbeBitBlast (cbLLVMCtx cb) be
+  return (cb, be, backend, stdTestMem $ cbLLVMCtx cb)
 
-stdTestMem :: LV.Storable l => BitMemory l
-stdTestMem =
-  sbeBitBlastMem (ss, se) (cs, ce) (ds, de) (hs, he)
+stdTestMem :: LV.Storable l => LLVMContext -> BitMemory l
+stdTestMem lc =
+  sbeBitBlastMem stack code data' heap --(ss, se) (cs, ce) (ds, de) (hs, he)
   where
-    defaultSz  = 2^(16 :: Int)
-    ext st len = (st, st + len)
-    (ss, se)   = ext 0 defaultSz
-    (cs, ce)   = ext se defaultSz
-    (ds, de)   = ext ce defaultSz
-    (hs, he)   = ext de defaultSz
+    (stack, code, data', heap) = defaultMemGeom lc
 
 stdBitBlastLift :: BitIO l a -> Simulator sbe IO a
 stdBitBlastLift = SM . lift . liftSBEBitBlast

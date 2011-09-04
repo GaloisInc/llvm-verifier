@@ -31,13 +31,14 @@ sanityChecks ::
   => SEH sbe m
 sanityChecks = SEH
   {
-    onPreStep    = \_ -> return ()
-  , onPostStep   = \_ -> return ()
-  , onMkGlobTerm = \_ -> return ()
+    onPreStep         = \_ -> return ()
+  , onPostStep        = \_ -> return ()
+  , onMkGlobTerm      = \_ -> return ()
+  , onPostOverrideReg = return ()
 
   , onPreGlobInit = \g (Typed ty gdata) -> do
       CE.assert (L.globalType g == ty) $ return ()
-      sz  <- withLC (`llvmByteSizeOf` ty)
+      sz  <- withLC (`llvmStoreSizeOf` ty)
       szt <- withSBE' $ \sbe -> termWidth sbe gdata
       when (szt `shiftR` 3 /= sz) $ do
         dbugM $ "onPreGlobInit assert failure on " ++ show (L.ppSymbol $ L.globalSym g)
@@ -45,10 +46,11 @@ sanityChecks = SEH
         CE.assert False $ return ()
 
   , onPostGlobInit = \g (Typed ty gdata) -> do
-      mem <- getMem
-      sz  <- withLC (`llvmByteSizeOf` ty)
+      mem       <- getMem
+      sz        <- withLC (`llvmStoreSizeOf` ty)
+      addrWidth <- withLC llvmAddrWidthBits
       -- Read back and check
-      gstart <- withSBE $ \sbe -> termInt sbe 32 (bmDataAddr mem - sz)
+      gstart <- withSBE $ \sbe -> termInt sbe addrWidth (bmDataAddr mem - sz)
       (cond, gdata') <- withSBE $ \sbe -> memLoad sbe mem (Typed (L.PtrTo ty) gstart)
       eq <- uval =<< (Typed i1 <$> withSBE (\sbe -> applyICmp sbe L.Ieq gdata gdata'))
       when (eq /= 1) $ do

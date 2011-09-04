@@ -20,7 +20,6 @@ module LSS.Execution.Common where
 import           Control.Applicative
 import           Control.Arrow             hiding ((<+>))
 import           Control.Monad.State       hiding (State)
-import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
@@ -50,7 +49,6 @@ type OvrMap sbe m  = M.Map L.Symbol (Override sbe m)
 -- | Symbolic simulator state
 data State sbe m = State
   { codebase     :: Codebase      -- ^ LLVM code, post-transformation to sym ast
-  , llvmCtx      :: LLVMContext   -- ^ Memory alignment and type aliasing info
   , symBE        :: SBE sbe       -- ^ Symbolic backend interface
   , initMemModel :: SBEMemory sbe -- ^ The SBE's initial LLVM memory model;
                                   -- mutated models are carried in path states.
@@ -113,16 +111,18 @@ data Path' term mem = Path
 -- Simulation event handlers, useful for debugging nontrivial codes.
 data SEH sbe m = SEH
   {
+    -- | Invoked after function overrides have been registered
+    onPostOverrideReg :: Simulator sbe m ()
     -- | Invoked before each instruction executes
-    onPreStep      :: SymStmt  -> Simulator sbe m ()
+  , onPreStep         :: SymStmt  -> Simulator sbe m ()
     -- | Invoked after each instruction executes
-  , onPostStep     :: SymStmt  -> Simulator sbe m ()
+  , onPostStep        :: SymStmt  -> Simulator sbe m ()
     -- | Invoked before construction of a global term value
-  , onMkGlobTerm   :: L.Global -> Simulator sbe m ()
+  , onMkGlobTerm      :: L.Global -> Simulator sbe m ()
     -- | Invoked before memory model initialization of global data
-  , onPreGlobInit  :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
+  , onPreGlobInit     :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked after memory model initialization of global data
-  , onPostGlobInit :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
+  , onPostGlobInit    :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
   }
 
 -- Carry aggregated symconds for pretty-printing; useful when symbolic term
@@ -142,13 +142,13 @@ data CallFrame term = CallFrame
   }
   deriving Show
 
--- | A handler for a function override. This gets the function symbol
--- as an argumetn so that one function can potentially be used to
--- override multiple symbols.
+-- | A handler for a function override. This gets the function symbol as an
+-- argument so that one function can potentially be used to override multiple
+-- symbols.
 type OverrideHandler sbe m
   =  L.Symbol              -- ^ Callee symbol
   -> Maybe (Typed Reg)     -- ^ Callee return register
-  -> [Typed (SBETerm sbe)] -- ^ Callee argumenxblitts
+  -> [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m (Maybe (SBETerm sbe))
 
 -- | An override may specify a function to run within the simulator,
