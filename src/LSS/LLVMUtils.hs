@@ -46,7 +46,7 @@ typedAs tv x = const x <$> tv
 
 -- | @nextMultiple x y@ computes the next multiple m of x s.t. m >= y.  E.g.,
 -- nextMultiple 4 8 = 8 since 8 is a multiple of 8; nextMultiple 4 7 = 8;
--- nextMultiple 8 6 = 16.
+-- nextMultiple 8 6 = 8.
 nextMultiple :: Integral a => a -> a -> a
 nextMultiple x y = ((y + x - 1) `div` x) * x
 

@@ -153,7 +153,7 @@ data Storage l
 
 -- A derived(Show)-like pretty printer for the Storage type
 ppStorageShow :: (Eq l, LV.Storable l) => BitEngine l -> Storage l -> Doc
-ppStorageShow be (SBranch f t) = text "SBranch" <+> parens (ppStorage be f) <+> parens (ppStorage be t)
+ppStorageShow be (SBranch f t) = text "SBranch" <+> parens (ppStorageShow be f) <+> parens (ppStorageShow be t)
 ppStorageShow be (SValue lv) = text "SValue" <+> parens (prettyLV be lv)
 ppStorageShow _ (SDefine d) = text ("SDefine " ++ show d)
 ppStorageShow _ (SBlock d b) = text ("SBlock " ++ show d ++ " " ++ show b)
@@ -205,7 +205,19 @@ mergeStorage be c x y = impl x y
           | otherwise = bmError "Attempt to merge memories with incompatible block values."
         impl SUninitialized SUninitialized = return SUninitialized
         impl SUnallocated SUnallocated = return SUnallocated
-        impl _ _ = bmError "Attempt to merge incompatible valid addresses."
+
+        -- TODO FIXME: Discuss the following four lines with JHX.  This was
+        -- needed in order to merge memories in the multiply-lss examples. [JS
+        -- 05 Sep 11]
+        impl a@SValue{} SUninitialized = return a
+        impl SUninitialized b@SValue{} = return b
+        impl a SUnallocated            = return a
+        impl SUnallocated b            = return b
+
+        impl a b = do
+          dbugM $ "mergeStorage failure case: a = " ++ show (ppStorageShow be a)
+          dbugM $ "mergeStorage failure case: b = " ++ show (ppStorageShow be b)
+          bmError "Attempt to merge incompatible valid addresses."
 
 beIteM :: Eq l => BitEngine l -> l -> IO l -> IO l -> IO l
 beIteM be c tm fm

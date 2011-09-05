@@ -119,6 +119,19 @@ runBitBlast cb argv' args mainDef = do
 
     callDefine_ (L.Symbol "main") i32 $
       if mainHasArgv then buildArgv numArgs argv' else return []
+
+{-
+    -- tmp: hacky manual eval aiger until the overrides are all in place and working
+    mrv <- getProgramReturnValue
+    case mrv of
+      Nothing -> dbugM "no retval"
+      Just rv -> do
+        dbugTerm "rv" rv
+        -- for multiply-lss.c:multiply() with uint16_t VecTypes: manually check that 3 * 4 = 12.
+        eval <- withSBE $ \sbe -> evalAiger sbe ((True : True : replicate 14 False) ++ (False : False : True : replicate 13 False)) rv
+        dbugTerm "eval" eval
+    return ()
+-}
   where
       mainHasArgv              = not $ null $ sdArgs mainDef
       numArgs                  = fromIntegral (length argv') :: Int32

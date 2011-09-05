@@ -71,6 +71,8 @@ import           LSS.Execution.Utils
 import           LSS.LLVMUtils
 import           LSS.Printf
 import           LSS.SBEInterface
+import           System.Exit
+import           System.IO
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..),
@@ -435,24 +437,8 @@ mergeMFs src dst = do
           -- Exit frames have no pending paths and represent the program termination
           -- point, so merge src's merged state with dst's merge state.
           (`setMergedState` dst) <$> mergePaths srcMerged (getMergedState dst)
-        ReturnFrame{} -> do
-          -- In both cases, we dump up our merged state over dst's current path,
-          -- being careful to pick up a few pieces of data from dst (execution
-          -- context and return value -- since the dst is a return MF, we need
-          -- to retain its call frame, current block).
-          case pathRetVal srcMerged of
-            Nothing -> rfReplace id
-            Just rv -> case rfRetReg src of
-              Nothing   -> error "mergeMFs: src return frame has RV but no ret reg"
-              Just rreg -> rfReplace $ setReg (typedValue rreg) (typedAs rreg rv)
-          where
-            rfReplace mutCF = modifyDstPath $ \dstPath ->
-              srcMerged{ pathCallFrame = mutCF (pathCallFrame dstPath)
-                       , pathCB        = pathCB dstPath
-                       , pathRetVal    = pathRetVal dstPath
-                       }
-        PostdomFrame{} -> do
-          error "mergeMFs: postdom dst frame nyi"
+        ReturnFrame{}  -> mergeRetMF
+        PostdomFrame{} -> mergeRetMF
     PostdomFrame{}
       |isExitFrame dst -> error "mergeMFs: postdom MF => exit MF is not allowed"
       | otherwise      -> modifyDstPath (const srcMerged)
@@ -460,6 +446,21 @@ mergeMFs src dst = do
   where
     modifyDstPath  = return . (`modifyPending` dst)
     Just srcMerged = getMergedState src -- NB: src /must/ have a merged state.
+    mergeRetMF     = do
+      -- In both cases, we dump up our merged state over dst's current path,
+      -- being careful to pick up a few pieces of data from it: execution
+      -- context (call frame / current block), and return value if any.
+      case pathRetVal srcMerged of
+        Nothing -> rfReplace id
+        Just rv -> case rfRetReg src of
+          Nothing   -> error "mergeMFs: src return frame has RV but no ret reg"
+          Just rreg -> rfReplace $ setReg (typedValue rreg) (typedAs rreg rv)
+      where
+        rfReplace mutCF = modifyDstPath $ \dstPath ->
+          srcMerged{ pathCallFrame = mutCF (pathCallFrame dstPath)
+                   , pathCB        = pathCB dstPath
+                   , pathRetVal    = pathRetVal dstPath
+                   }
 
 -- | @mergePaths p1 p2@ merges path p1 into path p2, which may be empty; when p2
 -- is empty, this function merely p1 as the merged path. Yields Nothing if
@@ -530,8 +531,6 @@ mergePaths from (Just to) = do
 
     mergeV _a@(Typed t1 v1) _b@(Typed t2 v2) = do
       CE.assert (t1 == t2) $ return ()
---       dbugTypedTerm "a" a
---       dbugTypedTerm "b" b
       Typed t1 <$> v1 <-> v2
 
 -- @mergeMapsBy from to act@ unions the @from@ and @to@ maps, combing common
@@ -1181,8 +1180,32 @@ dbugStep stmt = do
                    IfThenElse{} -> "\n"
                    _ -> ""
                  ++ show (ppSymStmt stmt)
+--  repl
   step stmt
   dumpCtrlStk' 5
+
+repl :: (Functor m, MonadIO m) => Simulator sbe m ()
+repl = do
+  liftIO $ putStr "lss> " >> hFlush stdout
+  inp <- liftIO getLine
+  unless (null inp) $ case inp of
+    "cs"   -> dumpCtrlStk >> repl
+    "mem"  -> dumpMem 1 "User request" >> repl
+    "path" -> do sbe <- gets symBE
+                 p   <- getPath' "repl"
+                 liftIO $ putStrLn $ show $ ppPath sbe p
+                 repl
+    "quit"   -> liftIO $ exitWith ExitSuccess
+    other    -> case other of
+                  ('v':rest) -> case reads rest of
+                                  [(v, "")] -> do
+                                    dbugM $ "Verbosity set to " ++ show v ++ "."
+                                    setVerbosity v
+                                    repl
+                                  _ -> unknown
+                  _          -> unknown
+  where
+    unknown = dbugM "Unknown command. Options are cs, mem, path, quit, vx." >> repl
 
 dbugTerm :: (MonadIO m, Functor m) => String -> SBETerm sbe -> Simulator sbe m ()
 dbugTerm desc t = dbugM =<< ((++) (desc ++ ": ")) . render <$> prettyTermSBE t
@@ -1195,7 +1218,7 @@ _nowarn_unused :: a
 _nowarn_unused = undefined
   (dbugTerm undefined undefined :: Simulator IO IO ())
   (dbugTypedTerm undefined undefined :: Simulator IO IO ())
-
+  (repl :: Simulator IO IO ())
 
 --------------------------------------------------------------------------------
 -- Standard overrides
