@@ -351,24 +351,40 @@ getCurrentBlockM =
     <$> pathCB
     <$> getPath' "getCurrentBlockM"
 
--- @addPathConstraint p c@ adds the given condition @c@ to the path constraint
--- of the @p@; note that any idents are deref'd in the context of @p@'s call
--- frame.  This function does not modify any simulator state.
-addPathConstraint ::
+-- @addPathConstraintSC p c@ adds the given condition @c@ to the path constraint
+-- of @p@. Note that any idents are deref'd in the context of @p@'s call frame.
+-- This function does not modify simulator state.
+addPathConstraintSC ::
   ( MonadIO m
   , Functor m
   , ConstantProjection (SBEClosedTerm sbe)
   , Functor sbe
   )
   => Path sbe -> SymCond -> Simulator sbe m (Path sbe)
-addPathConstraint p TrueSymCond         = return p
-addPathConstraint p c@(HasConstValue v i) = do
+addPathConstraintSC p TrueSymCond           = return p
+addPathConstraintSC p c@(HasConstValue v i) = do
+  -- Construct the constraint term from the HasConstValue predicate
   Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (i1 =: v)
   Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
+  ct <- withSBE (\sbe -> applyICmp sbe L.Ieq vt it)
+  addPathConstraint p (Just c) ct
+
+-- @addPathConstraint p msc ct@ adds the given condition term @ct@ to the path
+-- constraint of @p@.  If msc is Just{}, it is added to the Constraint value
+-- associated with the path; otherwise it is ignored.  Note that any idents are
+-- deref'd in the context of @p@'s call frame.  This function does not modify
+-- simulator state.
+addPathConstraint ::
+  ( MonadIO m
+  , Functor m
+  , ConstantProjection (SBEClosedTerm sbe)
+  , Functor sbe
+  )
+  => Path sbe -> Maybe SymCond -> SBETerm sbe -> Simulator sbe m (Path sbe)
+addPathConstraint p msc ct = do
   let Constraint conds oldPC = pathConstraint p
-  newPC      <- return oldPC
-                  &&& withSBE (\sbe -> applyICmp sbe L.Ieq vt it)
-  let rslt = Constraint (conds `SCEAnd` SCAtom c) newPC
+  newPC <- return oldPC &&& return ct
+  let rslt = Constraint (conds `SCEAnd` maybe (SCTerm ct) SCAtom msc) newPC
   sbe <- gets symBE
   dbugM' 5 $ "addPathConstraint: " ++ show (ppPC sbe rslt)
   return p{ pathConstraint = rslt }
@@ -481,8 +497,9 @@ mergePaths from (Just to) = do
   let [(c1, m1), (c2, m2)] = (pathConstraint A.&&& pathMem) <$> [from, to]
 
   whenVerbosity (>= 4) $ do
+    sbe <- gets symBE
     dbugM $ "Merging paths with constraints: "
-            ++ show ( let f = parens . ppSCExpr . symConds in
+            ++ show ( let f = parens . ppSCExpr sbe . symConds in
                       f c1 <+> text "and" <+> f c2
                     )
     whenVerbosity (>= 6) $ do
@@ -713,7 +730,7 @@ step (MergePostDominator pdid cond) = do
   p <- getPath' "step MergePostDominator"
 
   -- Construct the new path constraint for the current path
-  newp <- addPathConstraint p cond
+  newp <- addPathConstraintSC p cond
 
   -- Merge the current path into the merged state for the current merge frame
   mmerged <- mergePaths newp (getMergedState top)
@@ -729,14 +746,14 @@ step (PushPendingExecution cond) = pushMergeFrame =<< ppe =<< popMergeFrame
     -- with the additional path constraint 'cond'.
     ppe mf = do
       let (p, mf') = popPending mf
-      divergent <- addPathConstraint p cond
+      divergent <- addPathConstraintSC p cond
       return (pushPending p . pushPending divergent $ mf')
 
 step (SetCurrentBlock bid) = setCurrentBlockM bid
 
 step (AddPathConstraint cond) = do
   p     <- getPath' "step AddPathConstraint"
-  newp  <- addPathConstraint p cond
+  newp  <- addPathConstraintSC p cond
   modifyPath $ const newp
 
 step (Assign reg expr) = assign reg =<< eval expr

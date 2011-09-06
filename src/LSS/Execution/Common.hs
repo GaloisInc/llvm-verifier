@@ -127,11 +127,12 @@ data SEH sbe m = SEH
 
 -- Carry aggregated symconds for pretty-printing; useful when symbolic term
 -- contents are not visible.
-data Constraint term = Constraint { symConds :: SCExpr, pcTerm :: term }
-data SCExpr
+data Constraint term = Constraint { symConds :: SCExpr term, pcTerm :: term }
+data SCExpr term
   = SCAtom SymCond
-  | SCEAnd SCExpr SCExpr
-  | SCEOr SCExpr SCExpr
+  | SCTerm term
+  | SCEAnd (SCExpr term) (SCExpr term)
+  | SCEOr (SCExpr term) (SCExpr term)
 
 type RegMap term = M.Map Reg (Typed term)
 
@@ -243,20 +244,21 @@ ppRegMap sbe mp =
 ppPC :: SBE sbe -> Constraint (SBETerm sbe) -> Doc
 ppPC sbe (Constraint conds pc) =
   prettyTermD sbe pc
-  <+> ( text "SCs:" <+> ppSCExpr conds
+  <+> ( text "SCs:" <+> ppSCExpr sbe conds
       )
 
 ppSymConds :: [SymCond] -> Doc
 ppSymConds = hcat . punctuate comma . map ppSymCond
 
-ppSCExpr :: SCExpr -> Doc
-ppSCExpr (SCAtom sc)                      = ppSymCond sc
-ppSCExpr (SCEAnd (SCAtom TrueSymCond) b)  = ppSCExpr b
-ppSCExpr (SCEAnd a (SCAtom TrueSymCond))  = ppSCExpr a
-ppSCExpr (SCEAnd a b)                     = ppSCExpr a <+> text "&" <+> ppSCExpr b
-ppSCExpr (SCEOr a@(SCAtom TrueSymCond) _) = ppSCExpr a
-ppSCExpr (SCEOr _ b@(SCAtom TrueSymCond)) = ppSCExpr b
-ppSCExpr (SCEOr a b)                      = ppSCExpr a <+> text "|" <+> ppSCExpr b
+ppSCExpr :: SBE sbe -> SCExpr (SBETerm sbe) -> Doc
+ppSCExpr _   (SCAtom sc)                      = ppSymCond sc
+ppSCExpr sbe (SCTerm t)                       = parens $ text "?term:" <+> prettyTermD sbe t
+ppSCExpr sbe (SCEAnd (SCAtom TrueSymCond) b)  = ppSCExpr sbe b
+ppSCExpr sbe (SCEAnd a (SCAtom TrueSymCond))  = ppSCExpr sbe a
+ppSCExpr sbe (SCEAnd a b)                     = ppSCExpr sbe a <+> text "&" <+> ppSCExpr sbe b
+ppSCExpr sbe (SCEOr a@(SCAtom TrueSymCond) _) = ppSCExpr sbe a
+ppSCExpr sbe (SCEOr _ b@(SCAtom TrueSymCond)) = ppSCExpr sbe b
+ppSCExpr sbe (SCEOr a b)                      = ppSCExpr sbe a <+> text "|" <+> ppSCExpr sbe b
 
 -----------------------------------------------------------------------------------------
 -- Debugging
