@@ -164,7 +164,7 @@ data SBE m = SBE
                 -> m (StackAllocaResult (SBETerm m) (SBEMemory m))
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
     -- stack frame to @mem@.
-  , stackPushFrame :: SBEMemory m -> m (SBEMemory m)
+  , stackPushFrame :: SBEMemory m -> m (SBEPartialResult m (SBEMemory m))
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)

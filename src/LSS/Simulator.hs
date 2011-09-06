@@ -311,7 +311,8 @@ run = do
 pushMemFrame :: (MonadIO m, Functor m, Functor sbe) => Simulator sbe m ()
 pushMemFrame = do
   dbugM' 6 "Memory model: pushing stack frame"
-  mutateMem_ stackPushFrame
+  cond <- mutateMem stackPushFrame
+  return ()
 
 -- | @pushMemFrame@ tells the memory model to pop a stack frame from the stack
 -- region.
