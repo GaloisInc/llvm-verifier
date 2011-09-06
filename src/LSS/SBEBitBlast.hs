@@ -35,6 +35,7 @@ import           Control.Monad.IO.Class
 import           Data.Bits
 import           Data.Int
 import           Data.LLVM.Memory
+import           Data.LLVM.TargetData
 import           Data.List
 import           Data.Map                  (Map)
 import           Debug.Trace

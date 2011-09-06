@@ -6,6 +6,7 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Trans
 import           Data.Int
+import           Data.LLVM.TargetData
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils

@@ -26,7 +26,7 @@ where
 
 import           Control.Monad
 import           Control.Monad.Trans
-import           Data.LLVM.Memory
+import           Data.LLVM.TargetData
 import           Data.LLVM.Symbolic.AST
 import           Data.LLVM.Symbolic.Translation
 import           Text.PrettyPrint.HughesPJ

@@ -60,7 +60,7 @@ where
 import           Control.Applicative
 import           Control.Monad.State       hiding (State)
 import           Data.Int
-import           Data.LLVM.Memory
+import           Data.LLVM.TargetData
 import           Data.LLVM.Symbolic.AST
 import           Data.List                 hiding (union)
 import           Data.Maybe

@@ -10,6 +10,7 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Trans
 import           Data.Bits
+import           Data.LLVM.TargetData
 import           Data.Maybe
 import           LSS.Execution.Common
 import           LSS.LLVMUtils

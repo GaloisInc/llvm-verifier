@@ -11,8 +11,6 @@ Point-of-contact : jstanley
 
 module Main where
 
-import Control.Monad.State
-
 import           Control.Applicative             hiding (many)
 import           Control.Monad
 import           Control.Monad.Trans

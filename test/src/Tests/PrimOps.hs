@@ -12,6 +12,7 @@ module Tests.PrimOps (primOpTests) where
 
 import           Control.Applicative
 import           Data.Int
+import           Data.LLVM.TargetData
 import           Data.Maybe
 import           Data.Word
 import           LSS.LLVMUtils
