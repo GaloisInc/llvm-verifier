@@ -8,7 +8,7 @@ Point-of-contact : jstanley
 -- Debugging output at various verbosity levels:
 -- 1: No output, the lowest verbosity level
 -- 2: Instruction trace only
--- 3: (open)
+-- 3: Warnings on symbolic validity results from memory model
 -- 4: Path constraints on nontrivial path merges
 -- 5: Simulator internal state (control stack dump per instruction)
 -- 6: Memory model dump on load/store operations only (for nontrivial codes,
@@ -47,6 +47,7 @@ module LSS.Simulator
   , sizeof
   , mutateMem
   , mutateMem_
+  , processMemCond
   -- for testing
   , withLC
   , dbugTerm
@@ -158,7 +159,12 @@ callDefine_ ::
   -> Simulator sbe m ()
 callDefine_ c t ag = callDefine c t ag >> return ()
 
-callDefine' ::(MonadIO m, Functor m, Functor sbe)
+callDefine' ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => SymBlockID        -- ^ Normal call return block id
   -> L.Symbol          -- ^ Callee symbol
   -> Maybe (Typed Reg) -- ^ Callee return type and result register
@@ -246,7 +252,12 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
       Just mf <- topMF <$> gets ctrlStk
       if isExitFrame mf then gets initMemModel else getMem
 
-intrinsic :: (MonadIO m, Functor m, Functor sbe)
+intrinsic ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => String -> [Typed (SBETerm sbe)] -> Simulator sbe m ()
 intrinsic intr args0 =
   case intr of
@@ -256,9 +267,7 @@ intrinsic intr args0 =
   where
     memcpy = do
       let [dst, src, len, align, _isvol] = map typedValue args0
-      -- TODO: Handle 'cond' result
-      cond <- mutateMem $ \sbe mem -> memCopy sbe mem dst src len align
-      return ()
+      processMemCond =<< mutateMem (\sbe mem -> memCopy sbe mem dst src len align)
 
 getProgramReturnValue :: (Monad m, Functor m)
   => Simulator sbe m (Maybe (SBETerm sbe))
@@ -275,6 +284,26 @@ getProgramFinalMem = do
   case top of
     ExitFrame _ _ mm -> return mm
     _                -> error "getProgramFinalMem: program not yet terminated"
+
+-- Handle a condition returned by the memory model
+processMemCond ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SBETerm sbe -> Simulator sbe m ()
+processMemCond cond = do
+  condv <- withSBE' $ \sbe -> getBool $ closeTerm sbe cond
+  case condv of
+    Just True  -> return ()
+    Just False -> error "Obtained constant-false memory model result (TODO: replace w/ error path handling)"
+    _          -> do
+      -- TODO: provide more detail here?
+      dbugM' 3 "Warning: Obtained symbolic validity result from memory model."
+      p <- getPath' "processMemCond"
+      newp <- addPathConstraint p Nothing cond
+      modifyPath $ const newp
 
 run ::
   ( LogMonad m
@@ -762,8 +791,7 @@ step (Store val addr _malign) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
   valTerm          <- getTypedTerm val
   Typed _ addrTerm <- getTypedTerm addr
-  -- TODO: Handle 'cond' result
-  cond <- mutateMem (\sbe mem -> memStore sbe mem valTerm addrTerm)
+  processMemCond =<< mutateMem (\sbe mem -> memStore sbe mem valTerm addrTerm)
   whenVerbosity (<=6) $ dumpMem 6 "store post"
 
 step (IfThenElse cond thenStmts elseStmts) = do
@@ -814,8 +842,8 @@ eval (Alloca ty msztv malign ) = alloca ty msztv malign
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
-  -- TODO: Handle 'cond' result
   (cond,v) <- withMem $ \sbe mem -> memLoad sbe mem addrTerm
+  processMemCond cond
   return (Typed ty v) <* dumpMem 6 "load post"
 eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
 eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
@@ -1029,9 +1057,9 @@ alloca ty msztv malign = do
           Just ntv -> getTypedTerm ntv
   let parseFn SASymbolicCountUnsupported = error "alloca only supports concrete element count"
       parseFn (SAResult c t m') = ((c,t), m')
-  -- TODO: Handle 'cond' result
   (cond,t) <- mutateMem $ \sbe m ->
                 parseFn <$> stackAlloca sbe m ty nt (maybe 0 lg malign)
+  processMemCond cond
   return (Typed (L.PtrTo ty) t)
 
 --------------------------------------------------------------------------------
@@ -1240,8 +1268,13 @@ _nowarn_unused = undefined
 --------------------------------------------------------------------------------
 -- Standard overrides
 
-loadString :: (Functor m, Monad m, ConstantProjection (SBEClosedTerm sbe)) =>
-              L.Typed (SBETerm sbe) -> Simulator sbe m String
+loadString ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Typed (SBETerm sbe) -> Simulator sbe m String
 loadString ptr =
   case typedType ptr of
     L.PtrTo (L.PrimType (L.Integer 8)) -> do
@@ -1250,8 +1283,8 @@ loadString ptr =
       cs <- go ptr
       return . map (toEnum . fromEnum) . catMaybes $ cs
       where go addr = do
-              -- TODO: Handle 'cond' result
               (cond,t) <- withMem $ \sbe mem -> memLoad sbe mem addr
+              processMemCond cond
               c <- withSBE' $ \sbe -> getUVal $ closeTerm sbe t
               one <- withSBE $ \sbe ->
                      termInt sbe (fromIntegral $ termWidth sbe (typedValue addr)) 1
@@ -1263,9 +1296,13 @@ loadString ptr =
     ty -> error $ "loading string with invalid type: " ++
                   show (L.ppType ty)
 
-termToArg :: (Functor m, Monad m,
-              ConstantProjection (SBEClosedTerm sbe)) =>
-             L.Typed (SBETerm sbe) -> Simulator sbe m Arg
+termToArg ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Typed (SBETerm sbe) -> Simulator sbe m Arg
 termToArg term = do
   mc <- withSBE' $ flip closeTerm (typedValue term)
   case (typedType term, termConst mc) of
@@ -1289,9 +1326,13 @@ isSymbolic :: (ConstantProjection (SBEClosedTerm sbe)) =>
               SBE sbe -> L.Typed (SBETerm sbe) -> Bool
 isSymbolic sbe = not . isConst . closeTerm sbe . typedValue
 
-printfHandler :: (Functor m, Monad m, MonadIO m,
-                  ConstantProjection (SBEClosedTerm sbe)) =>
-                 Override sbe m
+printfHandler ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
 printfHandler = Override $ \_sym _rty args ->
   case args of
     (fmtPtr : rest) -> do
@@ -1338,15 +1379,19 @@ freshIntArray n = Override $ \_sym _rty args ->
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ flip termArray elts
           let typedArrTm = Typed ty arrTm
-          -- TODO: Handle 'cond' result
-          cond <- mutateMem (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
+          processMemCond =<<
+            mutateMem (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
           return (Just arrPtr)
         Nothing -> error "fresh_array_uint called with symbolic size"
     _ -> error "fresh_array_uint: wrong number of arguments"
 
-writeIntAiger :: (Functor m, Monad m,
-                  ConstantProjection (SBEClosedTerm sbe)) =>
-                 Override sbe m
+writeIntAiger ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
 writeIntAiger = Override $ \_sym _rty args ->
   case args of
     [t, fptr] -> do
@@ -1355,9 +1400,13 @@ writeIntAiger = Override $ \_sym _rty args ->
       return Nothing
     _ -> error "write_aiger_uint: wrong number of arguments"
 
-writeIntArrayAiger :: (Functor m, Monad m,
-                       ConstantProjection (SBEClosedTerm sbe)) =>
-                      L.Type -> Override sbe m
+writeIntArrayAiger ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Type -> Override sbe m
 writeIntArrayAiger _ety = Override $ \_sym _rty args ->
   case args of
     [tptr, sizeTm, fptr] -> do
@@ -1376,8 +1425,8 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
     _ -> error "write_aiger_array_uint: wrong number of arguments"
   where go _one _addr 0 = return []
         go one addr size = do
-          -- TODO: Handle 'cond' result
           (cond,t) <- withMem $ \sbe mem -> memLoad sbe mem addr
+          processMemCond cond
           addr' <- withSBE $ \sbe ->
                    applyArith sbe L.Add (typedValue addr) one
           (t:) <$> go one (typedAs addr addr') (size - 1)

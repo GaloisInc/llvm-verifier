@@ -26,6 +26,7 @@ import qualified Text.LLVM              as L
 sanityChecks ::
   ( Functor m
   , MonadIO m
+  , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   , SBEMemory sbe ~ BitMemory Lit
   )
@@ -53,6 +54,7 @@ sanityChecks = SEH
       -- Read back and check
       gstart <- withSBE $ \sbe -> termInt sbe addrWidth (bmDataAddr mem - sz)
       (cond, gdata') <- withSBE $ \sbe -> memLoad sbe mem (Typed (L.PtrTo ty) gstart)
+      processMemCond cond
       eq <- uval =<< (Typed i1 <$> withSBE (\sbe -> applyICmp sbe L.Ieq gdata gdata'))
       when (eq /= 1) $ do
         dbugM $ "onPostGlobInit assert failure on " ++ show (L.ppSymbol $ L.globalSym g)
