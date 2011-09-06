@@ -174,6 +174,7 @@ data MemModel mem ptr int bytes cond = MemModel {
   , mmBlockAddress :: mem -> LLVM.Symbol -> LLVM.BlockLabel -> ptr
   , mmLookupDefine :: mem -> ptr -> LookupDefineResult
   , mmStackAlloca :: mem -> Integer -> int -> Int -> StackAllocaResult ptr mem
+  , mmHeapAlloc :: mem -> Integer -> int -> Int -> HeapAllocResult ptr mem
   , mmStackPush :: mem -> mem
   , mmStackPop :: mem -> mem
   , mmMemCopy :: mem
@@ -692,6 +693,48 @@ bmStackPop ptrWidth bm@BitMemory { bmStackFrames = f : fl } =
      , bmStackFrames = fl
      }
 
+blockPower :: Integer -> Int
+blockPower v = go 0 1
+  where go p n | n >= v = p
+               | otherwise = go (p + 1) (n `shiftL` 1)
+
+bmHeapAlloc :: (Eq l, LV.Storable l)
+            => Int       -- ^ Width of pointer in bits.
+            -> BitEngine l
+            -> BitMemory l
+            -> Integer   -- ^ Element size
+            -> BitTerm l -- ^ Number of elements
+            -> Int       -- ^ Alignment constraint
+            -> HeapAllocResult (BitTerm l) (BitMemory l)
+bmHeapAlloc ptrWidth be bm eltSize (BitTerm cntVector) a =
+  case beVectorToMaybeInt be cntVector of
+    Nothing -> HASymbolicCountUnsupported
+    Just (_, cnt) ->
+      let -- Get number requested.
+          -- @nm x y@ computes the next multiple m of y s.t. m >= y
+          nm x y = ((y + x - 1) `div` x) * x
+          -- Pad up to the end of the aligned region; we do this because any
+          -- global data that gets copied into this space will be padded to this
+          -- size by LLVM.
+          sz = eltSize * cnt
+          padBytes = nm (2 ^ a :: Integer) sz - sz
+          pwr = blockPower (sz + padBytes)
+          size = 2 ^ pwr
+          mres = allocBlock (bmFreeList bm) pwr
+          false = BitTerm $ beVectorFromInt be 1 0
+          true = BitTerm $ beVectorFromInt be 1 1
+          zeroTerm = BitTerm (beVectorFromInt be (LV.length cntVector) 0) in
+      case mres of
+        Just (freeList, addr) ->
+          let endAddr = addr + size
+              addrTerm = BitTerm $ beVectorFromInt be ptrWidth addr
+              newStorage = uninitRegion ptrWidth addr endAddr (bmStorage bm) in
+          HAResult true addrTerm size
+                   (bm { bmFreeList = freeList
+                       , bmStorage = newStorage
+                       })
+        Nothing -> HAResult false zeroTerm 0 bm
+
 bmMemCopy :: (Eq l, LV.Storable l)
           => BitEngine l -- ^ Bit engine for literals
           -> BitMemory l
@@ -732,6 +775,7 @@ buddyMemModel lc be =
         , mmStackAlloca = bmStackAlloca ptrWidth be
         , mmStackPush = bmStackPush
         , mmStackPop = bmStackPop (llvmAddrWidthBits lc)
+        , mmHeapAlloc = bmHeapAlloc ptrWidth be
         , mmMemCopy = bmMemCopy be
         }
 
@@ -994,6 +1038,7 @@ dagMemModel lc be stack code gdata heap = do
         , mmStackAlloca = undefined
         , mmStackPush = undefined
         , mmStackPop = undefined
+        , mmHeapAlloc = undefined
         , mmMemCopy = undefined
         {-
           mmDump = \_space _m -> return ()
@@ -1151,6 +1196,8 @@ sbeBitBlast lc be mm = sbe
               return . mmStackAlloca mm m (llvmAllocSizeOf lc eltTp) cnt
           , stackPushFrame   = return . mmStackPush mm
           , stackPopFrame    = return . mmStackPop mm
+          , heapAlloc        = \m eltTp (LLVM.typedValue -> cnt) ->
+              return . mmHeapAlloc mm m (llvmAllocSizeOf lc eltTp) cnt
           , memCopy          = (BitIO . fmap (\(c,m) -> (BitTerm (LV.singleton c), m)))
                                 `c5` mmMemCopy mm
           , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)

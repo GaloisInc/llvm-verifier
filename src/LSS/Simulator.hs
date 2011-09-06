@@ -77,8 +77,7 @@ import           System.IO
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..),
-                                            CValue(..),
-                                            intToBoolSeq)
+                                            CValue(..))
 
 import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
@@ -667,9 +666,9 @@ getTypedTerm' mfrm tv@(Typed t v)
   = do
   sbe <- gets symBE
   error $ "getTypedTerm': unsupported value / call frame presence: "
-          ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
-          ++ show (parens $ text $ show tv)
-          ++ show ("mfrm = " ++ show (ppCallFrame sbe <$> mfrm))
+          ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
+          ++ "\n" ++ show (parens $ text $ show tv)
+          ++ "\nmfrm = " ++ show (ppCallFrame sbe <$> mfrm)
 
 getGlobalPtrTerm ::
   ( Functor m
@@ -846,12 +845,11 @@ eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   processMemCond cond
   return (Typed ty v) <* dumpMem 6 "load post"
 eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
-eval (ICmp op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
+eval (ICmp op (Typed t v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
   Typed t2 y <- getTypedTerm (Typed t v2)
-  CE.assert (t == t1 && t == t2) $ return ()
+  CE.assert (t == t1 && t == t2 && (isIntegerType t || L.isPointer t)) $ return ()
   Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
-eval e@ICmp{} = error $ "Unsupported icmp expr type: " ++ show (ppSymExpr e)
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val tv)                  = getTypedTerm tv
 eval e@GEP{}                   = evalGEP e
@@ -1045,7 +1043,7 @@ defaultSEH = SEH
 --------------------------------------------------------------------------------
 -- Memory operation helpers
 
-alloca ::
+alloca, malloc ::
   ( MonadIO m
   , Functor m
   , Functor sbe
@@ -1063,6 +1061,18 @@ alloca ty msztv malign = do
       parseFn (SAResult c t m') = ((c,t), m')
   (cond,t) <- mutateMem $ \sbe m ->
                 parseFn <$> stackAlloca sbe m ty nt (maybe 0 lg malign)
+  processMemCond cond
+  return (Typed (L.PtrTo ty) t)
+
+malloc ty msztv malign = do
+  nt <- case msztv of
+          Nothing  -> getTypedTerm (int32const 1)
+          Just ntv -> getTypedTerm ntv
+  let parseFn HASymbolicCountUnsupported = error "malloc only supports concrete element count"
+      parseFn (HAResult c t _sz m') = ((c,t), m')
+  -- TODO: Handle 'size' result
+  (cond,t) <- mutateMem $ \sbe m ->
+    parseFn <$> heapAlloc sbe m ty nt (maybe 0 lg malign)
   processMemCond cond
   return (Typed (L.PtrTo ty) t)
 
@@ -1348,17 +1358,21 @@ printfHandler = Override $ \_sym _rty args ->
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
 
-allocaHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
+allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
                   ConstantProjection (SBEClosedTerm sbe)) =>
-                 Override sbe m
-allocaHandler = Override $ \_sym _rty args ->
+                (L.Type
+                   -> Maybe (Typed L.Value)
+                   -> Maybe Int
+                   -> Simulator sbe m (Typed (SBETerm sbe)))
+             -> Override sbe m
+allocHandler fn = Override $ \_sym _rty args ->
   case args of
     [sizeTm] -> do
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
       case msize of
         Just size -> do
           let sizeVal = Typed i32 (L.ValInteger size)
-          (Just . typedValue) <$> alloca i8 (Just sizeVal) Nothing
+          (Just . typedValue) <$> fn i8 (Just sizeVal) Nothing
         Nothing -> error "alloca: symbolic size not supported"
     _ -> error "alloca: wrong number of arguments"
 
@@ -1417,11 +1431,9 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
       case (msize, typedType tptr) of
         (Just size, L.PtrTo tgtTy) -> do
-          elemWidth <- withLC (`llvmStoreSizeOf` tgtTy)
           ptrWidth <- withSBE' $ \sbe ->
                       fromIntegral $ termWidth sbe (typedValue tptr)
-          inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
-          elems <- go inc tptr size
+          elems <- loadArray ptrWidth tptr tgtTy size
           arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
           withSBE $ \sbe -> writeAiger sbe file arrTm
@@ -1430,12 +1442,48 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
           error "write_aiger_array_uint called with symbolic size"
         _ -> error "write_aiger_array_uint: invalid argument type"
     _ -> error "write_aiger_array_uint: wrong number of arguments"
-  where go _one _addr 0 = return []
-        go one addr size = do
-          (cond,t) <- load addr
-          processMemCond cond
-          addr' <- termAdd (typedValue addr) one
-          (t:) <$> go one (typedAs addr addr') (size - 1)
+
+loadArray ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Int
+  -> Typed (SBETerm sbe)
+  -> L.Type
+  -> Integer
+  -> Simulator sbe m [SBETerm sbe]
+loadArray ptrWidth ptr ety count = do
+  elemWidth <- withLC (`llvmStoreSizeOf` ety)
+  inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
+  go inc ptr count
+    where go _one _addr 0 = return []
+          go one addr size = do
+            (cond,t) <- load addr
+            processMemCond cond
+            addr' <- termAdd (typedValue addr) one
+            (t:) <$> go one (typedAs addr addr') (size - 1)
+
+evalAigerOverride :: (Functor m, MonadIO m, Functor sbe,
+                      ConstantProjection (SBEClosedTerm sbe)) =>
+                     Override sbe m
+evalAigerOverride =
+  Override $ \_sym _rty args ->
+    case args of
+      [Typed _ tm, p@(Typed (L.PtrTo ety) ptm), Typed _ szTm] -> do
+        msz <- withSBE' $ \sbe -> getUVal . closeTerm sbe $ szTm
+        case msz of
+          Just sz -> do
+            ptrWidth <- withSBE' $ \sbe -> fromIntegral $ termWidth sbe ptm
+            elems <- loadArray ptrWidth p ety sz
+            ints <- mapM
+                    (\t -> withSBE' $ \sbe -> getUVal $ closeTerm sbe t)
+                    elems
+            let bools = map (not . (== 0)) $ catMaybes ints
+            Just <$> (withSBE $ \sbe -> evalAiger sbe bools tm)
+          Nothing -> error "eval_aiger: symbolic size not supported"
+      _ -> error "eval_aiger: wrong number of arguments"
 
 overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1471,7 +1519,8 @@ standardOverrides =
   [ ("exit", voidTy, [i32], False,
      -- TODO: stub! Should be replaced with something useful.
      Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing)
-  , ("alloca", voidPtr, [i32], False, allocaHandler)
+  , ("alloca", voidPtr, [i32], False, allocHandler alloca)
+  , ("malloc", voidPtr, [i32], False, allocHandler malloc)
   , ("printf", i32, [strTy], True, printfHandler)
   , ("fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("fresh_uint16", i16, [i16], False, freshInt' 16)
@@ -1493,10 +1542,10 @@ standardOverrides =
      writeIntArrayAiger i32)
   , ("write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
      writeIntArrayAiger i64)
-  , ("eval_aiger_uint8",   i8, [i8,  i8p], False, nyiOverride)
-  , ("eval_aiger_uint16", i16, [i16, i8p], False, nyiOverride)
-  , ("eval_aiger_uint32", i32, [i32, i8p], False, nyiOverride)
-  , ("eval_aiger_uint64", i64, [i64, i8p], False, nyiOverride)
+  , ("eval_aiger_uint8",   i8, [i8,  i8p], False, evalAigerOverride)
+  , ("eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
+  , ("eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
+  , ("eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
   , ("eval_aiger_array_uint8",   i8p, [i8p,  i32, i8p], False, nyiOverride)
   , ("eval_aiger_array_uint16", i16p, [i16p, i32, i8p], False, nyiOverride)
   , ("eval_aiger_array_uint32", i32p, [i32p, i32, i8p], False, nyiOverride)
@@ -1516,15 +1565,3 @@ registerStandardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                              Simulator sbe m ()
 registerStandardOverrides = do
   mapM_ registerOverride' standardOverrides
-  -- TODO: this is bogus, because it assumes 32 bits of input.
-  registerOverride "eval_aiger_uint32" i32 [i32, i32] False $
-    Override $ \_sym _rty args ->
-      case args of
-        [t, v] -> do
-          mv <- withSBE' $ \sbe -> termConst . closeTerm sbe . typedValue $ v
-          case mv of
-            Just v' -> Just <$>
-                       (withSBE $ \sbe ->
-                        evalAiger sbe (intToBoolSeq v') (typedValue t))
-            Nothing -> error "value given to eval_int32_aiger not constant"
-        _ -> error "eval_aiger_int32: wrong number of arguments"

@@ -58,3 +58,7 @@ nextPow2 x = 2 ^ (lg x + 1)
 
 lg :: (Ord a, Bits a) => a -> a
 lg = genericLength . takeWhile (>0) . drop 1 . iterate (`shiftR` 1)
+
+isIntegerType :: Type -> Bool
+isIntegerType (PrimType t) = isInteger t
+isIntegerType _ = False
