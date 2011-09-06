@@ -92,12 +92,10 @@ chkArithBitEngineFn :: (Integral a, Arbitrary a) =>
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
   be <- run createBitEngine
-  let sbe = sbeBitBlast
-            ( buildLLVMContext
+  let lc  = buildLLVMContext
               (error "LLVM Context has no ident -> type relation defined")
               []
-            )
-            be
+      sbe = sbeBitBlast lc be (buddyMemModel lc be)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do
     let r = fn x y
         proj = if s then getSVal else getUVal
