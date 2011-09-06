@@ -842,7 +842,7 @@ eval (Alloca ty msztv malign ) = alloca ty msztv malign
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
-  (cond,v) <- withMem $ \sbe mem -> memLoad sbe mem addrTerm
+  (cond,v) <- load addrTerm
   processMemCond cond
   return (Typed ty v) <* dumpMem 6 "load post"
 eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
@@ -1013,6 +1013,10 @@ mutateMem_ f = mutateMem (\sbe mem -> ((,) ()) <$> f sbe mem) >> return ()
 
 withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
 withLC f = f <$> gets (cbLLVMCtx . codebase)
+
+load :: (Functor m, Monad m) =>
+        Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe, SBETerm sbe)
+load addr = withMem $ \sbe mem -> memLoad sbe mem addr
 
 --------------------------------------------------------------------------------
 -- Callbacks
@@ -1283,12 +1287,12 @@ loadString ptr =
       cs <- go ptr
       return . map (toEnum . fromEnum) . catMaybes $ cs
       where go addr = do
-              (cond,t) <- withMem $ \sbe mem -> memLoad sbe mem addr
+              (cond,t) <- load addr
               processMemCond cond
               c <- withSBE' $ \sbe -> getUVal $ closeTerm sbe t
               one <- withSBE $ \sbe ->
                      termInt sbe (fromIntegral $ termWidth sbe (typedValue addr)) 1
-              addr' <- withSBE $ \sbe -> applyArith sbe L.Add (typedValue addr) one
+              addr' <- termAdd (typedValue addr) one
               case c of
                 Nothing -> return []
                 Just 0  -> return []
@@ -1316,7 +1320,7 @@ termToArg term = do
       return $ Arg (fromInteger n :: Int64)
     (L.PtrTo (L.PrimType (L.Integer 8)), _) ->
        Arg <$> loadString term
-    _ -> Arg <$> withSBE' (show . flip prettyTermD (typedValue term))
+    _ -> Arg . show <$> prettyTermSBE (typedValue term)
 
 termIntS :: (Functor m, Monad m, Integral a) =>
             Int -> a -> Simulator sbe m (SBETerm sbe)
@@ -1411,24 +1415,26 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
   case args of
     [tptr, sizeTm, fptr] -> do
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
-      case msize of
-        Just size -> do
-          one <- withSBE $ \sbe ->
-                 termInt sbe (fromIntegral $ termWidth sbe (typedValue tptr)) 1
-          bytes <- go one tptr size
-          arrTm <- withSBE $ flip termArray bytes
+      case (msize, typedType tptr) of
+        (Just size, L.PtrTo tgtTy) -> do
+          elemWidth <- withLC (`llvmStoreSizeOf` tgtTy)
+          ptrWidth <- withSBE' $ \sbe ->
+                      fromIntegral $ termWidth sbe (typedValue tptr)
+          inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
+          elems <- go inc tptr size
+          arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
           withSBE $ \sbe -> writeAiger sbe file arrTm
           return Nothing
-
-        Nothing -> error "write_aiger_array_uint called with symbolic size"
+        (Nothing, _) ->
+          error "write_aiger_array_uint called with symbolic size"
+        _ -> error "write_aiger_array_uint: invalid argument type"
     _ -> error "write_aiger_array_uint: wrong number of arguments"
   where go _one _addr 0 = return []
         go one addr size = do
-          (cond,t) <- withMem $ \sbe mem -> memLoad sbe mem addr
+          (cond,t) <- load addr
           processMemCond cond
-          addr' <- withSBE $ \sbe ->
-                   applyArith sbe L.Add (typedValue addr) one
+          addr' <- termAdd (typedValue addr) one
           (t:) <$> go one (typedAs addr addr') (size - 1)
 
 overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
@@ -1439,7 +1445,7 @@ overrideByName = Override $ \_sym _rty args ->
     [fromPtr, toPtr] -> do
       _from <- loadString fromPtr
       _to <- loadString toPtr
-      dbugM' 0 "overrideByName: nyi"
+      dbugM "overrideByName: nyi"
       return Nothing
     _ -> error "override_function_by_name: wrong number of arguments"
 
@@ -1449,7 +1455,7 @@ overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
 overrideByAddr = Override $ \_sym _rty args ->
   case args of
     [_fromPtr, _toPtr] -> do
-      dbugM' 0 "overrideByAddr: nyi"
+      dbugM "overrideByAddr: nyi"
       return Nothing
     _ -> error "override_function_by_addr: wrong number of arguments"
 

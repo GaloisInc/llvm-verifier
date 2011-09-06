@@ -104,7 +104,9 @@ main = do
 runBitBlast :: Codebase -> [String] -> LSS -> SymDefine -> IO ()
 runBitBlast cb argv' args mainDef = do
   let lc = cbLLVMCtx cb
-  sbe <- sbeBitBlast lc <$> createBitEngine
+  sbe <- do
+    be <- createBitEngine
+    return $ sbeBitBlast lc be (buddyMemModel lc be)
   runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) defaultSEH $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
