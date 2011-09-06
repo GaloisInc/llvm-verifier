@@ -65,6 +65,7 @@ import           Data.LLVM.TargetData
 import           Data.LLVM.Symbolic.AST
 import           Data.List                 hiding (union)
 import           Data.Maybe
+import           Data.String
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
@@ -1488,9 +1489,12 @@ overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
 overrideByName = Override $ \_sym _rty args ->
   case args of
     [fromPtr, toPtr] -> do
-      _from <- loadString fromPtr
-      _to <- loadString toPtr
-      dbugM "overrideByName: nyi"
+      from <- loadString fromPtr
+      to <- loadString toPtr
+      let sym = fromString from
+          sym' = fromString to
+          handler = Redirect sym'
+      modify $ \s -> s { overrides = M.insert sym handler (overrides s) }
       return Nothing
     _ -> error "override_function_by_name: wrong number of arguments"
 
