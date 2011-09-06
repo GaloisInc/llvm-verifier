@@ -1301,8 +1301,8 @@ loadString ptr =
               (cond,t) <- load addr
               processMemCond cond
               c <- withSBE' $ \sbe -> getUVal $ closeTerm sbe t
-              one <- withSBE $ \sbe ->
-                     termInt sbe (fromIntegral $ termWidth sbe (typedValue addr)) 1
+              ptrWidth <- withLC llvmAddrWidthBits
+              one <- withSBE $ \sbe -> termInt sbe ptrWidth 1
               addr' <- termAdd (typedValue addr) one
               case c of
                 Nothing -> return []
@@ -1453,7 +1453,7 @@ loadArray ::
   -> Integer
   -> Simulator sbe m [SBETerm sbe]
 loadArray ptr ety count = do
-  ptrWidth <- (`div` 8) <$> withLC llvmAddrWidthBits
+  ptrWidth <- withLC llvmAddrWidthBits
   elemWidth <- withLC (`llvmStoreSizeOf` ety)
   inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
   go inc ptr count
