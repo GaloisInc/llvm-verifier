@@ -1240,7 +1240,9 @@ dbugStep stmt = do
                    _ -> ""
                  ++ show (ppSymStmt stmt)
 --  repl
+  cb1 onPreStep stmt
   step stmt
+  cb1 onPostStep stmt
   dumpCtrlStk' 5
 
 repl :: (Functor m, MonadIO m) => Simulator sbe m ()
