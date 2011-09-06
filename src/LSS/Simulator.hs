@@ -1431,9 +1431,7 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
       case (msize, typedType tptr) of
         (Just size, L.PtrTo tgtTy) -> do
-          ptrWidth <- withSBE' $ \sbe ->
-                      fromIntegral $ termWidth sbe (typedValue tptr)
-          elems <- loadArray ptrWidth tptr tgtTy size
+          elems <- loadArray tptr tgtTy size
           arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
           withSBE $ \sbe -> writeAiger sbe file arrTm
@@ -1449,12 +1447,12 @@ loadArray ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => Int
-  -> Typed (SBETerm sbe)
+  => Typed (SBETerm sbe)
   -> L.Type
   -> Integer
   -> Simulator sbe m [SBETerm sbe]
-loadArray ptrWidth ptr ety count = do
+loadArray ptr ety count = do
+  ptrWidth <- (`div` 8) <$> withLC llvmAddrWidthBits
   elemWidth <- withLC (`llvmStoreSizeOf` ety)
   inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
   go inc ptr count
@@ -1471,12 +1469,11 @@ evalAigerOverride :: (Functor m, MonadIO m, Functor sbe,
 evalAigerOverride =
   Override $ \_sym _rty args ->
     case args of
-      [Typed _ tm, p@(Typed (L.PtrTo ety) ptm), Typed _ szTm] -> do
+      [Typed _ tm, p@(Typed (L.PtrTo ety) _), Typed _ szTm] -> do
         msz <- withSBE' $ \sbe -> getUVal . closeTerm sbe $ szTm
         case msz of
           Just sz -> do
-            ptrWidth <- withSBE' $ \sbe -> fromIntegral $ termWidth sbe ptm
-            elems <- loadArray ptrWidth p ety sz
+            elems <- loadArray p ety sz
             ints <- mapM
                     (\t -> withSBE' $ \sbe -> getUVal $ closeTerm sbe t)
                     elems
