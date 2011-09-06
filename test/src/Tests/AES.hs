@@ -41,8 +41,9 @@ aes128ConcreteImpl _be = do
       ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
       return $ map (i32p =:) [ptptr, keyptr, ctptr]
   Just mem <- getProgramFinalMem
-  (cond,ctarr) <- withSBE $ \sbe ->
-                    memLoad sbe mem (Typed (L.PtrTo arrayTy) ctRawPtr)
+  (cond, ctarr) <- withSBE $ \sbe ->
+                     memLoad sbe mem (Typed (L.PtrTo arrayTy) ctRawPtr)
+  processMemCond cond
   ctVals <- withSBE $ \sbe -> map (getVal sbe)
                                 <$> termDecomp sbe (replicate 4 i32) ctarr
   return (ctVals == ctChks)
@@ -51,7 +52,7 @@ aes128ConcreteImpl _be = do
     initArr xs = do
        arr <- withSBE $ \s -> termArray s =<< mapM (termInt s 32) xs
        p   <- typedValue <$> alloca arrayTy Nothing (Just 4)
-       cond <- mutateMem $ \s m -> memStore s m (arrayTy =: arr) p
+       processMemCond =<< mutateMem (\s m -> memStore s m (arrayTy =: arr) p)
        return p
     arrayTy = L.Array 4 i32
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]
