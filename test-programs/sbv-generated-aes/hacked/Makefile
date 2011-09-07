@@ -4,26 +4,29 @@
 -include *.mk
 
 CC=gcc
-CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer
+CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I.
 
-all: aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm
+all: aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm aes.bc
 
 %.bc: %.c
-	clang -emit-llvm -c $< -o $@
+	clang -emit-llvm -I. -c $< -o $@
 
 aes128BlockEncrypt.o: aes128BlockEncrypt.c aes128BlockEncrypt.h
 	${CC} ${CCFLAGS} -c $< -o $@
 
-aes128BlockEncrypt_driver.o: aes128BlockEncrypt_driver.c
+%.o: %.c
 	${CC} ${CCFLAGS} -c $< -o $@
 
-aes128BlockEncrypt_driver: aes128BlockEncrypt.o aes128BlockEncrypt_driver.o
+aes128BlockEncrypt_driver: aes128BlockEncrypt.o aes128BlockEncrypt_driver.o sym-api.o
 	${CC} ${CCFLAGS} $^ -o $@
 
-aes128BlockEncrypt_driver_llvm: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.bc
+aes.bc: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.bc
+	llvm-link $^ -o $@
+
+aes128BlockEncrypt_driver_llvm: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.bc sym-api.bc
 	llvm-dis aes128BlockEncrypt.bc
 	llvm-dis aes128BlockEncrypt_driver.bc
 	llvm-ld -v -disable-opt -native $^ -o $@
 
 clean:
-	rm -f *.o *.bc *.ll *.s aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm
+	rm -f *.o *.bc *.ll *.s aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm aes.aig

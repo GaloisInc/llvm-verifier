@@ -12,6 +12,7 @@ module Tests.PrimOps (primOpTests) where
 
 import           Control.Applicative
 import           Data.Int
+import           Data.LLVM.TargetData
 import           Data.Maybe
 import           Data.Word
 import           LSS.LLVMUtils
@@ -45,6 +46,7 @@ primOpTests =
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
   , test  1  False "test-call-exit"        $ testCallExit    1
   , test  1  False "test-call-alloca"      $ testCallAlloca  1
+  , test  1  False "test-call-malloc"      $ testCallMalloc  1
   ]
   where
     -- The 'v' parameter to all of these tests controls the verbosity; a
@@ -70,6 +72,7 @@ primOpTests =
                                   defaultSEH testSetupPtrArgImpl
     testCallExit v    = runMain v "test-call-exit.bc" (Just 1)
     testCallAlloca v  = runMain v "test-call-alloca.bc" (Just 34289)
+    testCallMalloc v  = runMain v "test-call-malloc.bc" (Just 34289)
 
     add, mul, idiv, irem :: Int32 -> Int32 -> Int32
     add               = (+)
@@ -90,10 +93,11 @@ chkArithBitEngineFn :: (Integral a, Arbitrary a) =>
                        Int -> Bool -> L.ArithOp -> (a -> a -> a)
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
-  let lc = LLVMContext 32 $
-             error "LLVM Context has no ident -> type alias map defined"
   be <- run createBitEngine
-  let sbe = sbeBitBlast lc be (buddyMemModel lc be)
+  let lc  = buildLLVMContext
+              (error "LLVM Context has no ident -> type relation defined")
+              []
+      sbe = sbeBitBlast lc be (buddyMemModel lc be)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do
     let r = fn x y
         proj = if s then getSVal else getUVal
@@ -105,7 +109,8 @@ chkArithBitEngineFn w s op fn = do
 testSetupPtrArgImpl :: StdBitBlastTest
 testSetupPtrArgImpl be = do
   callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) $ do
-    p <- alloca i32 Nothing (Just 8)
+    a <- withLC llvmPtrAlign
+    p <- alloca i32 Nothing (Just $ fromIntegral a)
     return [p]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()
@@ -113,8 +118,10 @@ testSetupPtrArgImpl be = do
   case mm of
     Nothing  -> return False
     Just mem -> do
-      p <- L.Typed (L.PtrTo i32) <$> withSBE (\sbe -> termInt sbe 32 0)
+      w <- withLC llvmAddrWidthBits
+      p <- L.Typed (L.PtrTo i32) <$> withSBE (\sbe -> termInt sbe w 0)
       (cond, r) <- withSBE $ \sbe -> memLoad sbe mem p
+      processMemCond cond
       return $ BitTermClosed (be, r) `constTermEq` 42
 
 --------------------------------------------------------------------------------
