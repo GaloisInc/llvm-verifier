@@ -1,6 +1,14 @@
 include "Cipher.cry";
 
 extern AIG llvm_aes("../aes.aig") : ([4][32], [4][32]) -> [4][32];
+extern AIG openssl_aes("../../../openssl/aes.aig") : ([16][8], [16][8]) -> [16][8];
+
+openssl_aes_fixed : ([128], [128]) -> [128];
+openssl_aes_fixed (x, y) = join (reverse (openssl_aes(y', x')))
+  where {
+      x' = reverse (split (x));
+      y' = reverse (split (y));
+  };
 
 blockEncryptref : ([128], [128]) -> [128];
 blockEncryptref (x, y) = blockEncrypt (x, y)

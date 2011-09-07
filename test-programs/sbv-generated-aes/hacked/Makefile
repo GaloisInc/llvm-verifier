@@ -5,6 +5,7 @@
 
 CC=gcc
 CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I.
+LSS?=../../../cabal-dev/bin/lss
 
 all: aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm aes.bc
 
@@ -23,12 +24,16 @@ aes128BlockEncrypt_driver: aes128BlockEncrypt.o aes128BlockEncrypt_driver.o sym-
 aes.bc: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.bc
 	llvm-link $^ -o $@
 
+aes.aig: aes.bc
+	${LSS} $<
+
 aes128BlockEncrypt_driver_llvm: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.bc sym-api.bc
 	llvm-dis aes128BlockEncrypt.bc
 	llvm-dis aes128BlockEncrypt_driver.bc
 	llvm-ld -v -disable-opt -native $^ -o $@
 
-check:
+check: aes.aig
+	make -C ../../openssl
 	cryptol -b ref/equivAES.scr
 
 clean:
