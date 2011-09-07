@@ -29,7 +29,7 @@ aes128BlockEncrypt_driver_llvm: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.
 	llvm-ld -v -disable-opt -native $^ -o $@
 
 check:
-	cryptol -B ref/equivAES.scr
+	cryptol -b ref/equivAES.scr
 
 clean:
 	rm -f *.o *.bc *.ll *.s aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm aes.aig
