@@ -617,6 +617,10 @@ getTypedTerm' ::
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
 
+getTypedTerm' _ (Typed t@(L.PtrTo _) L.ValNull) = do
+  ptrWidth <- withLC llvmAddrWidthBits
+  Typed t <$> withSBE (\sbe -> termInt sbe ptrWidth 0)
+
 getTypedTerm' _ (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
   = getGlobalPtrTerm (sym, Just argtys)
 
