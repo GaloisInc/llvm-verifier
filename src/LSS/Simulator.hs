@@ -888,8 +888,29 @@ eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val tv)                  = getTypedTerm tv
 eval e@GEP{}                   = evalGEP e
 eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
-eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
+eval (ExtractValue tv i      ) = evalExtractValue tv i
 eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
+
+evalExtractValue ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Typed SymValue -> [Int32] -> Simulator sbe m (Typed (SBETerm sbe))
+evalExtractValue tv idxs = do
+  sv <- getTypedTerm tv
+  go sv idxs
+    where go v [] = return v
+          go (Typed (L.Struct ftys) v) (i : is) = impl v ftys i is
+          go (Typed (L.PackedStruct ftys) v) (i : is) = impl v ftys i is
+          go (Typed (L.Array n ty) v) (i : is) =
+            impl v (replicate (fromIntegral n) ty) i is
+          go _ _ = error "non-composite type in extractvalue"
+          impl v tys i is =
+            CE.assert (fromIntegral i <= length tys) $ do
+              vs <- withSBE $ \sbe -> termDecomp sbe tys v
+              go (vs !! fromIntegral i) is
 
 evalGEP ::
   ( MonadIO m
