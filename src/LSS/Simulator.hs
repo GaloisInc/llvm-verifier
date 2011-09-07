@@ -177,7 +177,7 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   let args = case genOrArgs of
                Left{}      -> error "internal: ArgsGen use for intrinsic"
                Right args' -> args'
-  intrinsic calleeName args
+  intrinsic calleeName mreg args
   return []
   | otherwise
   = do
@@ -258,16 +258,44 @@ intrinsic ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => String -> [Typed (SBETerm sbe)] -> Simulator sbe m ()
-intrinsic intr args0 =
-  case intr of
+  => String -> Maybe (Typed Reg) -> [Typed (SBETerm sbe)]
+  -> Simulator sbe m ()
+intrinsic intr mreg args0 =
+  case (intr, mreg) of
     -- TODO: Handle intrinsic overrides
-    "llvm.memcpy.p0i8.p0i8.i64" -> memcpy
+    ("llvm.memcpy.p0i8.p0i8.i64", Nothing) -> memcpy
+    ("llvm.memset.p0i8.i64", Nothing) -> memset
     _ -> error $ "Unsupported LLVM intrinsic: " ++ intr
   where
     memcpy = do
       let [dst, src, len, align, _isvol] = map typedValue args0
       processMemCond =<< mutateMem (\sbe mem -> memCopy sbe mem dst src len align)
+    memset = do
+      let [dst, val, len, align, _isvol] = args0
+      memSet (typedValue dst) val (typedValue len) (typedValue align)
+
+memSet :: ( Monad m, Functor m, MonadIO m
+          , Functor sbe
+          , ConstantProjection (SBEClosedTerm sbe)
+          ) =>
+          SBETerm sbe
+       -> Typed (SBETerm sbe)
+       -> SBETerm sbe
+       -> SBETerm sbe
+       -> Simulator sbe m ()
+memSet dst val len align = do
+  lenVal <- withSBE' $ \sbe -> getUVal $ closeTerm sbe len
+  case lenVal of
+    Just 0 -> return ()
+    _ -> do
+      processMemCond =<< mutateMem (\sbe mem -> memStore sbe mem val dst)
+      ptrWidth <- withLC llvmAddrWidthBits
+      lenWidth <- withSBE' $ \sbe -> termWidth sbe len
+      one <- withSBE $ \sbe -> termInt sbe ptrWidth 1
+      negone <- withSBE $ \sbe -> termInt sbe (fromIntegral lenWidth) (-1)
+      dst' <- termAdd dst one
+      len' <- termAdd len negone
+      memSet dst' val len' align
 
 getProgramReturnValue :: (Monad m, Functor m)
   => Simulator sbe m (Maybe (SBETerm sbe))
