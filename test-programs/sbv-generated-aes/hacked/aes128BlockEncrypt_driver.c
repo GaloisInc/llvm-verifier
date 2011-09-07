@@ -9,24 +9,52 @@
 
 int main(void)
 {
-  SWord32 *pt = fresh_array_uint32(4, 0x8899aabbUL); /*{
+  SWord32 *pt = fresh_array_uint32(4, 0x8899aabbUL);
+  /*
+  SWord32 pt[4] = {
       0x00112233UL, 0x44556677UL, 0x8899aabbUL, 0xccddeeffUL
-  };*/
+  };
+  */
+  //SWord32 pt[4];
   
-  SWord32 *key = fresh_array_uint32(4, 0x08090a0bUL); /*{
+  SWord32 *key = fresh_array_uint32(4, 0x08090a0bUL);
+  /*
+  SWord32 key[4] = {
       0x00010203UL, 0x04050607UL, 0x08090a0bUL, 0x0c0d0e0fUL
-  };*/
+  };
+  */
+  //SWord32 key[4];
   
   SWord32 ct[4];
+
+  /*
+  pt[0] = 0;
+  pt[1] = 0;
+  pt[2] = 0;
+  pt[3] = 0;
+  key[0] = 0;
+  key[1] = 0;
+  key[2] = 0;
+  key[3] = 0;
+  */
   
   aes128BlockEncrypt(pt, key, ct);
   write_aiger_array_uint32(ct, 4, "aes.aig");
-  //printf("%08x\n", ct[0]);
-  //printf("%08x\n", ct[1]);
-  //printf("%08x\n", ct[2]);
-  //printf("%08x\n", ct[3]);
+  printf("%08x\n", ct[0]);
+  printf("%08x\n", ct[1]);
+  printf("%08x\n", ct[2]);
+  printf("%08x\n", ct[3]);
   
   return 0;
+  /* For all zero key and pt */
+  /*
+  return ct[0] == 0xUL
+      && ct[1] == 0xUL
+      && ct[2] == 0xUL
+      && ct[3] == 0xUL;
+  */
+
+  /* For concrete fresh key and pt */
   /*
   return ct[0] == 0x89a7fddfUL
       && ct[1] == 0x2dafd9feUL
