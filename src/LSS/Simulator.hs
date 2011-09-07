@@ -1551,10 +1551,14 @@ standardOverrides =
   , ("eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
   , ("eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
   , ("eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
-  , ("eval_aiger_array_uint8",   i8p, [i8p,  i32, i8p], False, nyiOverride)
-  , ("eval_aiger_array_uint16", i16p, [i16p, i32, i8p], False, nyiOverride)
-  , ("eval_aiger_array_uint32", i32p, [i32p, i32, i8p], False, nyiOverride)
-  , ("eval_aiger_array_uint64", i64p, [i64p, i32, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False,
+     nyiOverride)
+  , ("eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False,
+     nyiOverride)
+  , ("eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False,
+     nyiOverride)
+  , ("eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False,
+     nyiOverride)
   , ("override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
   , ("override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)
