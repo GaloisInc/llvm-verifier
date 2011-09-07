@@ -6,7 +6,6 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Trans
 import           Data.Int
-import           Data.LLVM.TargetData
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
@@ -19,7 +18,6 @@ import           Test.QuickCheck.Monadic
 import           Text.LLVM                     ((=:))
 import           Verinf.Symbolic.Common        (ConstantProjection(..), Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
-import qualified Data.Vector.Storable          as LV
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
 
@@ -99,39 +97,44 @@ runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile defaultSEH $ \be -> do
   rv <- getProgramReturnValue
   return $ BitTermClosed . (,) be <$> rv
 
+type StdMemory     = BitMemory Lit
 type StdBitEngine     = BitEngine Lit
-type StdBitBlastSim a = Simulator (BitIO (BitMemory Lit) Lit) IO a
-type StdBitBlastTest  = StdBitEngine -> StdBitBlastSim Bool
-type StdBitBlastSEH   = SEH (BitIO (BitMemory Lit) Lit) IO
+type StdBitBlastSim mem a = Simulator (BitIO mem Lit) IO a
+type StdBitBlastTest = StdBitEngine -> StdBitBlastSim StdMemory Bool
+type StdBitBlastSEH mem = SEH (BitIO mem Lit) IO
 
-runBitBlastSim :: Int -> FilePath -> StdBitBlastSEH -> (StdBitEngine -> StdBitBlastSim a) -> IO a
+runBitBlastSim :: Int
+               -> FilePath
+               -> StdBitBlastSEH StdMemory
+               -> (StdBitEngine -> StdBitBlastSim StdMemory a)
+               -> IO a
 runBitBlastSim v bcFile seh act = do
   (cb, be, backend, mem) <- stdBitBlastInit bcFile
-  runSimulator cb backend mem stdBitBlastLift seh $ withVerbosity v (act be)
+  runSimulator cb backend mem stdBitBlastLift seh Nothing $ withVerbosity v (act be)
 
-runBitBlastSimTest :: Int -> FilePath -> StdBitBlastSEH -> StdBitBlastTest-> PropertyM IO ()
+runBitBlastSimTest :: Int
+                   -> FilePath
+                   -> StdBitBlastSEH StdMemory
+                   -> StdBitBlastTest
+                   -> PropertyM IO ()
 runBitBlastSimTest v bcFile seh = assert <=< run . runBitBlastSim v bcFile seh
 
 stdBitBlastInit :: FilePath -> IO ( Codebase
                                   , StdBitEngine
-                                  , BitBlastSBE Lit
-                                  , BitMemory Lit
+                                  , BitBlastSBE StdMemory Lit
+                                  , StdMemory
                                   )
 stdBitBlastInit bcFile = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
   let lc      = cbLLVMCtx cb
-      mm      = buddyMemModel lc be
-      backend = sbeBitBlast lc be mm
-  return (cb, be, backend, stdTestMem $ cbLLVMCtx cb)
+      mg      = defaultMemGeom lc
+  --(mm, mem) <- dagMemModel lc be stack code gdata heap
+  let mm  = buddyMemModel lc be
+      mem = buddyInitMemory mg
+  return (cb, be, sbeBitBlast lc be mm, mem)
 
-stdTestMem :: LV.Storable l => LLVMContext -> BitMemory l
-stdTestMem lc =
-  sbeBitBlastMem stack code data' heap --(ss, se) (cs, ce) (ds, de) (hs, he)
-  where
-    (stack, code, data', heap) = defaultMemGeom lc
-
-stdBitBlastLift :: BitIO (BitMemory l) l a -> Simulator sbe IO a
+stdBitBlastLift :: BitIO m l a -> Simulator sbe IO a
 stdBitBlastLift = SM . lift . liftSBEBitBlast
 
 -- possibly skip a test

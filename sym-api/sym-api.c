@@ -2,7 +2,11 @@
 
 #define FRESH(ty, def) { return def; }
 #define EVAL(ty, sym)  { return sym; }
-#define FRESH_ARRAY(ty, size, def) { \
+#define EVAL_ARRAY(ty, sym, out, size) {                \
+        int i;                                          \
+        for(i = 0; i < size; i++) out[i] = sym[i];      \
+    }
+#define FRESH_ARRAY(ty, size, def) {                    \
         ty *buf = malloc(size * sizeof(ty));            \
         int i;                                          \
         for (i = 0; i < size; i++) buf[i] = def;        \
@@ -50,18 +54,18 @@ uint64_t eval_aiger_uint64 (uint64_t sym, uint8_t *input_bits,
                             uint32_t input_size)
     EVAL(uint64_t, sym);
 
-uint8_t*  eval_aiger_array_uint8  (uint8_t  *sym, uint32_t size,
-                                   uint8_t *input_bits,
-                                   uint32_t input_size) EVAL(uint8_t, sym);
-uint16_t* eval_aiger_array_uint16 (uint16_t *sym, uint32_t size,
-                                   uint8_t *input_bits,
-                                   uint32_t input_size) EVAL(uint16_t, sym);
-uint32_t* eval_aiger_array_uint32 (uint32_t *sym, uint32_t size,
-                                   uint8_t *input_bits,
-                                   uint32_t input_size) EVAL(uint32_t, sym);
-uint64_t* eval_aiger_array_uint64 (uint64_t *sym, uint32_t size,
-                                   uint8_t *input_bits,
-                                   uint32_t input_size) EVAL(uint64_t, sym);
+void eval_aiger_array_uint8  (uint8_t  *sym, uint8_t  *out, uint32_t size,
+                              uint8_t *input_bits, uint32_t input_size)
+    EVAL_ARRAY(uint8_t, sym, out, size);
+void eval_aiger_array_uint16 (uint16_t *sym, uint16_t *out, uint32_t size,
+                              uint8_t *input_bits, uint32_t input_size)
+    EVAL_ARRAY(uint16_t, sym, out, size);
+void eval_aiger_array_uint32 (uint32_t *sym, uint32_t *out, uint32_t size,
+                              uint8_t *input_bits, uint32_t input_size)
+    EVAL_ARRAY(uint32_t, sym, out, size);
+void eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
+                              uint8_t *input_bits, uint32_t input_size)
+    EVAL_ARRAY(uint64_t, sym, out, size);
 
 void override_function_by_name(char *from, char *to) {}
 void override_function_by_addr(void *from, void *to) {}
