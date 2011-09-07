@@ -265,6 +265,7 @@ intrinsic intr mreg args0 =
     -- TODO: Handle intrinsic overrides
     ("llvm.memcpy.p0i8.p0i8.i64", Nothing) -> memcpy
     ("llvm.memset.p0i8.i64", Nothing) -> memset
+    ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow reg
     _ -> error $ "Unsupported LLVM intrinsic: " ++ intr
   where
     memcpy = do
@@ -273,6 +274,15 @@ intrinsic intr mreg args0 =
     memset = do
       let [dst, val, len, align, _isvol] = args0
       memSet (typedValue dst) val (typedValue len) (typedValue align)
+    uaddWithOverflow reg = do
+      let [x, y] = map typedValue args0
+      b0 <- withSBE $ \sbe -> termBool sbe False
+      x' <- withSBE $ \sbe -> termArray sbe [b0, x]
+      y' <- withSBE $ \sbe -> termArray sbe [b0, y]
+      z <- termAdd x' y'
+      [ov, z'] <- withSBE $ \sbe -> termDecomp sbe [i1, i64] z
+      res <- withSBE $ \sbe -> termArray sbe [typedValue z', typedValue ov]
+      assign (typedValue reg) (Typed (L.Struct [i64, i1]) res)
 
 memSet :: ( Monad m, Functor m, MonadIO m
           , Functor sbe
