@@ -130,10 +130,10 @@ stdBitBlastInit bcFile = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
   let lc      = cbLLVMCtx cb
-      (stack, code, gdata, heap) = defaultMemGeom lc
+      mg      = defaultMemGeom lc
   --(mm, mem) <- dagMemModel lc be stack code gdata heap
   let mm  = buddyMemModel lc be
-      mem = buddyInitMemory stack code gdata heap
+      mem = buddyInitMemory mg
   return (cb, be, sbeBitBlast lc be mm, mem)
 
 stdBitBlastLift :: BitIO m l a -> Simulator sbe IO a

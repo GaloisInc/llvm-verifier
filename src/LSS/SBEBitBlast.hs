@@ -20,11 +20,14 @@ module LSS.SBEBitBlast
   , BitTermClosed(..)
   , sbeBitBlast
   , liftSBEBitBlast
+    -- Memmodel code
+  , BitBlastMemModel
   , BitMemory
   , buddyMemModel
   , buddyInitMemory
+  , createBuddyMemModel
   , DagMemory
-  , dagMemModel
+  , createDagMemModel
   -- for testing only
   , BitIO
   , bmDataAddr
@@ -96,6 +99,19 @@ alignDn addr i = addr .&. (complement mask)
 
 bmError :: String -> a
 bmError = error
+
+mgSanityCheck :: MemGeom -> Maybe String
+mgSanityCheck mg
+  | decreasing (mgCode mg) = Just "Code segment start and end are in wrong order."
+  | decreasing (mgData mg) = Just "Data segment start and end are in wrong order."
+  | decreasing (mgHeap mg) = Just "Heap segment start and end are in wrong order."
+  | norm (mgStack mg) `overlap` mgCode mg = Just "Stack and code segments overlap."
+  | norm (mgStack mg) `overlap` mgData mg = Just "Stack and data segments overlap."
+  | norm (mgStack mg) `overlap` mgHeap mg = Just "Stack and heap segments overlap."
+  | mgCode mg `overlap` mgData mg = Just "Code and data segments overlap."
+  | mgCode mg `overlap` mgHeap mg = Just "Code and heap segments overlap."
+  | mgData mg `overlap` mgHeap mg = Just "Data and code segments overlap."
+  | otherwise = Nothing
 
 -- Range {{{1 
 
@@ -246,7 +262,25 @@ instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
       Nothing     -> Nothing
       Just (w, v) -> Just (CInt (fromIntegral w) v)
 
+bytesToTerm :: LV.Storable l => LLVMContext -> LLVM.Type -> LV.Vector l -> BitTerm l
+bytesToTerm _ (LLVM.PrimType (LLVM.Integer w)) bits =
+  BitTerm (LV.take (fromIntegral w) bits)
+bytesToTerm _ _ bits = BitTerm bits
+
+termToBytes :: LV.Storable l
+            => LLVMContext -> BitEngine l -> LLVM.Type -> BitTerm l -> LV.Vector l
+termToBytes lc be tp (BitTerm val) =
+  case resolveType lc tp of
+    -- Extend integer types to full width.
+    LLVM.PrimType (LLVM.Integer w) ->
+      let newBits = (8 - (w .&. 0x7)) .&. 0x7
+       in val LV.++ LV.replicate (fromIntegral newBits) (beDontCare be)
+    -- Treat other types as same.
+    _ -> val
+
+
 -- MemModel {{{1
+
 data MemModel mem ptr int bytes cond = MemModel {
     mmDump :: Bool -> mem -> Maybe [Range Addr] -> IO ()
   , mmLoad :: mem -> ptr -> Integer -> IO (cond, bytes)
@@ -274,21 +308,7 @@ data MemModel mem ptr int bytes cond = MemModel {
               -> IO (cond, mem) -- ^ Condition and new value.
   }
 
-bytesToTerm :: LV.Storable l => LLVMContext -> LLVM.Type -> LV.Vector l -> BitTerm l
-bytesToTerm _ (LLVM.PrimType (LLVM.Integer w)) bits =
-  BitTerm (LV.take (fromIntegral w) bits)
-bytesToTerm _ _ bits = BitTerm bits
-
-termToBytes :: LV.Storable l
-            => LLVMContext -> BitEngine l -> LLVM.Type -> BitTerm l -> LV.Vector l
-termToBytes lc be tp (BitTerm val) =
-  case resolveType lc tp of
-    -- Extend integer types to full width.
-    LLVM.PrimType (LLVM.Integer w) ->
-      let newBits = (8 - (w .&. 0x7)) .&. 0x7
-       in val LV.++ LV.replicate (fromIntegral newBits) (beDontCare be)
-    -- Treat other types as same.
-    _ -> val
+type BitBlastMemModel m l = MemModel m (BitTerm l) (BitTerm l) (LV.Vector l) (BitTerm l)
 
 -- | Load memory using
 loadTerm :: (Eq l, LV.Storable l)
@@ -514,7 +534,7 @@ setBytes w low high fn mem
                 t = SUnallocated
         impl _ _ _ = bmError "internal: Malformed storage"
 
--- Allocator and allocation {{{1
+-- Allocator and allocation {{{2
 -- @uninitRegion w low high@ marks all bytes in [low..high) as uninitialized.
 -- N.B. @w@ is the width of pointers in bits.
 uninitRegion :: Int -> Addr -> Addr -> Storage l -> Storage l
@@ -850,13 +870,11 @@ bmMemCopy be m (BitTerm dst) src (BitTerm len0) (BitTerm _align) = do
             Nothing    -> bmError $ "Symbolic memcpy len not supported"
             Just (_,x) -> x
 
-type BuddyMemModel l = MemModel (BitMemory l) (BitTerm l) (BitTerm l) (LV.Vector l) (BitTerm l)
-
 -- | Memory model for explicit buddy allocation scheme.
 buddyMemModel :: (Eq l, LV.Storable l)
               => LLVMContext
               -> BitEngine l
-              -> BuddyMemModel l
+              -> BitBlastMemModel (BitMemory l) l
 buddyMemModel lc be = mm
  where ptrWidth = llvmAddrWidthBits lc
        mm = MemModel {
@@ -877,33 +895,31 @@ buddyMemModel lc be = mm
               , mmMemCopy = bmMemCopy be 
               }
 
-buddyInitMemory :: Range Addr -- ^ Stack start and end address
-                -> Range Addr -- ^ Code start and end address
-                -> Range Addr -- ^ Data start and end addresses
-                -> Range Addr -- ^ Heap start and end address
-                -> BitMemory l
-buddyInitMemory stack code gdata heap
-  | decreasing code = bmError "internal: Code segment start and end are in wrong order."
-  | decreasing gdata = bmError "internal: Data segment start and end are in wrong order."
-  | decreasing heap = bmError "internal: Heap segment start and end are in wrong order."
-  | norm stack `overlap` code  = bmError "internal: Stack and code segments overlap."
-  | norm stack `overlap` gdata = bmError "internal: Stack and data segments overlap."
-  | norm stack `overlap` heap  = bmError "internal: Stack and heap segments overlap."
-  | code `overlap` gdata = bmError "internal: Code and data segments overlap."
-  | code `overlap` heap = bmError "internal: Code and heap segments overlap."
-  | gdata `overlap` heap = bmError "internal: Data and code segments overlap."
-  | otherwise
-  = BitMemory { bmStorage = SUnallocated
-              , bmBasicBlockMap = Map.empty
-              , bmStackAddr = start stack
-              , bmStackEnd = end stack
-              , bmStackFrames = []
-              , bmCodeAddr = start code
-              , bmCodeEnd = end code
-              , bmDataAddr = start gdata
-              , bmDataEnd = end gdata
-              , bmFreeList = initFreeList (start heap) (end heap)
-              }
+buddyInitMemory :: MemGeom -> BitMemory l
+buddyInitMemory mg =
+  case mgSanityCheck mg of
+    Just msg -> bmError ("internal: " ++ msg)
+    Nothing ->
+      BitMemory { bmStorage = SUnallocated
+                , bmBasicBlockMap = Map.empty
+                , bmStackAddr = start (mgStack mg)
+                , bmStackEnd = end (mgStack mg)
+                , bmStackFrames = []
+                , bmCodeAddr = start (mgCode mg)
+                , bmCodeEnd = end (mgCode mg)
+                , bmDataAddr = start (mgData mg)
+                , bmDataEnd = end (mgData mg)
+                , bmFreeList = initFreeList (start (mgHeap mg)) (end (mgHeap mg))
+                }
+
+createBuddyMemModel :: (Eq l, LV.Storable l)
+                    => LLVMContext
+                    -> BitEngine l
+                    -> MemGeom
+                    -> IO ( BitBlastMemModel (BitMemory l) l
+                          , BitMemory l)
+createBuddyMemModel lc be mg =
+  return (buddyMemModel lc be, buddyInitMemory mg)
 
 -- DagMemory {{{1
 
@@ -1406,36 +1422,29 @@ dmMemCopy be ptrWidth ref mem (BitTerm dest) (BitTerm src) (BitTerm l) (BitTerm 
     -- Return result
     return (termFromLit c,m)
 
-
-
-type DagMemModel l = MemModel (DagMemory l) (BitTerm l) (BitTerm l) (LV.Vector l) (BitTerm l)
-
-dagMemModel :: (Ord l, LV.Storable l)
-            => LLVMContext
-            -> BitEngine l
-            -> Range Addr -- ^ Stack start and end address
-            -> Range Addr -- ^ Code start and end address
-            -> Range Addr -- ^ Data start and end addresses
-            -> Range Addr -- ^ Heap start and end address
-            -> IO (DagMemModel l, DagMemory l)
-dagMemModel lc be stack code gdata heap = do
+createDagMemModel :: (Ord l, LV.Storable l)
+                  => LLVMContext
+                  -> BitEngine l
+                  -> MemGeom
+                  -> IO (BitBlastMemModel (DagMemory l) l, DagMemory l)
+createDagMemModel lc be mg = do
   let ptrWidth = llvmAddrWidthBits lc
-  let stackGrowsUp = start stack <= end stack
+  let stackGrowsUp = not (decreasing (mgStack mg))
   ref <- newIORef DMDag { dmAppNodeMap = Map.empty, dmNodeCount = 1 }
   let ptrEnd range = beVectorFromInt be ptrWidth (end range)
   let mm = MemModel {
                mmLoad = dmLoadBytes be
              , mmStore = dmStoreBytes be ref
              , mmMux = dmMux be ref
-             , mmInitGlobal = dmInitGlobal be ptrWidth (end gdata) ref 
+             , mmInitGlobal = dmInitGlobal be ptrWidth (end (mgData mg)) ref 
              , mmDump = dmDump be
-             , mmAddDefine = dmAddDefine be ptrWidth (end code) ref
+             , mmAddDefine = dmAddDefine be ptrWidth (end (mgCode mg)) ref
              , mmBlockAddress = blockAddress . dmBasicBlockMap
              , mmLookupDefine = dmLookupDefine be
-             , mmStackAlloca = dmStackAlloca be ptrWidth stackGrowsUp (ptrEnd stack) ref 
+             , mmStackAlloca = dmStackAlloca be ptrWidth stackGrowsUp (ptrEnd (mgStack mg)) ref 
              , mmStackPush = dmStackPushFrame be ref
              , mmStackPop = dmStackPopFrame stackGrowsUp ref
-             , mmHeapAlloc = dmHeapAlloc be ptrWidth (ptrEnd heap) ref
+             , mmHeapAlloc = dmHeapAlloc be ptrWidth (ptrEnd (mgHeap mg)) ref
              , mmMemCopy = dmMemCopy be ptrWidth ref
              }
   allocRef <- newIORef Map.empty
@@ -1443,13 +1452,13 @@ dagMemModel lc be stack code gdata heap = do
   loadRef <- newIORef Map.empty
   let mem = DagMemory { dmNodeIdx = 0
                       , dmNodeApp = DMInitial
-                      , dmStack = beVectorFromInt be ptrWidth (start stack)
+                      , dmStack = beVectorFromInt be ptrWidth (start (mgStack mg))
                       , dmStackFrames = []
-                      , dmCode = start code
+                      , dmCode = start (mgCode mg)
                       , dmDefineMap = Map.empty
                       , dmBasicBlockMap = Map.empty
-                      , dmData = start gdata
-                      , dmHeap = beVectorFromInt be ptrWidth (start heap)
+                      , dmData = start (mgData mg)
+                      , dmHeap = beVectorFromInt be ptrWidth (start (mgHeap mg))
                       , dmAllocCache = allocRef
                       , dmInitCache = initRef
                       , dmLoadCache = loadRef
@@ -1558,7 +1567,7 @@ type BitBlastSBE m l = SBE (BitIO m l)
 sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
             => LLVMContext
             -> BitEngine l
-            -> MemModel m (BitTerm l) (BitTerm l) (LV.Vector l) (BitTerm l)
+            -> BitBlastMemModel m l
             -> SBE (BitIO m l)
 sbeBitBlast lc be mm = sbe
   where
@@ -1625,7 +1634,7 @@ testSBEBitBlast = do
              []
   be <- createBitEngine
   let mm = buddyMemModel lc be
-      m0 = buddyInitMemory (0x10,0x0) (0x0,0x0) (0x0, 0x0) (0x0,0x0)
+      m0 = buddyInitMemory (MemGeom (0x10,0x0) (0x0,0x0) (0x0, 0x0) (0x0,0x0))
   -- (mm,m0) <- dagMemModel lc be (0x10,0x0) (0x0,0x0) (0x0, 0x0) (0x0,0x0)
   let sbe = sbeBitBlast lc be mm
   liftSBEBitBlast $ do
