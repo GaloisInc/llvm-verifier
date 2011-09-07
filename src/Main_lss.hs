@@ -144,7 +144,6 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
         dbugTerm "eval" eval
     return ()
 -}
-
   where
       mainHasArgv              = not $ null $ sdArgs mainDef
       numArgs                  = fromIntegral (length argv') :: Int32

@@ -331,7 +331,7 @@ processMemCond ::
   )
   => SBETerm sbe -> Simulator sbe m ()
 processMemCond cond = do
-  condv <- withSBE' $ \sbe -> getBool $ closeTerm sbe cond
+  condv <- condTerm cond
   case condv of
     Just True  -> return ()
     Just False -> error "Obtained constant-false memory model result (TODO: replace w/ error path handling)"
@@ -359,8 +359,13 @@ run = do
           -- Normal program termination on at least one path. Set the exit merge
           -- frame return value (if any) and clear the merged state.
           modifyCS $ \(popMF -> (_, cs)) -> pushMF (finalizeExit top) cs
-          dbugM' 2 $ "run terminating normally: found valid exit frame"
           dumpCtrlStk' 5
+          whenVerbosity (>=2) $ do
+            dbugM "run terminating normally: found valid exit frame"
+            mrv <- getProgramReturnValue
+            case mrv of
+              Nothing -> dbugM "Program had no return value."
+              Just rv -> dbugTerm "Program returned value" rv
 
           -- Let the user know about error paths.
           numErrs <- length <$> gets errorPaths
@@ -887,6 +892,7 @@ step (IfThenElse cond thenStmts elseStmts) = do
       maybe False (==i) . fmap (fromIntegral . fromEnum)
         <$> withSBE' (\sbe -> getBool $ closeTerm sbe v')
 
+
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
 
@@ -904,7 +910,6 @@ eval ::
   , Functor sbe
   )
   => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
-
 eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
   Typed t2 y <- getTypedTerm (Typed t v2)
@@ -936,7 +941,13 @@ eval (ICmp op (Typed t v1) v2) = do
 eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
 eval (Val tv)                  = getTypedTerm tv
 eval e@GEP{}                   = evalGEP e
-eval (Select _tc _tv1 _v2    ) = error "eval Select nyi"
+eval (Select tc tv1 v2)        = do
+  [Typed _ c, Typed t x, Typed _ y] <- mapM getTypedTerm [tc, tv1, typedAs tv1 v2]
+  mc <- condTerm c
+  case mc of
+    Just True  -> return (Typed t x)
+    Just False -> return (Typed t y)
+    Nothing    -> Typed t <$> withSBE (\s -> applyIte s c x y)
 eval (ExtractValue _tv _i    ) = error "eval ExtractValue nyi"
 eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
 
@@ -1161,6 +1172,12 @@ malloc ty msztv malign = do
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+-- Evaluate the given term : i1 yields Nothing if the term is symbolic, Just
+-- (concrete bool) otherwise.
+condTerm :: (Functor m, Monad m, ConstantProjection (SBEClosedTerm sbe))
+  => SBETerm sbe -> Simulator sbe m (Maybe Bool)
+condTerm c = withSBE' $ \s -> getBool $ closeTerm s c
 
 -- | Returns the a term representing the target-specific number of bytes
 -- required to store a value of the given type.
