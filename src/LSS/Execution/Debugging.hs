@@ -6,19 +6,15 @@
 
 module LSS.Execution.Debugging where
 
-import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Trans
 import           Data.Bits
 import           Data.LLVM.TargetData
-import           Data.Maybe
 import           LSS.Execution.Common
-import           LSS.LLVMUtils
 import           LSS.SBEInterface
-import           LSS.SBEBitBlast
 import           LSS.Simulator
-import           Text.LLVM              (Typed(..), typedValue)
-import           Verinf.Symbolic.Common (ConstantProjection(..), Lit)
+import           Text.LLVM              (Typed(..))
+import           Verinf.Symbolic.Common (ConstantProjection(..))
 import qualified Control.Exception      as CE
 import qualified Text.LLVM              as L
 
@@ -28,7 +24,6 @@ sanityChecks ::
   , MonadIO m
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
-  , SBEMemory sbe ~ BitMemory Lit
   )
   => SEH sbe m
 sanityChecks = SEH
@@ -47,7 +42,8 @@ sanityChecks = SEH
                 ++ " (size check)"
         CE.assert False $ return ()
 
-  , onPostGlobInit = \g (Typed ty gdata) -> do
+  , onPostGlobInit = \_g (Typed _ty _gdata) -> do
+      {-
       mem       <- getMem
       sz        <- withLC (`llvmStoreSizeOf` ty)
       addrWidth <- withLC llvmAddrWidthBits
@@ -60,9 +56,11 @@ sanityChecks = SEH
         dbugM $ "onPostGlobInit assert failure on " ++ show (L.ppSymbol $ L.globalSym g)
                 ++ " (read-back) "
         CE.assert False $ return ()
+        -}
+      return ()
   }
+  {-
   where
     uval (typedValue -> v) =
       fromJust <$> withSBE' (\sbe -> getUVal $ closeTerm sbe v)
-
-
+-}

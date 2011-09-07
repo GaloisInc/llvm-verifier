@@ -23,7 +23,7 @@ module LSS.SBEBitBlast
   , BitMemory
   , buddyMemModel
   , buddyInitMemory
-  , DMMemory
+  , DagMemory
   , dagMemModel
   -- for testing only
   , BitIO
@@ -265,7 +265,7 @@ data MemModel mem ptr int bytes cond = MemModel {
                   -> IO (StackAllocaResult ptr mem)
   , mmStackPush :: mem -> IO (cond, mem)
   , mmStackPop :: mem -> IO mem
-  , mmHeapAlloc :: mem -> Integer -> int -> Int -> HeapAllocResult ptr mem
+  , mmHeapAlloc :: mem -> Integer -> int -> Int -> IO (HeapAllocResult ptr mem)
   , mmMemCopy :: mem
               -> ptr            -- ^ Destination pointer
               -> ptr            -- ^ Source pointer
@@ -825,11 +825,12 @@ bmHeapAlloc ptrWidth be bm eltSize (BitTerm cntVector) a =
           let endAddr = addr + size
               addrTerm = BitTerm $ beVectorFromInt be ptrWidth addr
               newStorage = uninitRegion ptrWidth addr endAddr (bmStorage bm) in
-          HAResult true addrTerm size
-                   (bm { bmFreeList = freeList
-                       , bmStorage = newStorage
-                       })
-        Nothing -> HAResult false zeroTerm 0 bm
+          HAResult true
+                   addrTerm
+                   bm { bmFreeList = freeList
+                      , bmStorage = newStorage
+                      }
+        Nothing -> HAResult false zeroTerm bm
 
 bmMemCopy :: (Eq l, LV.Storable l)
           => BitEngine l -- ^ Bit engine for literals
@@ -872,7 +873,7 @@ buddyMemModel lc be = mm
               , mmStackAlloca = return `c4` bmStackAlloca ptrWidth be
               , mmStackPush = \mem -> return (termFromLit (beTrue be), bmStackPush mem)
               , mmStackPop = return . bmStackPop (llvmAddrWidthBits lc)
-              , mmHeapAlloc = bmHeapAlloc ptrWidth be
+              , mmHeapAlloc = return `c4` bmHeapAlloc ptrWidth be
               , mmMemCopy = bmMemCopy be 
               }
 
@@ -907,11 +908,11 @@ buddyInitMemory stack code gdata heap
 -- DagMemory {{{1
 
 data DMDag l = DMDag {
-    dmAppNodeMap :: !(Map (DMApp l) (DMMemory l))
+    dmAppNodeMap :: !(Map (DMApp l) (DagMemory l))
   , dmNodeCount :: !Int
   }
 
-data DMMemory l = DMMemory {
+data DagMemory l = DagMemory {
     dmNodeIdx :: Int
   , dmNodeApp :: DMApp l
     -- | Current address for stack.
@@ -936,10 +937,10 @@ data DMMemory l = DMMemory {
   , dmLoadCache :: IORef (Map (LV.Vector l) (LV.Vector l))
   }
 
-instance Eq (DMMemory l) where
+instance Eq (DagMemory l) where
   x == y = dmNodeIdx x == dmNodeIdx y
 
-instance Ord (DMMemory l) where
+instance Ord (DagMemory l) where
   x `compare` y = dmNodeIdx x `compare` dmNodeIdx y
 
 -- Query operations:
@@ -954,25 +955,25 @@ data DMApp l
    = DMInitial
      -- | @DMAddDefine s bl p@ denotes memory obtained from adding definition to
      -- memory.
-   | DMAddDefine LLVM.Symbol (V.Vector LLVM.BlockLabel) (DMMemory l)
+   | DMAddDefine LLVM.Symbol (V.Vector LLVM.BlockLabel) (DagMemory l)
      -- | @DMAlloc base end prev@ denotes the memory obtained by
      -- allocating bytes in @[base,end)@ to @prev@.
-   | DMAlloc (SymAddr l) (SymAddr l) (DMMemory l) 
-   | DMStackPush (DMMemory l)
+   | DMAlloc (SymAddr l) (SymAddr l) (DagMemory l) 
+   | DMStackPush (DagMemory l)
      -- | @DMStackPop base end prev@ denotes the memory obtained by?b
      -- deallocating bytes in @[base,end)@ to @prev@.  The range may
      -- be empty.
-   | DMStackPop (SymAddr l) (SymAddr l) (DMMemory l)
+   | DMStackPop (SymAddr l) (SymAddr l) (DagMemory l)
      -- | @DMStore addr end valueBytes prev@.  The range [addr end) is
      -- non-empty.
-   | DMStore (SymAddr l) (SymAddr l) (V.Vector (Byte l)) (DMMemory l)
+   | DMStore (SymAddr l) (SymAddr l) (V.Vector (Byte l)) (DagMemory l)
      -- | @DMMemCopy dest destEnd src prev@.  The range [dest destEnd)
      -- may be empty.
-   | DMMemCopy (SymAddr l) (SymAddr l) (SymAddr l) (DMMemory l)
-   | DMMerge l (DMMemory l) (DMMemory l)
+   | DMMemCopy (SymAddr l) (SymAddr l) (SymAddr l) (DagMemory l)
+   | DMMerge l (DagMemory l) (DagMemory l)
   deriving (Eq, Ord)
 
-prettyMemIdx :: DMMemory l -> Doc
+prettyMemIdx :: DagMemory l -> Doc
 prettyMemIdx m = char '$' <> int (dmNodeIdx m)
 
 bePrettyRange :: (Eq l, LV.Storable l) => BitEngine l -> Range (LV.Vector l) -> Doc
@@ -996,7 +997,7 @@ dmPrintApp be app =
        pbytes  = brackets . hsep . punctuate comma . V.toList . V.map (bePrettyLV be)
        paddr   = bePrettyLV be
 
-dmMemArgs :: DMApp l -> [DMMemory l]
+dmMemArgs :: DMApp l -> [DagMemory l]
 dmMemArgs DMInitial = []
 dmMemArgs (DMAddDefine _ _ m) = [m]
 dmMemArgs (DMAlloc _ _ m) = [m]
@@ -1013,7 +1014,7 @@ lfp fn initSet = impl initSet (Set.toList initSet)
           where new = filter (flip Set.notMember s) (fn h)
 
 dmDump :: (Eq l, LV.Storable l)
-       => BitEngine l -> Bool -> DMMemory l -> Maybe [Range Addr] -> IO ()
+       => BitEngine l -> Bool -> DagMemory l -> Maybe [Range Addr] -> IO ()
 dmDump be _ mem _ = do
   -- Steps: Build list of memory addresses to print out.
   let allNodes = lfp (dmMemArgs . dmNodeApp) (Set.singleton mem)
@@ -1023,109 +1024,103 @@ dmDump be _ mem _ = do
 -- | Returns predicate indicating if memory can be writen to.
 dmIsAllocated :: (LV.Storable l, Ord l)
              => BitEngine l 
-             -> DMMemory l
+             -> DagMemory l
              -> Range (LV.Vector l) -- ^ Bytes to check if writable (assumed to be non-empty)
              -> IO l
 dmIsAllocated be = parseMem
-  where parseMem mem range = do
-          allocCache <- readIORef (dmAllocCache mem)
+  where eq = beEqVector be
+        (|||) = beOrM be
+        leq = beUnsignedLeq be
+        parseMem mem range = do
+          let ref = dmAllocCache mem
+          let cache mp = mp >>= \p -> modifyIORef ref (Map.insert range p) >> return p
+          allocCache <- readIORef ref
           case Map.lookup range allocCache of
             Just p -> return p
             Nothing -> do
-              p <- parseApp (dmNodeApp mem) range
-              modifyIORef (dmAllocCache mem) (Map.insert range p)
-              return p
-        parseApp DMInitial             range = beEqVector be (start range) (end range)
-        parseApp (DMAlloc s e mem)     range = beRangeCovered be (parseMem mem) range (s,e)
-        parseApp (DMStackPop s e mem)  range = 
-          beAndM be
-                 ((end range `leq` s) ||| (e `leq` start range) ||| (s `eq` e))
-                 (parseMem mem range)
-          where eq = beEqVector be
-                (|||) = beOrM be
-                leq = beUnsignedLeq be
-        parseApp (DMMerge dmc tm fm)   range = beIteM be dmc (parseMem tm range) (parseMem fm range)
-        parseApp (DMStackPush mem)     range = parseMem mem range
-        parseApp (DMAddDefine _ _ mem) range = parseMem mem range
-        parseApp (DMStore _ _ _ mem)   range = parseMem mem range
-        parseApp (DMMemCopy _ _ _ mem) range = parseMem mem range
+              case dmNodeApp mem of
+                DMInitial           -> cache $ beEqVector be (start range) (end range)
+                DMAlloc s e pm      -> cache $ beRangeCovered be (parseMem pm) range (s,e)
+                DMStackPop s e pm   -> cache $
+                  beAndM be
+                         ((end range `leq` s) ||| (e `leq` start range) ||| (s `eq` e))
+                         (parseMem pm range)
+                DMMerge dmc tm fm   -> cache $ beIteM be dmc (parseMem tm range) (parseMem fm range)
+                DMStackPush pm      -> parseMem pm range
+                DMAddDefine _ _ pm  -> parseMem pm range
+                DMStore _ _ _ pm    -> parseMem pm range
+                DMMemCopy _ _ _ pm  -> parseMem pm range
 
 dmIsInitialized :: (Ord l, LV.Storable l)
                 => BitEngine l
-                -> DMMemory l
+                -> DagMemory l
                 -> Range (LV.Vector l)
                 -> IO l
 dmIsInitialized be = parseMem
-  where -- Perform mux of (Lit,LitVector) pairs
+  where eq = beEqVector be
+        (|||) = beOrM be
+        leq = beUnsignedLeq be
         parseMem mem range = do
-          initCache <- readIORef (dmInitCache mem)
+          let ref = dmInitCache mem
+          let cache mp = mp >>= \p -> modifyIORef ref (Map.insert range p) >> return p
+          initCache <- readIORef ref
           case Map.lookup range initCache of
             Just p -> return p
             Nothing -> do
-              p <- parseApp (dmNodeApp mem) range
-              -- Add rVal to cache for future lookups
-              modifyIORef (dmInitCache mem) (Map.insert range p)
-              return p
-        -- Parse application
-        parseApp DMInitial            _range = return (beFalse be)
-        parseApp (DMStackPop s e mem)  range =
-          beAndM be
-                 ((end range `leq` s) ||| (e `leq` start range) ||| (s `eq` e))
-                 (parseMem mem range)
-          where eq = beEqVector be
-                (|||) = beOrM be
-                leq = beUnsignedLeq be
-        parseApp (DMStore s e _ mem)   range = beRangeCovered be (parseMem mem) range (s,e)
-        parseApp (DMMemCopy d e _ mem) range = beRangeCovered be (parseMem mem) range (d,e)
-        parseApp (DMMerge dmc t f)     range = beIteM be dmc (parseMem t range) (parseMem f range)
-        parseApp (DMStackPush mem)     range = parseMem mem range
-        parseApp (DMAddDefine _ _ mem) range = parseMem mem range
-        parseApp (DMAlloc _ _ mem)     range = parseMem mem range
+              case dmNodeApp mem of
+                DMInitial -> return (beFalse be)
+                DMStackPop s e pm -> cache $
+                  beAndM be
+                         ((end range `leq` s) ||| (e `leq` start range) ||| (s `eq` e))
+                         (parseMem pm range)
+                DMStore s e _ pm   -> cache $ beRangeCovered be (parseMem pm) range (s,e)
+                DMMemCopy d e _ pm -> cache $ beRangeCovered be (parseMem pm) range (d,e)
+                DMMerge dmc t f    -> cache $ beIteM be dmc (parseMem t range) (parseMem f range)
+                DMStackPush pm     -> parseMem pm range
+                DMAddDefine _ _ pm -> parseMem pm range
+                DMAlloc _ _ pm     -> parseMem pm range
 
 dmLoadByte :: (Ord l, LV.Storable l)
            => BitEngine l
-           -> DMMemory l
+           -> DagMemory l
            -> LV.Vector l
            -> IO (LV.Vector l) -- ^ Verification condition and value.
 dmLoadByte be = parseMem
-  where -- Perform mux of (Lit,LitVector) pairs
+  where invalidResult = beDontCareByte be
+        -- Perform mux of (Lit,LitVector) pairs
         parseMem n ptr = do
-          loadCache <- readIORef (dmLoadCache n)
+          let ref = dmLoadCache n
+          let cache mp = mp >>= \p -> modifyIORef ref (Map.insert ptr p) >> return p
+          loadCache <- readIORef ref
           case Map.lookup ptr loadCache of
             Just res -> return res
             Nothing -> do
-              res <- parseApp (dmNodeApp n) ptr
-              -- Add rVal to cache for future lookups
-              modifyIORef (dmLoadCache n) (Map.insert ptr res)
-              return res
-        invalidResult = beDontCareByte be
-        -- Parse application
-        parseApp DMInitial              _ptr = return invalidResult
-        parseApp (DMStore s e bytes mem) ptr = do
-          let byteCount = V.length bytes
-          inRange <- beInRange be ptr (s, e)
-          beIteVector be 
-                      inRange
-                      (do vidx <- beSubInt be ptr s
-                          beMuxGeneral (beIteVector be)
-                                       (toInteger (byteCount - 1))
-                                       vidx
-                                       (return . (bytes V.!) . fromInteger))
-                      (parseMem mem ptr)
-        parseApp (DMMemCopy d e src mem) ptr = do
-          inRange <- beInRange be ptr (d,e)
-          let prevPtr = beAddInt be src =<< beSubInt be ptr d
-          parseMem mem =<< beIteVector be inRange prevPtr (return ptr)
-        parseApp (DMMerge dmc t f)       ptr = beIteVector be dmc (parseMem t ptr) (parseMem f ptr)
-        parseApp (DMAddDefine _ _ mem)   ptr = parseMem mem ptr
-        parseApp (DMAlloc _ _ mem)       ptr = parseMem mem ptr
-        parseApp (DMStackPush mem)       ptr = parseMem mem ptr
-        parseApp (DMStackPop _ _ mem)    ptr = parseMem mem ptr
+              case dmNodeApp n of
+                DMInitial -> return invalidResult
+                DMStore s e bytes pm -> cache $ do
+                  inRange <- beInRange be ptr (s, e)
+                  beIteVector be 
+                              inRange
+                              (do vidx <- beSubInt be ptr s
+                                  beMuxGeneral (beIteVector be)
+                                               (toInteger (V.length bytes - 1))
+                                               vidx
+                                               (return . (bytes V.!) . fromInteger))
+                              (parseMem pm ptr)
+                DMMemCopy d e src pm -> cache $ do
+                  inRange <- beInRange be ptr (d,e)
+                  let prevPtr = beAddInt be src =<< beSubInt be ptr d
+                  parseMem pm =<< beIteVector be inRange prevPtr (return ptr)
+                DMMerge dmc t f    -> cache $ beIteVector be dmc (parseMem t ptr) (parseMem f ptr)
+                DMAddDefine _ _ pm -> parseMem pm ptr
+                DMAlloc _ _ pm     -> parseMem pm ptr
+                DMStackPush pm     -> parseMem pm ptr
+                DMStackPop _ _ pm  -> parseMem pm ptr
 
 -- | @loadBytes be mem ptr size@ returns term representing all the bits with given size.
 dmLoadBytes :: (Ord l, LV.Storable l)
             => BitEngine l
-            -> DMMemory l
+            -> DagMemory l
             -> BitTerm l
             -> Integer
             -> IO (BitTerm l, LV.Vector l)
@@ -1141,10 +1136,10 @@ dmLoadBytes be mem (BitTerm ptr) sz = do
 -- in gives the opportunity to modify the node before it is cached.
 dmGetMem :: (Ord l, LV.Storable l)
          => IORef (DMDag l)
-         -> DMMemory l
+         -> DagMemory l
          -> DMApp l
-         -> (DMMemory l -> IO (DMMemory l))
-         -> IO (DMMemory l)
+         -> (DagMemory l -> IO (DagMemory l))
+         -> IO (DagMemory l)
 dmGetMem ref base app nodeFn = do
   dg <- readIORef ref
   case Map.lookup app (dmAppNodeMap dg) of
@@ -1160,7 +1155,7 @@ dmGetMem ref base app nodeFn = do
 -- | Store bytes in memory
 dmStoreBytes :: (Ord l, LV.Storable l)
              => BitEngine l -> IORef (DMDag l)
-             -> DMMemory l -> LV.Vector l -> BitTerm l -> IO (BitTerm l, DMMemory l)
+             -> DagMemory l -> LV.Vector l -> BitTerm l -> IO (BitTerm l, DagMemory l)
 dmStoreBytes be ref mem flatBytes (BitTerm ptr) 
   | V.length bytes == 0 = return (termFromLit (beTrue be), mem)
   | otherwise = do
@@ -1177,7 +1172,7 @@ dmStoreBytes be ref mem flatBytes (BitTerm ptr)
 
 dmMux :: (Ord l, LV.Storable l)
       => BitEngine l -> IORef (DMDag l)
-      -> BitTerm l -> DMMemory l -> DMMemory l -> IO (DMMemory l)
+      -> BitTerm l -> DagMemory l -> DagMemory l -> IO (DagMemory l)
 dmMux be ref (BitTerm c) t f = assert (LV.length c == 1) $ do
   unless (dmBasicBlockMap t == dmBasicBlockMap f) $
     fail "internal: Attempt to merge memories with different block addresses."
@@ -1209,7 +1204,7 @@ dmInitGlobal :: (Ord l, LV.Storable l)
              -> Int  -- ^ Width of pointer
              -> Addr -- ^ End of data region
              -> IORef (DMDag l) 
-             -> DMMemory l -> LV.Vector l -> IO (Maybe (BitTerm l, DMMemory l))
+             -> DagMemory l -> LV.Vector l -> IO (Maybe (BitTerm l, DagMemory l))
 dmInitGlobal be ptrWidth dataEnd ref mem flatBytes 
   | byteCount == 0 = return $ Just (BitTerm ptr, mem)
   | dataEnd - dmData mem < byteCount = return Nothing
@@ -1239,10 +1234,10 @@ dmAddDefine :: (Ord l, LV.Storable l)
             -> Int -- ^ width of pointers
             -> Addr -- ^ code end
             -> IORef (DMDag l)
-            -> DMMemory l -- ^ Memory
+            -> DagMemory l -- ^ Memory
             -> LLVM.Symbol -- ^ Definition
             -> V.Vector LLVM.BlockLabel -- ^ Labels for blocks
-            -> IO (Maybe (BitTerm l, DMMemory l))
+            -> IO (Maybe (BitTerm l, DagMemory l))
 dmAddDefine be ptrWidth codeEnd ref mem def blocks
    -- TODO: Alignment and overlap checks?
   | remaining >= bytesReq = do
@@ -1261,7 +1256,7 @@ dmAddDefine be ptrWidth codeEnd ref mem def blocks
 
 dmLookupDefine :: (Eq l, LV.Storable l)
                => BitEngine l
-               -> DMMemory l
+               -> DagMemory l
                -> BitTerm l
                -> LookupDefineResult
 dmLookupDefine be mem (BitTerm a) = do
@@ -1276,39 +1271,37 @@ dmStackAlloca :: (Ord l, LV.Storable l)
               => BitEngine l -- ^ Bit engine
               -> Int -- ^ Width of pointer in bits
               -> Bool -- ^ Flag indicates stack grows up
-              -> Addr -- ^ End of stack
+              -> LV.Vector l -- ^ End of stack
               -> IORef (DMDag l)
-              -> DMMemory l
+              -> DagMemory l
               -> Integer
               -> BitTerm l
               -> Int 
-              -> IO (StackAllocaResult (BitTerm l) (DMMemory l))
+              -> IO (StackAllocaResult (BitTerm l) (DagMemory l))
 dmStackAlloca be ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCount) _align = do
   let stack = dmStack mem
       eltCountSize = LV.length eltCount
   newSizeExt <- beFullMulIntConstant be eltCount (ptrWidth,eltSize)
-  stackRem <- if stackGrowsUp
-                then beVectorFromInt be ptrWidth stackEnd `sub` stack
-                else stack `sub` beVectorFromInt be ptrWidth stackEnd
-  let stackRemExt = stackRem LV.++ LV.replicate eltCountSize (beFalse be)
-  c <- beUnsignedLeq be newSizeExt stackRemExt
+  spaceRem <- if stackGrowsUp
+                then stackEnd `sub` stack
+                else stack `sub` stackEnd
+  let spaceRemExt = spaceRem LV.++ LV.replicate eltCountSize (beFalse be)
+  c <- beUnsignedLeq be newSizeExt spaceRemExt
   let newSize = LV.take ptrWidth newSizeExt
+      mkMem app newStack =
+        dmGetMem ref mem app $ \m -> do
+          allocRef <- newIORef Map.empty
+          return m { dmStack = newStack, dmAllocCache = allocRef }
   case () of
    _ | c == beFalse be -> do
         return (SAResult (termFromLit c) (BitTerm stack) mem)
      | stackGrowsUp -> do
         newStack <- stack `add` newSize
-        m <- dmGetMem ref mem (DMAlloc stack newStack mem) $ \m -> do
-               allocRef <- newIORef Map.empty
-               return m { dmStack = newStack
-                        , dmAllocCache = allocRef }
+        m <- mkMem (DMAlloc stack newStack mem) newStack
         return (SAResult (termFromLit c) (BitTerm stack) m)
      | otherwise -> do
         newStack <- stack `sub` newSize
-        m <- dmGetMem ref mem (DMAlloc newStack stack mem) $ \m -> do
-               allocRef <- newIORef Map.empty
-               return m { dmStack = newStack
-                        , dmAllocCache = allocRef }
+        m <- mkMem (DMAlloc newStack stack mem) newStack
         return (SAResult (termFromLit c) (BitTerm newStack) m)
  where add = beAddInt be
        sub = beSubInt be
@@ -1318,7 +1311,7 @@ dmStackAlloca be ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCoun
 -- the stack when pushing.
 dmStackPushFrame :: (LV.Storable l, Ord l)
                  => BitEngine l -> IORef (DMDag l)
-                 -> DMMemory l -> IO (BitTerm l, DMMemory l)
+                 -> DagMemory l -> IO (BitTerm l, DagMemory l)
 dmStackPushFrame be ref mem = do
   r <- dmGetMem ref mem (DMStackPush mem) $ \m ->
          return m { dmStackFrames = dmStack mem : dmStackFrames mem }
@@ -1328,8 +1321,8 @@ dmStackPushFrame be ref mem = do
 dmStackPopFrame :: (LV.Storable l, Ord l) 
                 => Bool -- ^ Flag indicating if stack should grow up in memory.
                 -> IORef (DMDag l)
-                -> DMMemory l 
-                -> IO (DMMemory l)
+                -> DagMemory l 
+                -> IO (DagMemory l)
 dmStackPopFrame stackGrowsUp ref mem =
   case dmStackFrames mem of
    [] -> bmError "internal: Attempted to pop stack frame from memory when no stack frames have been pushed."
@@ -1344,17 +1337,45 @@ dmStackPopFrame stackGrowsUp ref mem =
                 , dmStackFrames = fl
                 }
 
+dmHeapAlloc :: (Ord l, LV.Storable l)
+            => BitEngine l -- ^ Bit engine
+            -> Int -- ^ Width of pointer in bits
+            -> LV.Vector l -- ^ End of heap
+            -> IORef (DMDag l)
+            -> DagMemory l
+            -> Integer
+            -> BitTerm l
+            -> Int 
+            -> IO (HeapAllocResult (BitTerm l) (DagMemory l))
+dmHeapAlloc be ptrWidth heapEnd ref mem eltSize (BitTerm eltCount) _align = do
+  let heap = dmHeap mem
+      eltCountSize = LV.length eltCount
+  newSizeExt <- beFullMulIntConstant be eltCount (ptrWidth,eltSize)
+  spaceRem <- beSubInt be heapEnd heap
+  let spaceRemExt = spaceRem LV.++ LV.replicate eltCountSize (beFalse be)
+  c <- beUnsignedLeq be newSizeExt spaceRemExt
+  case () of
+   _ | c == beFalse be -> do
+        return (HAResult (termFromLit c) (BitTerm heap) mem)
+     | otherwise -> do
+        let newSize = LV.take ptrWidth newSizeExt
+        newHeap <- beAddInt be heap newSize
+        m <- dmGetMem ref mem (DMAlloc heap newHeap mem) $ \m -> do
+               allocRef <- newIORef Map.empty
+               return m { dmHeap = newHeap, dmAllocCache = allocRef }
+        return (HAResult (termFromLit c) (BitTerm heap) m)
+
 -- | Store bytes in memory
 dmMemCopy :: (Ord l, LV.Storable l)
           => BitEngine l
           -> Int -- ^ Pointer width
           -> IORef (DMDag l)
-          -> DMMemory l 
+          -> DagMemory l 
           -> BitTerm l   -- ^ Destination pointer
           -> BitTerm l   -- ^ Source pointer
           -> BitTerm l   -- ^ Length value
           -> BitTerm l   -- ^ Alignment in bytes
-          -> IO (BitTerm l, DMMemory l)
+          -> IO (BitTerm l, DagMemory l)
 dmMemCopy be ptrWidth ref mem (BitTerm dest) (BitTerm src) (BitTerm l) (BitTerm _)
  | LV.length src /= ptrWidth = bmError "internal: src pointer size does not match pointer width."
  | LV.length dest /= ptrWidth = bmError "internal: dest pointer size does not match pointer width"
@@ -1385,7 +1406,9 @@ dmMemCopy be ptrWidth ref mem (BitTerm dest) (BitTerm src) (BitTerm l) (BitTerm 
     -- Return result
     return (termFromLit c,m)
 
-type DagMemModel l = MemModel (DMMemory l) (BitTerm l) (BitTerm l) (LV.Vector l) (BitTerm l)
+
+
+type DagMemModel l = MemModel (DagMemory l) (BitTerm l) (BitTerm l) (LV.Vector l) (BitTerm l)
 
 dagMemModel :: (Ord l, LV.Storable l)
             => LLVMContext
@@ -1394,11 +1417,12 @@ dagMemModel :: (Ord l, LV.Storable l)
             -> Range Addr -- ^ Code start and end address
             -> Range Addr -- ^ Data start and end addresses
             -> Range Addr -- ^ Heap start and end address
-            -> IO (DagMemModel l, DMMemory l)
+            -> IO (DagMemModel l, DagMemory l)
 dagMemModel lc be stack code gdata heap = do
   let ptrWidth = llvmAddrWidthBits lc
   let stackGrowsUp = start stack <= end stack
   ref <- newIORef DMDag { dmAppNodeMap = Map.empty, dmNodeCount = 1 }
+  let ptrEnd range = beVectorFromInt be ptrWidth (end range)
   let mm = MemModel {
                mmLoad = dmLoadBytes be
              , mmStore = dmStoreBytes be ref
@@ -1408,28 +1432,28 @@ dagMemModel lc be stack code gdata heap = do
              , mmAddDefine = dmAddDefine be ptrWidth (end code) ref
              , mmBlockAddress = blockAddress . dmBasicBlockMap
              , mmLookupDefine = dmLookupDefine be
-             , mmStackAlloca = dmStackAlloca be ptrWidth stackGrowsUp (end stack) ref 
+             , mmStackAlloca = dmStackAlloca be ptrWidth stackGrowsUp (ptrEnd stack) ref 
              , mmStackPush = dmStackPushFrame be ref
              , mmStackPop = dmStackPopFrame stackGrowsUp ref
-             , mmHeapAlloc = error "dagMemMode.mmHeapAlloc not yet implemented."
+             , mmHeapAlloc = dmHeapAlloc be ptrWidth (ptrEnd heap) ref
              , mmMemCopy = dmMemCopy be ptrWidth ref
              }
   allocRef <- newIORef Map.empty
   initRef <- newIORef Map.empty
   loadRef <- newIORef Map.empty
-  let mem = DMMemory { dmNodeIdx = 0
-                     , dmNodeApp = DMInitial
-                     , dmStack = beVectorFromInt be ptrWidth (start stack)
-                     , dmStackFrames = []
-                     , dmCode = start code
-                     , dmDefineMap = Map.empty
-                     , dmBasicBlockMap = Map.empty
-                     , dmData = start gdata
-                     , dmHeap = beVectorFromInt be ptrWidth (start heap)
-                     , dmAllocCache = allocRef
-                     , dmInitCache = initRef
-                     , dmLoadCache = loadRef
-                     }
+  let mem = DagMemory { dmNodeIdx = 0
+                      , dmNodeApp = DMInitial
+                      , dmStack = beVectorFromInt be ptrWidth (start stack)
+                      , dmStackFrames = []
+                      , dmCode = start code
+                      , dmDefineMap = Map.empty
+                      , dmBasicBlockMap = Map.empty
+                      , dmData = start gdata
+                      , dmHeap = beVectorFromInt be ptrWidth (start heap)
+                      , dmAllocCache = allocRef
+                      , dmInitCache = initRef
+                      , dmLoadCache = loadRef
+                      }
   return (mm, mem) 
 
 -- Aiger operations {{{1
@@ -1529,7 +1553,7 @@ type instance SBETerm (BitIO m l)       = BitTerm l
 type instance SBEClosedTerm (BitIO m l) = BitTermClosed l
 type instance SBEMemory (BitIO m l)     = m
 
-type BitBlastSBE l = SBE (BitIO (BitMemory l) l)
+type BitBlastSBE m l = SBE (BitIO m l)
 
 sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
             => LLVMContext
@@ -1567,7 +1591,7 @@ sbeBitBlast lc be mm = sbe
           , stackPushFrame   = BitIO . mmStackPush mm
           , stackPopFrame    = BitIO . mmStackPop mm
           , heapAlloc        = \m eltTp (LLVM.typedValue -> cnt) ->
-              return . mmHeapAlloc mm m (llvmAllocSizeOf lc eltTp) cnt
+              BitIO . mmHeapAlloc mm m (llvmAllocSizeOf lc eltTp) cnt
           , memCopy          = BitIO `c5` mmMemCopy mm
           , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)
           , evalAiger        = BitIO `c2` evalAigerImpl be

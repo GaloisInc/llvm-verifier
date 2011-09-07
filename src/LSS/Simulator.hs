@@ -1070,7 +1070,7 @@ malloc ty msztv malign = do
           Nothing  -> getTypedTerm (int32const 1)
           Just ntv -> getTypedTerm ntv
   let parseFn HASymbolicCountUnsupported = error "malloc only supports concrete element count"
-      parseFn (HAResult c t _sz m') = ((c,t), m')
+      parseFn (HAResult c t m') = ((c,t), m')
   -- TODO: Handle 'size' result
   (cond,t) <- mutateMem $ \sbe m ->
     parseFn <$> heapAlloc sbe m ty nt (maybe 0 lg malign)

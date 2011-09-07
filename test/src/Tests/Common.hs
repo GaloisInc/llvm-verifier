@@ -99,16 +99,16 @@ runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile defaultSEH $ \be -> do
   rv <- getProgramReturnValue
   return $ BitTermClosed . (,) be <$> rv
 
-type StdBitMemory     = BitMemory Lit
+type StdMemory     = BitMemory Lit
 type StdBitEngine     = BitEngine Lit
 type StdBitBlastSim mem a = Simulator (BitIO mem Lit) IO a
-type StdBitBlastTest = StdBitEngine -> StdBitBlastSim StdBitMemory Bool
+type StdBitBlastTest = StdBitEngine -> StdBitBlastSim StdMemory Bool
 type StdBitBlastSEH mem = SEH (BitIO mem Lit) IO
 
 runBitBlastSim :: Int 
                -> FilePath
-               -> StdBitBlastSEH StdBitMemory
-               -> (StdBitEngine -> StdBitBlastSim StdBitMemory a)
+               -> StdBitBlastSEH StdMemory
+               -> (StdBitEngine -> StdBitBlastSim StdMemory a)
                -> IO a
 runBitBlastSim v bcFile seh act = do
   (cb, be, backend, mem) <- stdBitBlastInit bcFile
@@ -116,29 +116,25 @@ runBitBlastSim v bcFile seh act = do
 
 runBitBlastSimTest :: Int
                    -> FilePath
-                   -> StdBitBlastSEH StdBitMemory
+                   -> StdBitBlastSEH StdMemory
                    -> StdBitBlastTest
                    -> PropertyM IO ()
 runBitBlastSimTest v bcFile seh = assert <=< run . runBitBlastSim v bcFile seh
 
 stdBitBlastInit :: FilePath -> IO ( Codebase
                                   , StdBitEngine
-                                  , BitBlastSBE Lit
-                                  , BitMemory Lit
+                                  , BitBlastSBE StdMemory Lit
+                                  , StdMemory
                                   )
 stdBitBlastInit bcFile = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
   let lc      = cbLLVMCtx cb
-      mm      = buddyMemModel lc be
-      backend = sbeBitBlast lc be mm
-  return (cb, be, backend, stdTestMem $ cbLLVMCtx cb)
-
-stdTestMem :: LV.Storable l => LLVMContext -> BitMemory l
-stdTestMem lc =
-  buddyInitMemory stack code data' heap
-  where
-    (stack, code, data', heap) = defaultMemGeom lc
+      (stack, code, gdata, heap) = defaultMemGeom lc
+  --(mm, mem) <- dagMemModel lc be stack code gdata heap
+  let mm  = buddyMemModel lc be
+      mem = buddyInitMemory stack code gdata heap
+  return (cb, be, sbeBitBlast lc be mm, mem)
 
 stdBitBlastLift :: BitIO m l a -> Simulator sbe IO a
 stdBitBlastLift = SM . lift . liftSBEBitBlast

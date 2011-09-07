@@ -57,13 +57,13 @@ data StackAllocaResult t m
 -- | Result returned by @heapAlloc@ (defined below). Currently
 -- isomorphic to StackAllocResult, but that might change.
 data HeapAllocResult t m
-  -- | @HAResult c p s m@ is returned when allocation succeeded. @c@
+  -- | @HAResult c p m@ is returned when allocation succeeded. @c@
   -- is a symbolic path constraint that the allocation must satisfy
   -- for allocation to have succeeded, @m@ is the new memory state,
-  -- @s@ is the actual size allocated, and @p@ is a @ptr@ to the newly
+  -- and @p@ is a @ptr@ to the newly
   -- allocated space. @c@ is false if the allocation failed due to
   -- insufficient space.
-  = HAResult t t Integer m
+  = HAResult t t m
   -- | Returned if heapAlloc given a symbolic length and the
   -- implementation does not support this.
   | HASymbolicCountUnsupported
