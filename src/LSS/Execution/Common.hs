@@ -230,6 +230,17 @@ ppPath sbe (Path cf mrv _mexc mcb _mem c) =
              )
   $+$ nest 2 (ppCallFrame sbe cf)
 
+-- Prints just the path's location and path constraints
+ppPathLoc :: SBE sbe -> Path sbe -> Doc
+ppPathLoc sbe (Path cf _ _ mcb _ c) =
+  text "Path"
+  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
+                 <> char '/'
+                 <> maybe (text "none") ppSymBlockID mcb
+               )
+  <>  colon
+  <+> (parens $ text "PC:" <+> ppPC sbe c)
+
 ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
 ppRegMap sbe mp =
     vcat [ ppIdentAssoc r <> (L.ppTyped (prettyTermD sbe) v) | (r,v) <- as ]

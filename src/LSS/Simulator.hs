@@ -55,6 +55,8 @@ module LSS.Simulator
   , dbugM
   , dumpMem
   , getMem
+  , getPath'
+  , getTypedTerm
   )
 where
 
@@ -569,7 +571,14 @@ mergePaths from (Just to) = do
         (Just frv, Just trv) -> Just <$> frv <-> trv
         _                    -> error "merge precond viol: path missing rv"
 
-    mergeMems c a b = withSBE $ \sbe -> memMerge sbe c a b
+    mergeMems c a b = do
+      {-
+      dbugM $ "mergeMems: Memory A"
+      withSBE $ \s -> memDump s a Nothing
+      dbugM $ "mergeMems: Memory B"
+      withSBE $ \s -> memDump s b Nothing
+      -}
+      withSBE $ \sbe -> memMerge sbe c a b
 
     mergePCs (Constraint scs1 c1) (Constraint scs2 c2) = do
       Constraint (scs1 `SCEOr` scs2) <$> (return c1 ||| return c2)

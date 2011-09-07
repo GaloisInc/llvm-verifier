@@ -11,6 +11,8 @@ Point-of-contact : jstanley
 
 module Main where
 
+import Control.Monad.State
+
 import           Control.Applicative             hiding (many)
 import           Control.Monad
 import           Control.Monad.Trans
@@ -107,7 +109,46 @@ runBitBlast cb argv' args mainDef = do
   sbe <- do
     be <- createBitEngine
     return $ sbeBitBlast lc be (buddyMemModel lc be)
-  runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) defaultSEH $ do
+
+  -- tmp hack
+  let seh' = defaultSEH
+{-
+  let seh' = defaultSEH {
+               onPreStep = \stmt -> do
+                             case stmt of
+                               Assign lhs (Load tv@(Typed (L.PtrTo ty) _) _malign) -> do
+--                                  dbugM $ "Preload statement: " ++ show (ppSymStmt stmt)
+--                                  sbe <- gets symBE
+--                                  getPath' "Preload" >>= \p -> dbugM (show (ppPathLoc sbe p))
+                                 return ()
+                               PushCallFrame callee _ _ -> do
+                                 dbugM "------ invocation of multiply_other"
+                               Store val addr _malign -> do
+                                 Typed _ addrTerm <- getTypedTerm addr
+                                 sbe <- gets symBE
+                                 p   <- getPath' "Prestore"
+                                 dbugM $ show (ppSymStmt stmt) ++ " on " ++ show (ppPathLoc sbe p)
+                                 dbugTerm ("  Storing (" ++ show (L.ppType (typedType val)) ++ ") to address: ") addrTerm
+                               _ -> return ()
+
+             , onPostStep = \stmt -> do
+                              case stmt of
+                                Assign lhs (Load tv@(Typed (L.PtrTo ty) _) _malign) -> do
+--                                   dbugM $ "Post load statement: " ++ show (ppSymStmt stmt)
+--                                   sbe <- gets symBE
+--                                   getPath' "Postload" >>= \p -> dbugM (show (ppPathLoc sbe p))
+                                  return ()
+                                Store val addr _malign -> do
+--                                   dbugM $ "Post store statement: " ++ show (ppSymStmt stmt)
+--                                   sbe <- gets symBE
+--                                   getPath' "Poststore" >>= \p -> dbugM (show (ppPathLoc sbe p))
+                                  return ()
+                                _ -> return ()
+             }
+  -- tmp hack
+-}
+
+  runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) seh' $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"
@@ -120,7 +161,6 @@ runBitBlast cb argv' args mainDef = do
     callDefine_ (L.Symbol "main") i32 $
       if mainHasArgv then buildArgv numArgs argv' else return []
 
-{-
     -- tmp: hacky manual eval aiger until the overrides are all in place and working
     mrv <- getProgramReturnValue
     case mrv of
@@ -131,7 +171,7 @@ runBitBlast cb argv' args mainDef = do
         eval <- withSBE $ \sbe -> evalAiger sbe ((True : True : replicate 14 False) ++ (False : False : True : replicate 13 False)) rv
         dbugTerm "eval" eval
     return ()
--}
+
   where
       mainHasArgv              = not $ null $ sdArgs mainDef
       numArgs                  = fromIntegral (length argv') :: Int32
