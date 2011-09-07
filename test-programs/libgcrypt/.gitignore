@@ -1,0 +1,6 @@
+*.bc
+*.o
+test
+test.elf
+libgcrypt-1.5.0
+libgcrypt-1.5.0.tar.bz2
