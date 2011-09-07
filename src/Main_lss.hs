@@ -11,8 +11,6 @@ Point-of-contact : jstanley
 
 module Main where
 
-import Control.Monad.State
-
 import           Control.Applicative             hiding (many)
 import           Control.Monad
 import           Control.Monad.Trans
@@ -20,6 +18,7 @@ import           Data.Char
 import           Data.Int
 import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
+import           Data.Vector.Storable            (Storable)
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.LLVMUtils
@@ -101,27 +100,34 @@ main = do
                Just mainDef -> do
                  when (null (sdArgs mainDef) && not (null argv')) warnNoArgv
                  return mainDef
+  let lc = cbLLVMCtx cb
+  be <- createBitEngine
+  let mg = defaultMemGeom (cbLLVMCtx cb)
   case mem of
-    DagBased -> error "Support for DAG-based memory NYI"
-    BitBlast -> runBitBlast cb argv' args mainDef
+    DagBased -> do
+      (mm, mem') <- createDagMemModel lc be mg
+      let sbe = sbeBitBlast lc be mm
+      runBitBlast sbe mem' cb mg argv' args mainDef
+    BitBlast -> do
+      (mm, mem') <- createBuddyMemModel lc be mg
+      let sbe = sbeBitBlast lc be mm
+      runBitBlast sbe mem' cb mg argv' args mainDef
 
-runBitBlast :: Codebase -> [String] -> LSS -> SymDefine -> IO ()
-runBitBlast cb argv' args mainDef = do
-  let lc   = cbLLVMCtx cb
-      opts = Just $ LSSOpts (errpaths args)
-  sbe <- do
-    be <- createBitEngine
-    return $ sbeBitBlast lc be (buddyMemModel lc be)
-  let seh' = defaultSEH
+runBitBlast :: (Eq l, Storable l)
+            => SBE (BitIO mem l) -> mem
+            -> Codebase -> MemGeom -> [String] -> LSS -> SymDefine -> IO ()
+runBitBlast sbe mem cb mg argv' args mainDef = do
+  let opts = Just $ LSSOpts (errpaths args)
+      seh' = defaultSEH
   runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) seh' opts $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"
       dbugM $ "Memory model regions:"
-      dbugM $ "Stack range : " ++ sr stk
-      dbugM $ "Code range  : " ++ sr code
-      dbugM $ "Data range  : " ++ sr data'
-      dbugM $ "Heap range  : " ++ sr heap
+      dbugM $ "Stack range : " ++ sr (mgStack mg)
+      dbugM $ "Code range  : " ++ sr (mgCode mg)
+      dbugM $ "Data range  : " ++ sr (mgData mg)
+      dbugM $ "Heap range  : " ++ sr (mgHeap mg)
 
     callDefine_ (L.Symbol "main") i32 $
       if mainHasArgv then buildArgv numArgs argv' else return []
@@ -142,8 +148,6 @@ runBitBlast cb argv' args mainDef = do
   where
       mainHasArgv              = not $ null $ sdArgs mainDef
       numArgs                  = fromIntegral (length argv') :: Int32
-      (stk, code, data', heap) = defaultMemGeom (cbLLVMCtx cb)
-      mem                      = sbeBitBlastMem stk code data' heap
 
 buildArgv ::
   ( MonadIO m

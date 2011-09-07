@@ -70,6 +70,7 @@ import           Data.LLVM.TargetData
 import           Data.LLVM.Symbolic.AST
 import           Data.List                 hiding (union)
 import           Data.Maybe
+import           Data.String
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
@@ -383,7 +384,8 @@ run = do
 pushMemFrame :: (MonadIO m, Functor m, Functor sbe) => Simulator sbe m ()
 pushMemFrame = do
   dbugM' 6 "Memory model: pushing stack frame"
-  mutateMem_ stackPushFrame
+  cond <- mutateMem stackPushFrame
+  return ()
 
 -- | @pushMemFrame@ tells the memory model to pop a stack frame from the stack
 -- region.
@@ -663,6 +665,10 @@ getTypedTerm' ::
 
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
+
+getTypedTerm' _ (Typed t@(L.PtrTo _) L.ValNull) = do
+  ptrWidth <- withLC llvmAddrWidthBits
+  Typed t <$> withSBE (\sbe -> termInt sbe ptrWidth 0)
 
 getTypedTerm' _ (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
   = getGlobalPtrTerm (sym, Just argtys)
@@ -1117,7 +1123,7 @@ malloc ty msztv malign = do
           Nothing  -> getTypedTerm (int32const 1)
           Just ntv -> getTypedTerm ntv
   let parseFn HASymbolicCountUnsupported = error "malloc only supports concrete element count"
-      parseFn (HAResult c t _sz m') = ((c,t), m')
+      parseFn (HAResult c t m') = ((c,t), m')
   -- TODO: Handle 'size' result
   (cond,t) <- mutateMem $ \sbe m ->
     parseFn <$> heapAlloc sbe m ty nt (maybe 0 lg malign)
@@ -1386,8 +1392,8 @@ loadString ptr =
               (cond,t) <- load addr
               processMemCond cond
               c <- withSBE' $ \sbe -> getUVal $ closeTerm sbe t
-              one <- withSBE $ \sbe ->
-                     termInt sbe (fromIntegral $ termWidth sbe (typedValue addr)) 1
+              ptrWidth <- withLC llvmAddrWidthBits
+              one <- withSBE $ \sbe -> termInt sbe ptrWidth 1
               addr' <- termAdd (typedValue addr) one
               case c of
                 Nothing -> return []
@@ -1538,9 +1544,7 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
       msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
       case (msize, typedType tptr) of
         (Just size, L.PtrTo tgtTy) -> do
-          ptrWidth <- withSBE' $ \sbe ->
-                      fromIntegral $ termWidth sbe (typedValue tptr)
-          elems <- loadArray ptrWidth tptr tgtTy size
+          elems <- loadArray tptr tgtTy size
           arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
           withSBE $ \sbe -> writeAiger sbe file arrTm
@@ -1556,12 +1560,12 @@ loadArray ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => Int
-  -> Typed (SBETerm sbe)
+  => Typed (SBETerm sbe)
   -> L.Type
   -> Integer
   -> Simulator sbe m [SBETerm sbe]
-loadArray ptrWidth ptr ety count = do
+loadArray ptr ety count = do
+  ptrWidth <- withLC llvmAddrWidthBits
   elemWidth <- withLC (`llvmStoreSizeOf` ety)
   inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
   go inc ptr count
@@ -1578,12 +1582,11 @@ evalAigerOverride :: (Functor m, MonadIO m, Functor sbe,
 evalAigerOverride =
   Override $ \_sym _rty args ->
     case args of
-      [Typed _ tm, p@(Typed (L.PtrTo ety) ptm), Typed _ szTm] -> do
+      [Typed _ tm, p@(Typed (L.PtrTo ety) _), Typed _ szTm] -> do
         msz <- withSBE' $ \sbe -> getUVal . closeTerm sbe $ szTm
         case msz of
           Just sz -> do
-            ptrWidth <- withSBE' $ \sbe -> fromIntegral $ termWidth sbe ptm
-            elems <- loadArray ptrWidth p ety sz
+            elems <- loadArray p ety sz
             ints <- mapM
                     (\t -> withSBE' $ \sbe -> getUVal $ closeTerm sbe t)
                     elems
@@ -1598,9 +1601,12 @@ overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
 overrideByName = Override $ \_sym _rty args ->
   case args of
     [fromPtr, toPtr] -> do
-      _from <- loadString fromPtr
-      _to <- loadString toPtr
-      dbugM "overrideByName: nyi"
+      from <- loadString fromPtr
+      to <- loadString toPtr
+      let sym = fromString from
+          sym' = fromString to
+          handler = Redirect sym'
+      modify $ \s -> s { overrides = M.insert sym handler (overrides s) }
       return Nothing
     _ -> error "override_function_by_name: wrong number of arguments"
 
@@ -1654,10 +1660,14 @@ standardOverrides =
   , ("eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
   , ("eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
   , ("eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
-  , ("eval_aiger_array_uint8",   i8p, [i8p,  i32, i8p], False, nyiOverride)
-  , ("eval_aiger_array_uint16", i16p, [i16p, i32, i8p], False, nyiOverride)
-  , ("eval_aiger_array_uint32", i32p, [i32p, i32, i8p], False, nyiOverride)
-  , ("eval_aiger_array_uint64", i64p, [i64p, i32, i8p], False, nyiOverride)
+  , ("eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False,
+     nyiOverride)
+  , ("eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False,
+     nyiOverride)
+  , ("eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False,
+     nyiOverride)
+  , ("eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False,
+     nyiOverride)
   , ("override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
   , ("override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)

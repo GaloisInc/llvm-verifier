@@ -1,0 +1,4 @@
+:l "equivAES.cry"
+:set symbolic
+:eq llvm_aes blockEncryptref_c
+:eq openssl_aes_fixed blockEncryptref
