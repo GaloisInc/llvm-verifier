@@ -344,7 +344,8 @@ run = do
 pushMemFrame :: (MonadIO m, Functor m, Functor sbe) => Simulator sbe m ()
 pushMemFrame = do
   dbugM' 6 "Memory model: pushing stack frame"
-  mutateMem_ stackPushFrame
+  cond <- mutateMem stackPushFrame
+  return ()
 
 -- | @pushMemFrame@ tells the memory model to pop a stack frame from the stack
 -- region.
@@ -1074,7 +1075,7 @@ malloc ty msztv malign = do
           Nothing  -> getTypedTerm (int32const 1)
           Just ntv -> getTypedTerm ntv
   let parseFn HASymbolicCountUnsupported = error "malloc only supports concrete element count"
-      parseFn (HAResult c t _sz m') = ((c,t), m')
+      parseFn (HAResult c t m') = ((c,t), m')
   -- TODO: Handle 'size' result
   (cond,t) <- mutateMem $ \sbe m ->
     parseFn <$> heapAlloc sbe m ty nt (maybe 0 lg malign)
@@ -1245,7 +1246,9 @@ dbugStep stmt = do
                    _ -> ""
                  ++ show (ppSymStmt stmt)
 --  repl
+  cb1 onPreStep stmt
   step stmt
+  cb1 onPostStep stmt
   dumpCtrlStk' 5
 
 repl :: (Functor m, MonadIO m) => Simulator sbe m ()
