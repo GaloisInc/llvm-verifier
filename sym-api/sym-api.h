@@ -41,18 +41,14 @@ uint32_t eval_aiger_uint32 (uint32_t sym, uint8_t *input_bits,
 uint64_t eval_aiger_uint64 (uint64_t sym, uint8_t *input_bits,
                             uint32_t input_size);
 
-uint8_t *eval_aiger_array_uint8  (uint8_t  *sym, uint32_t size,
-                                  uint8_t *input_bits,
-                                  uint32_t input_size);
-uint16_t *eval_aiger_array_uint16 (uint16_t *sym, uint32_t size,
-                                   uint8_t *input_bits,
-                                   uint32_t input_size);
-uint32_t *eval_aiger_array_uint32 (uint32_t *sym, uint32_t size,
-                                   uint8_t *input_bits,
-                                   uint32_t input_size);
-uint64_t *eval_aiger_array_uint64 (uint64_t *sym, uint32_t size,
-                                   uint8_t *input_bits,
-                                   uint32_t input_size);
+void eval_aiger_array_uint8  (uint8_t  *sym, uint8_t *out, uint32_t size,
+                              uint8_t *input_bits, uint32_t input_size);
+void eval_aiger_array_uint16 (uint16_t *sym, uint16_t *out, uint32_t size,
+                              uint8_t *input_bits, uint32_t input_size);
+void eval_aiger_array_uint32 (uint32_t *sym, uint32_t *out, uint32_t size,
+                              uint8_t *input_bits, uint32_t input_size);
+void eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
+                              uint8_t *input_bits, uint32_t input_size);
 
 void override_function_by_name(char *from, char *to);
 void override_function_by_addr(void *from, void *to);
