@@ -125,8 +125,17 @@ liftBB lti phiMap bb = do
       phiInstrs :: LLVM.BlockLabel -> [SymStmt]
       phiInstrs tgt =
           [ Assign r (Val Typed { typedType = tp, typedValue = val })
-            | (r, tp, valMap) <- phiMap Map.! tgt
-            , let val = valMap Map.! llvmId ]
+            | (r, tp, valMap) <- case Map.lookup tgt phiMap of
+                Nothing -> error "AST xlate: missing tgt entry in phiMap"
+                Just x  -> x
+            , let val = case Map.lookup llvmId valMap of
+                          Nothing -> error $
+                            "AST xlate: expected to find "
+                            ++ show (LLVM.ppLabel llvmId)
+                            ++ " as a phi operand of block"
+                            ++ " labeled " ++ show (LLVM.ppLabel tgt)
+                          Just x -> x
+          ]
       -- @brSymInstrs tgt@ returns the code for jumping to the target block.
       -- Observations:
       --  * A post-dominator of a post-dominator of the current block is itself

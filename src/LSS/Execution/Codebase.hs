@@ -24,11 +24,13 @@ module LSS.Execution.Codebase
 
 where
 
-import qualified Control.Exception              as CE
+import           Control.Monad
 import           Control.Monad.Trans
+import           Data.LLVM.TargetData
 import           Data.LLVM.Symbolic.AST
 import           Data.LLVM.Symbolic.Translation
 import           Text.PrettyPrint.HughesPJ
+import qualified Control.Exception              as CE
 import qualified Data.ByteString                as BS
 import qualified Data.LLVM.BitCode              as BC
 import qualified Data.Map                       as M
@@ -44,19 +46,18 @@ type TypeAliasMap  = M.Map LLVM.Ident LLVM.Type
 data Codebase = Codebase {
     cbGlobalNameMap :: GlobalNameMap
   , cbTypeAliasMap  :: TypeAliasMap
-  , cbBitcodeSize   :: Int
+  , cbLLVMCtx       :: LLVMContext
   }
 
 -- For now, only take a single bytecode file argument and assume that the world
 -- is linked together a priori.
 loadCodebase :: FilePath -> IO Codebase
 loadCodebase bcFile = do
-  bs <- BS.readFile bcFile
-  let bsSz = BS.length bs
-  eab <- BC.parseBitCode bs `CE.catch` \(e :: CE.SomeException) -> err (show e)
+  eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
   case eab of
     Left msg  -> err msg
     Right mdl -> do
+
       let ins0 d = M.insert (LLVM.defName d) (Right $ liftDefine d)
           ins1 g = M.insert (LLVM.globalSym g) (Left g)
           ins2 d = M.insert (LLVM.typeName d) (LLVM.typeValue d)
@@ -65,15 +66,20 @@ loadCodebase bcFile = do
           m3     = foldr ins2 M.empty (LLVM.modTypes mdl)
           cb     = Codebase { cbGlobalNameMap = m2
                             , cbTypeAliasMap  = m3
-                            , cbBitcodeSize   = bsSz
+                            , cbLLVMCtx       = buildLLVMContext
+                                                  (`lookupAlias` cb)
+                                                  (LLVM.modDataLayout mdl)
                             }
---       putStrLn $ "mdl = \n" ++ show (LLVM.ppModule mdl)
---       putStrLn $ "types = \n" ++ show (LLVM.modTypes mdl)
---       putStrLn $ "globals = \n" ++ show (map LLVM.ppGlobal (LLVM.modGlobals mdl))
---       putStrLn $ "xlated = \n" ++ (unlines $ map (show . ppSymDefine) (M.elems (cbGlobalNameMap cb)))
---       putStrLn "--"
+
+      when (null $ LLVM.modDataLayout mdl) $
+        putStrLn "Warning: No target data layout found; will use defaults."
+
+--       putStrLn $ "Target data layout: " ++ show (LLVM.modDataLayout mdl)
+--       putStrLn $ "LLVMCtx:" ++ show (cbLLVMCtx cb)
+
       return cb
   where
+    parse = BS.readFile >=> BC.parseBitCode
     err msg = error $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
               ++ show (nest 2 (vcat $ map text $ lines msg))
 

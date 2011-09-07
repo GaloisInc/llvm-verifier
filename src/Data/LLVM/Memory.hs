@@ -5,44 +5,57 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
-module Data.LLVM.Memory where
+{-# LANGUAGE ViewPatterns          #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
-import Data.Bits
-import qualified Text.LLVM as LLVM
+module Data.LLVM.Memory
+  ( Addr
+  , defaultMemGeom
+  , resolveType
+  )
+where
 
-data LLVMContext = LLVMContext
-  { llvmAddrWidthBits :: Int
-  , llvmLookupAlias   :: LLVM.Ident -> LLVM.Type
-  }
+import           Data.LLVM.TargetData
+import qualified Text.LLVM            as L
 
--- | Returns size of type in memory.
-llvmPrimSizeOf :: LLVM.PrimType -> Integer
-llvmPrimSizeOf LLVM.Label = error "internal: Cannot get size of label."
-llvmPrimSizeOf LLVM.Void = error "internal: Cannot get size of void."
-llvmPrimSizeOf (LLVM.Integer w) = (toInteger w + 7) `shiftR` 3
-llvmPrimSizeOf (LLVM.FloatType LLVM.Float) = 4
-llvmPrimSizeOf (LLVM.FloatType LLVM.Double) = 8
-llvmPrimSizeOf (LLVM.FloatType LLVM.Fp128) = 16
-llvmPrimSizeOf (LLVM.FloatType LLVM.X86_fp80) = 10
-llvmPrimSizeOf (LLVM.FloatType LLVM.PPC_fp128) = 16
-llvmPrimSizeOf LLVM.X86mmx = error "internal: X86MMX memory size is undefined."
-llvmPrimSizeOf LLVM.Metadata = error "internal: Cannnot get size of metadata."
+type Addr = Integer
 
- -- | Returns number of bits for an LLVM.Type
-llvmByteSizeOf :: LLVMContext -> LLVM.Type -> Integer
-llvmByteSizeOf lc tp =
-  case tp of
-    LLVM.PrimType pt -> llvmPrimSizeOf pt
-    LLVM.Alias a -> llvmByteSizeOf lc (llvmLookupAlias lc a)
-    LLVM.Array l eTp -> toInteger l * llvmByteSizeOf lc eTp
-    LLVM.FunTy _retTp _argTpl _ -> error "internal: Cannot get size of function type."
-    LLVM.PtrTo _tp -> toInteger (llvmAddrWidthBits lc `shiftR` 3)
-    --TODO: support alignment based on targetdata string in module.
-    LLVM.Struct argTypes -> sum [ llvmByteSizeOf lc atp | atp <- argTypes ]
-    LLVM.PackedStruct argTypes -> sum [ llvmByteSizeOf lc atp | atp <- argTypes ]
-    LLVM.Vector l pt -> toInteger l * llvmPrimSizeOf pt
-    LLVM.Opaque -> error "internal: Cannot get size of function type."
-
-resolveType :: LLVMContext -> LLVM.Type -> LLVM.Type
-resolveType lc (LLVM.Alias nm) = resolveType lc (llvmLookupAlias lc nm)
+resolveType :: LLVMContext -> L.Type -> L.Type
+resolveType lc (L.Alias nm) = resolveType lc (llvmLookupAlias lc nm)
 resolveType _ tp = tp
+
+-- We make a keep it simple concession and divide up the address space as
+-- follows:
+--
+-- Top  1/4: Stack
+-- Next 1/8: Code
+-- Next 1/8: Data
+-- Last 1/2: Heap
+--
+-- One advantage of this is that it's easy to tell the segment to which a
+-- pointer belongs simply by inspecting its address.
+--
+-- TODO: Allow user overrides of memory geom
+defaultMemGeom :: LLVMContext
+               -> ( (Addr, Addr)
+                  , (Addr, Addr)
+                  , (Addr, Addr)
+                  , (Addr, Addr)
+                  )
+defaultMemGeom lc =
+  ( (stackStart, stackEnd)
+  , (codeStart,  codeEnd)
+  , (dataStart,  dataEnd)
+  , (heapStart,  heapEnd)
+  )
+  where
+    w           = llvmAddrWidthBits lc
+    addrSpace   = 2 ^ w - 1
+    stackStart  = 0
+    stackEnd    = addrSpace `div` 4
+    codeStart   = stackEnd + 1
+    codeEnd     = codeStart + addrSpace `div` 8
+    dataStart   = codeEnd + 1
+    dataEnd     = dataStart + addrSpace `div` 8
+    heapStart   = dataEnd + 1
+    heapEnd     = addrSpace

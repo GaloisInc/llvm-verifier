@@ -75,6 +75,7 @@ sbeSymbolic = SBE
   , stackAlloca = nyi "stackAlloca "
   , stackPushFrame = nyi "stackPushFrame "
   , stackPopFrame = nyi "stackPopFrame "
+  , heapAlloc = nyi "heapAlloc"
   , memCopy = nyi "memCopy"
   , writeAiger = nyi "writeAiger"
   , evalAiger = nyi "evalAiger"

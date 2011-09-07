@@ -3,25 +3,42 @@
 
 #include <inttypes.h>
 #include <stdint.h>
+#include <sym-api.h>
+#include <stdio.h>
 #include "aes128BlockEncrypt.h"
 
 int main(void)
 {
-  const SWord32 pt[4] = {
+  SWord32 *pt = fresh_array_uint32(4, 0x8899aabbUL); /*{
       0x00112233UL, 0x44556677UL, 0x8899aabbUL, 0xccddeeffUL
-  };
+  };*/
   
-  const SWord32 key[4] = {
+  SWord32 *key = fresh_array_uint32(4, 0x08090a0bUL); /*{
       0x00010203UL, 0x04050607UL, 0x08090a0bUL, 0x0c0d0e0fUL
-  };
+  };*/
   
   SWord32 ct[4];
   
   aes128BlockEncrypt(pt, key, ct);
+  write_aiger_array_uint32(ct, 4, "aes.aig");
+  //printf("%08x\n", ct[0]);
+  //printf("%08x\n", ct[1]);
+  //printf("%08x\n", ct[2]);
+  //printf("%08x\n", ct[3]);
   
-  return
-         ct[0] == 0x69c4e0d8UL
+  return 0;
+  /*
+  return ct[0] == 0x89a7fddfUL
+      && ct[1] == 0x2dafd9feUL
+      && ct[2] == 0x2ac14135UL
+      && ct[3] == 0xc73e1cbaUL;
+  */
+
+  /* For commented out key and pt */
+  /*
+  return ct[0] == 0x69c4e0d8UL
       && ct[1] == 0x6a7b0430UL
       && ct[2] == 0xd8cdb780UL
       && ct[3] == 0x70b4c55aUL;
+  */
 }

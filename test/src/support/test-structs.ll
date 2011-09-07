@@ -1,27 +1,16 @@
+; ModuleID = 'test-structs.bc'
+target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
+target triple = "x86_64-apple-darwin10.0.0"
+
 %0 = type { i32, i8, [3 x i8] }
 %1 = type { i32, [6 x i8], [2 x i8] }
 %struct.A = type { i32, i8 }
 %struct.B = type { i32, [6 x i8] }
+
 @struct_test.b = internal constant %0 { i32 99, i8 122, [3 x i8] undef }, align 4
 @struct_test_two.x = internal constant %1 { i32 1, [6 x i8] c"fredd\00", [2 x i8] undef }, align 4
-declare void @llvm.memcpy.p0i8.p0i8.i64(i8* nocapture, i8* nocapture, i64, i32, i1) nounwind
 
-; typedef struct A
-; { int x;
-;   char y;
-; } A;
-; 
-; A struct_test() 
-; {
-;     A a;
-;     a.x = 42;
-;     a.y = 'q';
-; 
-;     A b = { .x = 99, .y = 'z' };
-;     b.x = a.x;
-;     
-;     return b;
-; }
+declare void @llvm.memcpy.p0i8.p0i8.i64(i8* nocapture, i8* nocapture, i64, i32, i1) nounwind
 
 define i64 @struct_test() nounwind ssp {
   %1 = alloca %struct.A, align 4
@@ -32,11 +21,7 @@ define i64 @struct_test() nounwind ssp {
   %3 = getelementptr inbounds %struct.A* %a, i32 0, i32 1
   store i8 113, i8* %3, align 1
   %4 = bitcast %struct.A* %b to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %4
-                                      , i8* bitcast (%0* @struct_test.b to i8*)
-                                      , i64 8
-                                      , i32 4
-                                      , i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %4, i8* bitcast (%0* @struct_test.b to i8*), i64 8, i32 4, i1 false)
   %5 = getelementptr inbounds %struct.A* %a, i32 0, i32 0
   %6 = load i32* %5, align 4
   %7 = getelementptr inbounds %struct.A* %b, i32 0, i32 0
@@ -48,29 +33,6 @@ define i64 @struct_test() nounwind ssp {
   %11 = load i64* %10, align 1
   ret i64 %11
 }
-
-; typedef struct B
-; { int num;
-;   char msg[6];
-; } B;
-; int struct_test_two_aux(B* bs) 
-; {
-;     int sum = 0;
-;     for (int i = 0; i < 3; ++i)
-;         sum += bs[0].num;
-;     return sum;
-; }
-; 
-; int struct_test_two()
-; {
-;     B x = { .num = 0, .msg = "fredd" };
-;     B rest[3];
-;     for (int i = 0; i < 3; ++i) {
-;         rest[i] = x;
-;         rest[i].num += 1;
-;     }
-;     return (1+2+3) == struct_test_two_aux(rest);
-; }
 
 define i32 @struct_test_two_aux(%struct.B* %bs) nounwind ssp {
   %1 = alloca %struct.B*, align 8
@@ -150,4 +112,3 @@ define i32 @struct_test_two() nounwind ssp {
   %24 = zext i1 %23 to i32
   ret i32 %24
 }
-

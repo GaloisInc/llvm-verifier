@@ -10,6 +10,12 @@ void printBlock(const unsigned char out[16]) {
   }
 }
 
+void dummy_memset(unsigned char *buf, unsigned char v, unsigned char sz) {
+  int i;
+  for(i = 0; i < sz; i++)
+    buf[i] = v;
+}
+
 int main(int argc, char** argv) {
 
   unsigned char userKey[16];
@@ -17,9 +23,9 @@ int main(int argc, char** argv) {
   AES_KEY key;
   unsigned char out[16];
 
-  memset(userKey, 0, 16);
+  dummy_memset(userKey, 0, 16);
   userKey[15] = 1;
-  memset(in, 0, 16);
+  dummy_memset(in, 0, 16);
   in[15] = 2;
 
   AES_set_encrypt_key(userKey, 128, &key);

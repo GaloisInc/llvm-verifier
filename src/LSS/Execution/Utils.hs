@@ -22,7 +22,6 @@ import Data.Maybe          (listToMaybe)
 import Control.Monad.Trans
 import Verinf.Utils.LogMonad
 
-
 headf :: [a] -> (a -> a) -> [a]
 headf [] _     = error "headf: empty list"
 headf (x:xs) f = f x : xs

@@ -43,6 +43,7 @@ library
       base >= 4
     , bytestring
     , containers
+    , fingertree
     , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
@@ -87,6 +88,7 @@ executable lss
     , bytestring
     , cmdargs == 0.8
     , containers
+    , fingertree
     , llvm-pretty == 0.1.1.0
     , mtl
     , parsec >= 2.1.0.1
@@ -115,6 +117,7 @@ executable Tests
     , bytestring
     , containers
     , filepath
+    , fingertree
     , llvm-pretty == 0.1.1.0
     , mtl
     , pretty
@@ -137,6 +140,7 @@ executable bcdump
     , bytestring
     , containers
     , filepath
+    , fingertree
     , llvm-pretty
     , pretty
     , mtl

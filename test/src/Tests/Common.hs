@@ -6,6 +6,7 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Trans
 import           Data.Int
+import           Data.LLVM.TargetData
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
@@ -18,6 +19,7 @@ import           Test.QuickCheck.Monadic
 import           Text.LLVM                     ((=:))
 import           Verinf.Symbolic.Common        (ConstantProjection(..), Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
+import qualified Data.Vector.Storable          as LV
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
 
@@ -109,8 +111,8 @@ runBitBlastSim :: Int
                -> (StdBitEngine -> StdBitBlastSim StdBitMemory a)
                -> IO a
 runBitBlastSim v bcFile seh act = do
-  (cb, be, lc, backend, mem) <- stdBitBlastInit bcFile
-  runSimulator cb lc backend mem stdBitBlastLift seh $ withVerbosity v (act be)
+  (cb, be, backend, mem) <- stdBitBlastInit bcFile
+  runSimulator cb backend mem stdBitBlastLift seh $ withVerbosity v (act be)
 
 runBitBlastSimTest :: Int
                    -> FilePath
@@ -121,26 +123,22 @@ runBitBlastSimTest v bcFile seh = assert <=< run . runBitBlastSim v bcFile seh
 
 stdBitBlastInit :: FilePath -> IO ( Codebase
                                   , StdBitEngine
-                                  , LLVMContext
-                                  , SBE (BitIO StdBitMemory Lit)
-                                  , StdBitMemory
+                                  , BitBlastSBE Lit
+                                  , BitMemory Lit
                                   )
 stdBitBlastInit bcFile = do
   cb <- loadCodebase $ supportDir </> bcFile
   be <- createBitEngine
-  let lc      = LLVMContext 32 (`lookupAlias` cb)
-      mm = buddyMemModel lc be
-      mem = buddyInitMemory (ss, se) (cs, ce) (ds, de) (hs, he)
-  -- (mm,mem) <- dagMemModel lc be (ss, se) (cs, ce) (ds, de) (hs, he)
-  let backend = sbeBitBlast lc be mm
-  return (cb, be, lc, backend, mem)
- where
-    defaultSz  = 2^(16 :: Int)
-    ext st len = (st, st + len)
-    (ss, se)   = ext 0 defaultSz
-    (cs, ce)   = ext se defaultSz
-    (ds, de)   = ext ce defaultSz
-    (hs, he)   = ext de defaultSz
+  let lc      = cbLLVMCtx cb
+      mm      = buddyMemModel lc be
+      backend = sbeBitBlast lc be mm
+  return (cb, be, backend, stdTestMem $ cbLLVMCtx cb)
+
+stdTestMem :: LV.Storable l => LLVMContext -> BitMemory l
+stdTestMem lc =
+  buddyInitMemory stack code data' heap
+  where
+    (stack, code, data', heap) = defaultMemGeom lc
 
 stdBitBlastLift :: BitIO m l a -> Simulator sbe IO a
 stdBitBlastLift = SM . lift . liftSBEBitBlast

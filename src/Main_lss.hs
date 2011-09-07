@@ -14,7 +14,6 @@ module Main where
 import           Control.Applicative             hiding (many)
 import           Control.Monad
 import           Control.Monad.Trans
-import           Data.Bits
 import           Data.Char
 import           Data.Int
 import           Data.LLVM.Memory
@@ -37,7 +36,7 @@ import qualified Text.LLVM                       as L
 
 data LSS = LSS
   { dbug    :: DbugLvl
-  , stack   :: StackSz
+--   , stack   :: StackSz
   , argv    :: String
   , mname   :: Maybe String
   , memtype :: Maybe String
@@ -49,9 +48,9 @@ newtype DbugLvl = DbugLvl { unD :: Int32 }
   deriving (Data, Enum, Eq, Integral, Num, Ord, Real, Show, Typeable)
 instance Default DbugLvl where def = DbugLvl 1
 
-newtype StackSz = StackSz { unS :: Int32 }
-  deriving (Data, Enum, Eq, Integral, Num, Ord, Real, Show, Typeable)
-instance Default StackSz where def = StackSz 8
+-- newtype StackSz = StackSz { unS :: Int32 }
+--   deriving (Data, Enum, Eq, Integral, Num, Ord, Real, Show, Typeable)
+-- instance Default StackSz where def = StackSz 8
 
 main :: IO ()
 main = do
@@ -62,7 +61,7 @@ main = do
 
   args <- cmdArgs $ LSS
             { dbug    = def &= help "Debug verbosity level (1-7)"
-            , stack   = def &= opt "8" &= help "Stack size in megabytes (default: 8)"
+--             , stack   = def &= opt "8" &= help "Stack size in megabytes (default: 8)"
             , argv    = def &= typ "\"arg1 arg2 ...\""
                             &= help "Space-delimited arguments to main()"
             , memtype = def &= typ "[bitblast|dagbased]"
@@ -104,41 +103,41 @@ main = do
 
 runBitBlast :: Codebase -> [String] -> LSS -> SymDefine -> IO ()
 runBitBlast cb argv' args mainDef = do
-  putStrLn $ "WARNING: Forcing 32-bit address width (TODO: parse target data and use that instead)"
+  let lc = cbLLVMCtx cb
   (sbe,mem) <- do
     be <- createBitEngine
     let mm = buddyMemModel lc be
-        mem = buddyInitMemory (stackStart, stackEnd)
-                              (codeStart,  codeEnd)
-                              (dataStart,  dataEnd)
-                              (heapStart,  heapEnd)
+        mem = buddyInitMemory stk code data' heap
     return (sbeBitBlast lc be mm,mem)
-  runSimulator cb lc sbe mem (SM . lift . liftSBEBitBlast) defaultSEH $ do
+  runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) defaultSEH $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"
       dbugM $ "Memory model regions:"
-      dbugM $ "Stack range : " ++ sr (stackStart, stackEnd)
-      dbugM $ "Code range  : " ++ sr (codeStart, codeEnd)
-      dbugM $ "Data range  : " ++ sr (dataStart, dataEnd)
-      dbugM $ "Heap range  : " ++ sr (heapStart, heapEnd)
+      dbugM $ "Stack range : " ++ sr stk
+      dbugM $ "Code range  : " ++ sr code
+      dbugM $ "Data range  : " ++ sr data'
+      dbugM $ "Heap range  : " ++ sr heap
 
     callDefine_ (L.Symbol "main") i32 $
       if mainHasArgv then buildArgv numArgs argv' else return []
+
+{-
+    -- tmp: hacky manual eval aiger until the overrides are all in place and working
+    mrv <- getProgramReturnValue
+    case mrv of
+      Nothing -> dbugM "no retval"
+      Just rv -> do
+        dbugTerm "rv" rv
+        -- for multiply-lss.c:multiply() with uint16_t VecTypes: manually check that 3 * 4 = 12.
+        eval <- withSBE $ \sbe -> evalAiger sbe ((True : True : replicate 14 False) ++ (False : False : True : replicate 13 False)) rv
+        dbugTerm "eval" eval
+    return ()
+-}
   where
-      mainHasArgv = not $ null $ sdArgs mainDef
-      numArgs     = fromIntegral (length argv') :: Int32
-      w           = 32 -- TODO: get from target data
-      lc          = LLVMContext w (`lookupAlias` cb)
-      sz          = fromIntegral (cbBitcodeSize cb) :: Integer
-      stackStart  = 0
-      stackEnd    = fromIntegral (stack args) `shiftL` 20
-      codeStart   = stackEnd
-      codeEnd     = codeStart + sz
-      dataStart   = codeEnd
-      dataEnd     = dataStart + sz
-      heapStart   = dataEnd
-      heapEnd     = 2 ^ w - 1 :: Integer
+      mainHasArgv              = not $ null $ sdArgs mainDef
+      numArgs                  = fromIntegral (length argv') :: Int32
+      (stk, code, data', heap) = defaultMemGeom (cbLLVMCtx cb)
 
 buildArgv ::
   ( MonadIO m
@@ -148,19 +147,16 @@ buildArgv ::
   )
   => Int32 -> [String] -> Simulator sbe m [Typed (SBETerm sbe)]
 buildArgv numArgs argv' = do
-  dbugM $ "WARNING: Forcing 4-byte alignment (TODO: parse target data and use that instead)"
-  let align = Just 4 -- TODO: get from target data
-
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   strVals  <- mapM (getTypedTerm' Nothing . cstring) argv'
-  strPtrs  <- mapM (\ty -> tv <$> alloca ty Nothing align) (tt <$> strVals)
-  argvBase <- alloca i8p (Just $ int32const numArgs) align
+  strPtrs  <- mapM (\ty -> tv <$> alloca ty Nothing Nothing) (tt <$> strVals)
+  argvBase <- alloca i8p (Just $ int32const numArgs) Nothing
   argvArr  <- (L.Array numArgs i8p =:) <$> withSBE (\s -> termArray s strPtrs)
   -- Write argument string data and argument string pointers
   forM_ (strPtrs `zip` strVals) $ \(p,v) -> do
-    cond <- mutateMem $ \s m -> memStore s m v p
+    processMemCond =<< mutateMem (\s m -> memStore s m v p)
     return ()
-  cond <- mutateMem $ \s m -> memStore s m argvArr (tv argvBase)
+  processMemCond =<< mutateMem (\s m -> memStore s m argvArr (tv argvBase))
   return [i32 =: argc, argvBase]
   where
     tv = typedValue
