@@ -107,7 +107,7 @@ type StdBitBlastSEH   = SEH (BitIO (BitMemory Lit) Lit) IO
 runBitBlastSim :: Int -> FilePath -> StdBitBlastSEH -> (StdBitEngine -> StdBitBlastSim a) -> IO a
 runBitBlastSim v bcFile seh act = do
   (cb, be, backend, mem) <- stdBitBlastInit bcFile
-  runSimulator cb backend mem stdBitBlastLift seh $ withVerbosity v (act be)
+  runSimulator cb backend mem stdBitBlastLift seh Nothing $ withVerbosity v (act be)
 
 runBitBlastSimTest :: Int -> FilePath -> StdBitBlastSEH -> StdBitBlastTest-> PropertyM IO ()
 runBitBlastSimTest v bcFile seh = assert <=< run . runBitBlastSim v bcFile seh

@@ -59,4 +59,6 @@ void override_function_by_addr(void *from, void *to);
 
 void print_symbolic(void *sym);
 
+void lss_abort(const char* msg);
+
 #endif

@@ -39,9 +39,10 @@ import qualified Text.LLVM                       as L
 data LSS = LSS
   { dbug    :: DbugLvl
 --   , stack   :: StackSz
-  , argv    :: String
-  , mname   :: Maybe String
-  , memtype :: Maybe String
+  , argv     :: String
+  , mname    :: Maybe String
+  , memtype  :: Maybe String
+  , errpaths :: Bool
   } deriving (Show, Data, Typeable)
 
 data MemType = BitBlast | DagBased deriving (Show)
@@ -64,12 +65,13 @@ main = do
   args <- cmdArgs $ LSS
             { dbug    = def &= help "Debug verbosity level (1-7)"
 --             , stack   = def &= opt "8" &= help "Stack size in megabytes (default: 8)"
-            , argv    = def &= typ "\"arg1 arg2 ...\""
-                            &= help "Space-delimited arguments to main()"
-            , memtype = def &= typ "[bitblast|dagbased]"
-                            &= help "Memory model to use (default: bitblast)"
-            , mname = def &= typ "Fully-linked .bc containing main()"
-                      &= Args.args
+            , argv     = def &= typ "\"arg1 arg2 ...\""
+                             &= help "Space-delimited arguments to main()"
+            , memtype  = def &= typ "[bitblast|dagbased]"
+                             &= help "Memory model to use (default: bitblast)"
+            , errpaths = def &= help "Dump error path details upon program completion (potentially very verbose)."
+            , mname    = def &= typ "Fully-linked .bc containing main()"
+                             &= Args.args
             }
             &= summary ("LLVM Symbolic Simulator (lss) 0.1a Sep 2011. "
                         ++ "Copyright 2011 Galois, Inc. All rights reserved.")
@@ -105,11 +107,11 @@ main = do
 
 runBitBlast :: Codebase -> [String] -> LSS -> SymDefine -> IO ()
 runBitBlast cb argv' args mainDef = do
-  let lc = cbLLVMCtx cb
+  let lc   = cbLLVMCtx cb
+      opts = Just $ LSSOpts (errpaths args)
   sbe <- do
     be <- createBitEngine
     return $ sbeBitBlast lc be (buddyMemModel lc be)
-
   -- tmp hack
   let seh' = defaultSEH
 {-
@@ -148,7 +150,7 @@ runBitBlast cb argv' args mainDef = do
   -- tmp hack
 -}
 
-  runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) seh' $ do
+  runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) seh' opts $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"
@@ -161,6 +163,7 @@ runBitBlast cb argv' args mainDef = do
     callDefine_ (L.Symbol "main") i32 $
       if mainHasArgv then buildArgv numArgs argv' else return []
 
+{-
     -- tmp: hacky manual eval aiger until the overrides are all in place and working
     mrv <- getProgramReturnValue
     case mrv of
@@ -171,6 +174,7 @@ runBitBlast cb argv' args mainDef = do
         eval <- withSBE $ \sbe -> evalAiger sbe ((True : True : replicate 14 False) ++ (False : False : True : replicate 13 False)) rv
         dbugTerm "eval" eval
     return ()
+-}
 
   where
       mainHasArgv              = not $ null $ sdArgs mainDef

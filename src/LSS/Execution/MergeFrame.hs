@@ -40,6 +40,7 @@ module LSS.Execution.MergeFrame
   , modifyCallFrame
   , pcTerm
   , setCurrentBlock
+  , setPrevBlock
   , setReturnValue
   , withCallFrame
   )
@@ -172,6 +173,9 @@ pendingPaths (ReturnFrame _ _ _ _ _ ps) = ps
 
 setCurrentBlock :: SymBlockID -> Path' term mem -> Path' term mem
 setCurrentBlock blk p = p{ pathCB = Just blk }
+
+setPrevBlock :: Maybe SymBlockID -> Path' term mem -> Path' term mem
+setPrevBlock mblk p = p{ prevPathCB = mblk }
 
 setCallFrame :: CallFrame term -> Path' term mem -> Path' term mem
 setCallFrame cf p = p{ pathCallFrame = cf }

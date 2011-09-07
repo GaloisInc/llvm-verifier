@@ -8,9 +8,12 @@ Point-of-contact : jstanley
 -- Debugging output at various verbosity levels:
 -- 1: No output, the lowest verbosity level
 -- 2: Instruction trace only
--- 3: Warnings on symbolic validity results from memory model
+-- 3: Warnings on symbolic validity results from memory model; show
+--    path state details when all paths yield errors.
 -- 4: Path constraints on nontrivial path merges
--- 5: Simulator internal state (control stack dump per instruction)
+-- 5: Simulator internal state (control stack dump per instruction); show
+--    memory model details in addition to path state details when all paths
+--    yield errors.
 -- 6: Memory model dump on load/store operations only (for nontrivial codes,
 --    this generates a /lot/ of output).  Complete path dumps on nontrivial path
 --    merges.
@@ -95,10 +98,11 @@ runSimulator :: (Functor m, MonadIO m)
   -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
   -> SEH sbe m             -- ^ Simulation event handlers (use defaultSEH if no
                            -- event handling is needed)
+  -> Maybe LSSOpts         -- Simulation options
   -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
-runSimulator cb sbe mem lifter seh m =
-  evalStateT (runSM (setup >> m)) (newSimState cb sbe mem lifter seh)
+runSimulator cb sbe mem lifter seh mopts m =
+  evalStateT (runSM (setup >> m)) (newSimState cb sbe mem lifter seh mopts)
   where
     setup = do
       modifyCS $ pushMF emptyExitFrame
@@ -108,8 +112,9 @@ newSimState :: Codebase
             -> SBEMemory sbe
             -> LiftSBE sbe m
             -> SEH sbe m
+            -> Maybe LSSOpts
             -> State sbe m
-newSimState cb sbe mem lifter seh =
+newSimState cb sbe mem lifter seh mopts =
   State
   { codebase     = cb
   , symBE        = sbe
@@ -120,6 +125,8 @@ newSimState cb sbe mem lifter seh =
   , overrides    = M.empty
   , verbosity    = 1
   , evHandlers   = seh
+  , errorPaths   = []
+  , lssOpts      = maybe defaultLSSOpts id mopts
   }
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
@@ -320,15 +327,30 @@ run = do
     Nothing  -> error "run: empty control stack"
     Just top
       | isExitFrame top -> do
-          -- Set the exit merge frame return value (if any) and clear merged
-          -- state.
+          -- Normal program termination on at least one path. Set the exit merge
+          -- frame return value (if any) and clear the merged state.
           modifyCS $ \(popMF -> (_, cs)) -> pushMF (finalizeExit top) cs
           dbugM' 2 $ "run terminating normally: found valid exit frame"
-          dumpCtrlStk' 2
+          dumpCtrlStk' 5
+
+          -- Let the user know about error paths.
+          numErrs <- length <$> gets errorPaths
+          showEPs <- optsErrorPathDetails <$> gets lssOpts
+          when (numErrs > 0 && not showEPs) $
+            dbugM "Warning: Some paths yielded errors. To see details, use --errpaths."
+          when (numErrs > 0 && showEPs) $ do
+            dbugM $ showErrCnt numErrs
+            dumpErrorPaths
       | otherwise -> do
           case topPending top of
-            Nothing -> error $ "internal: run: no path to execute"
-            Just p  -> runPath p
+            Just p  -> runPath p -- start/continue normal execution
+            Nothing -> do        -- No pending path => all paths yielded errors
+              numErrs <- length <$> gets errorPaths
+              CE.assert (numErrs > 0) $ return ()
+              showEPs <- optsErrorPathDetails <$> gets lssOpts
+              if showEPs
+                then dbugM "All paths yielded errors!" >> dumpErrorPaths
+                else dbugM "All paths yielded errors! To see details, use --errpaths."
   where
     runPath (pathCB -> Nothing)    = error "runPath: no current block"
     runPath p@(pathCB -> Just pcb) = withCallFrame p $ \frm -> do
@@ -336,6 +358,22 @@ run = do
       runStmts $ sbStmts $ lookupSymBlock def pcb
       run
     runPath _ = error "unreachable"
+
+    showErrCnt x
+      | x == 1    = "Encountered errors on 1 path; details below."
+      | otherwise = "Encountered errors on " ++ show x ++ " paths; details below."
+
+    dumpErrorPaths = do
+        dbugM $ replicate 80 '-'
+        eps <- gets errorPaths
+        forM_ eps $ \ep -> do
+          let p = epPath ep
+          sbe <- gets symBE
+          dbugM $ "Error reason        : " ++ epRsn ep
+          dbugM $ "Error path state    :\n" ++ show (nest 2 $ ppPath sbe p)
+          dumpMem 5 "Error path memory "
+          when (length eps > 1) $ dbugM "--"
+        dbugM $ replicate 80 '-'
 
 --------------------------------------------------------------------------------
 -- LLVM-Sym operations
@@ -373,7 +411,8 @@ assign reg v = modifyCallFrameM $ \frm ->
   frm{ frmRegs = M.insert reg v (frmRegs frm) }
 
 setCurrentBlockM :: (Functor m, Monad m) => SymBlockID -> Simulator sbe m ()
-setCurrentBlockM bid = modifyPath (setCurrentBlock bid)
+setCurrentBlockM bid = modifyPath $ \p ->
+  setCurrentBlock bid (setPrevBlock (pathCB p) p)
 
 getCurrentBlockM :: (Functor m, Monad m) => Simulator sbe m SymBlockID
 getCurrentBlockM =
@@ -1138,7 +1177,7 @@ newPath :: (Functor m, Monad m)
   => CF sbe -> SBEMemory sbe -> Simulator sbe m (Path sbe)
 newPath cf mem = do
   true <- boolTerm True
-  return $ Path cf Nothing Nothing (Just initSymBlockID) mem
+  return $ Path cf Nothing Nothing (Just initSymBlockID) Nothing mem
              (Constraint (SCAtom TrueSymCond) true)
 
 boolTerm :: (Functor m, Monad m) => Bool -> Simulator sbe m (SBETerm sbe)
@@ -1207,6 +1246,42 @@ registerOverride sym retTy argTys va handler = do
                    , globalTerms =
                        M.insert (sym, Just argTys) t' (globalTerms s)
                    }
+
+--------------------------------------------------------------------------------
+-- Error handling
+
+errorPath ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => String -> Simulator sbe m ()
+errorPath rsn = do
+  -- Pop the control stack and move the current path to the error paths list
+  mmf     <- topMF <$> gets ctrlStk
+  (p, mf) <- case mmf of
+               Nothing -> error "internal: errorPath invoked with no MF"
+               _       -> popPending <$> popMergeFrame
+  modify $ \s -> s{ errorPaths = EP rsn p : errorPaths s }
+
+  case getMergedState mf of
+    Nothing   -> do
+      -- When there's no merged state in the current MF, then either (a) there
+      -- are pending paths left to execute that may be valid or (b) there are no
+      -- pending paths left to execute, which means that all paths yielded
+      -- errors.  In both cases, just replace the modified MF back onto the
+      -- control stack and let the run function deal with the next step.
+      pushMergeFrame mf
+    Just{} -- Merged state in @mf@ => other valid paths have executed
+      | not . null $ pendingPaths mf -> do
+          -- There are still paths left to execute, so just place @mf@ back onto
+          -- the control stack.
+          pushMergeFrame mf
+      | otherwise -> do
+          -- @p@ was the last pending path in @mf@, so manually merge @mf@ with
+          -- the merge frame below it on the control stack.
+          pushMergeFrame =<< mergeMFs mf =<< popMergeFrame
 
 --------------------------------------------------------------------------------
 -- Debugging
@@ -1387,12 +1462,33 @@ allocHandler fn = Override $ \_sym _rty args ->
         Nothing -> error "alloca: symbolic size not supported"
     _ -> error "alloca: wrong number of arguments"
 
+abortHandler ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+abortHandler = Override $ \_sym _rty args -> do
+  case args of
+    [tv@(Typed t _)]
+      | t == strTy -> do
+          msg <- loadString tv
+          -- We'll have set the post-call target block already, so set the error
+          -- path's current block to the previous so that the correct location
+          -- is displayed when we show error paths.
+          modifyPath $ \p -> p{ pathCB = prevPathCB p }
+          errorPath $ "lss_abort(): " ++ msg
+          return Nothing
+      | otherwise -> error "Incorrect type passed to lss_abort()."
+    _ -> error "Incorrect number of parameters passed to lss_abort()."
+
 freshInt' :: (Functor m, Monad m) => Int -> Override sbe m
 freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
 
-freshIntArray :: (Functor m, Monad m, MonadIO m, Functor sbe,
-                          ConstantProjection (SBEClosedTerm sbe)) =>
-                         Int -> Override sbe m
+freshIntArray :: (Functor m, MonadIO m, Functor sbe,
+                  ConstantProjection (SBEClosedTerm sbe))
+              => Int -> Override sbe m
 freshIntArray n = Override $ \_sym _rty args ->
   case args of
     [sizeTm, _] -> do
@@ -1533,6 +1629,7 @@ standardOverrides =
   , ("alloca", voidPtr, [i32], False, allocHandler alloca)
   , ("malloc", voidPtr, [i32], False, allocHandler malloc)
   , ("printf", i32, [strTy], True, printfHandler)
+  , ("lss_abort", voidTy, [strTy], False, abortHandler)
   , ("fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("fresh_uint16", i16, [i16], False, freshInt' 16)
   , ("fresh_uint32", i32, [i32], False, freshInt' 32)
