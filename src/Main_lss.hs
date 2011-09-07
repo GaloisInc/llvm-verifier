@@ -112,44 +112,7 @@ runBitBlast cb argv' args mainDef = do
   sbe <- do
     be <- createBitEngine
     return $ sbeBitBlast lc be (buddyMemModel lc be)
-  -- tmp hack
   let seh' = defaultSEH
-{-
-  let seh' = defaultSEH {
-               onPreStep = \stmt -> do
-                             case stmt of
-                               Assign lhs (Load tv@(Typed (L.PtrTo ty) _) _malign) -> do
---                                  dbugM $ "Preload statement: " ++ show (ppSymStmt stmt)
---                                  sbe <- gets symBE
---                                  getPath' "Preload" >>= \p -> dbugM (show (ppPathLoc sbe p))
-                                 return ()
-                               PushCallFrame callee _ _ -> do
-                                 dbugM "------ invocation of multiply_other"
-                               Store val addr _malign -> do
-                                 Typed _ addrTerm <- getTypedTerm addr
-                                 sbe <- gets symBE
-                                 p   <- getPath' "Prestore"
-                                 dbugM $ show (ppSymStmt stmt) ++ " on " ++ show (ppPathLoc sbe p)
-                                 dbugTerm ("  Storing (" ++ show (L.ppType (typedType val)) ++ ") to address: ") addrTerm
-                               _ -> return ()
-
-             , onPostStep = \stmt -> do
-                              case stmt of
-                                Assign lhs (Load tv@(Typed (L.PtrTo ty) _) _malign) -> do
---                                   dbugM $ "Post load statement: " ++ show (ppSymStmt stmt)
---                                   sbe <- gets symBE
---                                   getPath' "Postload" >>= \p -> dbugM (show (ppPathLoc sbe p))
-                                  return ()
-                                Store val addr _malign -> do
---                                   dbugM $ "Post store statement: " ++ show (ppSymStmt stmt)
---                                   sbe <- gets symBE
---                                   getPath' "Poststore" >>= \p -> dbugM (show (ppPathLoc sbe p))
-                                  return ()
-                                _ -> return ()
-             }
-  -- tmp hack
--}
-
   runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) seh' opts $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
