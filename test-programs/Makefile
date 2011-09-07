@@ -25,7 +25,13 @@ CLANG ?= clang
 openssl/aes_test : openssl/aes_core.o openssl/aes_test.o
 	llvm-ld -o $@ $^
 
+openssl/sha256.o : openssl/sha256.c openssl/md32_common.h
+	$(CLANG) -c -D OPENSSL_NO_ASM -Wno-unused-value -emit-llvm -o $@ openssl/sha256.c
+
+openssl/sha224_test : openssl/sha224_test.o openssl/sha256.o openssl/mem_clr.o
+	llvm-ld -o $@ $^
+
 clean : 
-	rm -f *.bc *.ll *.dot *.o openssl/*.o openssl/*.bc openssl/aes_test
+	rm -f *.bc *.ll *.dot *.o openssl/*.o openssl/*.bc openssl/aes_test openssl/sha224_test
 
 .PHONY : clean all bc

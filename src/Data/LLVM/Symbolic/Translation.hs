@@ -215,7 +215,6 @@ liftBB lti phiMap bb = do
                            (brSymInstrs tgt2)
                            ([ SetCurrentBlock suspendSymBlockID
                             , PushPendingExecution (HasConstValue c 0)
-                              -- TODO Add phi instructions for d
                             , AddPathConstraint (HasConstValue c 1)]
                               ++ brSymInstrs tgt1)]]
         -- Define block for suspended thread.

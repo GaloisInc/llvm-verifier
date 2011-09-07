@@ -18,6 +18,7 @@ import           Data.Char
 import           Data.Int
 import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
+import           Data.Vector.Storable            (Storable)
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.LLVMUtils
@@ -37,9 +38,10 @@ import qualified Text.LLVM                       as L
 data LSS = LSS
   { dbug    :: DbugLvl
 --   , stack   :: StackSz
-  , argv    :: String
-  , mname   :: Maybe String
-  , memtype :: Maybe String
+  , argv     :: String
+  , mname    :: Maybe String
+  , memtype  :: Maybe String
+  , errpaths :: Bool
   } deriving (Show, Data, Typeable)
 
 data MemType = BitBlast | DagBased deriving (Show)
@@ -62,12 +64,13 @@ main = do
   args <- cmdArgs $ LSS
             { dbug    = def &= help "Debug verbosity level (1-7)"
 --             , stack   = def &= opt "8" &= help "Stack size in megabytes (default: 8)"
-            , argv    = def &= typ "\"arg1 arg2 ...\""
-                            &= help "Space-delimited arguments to main()"
-            , memtype = def &= typ "[bitblast|dagbased]"
-                            &= help "Memory model to use (default: bitblast)"
-            , mname = def &= typ "Fully-linked .bc containing main()"
-                      &= Args.args
+            , argv     = def &= typ "\"arg1 arg2 ...\""
+                             &= help "Space-delimited arguments to main()"
+            , memtype  = def &= typ "[bitblast|dagbased]"
+                             &= help "Memory model to use (default: bitblast)"
+            , errpaths = def &= help "Dump error path details upon program completion (potentially very verbose)."
+            , mname    = def &= typ "Fully-linked .bc containing main()"
+                             &= Args.args
             }
             &= summary ("LLVM Symbolic Simulator (lss) 0.1a Sep 2011. "
                         ++ "Copyright 2011 Galois, Inc. All rights reserved.")
@@ -97,25 +100,34 @@ main = do
                Just mainDef -> do
                  when (null (sdArgs mainDef) && not (null argv')) warnNoArgv
                  return mainDef
-  case mem of
-    DagBased -> error "Support for DAG-based memory NYI"
-    BitBlast -> runBitBlast cb argv' args mainDef
-
-runBitBlast :: Codebase -> [String] -> LSS -> SymDefine -> IO ()
-runBitBlast cb argv' args mainDef = do
   let lc = cbLLVMCtx cb
-  sbe <- do
-    be <- createBitEngine
-    return $ sbeBitBlast lc be (buddyMemModel lc be)
-  runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) defaultSEH $ do
+  be <- createBitEngine
+  let mg = defaultMemGeom (cbLLVMCtx cb)
+  case mem of
+    DagBased -> do
+      (mm, mem') <- createDagMemModel lc be mg
+      let sbe = sbeBitBlast lc be mm
+      runBitBlast sbe mem' cb mg argv' args mainDef
+    BitBlast -> do
+      (mm, mem') <- createBuddyMemModel lc be mg
+      let sbe = sbeBitBlast lc be mm
+      runBitBlast sbe mem' cb mg argv' args mainDef
+
+runBitBlast :: (Eq l, Storable l)
+            => SBE (BitIO mem l) -> mem
+            -> Codebase -> MemGeom -> [String] -> LSS -> SymDefine -> IO ()
+runBitBlast sbe mem cb mg argv' args mainDef = do
+  let opts = Just $ LSSOpts (errpaths args)
+      seh' = defaultSEH
+  runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) seh' opts $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"
       dbugM $ "Memory model regions:"
-      dbugM $ "Stack range : " ++ sr stk
-      dbugM $ "Code range  : " ++ sr code
-      dbugM $ "Data range  : " ++ sr data'
-      dbugM $ "Heap range  : " ++ sr heap
+      dbugM $ "Stack range : " ++ sr (mgStack mg)
+      dbugM $ "Code range  : " ++ sr (mgCode mg)
+      dbugM $ "Data range  : " ++ sr (mgData mg)
+      dbugM $ "Heap range  : " ++ sr (mgHeap mg)
 
     callDefine_ (L.Symbol "main") i32 $
       if mainHasArgv then buildArgv numArgs argv' else return []
@@ -135,8 +147,6 @@ runBitBlast cb argv' args mainDef = do
   where
       mainHasArgv              = not $ null $ sdArgs mainDef
       numArgs                  = fromIntegral (length argv') :: Int32
-      (stk, code, data', heap) = defaultMemGeom (cbLLVMCtx cb)
-      mem                      = sbeBitBlastMem stk code data' heap
 
 buildArgv ::
   ( MonadIO m

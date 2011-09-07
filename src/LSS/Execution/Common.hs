@@ -46,18 +46,27 @@ type Path sbe      = Path' (SBETerm sbe) (SBEMemory sbe)
 type CF sbe        = CallFrame (SBETerm sbe)
 type OvrMap sbe m  = M.Map L.Symbol (Override sbe m)
 
+-- | Symbolic simulator options
+data LSSOpts = LSSOpts {
+    optsErrorPathDetails :: Bool
+  }
+defaultLSSOpts :: LSSOpts
+defaultLSSOpts = LSSOpts False
+
 -- | Symbolic simulator state
 data State sbe m = State
-  { codebase     :: Codebase      -- ^ LLVM code, post-transformation to sym ast
-  , symBE        :: SBE sbe       -- ^ Symbolic backend interface
-  , initMemModel :: SBEMemory sbe -- ^ The SBE's initial LLVM memory model;
-                                  -- mutated models are carried in path states.
-  , liftSymBE    :: LiftSBE sbe m -- ^ Lift SBE operations into the Simulator monad
-  , ctrlStk      :: CS sbe        -- ^ Control stack for tracking merge points
-  , globalTerms  :: GlobalMap sbe -- ^ Global ptr terms
-  , overrides    :: OvrMap sbe m  -- ^ Function override table
-  , verbosity    :: Int           -- ^ Verbosity level
-  , evHandlers   :: SEH sbe m     -- ^ Simulation event handlers
+  { codebase     :: Codebase        -- ^ LLVM code, post-transformation to sym ast
+  , symBE        :: SBE sbe         -- ^ Symbolic backend interface
+  , initMemModel :: SBEMemory sbe   -- ^ The SBE's initial LLVM memory model;
+                                    -- mutated models are carried in path states.
+  , liftSymBE    :: LiftSBE sbe m   -- ^ Lift SBE operations into the Simulator monad
+  , ctrlStk      :: CS sbe          -- ^ Control stack for tracking merge points
+  , globalTerms  :: GlobalMap sbe   -- ^ Global ptr terms
+  , overrides    :: OvrMap sbe m    -- ^ Function override table
+  , verbosity    :: Int             -- ^ Verbosity level
+  , evHandlers   :: SEH sbe m       -- ^ Simulation event handlers
+  , errorPaths   :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
+  , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
   }
 
 data CtrlStk term mem = CtrlStk { mergeFrames :: [MergeFrame term mem] }
@@ -102,11 +111,16 @@ data Path' term mem = Path
                                           -- otherwise
   , pathCB          :: Maybe SymBlockID   -- ^ The currently-executing basic
                                           -- block along this path, if any.
+  , prevPathCB      :: Maybe SymBlockID   -- ^ The basic block this path
+                                          -- executed before the current block,
+                                          -- if any.
   , pathMem         :: mem                -- ^ The memory model along this path
   , pathConstraint  :: Constraint term    -- ^ The aggregated constraints
                                           -- necessary for execution of this
                                           -- path
   }
+
+data ErrorPath sbe = EP { epRsn :: String, epPath :: Path sbe }
 
 -- Simulation event handlers, useful for debugging nontrivial codes.
 data SEH sbe m = SEH
@@ -217,7 +231,7 @@ ppCallFrame sbe (CallFrame _sym regMap) =
   if M.null regMap then PP.empty else text "Locals:" $+$ nest 2 (ppRegMap sbe regMap)
 
 ppPath :: SBE sbe -> Path sbe -> Doc
-ppPath sbe (Path cf mrv _mexc mcb _mem c) =
+ppPath sbe (Path cf mrv _mexc mcb _mpcb _mem c) =
   text "Path"
   <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
                  <> char '/'
@@ -229,6 +243,17 @@ ppPath sbe (Path cf mrv _mexc mcb _mem c) =
                <+> maybe (parens . text $ "not set") (prettyTermD sbe) mrv
              )
   $+$ nest 2 (ppCallFrame sbe cf)
+
+-- Prints just the path's location and path constraints
+ppPathLoc :: SBE sbe -> Path sbe -> Doc
+ppPathLoc sbe (Path cf _ _ mcb _mpcb _ c) =
+  text "Path"
+  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
+                 <> char '/'
+                 <> maybe (text "none") ppSymBlockID mcb
+               )
+  <>  colon
+  <+> (parens $ text "PC:" <+> ppPC sbe c)
 
 ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
 ppRegMap sbe mp =

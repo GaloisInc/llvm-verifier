@@ -13,3 +13,5 @@ utils:
 test: all
 	dist/build/Tests/Tests
 
+clean:
+	cabal clean

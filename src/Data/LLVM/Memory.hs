@@ -10,6 +10,7 @@ Point-of-contact : jstanley
 
 module Data.LLVM.Memory
   ( Addr
+  , MemGeom(..)
   , defaultMemGeom
   , resolveType
   )
@@ -24,6 +25,13 @@ resolveType :: LLVMContext -> L.Type -> L.Type
 resolveType lc (L.Alias nm) = resolveType lc (llvmLookupAlias lc nm)
 resolveType _ tp = tp
 
+data MemGeom = MemGeom {
+        mgStack :: (Addr, Addr)
+      , mgCode :: (Addr, Addr)
+      , mgData :: (Addr, Addr)
+      , mgHeap :: (Addr, Addr)
+      }
+
 -- We make a keep it simple concession and divide up the address space as
 -- follows:
 --
@@ -36,18 +44,12 @@ resolveType _ tp = tp
 -- pointer belongs simply by inspecting its address.
 --
 -- TODO: Allow user overrides of memory geom
-defaultMemGeom :: LLVMContext
-               -> ( (Addr, Addr)
-                  , (Addr, Addr)
-                  , (Addr, Addr)
-                  , (Addr, Addr)
-                  )
+defaultMemGeom :: LLVMContext -> MemGeom
 defaultMemGeom lc =
-  ( (stackStart, stackEnd)
-  , (codeStart,  codeEnd)
-  , (dataStart,  dataEnd)
-  , (heapStart,  heapEnd)
-  )
+  MemGeom (stackStart, stackEnd)
+          (codeStart,  codeEnd)
+          (dataStart,  dataEnd)
+          (heapStart,  heapEnd)
   where
     w           = llvmAddrWidthBits lc
     addrSpace   = 2 ^ w - 1
