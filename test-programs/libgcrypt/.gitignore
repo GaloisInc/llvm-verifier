@@ -1,6 +1,7 @@
 *.bc
 *.o
 sha384-test
+sha384-test-lss
 aes-test
 libgcrypt-1.5.0
 libgcrypt-1.5.0.tar.bz2
