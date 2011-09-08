@@ -6,7 +6,6 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Trans
 import           Data.Int
-import           Data.LLVM.TargetData
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
@@ -19,7 +18,6 @@ import           Test.QuickCheck.Monadic
 import           Text.LLVM                     ((=:))
 import           Verinf.Symbolic.Common        (ConstantProjection(..), Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
-import qualified Data.Vector.Storable          as LV
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
 
@@ -105,14 +103,14 @@ type StdBitBlastSim mem a = Simulator (BitIO mem Lit) IO a
 type StdBitBlastTest = StdBitEngine -> StdBitBlastSim StdMemory Bool
 type StdBitBlastSEH mem = SEH (BitIO mem Lit) IO
 
-runBitBlastSim :: Int 
+runBitBlastSim :: Int
                -> FilePath
                -> StdBitBlastSEH StdMemory
                -> (StdBitEngine -> StdBitBlastSim StdMemory a)
                -> IO a
 runBitBlastSim v bcFile seh act = do
   (cb, be, backend, mem) <- stdBitBlastInit bcFile
-  runSimulator cb backend mem stdBitBlastLift seh $ withVerbosity v (act be)
+  runSimulator cb backend mem stdBitBlastLift seh Nothing $ withVerbosity v (act be)
 
 runBitBlastSimTest :: Int
                    -> FilePath
