@@ -1425,6 +1425,21 @@ printfHandler = Override $ \_sym _rty args ->
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
 
+printSymbolic ::
+  ( Functor m
+  , Monad m
+  , MonadIO m
+  )
+  => Override sbe m
+printSymbolic = Override $ \_sym _rty args ->
+  case args of
+    [ptr] -> do
+      (_, v) <- load ptr
+      d <- withSBE' $ \sbe -> prettyTermD sbe v
+      liftIO $ print d
+      return Nothing
+    _ -> error "lss_print_symbolic: wrong number of arguments"
+
 allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
                   ConstantProjection (SBEClosedTerm sbe)) =>
                 (L.Type
@@ -1592,6 +1607,7 @@ standardOverrides =
      -- TODO: stub! Does this need to be implemented?
      Override $ \_sym _rty _args -> return Nothing)
   , ("printf", i32, [strTy], True, printfHandler)
+  , ("lss_print_symbolic", voidTy, [voidPtr], False, printSymbolic)
   , ("lss_fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("lss_fresh_uint16", i16, [i16], False, freshInt' 16)
   , ("lss_fresh_uint32", i32, [i32], False, freshInt' 32)
