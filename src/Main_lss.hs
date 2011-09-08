@@ -162,10 +162,8 @@ buildArgv numArgs argv' = do
   argvBase <- alloca i8p (Just $ int32const numArgs) Nothing
   argvArr  <- (L.Array numArgs i8p =:) <$> withSBE (\s -> termArray s strPtrs)
   -- Write argument string data and argument string pointers
-  forM_ (strPtrs `zip` strVals) $ \(p,v) -> do
-    processMemCond =<< mutateMem (\s m -> memStore s m v p)
-    return ()
-  processMemCond =<< mutateMem (\s m -> memStore s m argvArr (tv argvBase))
+  forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p
+  store argvArr (tv argvBase)
   return [i32 =: argc, argvBase]
   where
     tv = typedValue
