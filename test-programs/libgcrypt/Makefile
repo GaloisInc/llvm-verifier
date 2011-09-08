@@ -4,7 +4,8 @@ libgcrypt_pkg := $(libgcrypt).tar.bz2
 libgcrypt_url ?= ftp://ftp.gnupg.org/gcrypt/libgcrypt/$(libgcrypt_pkg)
 
 CC := clang
-CFLAGS := -I$(libgcrypt) -I$(libgcrypt)/src -I$(libgcrypt)/cipher -Wall
+CFLAGS := -I$(libgcrypt) -I$(libgcrypt)/src -I$(libgcrypt)/cipher -Wall \
+          -I../../sym-api
 
 .PHONY: all
 all:
@@ -14,6 +15,9 @@ clean: $(clean-targets)
 
 
 %.bc: %.c
+	$(CC) $(CFLAGS) -emit-llvm -c -o $@ $<
+
+sym-api.bc: ../../sym-api/sym-api.c
 	$(CC) $(CFLAGS) -emit-llvm -c -o $@ $<
 
 
@@ -35,10 +39,14 @@ distclean: clean
 	$(RM) $(libgcrypt_pkg)
 
 
-all: sha384-test
+all: sha384-test sha384-test-lss
 sha384-test_objects := sha512.bc sha-384-driver.bc compat.bc
+sha384-test-lss_objects := sha512.bc sha-384-driver-lss.bc compat.bc \
+                           sym-api.bc
 sha384-test: $(libgcrypt)/config.h $(sha384-test_objects)
 	llvm-ld -o $@ $(sha384-test_objects)
+sha384-test-lss: $(libgcrypt)/config.h $(sha384-test-lss_objects)
+	llvm-ld -o $@ $(sha384-test-lss_objects)
 
 clean: clean-sha384-test
 clean-sha384-test:
