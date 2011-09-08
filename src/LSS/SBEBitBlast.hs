@@ -435,14 +435,17 @@ mergeStorage be c x y = impl x y
         impl SUninitialized SUninitialized = return SUninitialized
         impl SUnallocated SUnallocated = return SUnallocated
 
-        -- TODO FIXME: Discuss the following four lines with JHX.  This was
-        -- needed in order to merge memories in the multiply-lss examples. [JS
-        -- 05 Sep 11].  E.g., ite-wrap these so the path constraints are taken
-        -- into account.
-        impl a@SValue{} SUninitialized = return a
-        impl SUninitialized b@SValue{} = return b
-        impl a SUnallocated            = return a
-        impl SUnallocated b            = return b
+        -- TODO: FIXME: value <-> uninitialized ctor pairing: ite condition with
+        -- (actual value) (be don't care byte with the valid bit cleared.).  JHX
+        -- to add valid bit stuff.
+        impl (SValue a) SUninitialized =
+          SValue {- c -}     <$> beIteVector be c (return a) (return $ beDontCareByte be)
+        impl SUninitialized (SValue b) =
+          SValue {- not c -} <$> beIteVector be c (return $ beDontCareByte be) (return b)
+
+        -- Unallocated and a branch to two Unallocateds mean the same thing.
+        impl SUnallocated b@SBranch{} = impl (SBranch SUnallocated SUnallocated) b
+        impl a@SBranch{} SUnallocated = impl a (SBranch SUnallocated SUnallocated)
 
         impl a b = do
           dbugM $ "mergeStorage failure case: a = " ++ show (ppStorageShow be a)

@@ -63,4 +63,6 @@ void lss_print_symbolic(void *sym);
 }
 #endif
 
+void lss_abort(const char* msg);
+
 #endif
