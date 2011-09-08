@@ -1,6 +1,10 @@
 #ifndef _SYM_API_H_
 #define _SYM_API_H_
 
+#if defined(c_plusplus) || defined(__cplusplus)
+extern "C" {
+#endif
+
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -54,5 +58,8 @@ void override_function_by_name(char *from, char *to);
 void override_function_by_addr(void *from, void *to);
 
 void print_symbolic(void *sym);
+#if defined(c_plusplus) || defined(__cplusplus)
+}
+#endif
 
 #endif
