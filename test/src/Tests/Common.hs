@@ -135,7 +135,7 @@ stdBitBlastInit bcFile = do
   return (cb, be, sbeBitBlast lc be mm, mem)
 
 stdBitBlastLift :: BitIO m l a -> Simulator sbe IO a
-stdBitBlastLift = SM . lift . liftSBEBitBlast
+stdBitBlastLift = SM . lift . lift . liftSBEBitBlast
 
 -- possibly skip a test
 psk :: Int -> PropertyM IO () -> PropertyM IO ()
