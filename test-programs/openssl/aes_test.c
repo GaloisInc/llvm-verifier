@@ -29,13 +29,13 @@ int main(int argc, char** argv) {
   //dummy_memset(in, 0, 16);
   //in[15] = 2;
 
-  unsigned char *in = fresh_array_uint8(16, 0);
-  unsigned char *userKey = fresh_array_uint8(16, 0);
+  unsigned char *in = lss_fresh_array_uint8(16, 0);
+  unsigned char *userKey = lss_fresh_array_uint8(16, 0);
 
   AES_set_encrypt_key(userKey, 128, &key);
   AES_encrypt(in, out, &key);
   printBlock(out);
-  write_aiger_array_uint8(out, 16, "aes.aig");
+  lss_write_aiger_array_uint8(out, 16, "aes.aig");
   printf("\n");
   return 0;
 }
