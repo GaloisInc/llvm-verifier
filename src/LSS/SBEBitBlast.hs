@@ -113,7 +113,7 @@ mgSanityCheck mg
   | mgData mg `overlap` mgHeap mg = Just "Data and code segments overlap."
   | otherwise = Nothing
 
--- Range {{{1 
+-- Range {{{1
 
 type Range t = (t,t)
 
@@ -181,7 +181,7 @@ beRangeCovered :: (Eq l, LV.Storable l)
 beRangeCovered be subFn (s1,e1) (s2,e2) =
  ite rangesOverlap
      (((s2 `le` s1) ||| subFn (s1,s2)) &&& ((e1 `le` e2) ||| subFn (e2,e1)))
-     (subFn (s1,e1))   
+     (subFn (s1,e1))
  where le = beUnsignedLeq be
        lt = beUnsignedLt be
        ite cm tm fm = cm >>= \c -> beIteM be c tm fm
@@ -223,12 +223,12 @@ termToSVal be lv =
         i8 x = fromIntegral x :: Int8
 
 bePrettyLit :: Eq l => BitEngine l -> l -> Doc
-bePrettyLit be x | x == beFalse be = text "False" 
+bePrettyLit be x | x == beFalse be = text "False"
                  | x == beTrue be = text "True"
                  | otherwise = text "?:[1]"
 
 bePrettyLV :: (Eq l, LV.Storable l) => BitEngine l -> LV.Vector l -> Doc
-bePrettyLV be bv 
+bePrettyLV be bv
   | 1 == LV.length bv = bePrettyLit be (bv LV.! 0)
   | otherwise = text str <> colon <>  brackets (text $ show $ LV.length bv)
                   <+> maybe empty cvt (termToSVal be bv)
@@ -332,17 +332,17 @@ storeTerm :: (Eq l, LV.Storable l)
           -> LLVM.Typed (BitTerm l)
           -> ptr
           -> IO (BitTerm l, mem)
-storeTerm lc be mm m v ptr 
+storeTerm lc be mm m v ptr
   | LV.length bytes == 0 = return (termFromLit (beTrue be), m)
   | otherwise = mmStore mm m bytes ptr
   where bytes = termToBytes lc be (LLVM.typedType v) (LLVM.typedValue v)
- 
+
 -- BasicBlockMap {{{1
 
 type BasicBlockMap l = Map (LLVM.Symbol,LLVM.BlockLabel) (BitTerm l)
 
 blockAddress :: BasicBlockMap l -> LLVM.Symbol -> LLVM.BlockLabel -> BitTerm l
-blockAddress bbm d b = 
+blockAddress bbm d b =
   let errMsg = "internal: Failed to find block " ++ show b ++ " in " ++ show d ++ "."
    in maybe (bmError errMsg) id $ Map.lookup (d,b) bbm
 
@@ -350,13 +350,13 @@ addBlockLabels :: LV.Storable l
                => Int -- ^ Pointer width
                -> BitEngine l
                -> LLVM.Symbol -- ^ Definition
-               -> V.Vector LLVM.BlockLabel -- ^ Block labels. 
+               -> V.Vector LLVM.BlockLabel -- ^ Block labels.
                -> Addr -- ^ Base address
                -> BasicBlockMap l -- ^ Initial map
                -> BasicBlockMap l
 addBlockLabels ptrWidth be def blocks base initMap =
   V.foldl insertAddr initMap (V.enumFromN 0 (V.length blocks))
- where insertAddr m i = 
+ where insertAddr m i =
          let v = beVectorFromInt be ptrWidth (base + i)
           in Map.insert (def,blocks V.! fromInteger i) (BitTerm v) m
 
@@ -459,7 +459,7 @@ loadBytes :: (Eq l, LV.Storable l)
           -> BitTerm l
           -> Integer
           -> IO (BitTerm l, LV.Vector l)
-loadBytes be byteLoader (BitTerm ptr) sz = impl [] (beTrue be) sz 
+loadBytes be byteLoader (BitTerm ptr) sz = impl [] (beTrue be) sz
   where impl l c 0 = return (termFromLit c, LV.concat l)
         impl l c i = do
           (bc, bv) <- byteLoader =<< beAddIntConstant be ptr (i-1)
@@ -720,45 +720,6 @@ bmLookupDefine be m (BitTerm a) = do
         Nothing -> Invalid
         Just d -> Result d
 
--- TODO: joel-wip bmstackalloca begin
--- bmStackAlloca :: (Eq l, LV.Storable l)
---               => LLVMContext
---               -> BitEngine l
---               -> BitMemory l
---               -> LLVM.Type
---               -> LLVM.Typed (BitTerm l)
---               -> Int
---               -> StackAllocaResult (BitTerm l) (BitMemory l)
--- bmStackAlloca lc be bm eltTp typedCnt a
---   | BitTerm cntVector <- LLVM.typedValue typedCnt
---   , Just (_,cnt) <- beVectorToMaybeInt be cntVector =
---      let -- Number of bytes in element type.
---          eltSize = llvmAllocSizeOf lc eltTp
---          -- Get number requested.
---          mkRes c res newStorage newAddr =
---            SAResult (BitTerm (LV.singleton (beLitFromBool be c)))
---                     (BitTerm (beVectorFromInt be (llvmAddrWidthBits lc) res))
---                     bm { bmStorage = newStorage, bmStackAddr = newAddr }
---          -- Get new bit memory.
---          r | bmStackGrowsUp bm =
---                let alignedAddr  = alignUp (bmStackAddr bm) a
---                    newStackAddr = alignedAddr + eltSize * cnt
---                 in mkRes (newStackAddr <= bmStackEnd bm)
---                          alignedAddr
---                          (uninitRegion lc alignedAddr newStackAddr (bmStorage bm))
---                          newStackAddr
---            | otherwise =
---                let sz = eltSize * cnt
---                    alignedAddr = alignDn (bmStackAddr bm - sz) a
---                 in mkRes (alignedAddr >= bmStackEnd bm)
---                          alignedAddr
---                          (uninitRegion lc alignedAddr (alignedAddr + sz) (bmStorage bm))
---                          alignedAddr
---       in r
---   | otherwise = SASymbolicCountUnsupported
--- joel wip bmstackalloca end
-
-
 bmStackAlloca :: (Eq l, LV.Storable l)
               => Int       -- ^ Width of pointer in bits.
               -> BitEngine l
@@ -895,7 +856,7 @@ buddyMemModel lc be = mm
               , mmStackPush = \mem -> return (termFromLit (beTrue be), bmStackPush mem)
               , mmStackPop = return . bmStackPop (llvmAddrWidthBits lc)
               , mmHeapAlloc = return `c4` bmHeapAlloc ptrWidth be
-              , mmMemCopy = bmMemCopy be 
+              , mmMemCopy = bmMemCopy be
               }
 
 buddyInitMemory :: MemGeom -> BitMemory l
@@ -977,7 +938,7 @@ data DMApp l
    | DMAddDefine LLVM.Symbol (V.Vector LLVM.BlockLabel) (DagMemory l)
      -- | @DMAlloc base end prev@ denotes the memory obtained by
      -- allocating bytes in @[base,end)@ to @prev@.
-   | DMAlloc (SymAddr l) (SymAddr l) (DagMemory l) 
+   | DMAlloc (SymAddr l) (SymAddr l) (DagMemory l)
    | DMStackPush (DagMemory l)
      -- | @DMStackPop base end prev@ denotes the memory obtained by?b
      -- deallocating bytes in @[base,end)@ to @prev@.  The range may
@@ -999,15 +960,15 @@ bePrettyRange :: (Eq l, LV.Storable l) => BitEngine l -> Range (LV.Vector l) -> 
 bePrettyRange be (s,e) = char '[' <> bePrettyLV be s <> comma <+> bePrettyLV be e <> char ')'
 
 dmPrintApp :: (Eq l, LV.Storable l) => BitEngine l -> DMApp l -> Doc
-dmPrintApp be app = 
+dmPrintApp be app =
   case app of
     DMInitial -> text "initial"
     DMAddDefine d bl mem  -> text "define"    <+> text (show d) <+> pblocks bl <+> pm mem
-    DMAlloc s e mem       -> text "alloc"     <+> pr (s,e) <+> pm mem  
-    DMStackPush mem       -> text "stackPush" <+> pm mem  
-    DMStackPop s e mem    -> text "stackPop"  <+> pr (s,e) <+> pm mem  
-    DMStore s e bytes mem -> text "store"     <+> pr (s,e) <+> text ":=" <+> pbytes bytes <+> pm mem  
-    DMMemCopy s e src mem -> text "memCopy"   <+> pr (s,e) <+> text ":= *" <> paddr src <+> pm mem  
+    DMAlloc s e mem       -> text "alloc"     <+> pr (s,e) <+> pm mem
+    DMStackPush mem       -> text "stackPush" <+> pm mem
+    DMStackPop s e mem    -> text "stackPop"  <+> pr (s,e) <+> pm mem
+    DMStore s e bytes mem -> text "store"     <+> pr (s,e) <+> text ":=" <+> pbytes bytes <+> pm mem
+    DMMemCopy s e src mem -> text "memCopy"   <+> pr (s,e) <+> text ":= *" <> paddr src <+> pm mem
     DMMerge c t f         -> text "merge"     <+> pl c <+> char '?' <+> pm t <+> char ':' <> pm f
  where pr = bePrettyRange be
        pl = bePrettyLit be
@@ -1042,7 +1003,7 @@ dmDump be _ mem _ = do
 
 -- | Returns predicate indicating if memory can be writen to.
 dmIsAllocated :: (LV.Storable l, Ord l)
-             => BitEngine l 
+             => BitEngine l
              -> DagMemory l
              -> Range (LV.Vector l) -- ^ Bytes to check if writable (assumed to be non-empty)
              -> IO l
@@ -1118,7 +1079,7 @@ dmLoadByte be = parseMem
                 DMInitial -> return invalidResult
                 DMStore s e bytes pm -> cache $ do
                   inRange <- beInRange be ptr (s, e)
-                  beIteVector be 
+                  beIteVector be
                               inRange
                               (do vidx <- beSubInt be ptr s
                                   beMuxGeneral (beIteVector be)
@@ -1175,7 +1136,7 @@ dmGetMem ref base app nodeFn = do
 dmStoreBytes :: (Ord l, LV.Storable l)
              => BitEngine l -> IORef (DMDag l)
              -> DagMemory l -> LV.Vector l -> BitTerm l -> IO (BitTerm l, DagMemory l)
-dmStoreBytes be ref mem flatBytes (BitTerm ptr) 
+dmStoreBytes be ref mem flatBytes (BitTerm ptr)
   | V.length bytes == 0 = return (termFromLit (beTrue be), mem)
   | otherwise = do
     ptrEnd <- beAddIntConstant be ptr (toInteger (V.length bytes))
@@ -1218,13 +1179,13 @@ dmMux be ref (BitTerm c) t f = assert (LV.length c == 1) $ do
              }
 
 -- | Initialize global data memory.
-dmInitGlobal :: (Ord l, LV.Storable l) 
-             => BitEngine l 
+dmInitGlobal :: (Ord l, LV.Storable l)
+             => BitEngine l
              -> Int  -- ^ Width of pointer
              -> Addr -- ^ End of data region
-             -> IORef (DMDag l) 
+             -> IORef (DMDag l)
              -> DagMemory l -> LV.Vector l -> IO (Maybe (BitTerm l, DagMemory l))
-dmInitGlobal be ptrWidth dataEnd ref mem flatBytes 
+dmInitGlobal be ptrWidth dataEnd ref mem flatBytes
   | byteCount == 0 = return $ Just (BitTerm ptr, mem)
   | dataEnd - dmData mem < byteCount = return Nothing
   | otherwise = do
@@ -1233,7 +1194,7 @@ dmInitGlobal be ptrWidth dataEnd ref mem flatBytes
         allocRef <- newIORef Map.empty
         return m { dmData = nextData
                  , dmAllocCache = allocRef }
-      -- Store bytes 
+      -- Store bytes
       mem2 <- dmGetMem ref mem1 (DMStore ptr ptrEnd bytes mem) $ \m -> do
         initRef <- newIORef Map.empty
         loadRef <- newIORef Map.empty
@@ -1247,7 +1208,7 @@ dmInitGlobal be ptrWidth dataEnd ref mem flatBytes
         nextData = dmData mem + byteCount
         ptr = beVectorFromInt be ptrWidth (dmData mem)
         ptrEnd = beVectorFromInt be ptrWidth nextData
-  
+
 dmAddDefine :: (Ord l, LV.Storable l)
             => BitEngine l
             -> Int -- ^ width of pointers
@@ -1295,7 +1256,7 @@ dmStackAlloca :: (Ord l, LV.Storable l)
               -> DagMemory l
               -> Integer
               -> BitTerm l
-              -> Int 
+              -> Int
               -> IO (StackAllocaResult (BitTerm l) (DagMemory l))
 dmStackAlloca be ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCount) _align = do
   let stack = dmStack mem
@@ -1337,10 +1298,10 @@ dmStackPushFrame be ref mem = do
   return (termFromLit (beTrue be), r)
 
 -- | Pop stack frame in memory and invalidate old addresses.
-dmStackPopFrame :: (LV.Storable l, Ord l) 
+dmStackPopFrame :: (LV.Storable l, Ord l)
                 => Bool -- ^ Flag indicating if stack should grow up in memory.
                 -> IORef (DMDag l)
-                -> DagMemory l 
+                -> DagMemory l
                 -> IO (DagMemory l)
 dmStackPopFrame stackGrowsUp ref mem =
   case dmStackFrames mem of
@@ -1364,7 +1325,7 @@ dmHeapAlloc :: (Ord l, LV.Storable l)
             -> DagMemory l
             -> Integer
             -> BitTerm l
-            -> Int 
+            -> Int
             -> IO (HeapAllocResult (BitTerm l) (DagMemory l))
 dmHeapAlloc be ptrWidth heapEnd ref mem eltSize (BitTerm eltCount) _align = do
   let heap = dmHeap mem
@@ -1389,7 +1350,7 @@ dmMemCopy :: (Ord l, LV.Storable l)
           => BitEngine l
           -> Int -- ^ Pointer width
           -> IORef (DMDag l)
-          -> DagMemory l 
+          -> DagMemory l
           -> BitTerm l   -- ^ Destination pointer
           -> BitTerm l   -- ^ Source pointer
           -> BitTerm l   -- ^ Length value
@@ -1399,7 +1360,7 @@ dmMemCopy be ptrWidth ref mem (BitTerm dest) (BitTerm src) (BitTerm l) (BitTerm 
  | LV.length src /= ptrWidth = bmError "internal: src pointer size does not match pointer width."
  | LV.length dest /= ptrWidth = bmError "internal: dest pointer size does not match pointer width"
  | otherwise = do
-    let lWidth = LV.length l  
+    let lWidth = LV.length l
     let lext | lWidth == ptrWidth = l
              | lWidth >= ptrWidth = LV.drop (lWidth - ptrWidth) l
              | otherwise = LV.replicate (ptrWidth - lWidth) (beFalse be) LV.++ l
@@ -1420,7 +1381,7 @@ dmMemCopy be ptrWidth ref mem (BitTerm dest) (BitTerm src) (BitTerm l) (BitTerm 
         initRef <- newIORef Map.empty
         loadRef <- newIORef Map.empty
         return m { dmInitCache = initRef
-                 , dmLoadCache = loadRef 
+                 , dmLoadCache = loadRef
                  }
     -- Return result
     return (termFromLit c,m)
@@ -1439,12 +1400,12 @@ createDagMemModel lc be mg = do
                mmLoad = dmLoadBytes be
              , mmStore = dmStoreBytes be ref
              , mmMux = dmMux be ref
-             , mmInitGlobal = dmInitGlobal be ptrWidth (end (mgData mg)) ref 
+             , mmInitGlobal = dmInitGlobal be ptrWidth (end (mgData mg)) ref
              , mmDump = dmDump be
              , mmAddDefine = dmAddDefine be ptrWidth (end (mgCode mg)) ref
              , mmBlockAddress = blockAddress . dmBasicBlockMap
              , mmLookupDefine = dmLookupDefine be
-             , mmStackAlloca = dmStackAlloca be ptrWidth stackGrowsUp (ptrEnd (mgStack mg)) ref 
+             , mmStackAlloca = dmStackAlloca be ptrWidth stackGrowsUp (ptrEnd (mgStack mg)) ref
              , mmStackPush = dmStackPushFrame be ref
              , mmStackPop = dmStackPopFrame stackGrowsUp ref
              , mmHeapAlloc = dmHeapAlloc be ptrWidth (ptrEnd (mgHeap mg)) ref
@@ -1466,7 +1427,7 @@ createDagMemModel lc be mg = do
                       , dmInitCache = initRef
                       , dmLoadCache = loadRef
                       }
-  return (mm, mem) 
+  return (mm, mem)
 
 -- Aiger operations {{{1
 

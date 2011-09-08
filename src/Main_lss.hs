@@ -119,7 +119,8 @@ runBitBlast :: (Eq l, Storable l)
 runBitBlast sbe mem cb mg argv' args mainDef = do
   let opts = Just $ LSSOpts (errpaths args)
       seh' = defaultSEH
-  runSimulator cb sbe mem (SM . lift . liftSBEBitBlast) seh' opts $ do
+      lft  = SM . lift . lift . liftSBEBitBlast
+  runSimulator cb sbe mem lft seh' opts $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"
