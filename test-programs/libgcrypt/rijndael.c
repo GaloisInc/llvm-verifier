@@ -205,7 +205,7 @@ do_setkey (RIJNDAEL_context *ctx, const byte *key, const unsigned keylen)
 
      FIXME: We might want to have a central registry of succeeded
      self-tests. */
-  if (!fips_mode () && !initialized)
+  if (0 && !fips_mode () && !initialized)
     {
       initialized = 1;
       selftest_failed = selftest ();
@@ -2087,4 +2087,5 @@ struct aes aes =
   { .set_key = rijndael_setkey
   , .encrypt = rijndael_encrypt
   , .decrypt = rijndael_decrypt
+  , .size    = sizeof(RIJNDAEL_context)
   };
