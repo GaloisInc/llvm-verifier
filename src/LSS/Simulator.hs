@@ -1486,6 +1486,7 @@ dbugTypedTerm desc (Typed ty t) =
 
 _nowarn_unused :: a
 _nowarn_unused = undefined
+  (nyiOverride :: Override IO IO)
   (dbugTerm undefined undefined :: Simulator IO IO ())
   (dbugTypedTerm undefined undefined :: Simulator IO IO ())
   (repl :: Simulator IO IO ())
@@ -1709,6 +1710,27 @@ loadArray ptr ety count = do
             addr' <- termAdd (typedValue addr) one
             (t:) <$> go one (typedAs addr addr') (size - 1)
 
+storeArray ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SBETerm sbe
+  -> L.Type
+  -> [SBETerm sbe]
+  -> Simulator sbe m ()
+storeArray ptr ety elems = do
+  ptrWidth <- withLC llvmAddrWidthBits
+  elemWidth <- withLC (`llvmStoreSizeOf` ety)
+  inc <- withSBE $ \s -> termInt s ptrWidth elemWidth
+  go inc ptr elems
+    where go _one _addr [] = return ()
+          go one addr (e:es) = do
+            store (Typed ety e) addr
+            addr' <- termAdd addr one
+            go one addr' es
+
 evalAigerOverride :: (Functor m, MonadIO m, Functor sbe,
                       ConstantProjection (SBEClosedTerm sbe)) =>
                      Override sbe m
@@ -1727,6 +1749,32 @@ evalAigerOverride =
             Just <$> (withSBE $ \s -> evalAiger s bools tm)
           Nothing -> error "lss_eval_aiger: symbolic size not supported"
       _ -> error "lss_eval_aiger: wrong number of arguments"
+
+evalAigerArray :: (Functor m, MonadIO m, Functor sbe,
+                   ConstantProjection (SBEClosedTerm sbe)) =>
+                  L.Type -> Override sbe m
+evalAigerArray ty =
+  Override $ \_sym _rty args ->
+    case args of
+      [sym, dst, szTm, input@(Typed (L.PtrTo ety) _), inputSz] -> do
+        msz <- withSBE' $ \s -> getUVal . closeTerm s . typedValue $ szTm
+        misz <- withSBE' $ \s -> getUVal . closeTerm s . typedValue $ inputSz
+        case (msz, misz) of
+          (Just sz, Just isz) -> do
+            inputs <- loadArray input ety isz
+            ints <- mapM
+                    (\t -> withSBE' $ \s -> getUVal $ closeTerm s t)
+                    inputs
+            let bools = map (not . (== 0)) $ catMaybes ints
+            tm <- loadArray sym ty sz
+            tm' <- withSBE $ \s -> termArray s tm
+            res <- withSBE $ \s -> evalAiger s bools tm'
+            let tys = replicate (fromIntegral sz) ety
+            res' <- withSBE $ \s -> termDecomp s tys res
+            storeArray (typedValue dst) ety (map typedValue res')
+            return Nothing
+          _ -> error "lss_eval_aiger_array: symbolic sizes not supported"
+      _ -> error "lss_eval_aiger_array: wrong number of arguments"
 
 overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1798,13 +1846,13 @@ standardOverrides =
   , ("lss_eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
   , ("lss_eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
   , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False,
-     nyiOverride)
+     evalAigerArray i8)
   , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False,
-     nyiOverride)
+     evalAigerArray i16)
   , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False,
-     nyiOverride)
+     evalAigerArray i32)
   , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False,
-     nyiOverride)
+     evalAigerArray i64)
   , ("lss_override_function_by_name", voidTy, [strTy, strTy], False,
      overrideByName)
   , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
