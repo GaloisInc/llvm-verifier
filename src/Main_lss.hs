@@ -96,7 +96,7 @@ main = do
   mainDef <- case lookupDefine' (L.Symbol "main") cb of
                Nothing -> error "Provided bitcode does not contain main()."
                Just mainDef -> do
-                 when (null (sdArgs mainDef) && not (null argv')) warnNoArgv
+                 when (null (sdArgs mainDef) && length argv' > 1) warnNoArgv
                  return mainDef
   let lc = cbLLVMCtx cb
   be <- createBitEngine
