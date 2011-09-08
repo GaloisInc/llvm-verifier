@@ -31,7 +31,22 @@ openssl/sha256.o : openssl/sha256.c openssl/md32_common.h
 openssl/sha224_test : openssl/sha224_test.o openssl/sha256.o openssl/mem_clr.o
 	llvm-ld -o $@ $^
 
+openssl/casttest.bc : openssl/casttest.c
+	$(CLANG) -c -emit-llvm -m32 -o $@ $^
+
+openssl/c_skey.bc : openssl/c_skey.c
+	$(CLANG) -c -emit-llvm -m32 -o $@ $^
+
+openssl/c_ecb.bc : openssl/c_ecb.c
+	$(CLANG) -c -emit-llvm -m32 -o $@ $^
+
+openssl/c_enc.bc : openssl/c_enc.c
+	$(CLANG) -c -emit-llvm -m32 -o $@ $^
+
+openssl/cast_test : openssl/casttest.bc openssl/c_skey.bc openssl/c_enc.bc openssl/c_ecb.bc
+	llvm-ld -o $@ $^
+
 clean : 
-	rm -f *.bc *.ll *.dot *.o openssl/*.o openssl/*.bc openssl/aes_test openssl/sha224_test
+	rm -f *.bc *.ll *.dot *.o openssl/*.o openssl/*.bc openssl/aes_test openssl/sha224_test openssl/cast_test
 
 .PHONY : clean all bc
