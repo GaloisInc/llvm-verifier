@@ -63,7 +63,7 @@ typedef struct
   int count;
 } SHA512_CONTEXT;
 
-static void
+void
 sha512_init (void *context)
 {
   SHA512_CONTEXT *hd = context;
@@ -81,7 +81,7 @@ sha512_init (void *context)
   hd->count = 0;
 }
 
-static void
+void
 sha384_init (void *context)
 {
   SHA512_CONTEXT *hd = context;
@@ -305,7 +305,7 @@ transform (SHA512_CONTEXT *hd, const unsigned char *data)
 /* Update the message digest with the contents
  * of INBUF with length INLEN.
  */
-static void
+void
 sha512_write (void *context, const void *inbuf_arg, size_t inlen)
 {
   const unsigned char *inbuf = inbuf_arg;
@@ -351,7 +351,7 @@ sha512_write (void *context, const void *inbuf_arg, size_t inlen)
  * we take the leftmost 48 of those bytes.
  */
 
-static void
+void
 sha512_final (void *context)
 {
   SHA512_CONTEXT *hd = context;
@@ -431,7 +431,7 @@ sha512_final (void *context)
 #undef X
 }
 
-static byte *
+byte *
 sha512_read (void *context)
 {
   SHA512_CONTEXT *hd = (SHA512_CONTEXT *) context;
