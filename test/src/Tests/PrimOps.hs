@@ -120,8 +120,7 @@ testSetupPtrArgImpl be = do
     Just mem -> do
       w <- withLC llvmAddrWidthBits
       p <- L.Typed (L.PtrTo i32) <$> withSBE (\sbe -> termInt sbe w 0)
-      (cond, r) <- withSBE $ \sbe -> memLoad sbe mem p
-      processMemCond cond
+      r <- load' mem p
       return $ BitTermClosed (be, r) `constTermEq` 42
 
 --------------------------------------------------------------------------------
