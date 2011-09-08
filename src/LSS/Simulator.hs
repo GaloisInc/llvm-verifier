@@ -1588,6 +1588,9 @@ standardOverrides =
      Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing)
   , ("alloca", voidPtr, [i32], False, allocHandler alloca)
   , ("malloc", voidPtr, [i32], False, allocHandler malloc)
+  , ("free", voidTy, [voidPtr], False,
+     -- TODO: stub! Does this need to be implemented?
+     Override $ \_sym _rty _args -> return Nothing)
   , ("printf", i32, [strTy], True, printfHandler)
   , ("fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("fresh_uint16", i16, [i16], False, freshInt' 16)
