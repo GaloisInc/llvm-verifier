@@ -47,6 +47,9 @@ module LSS.Simulator
   , withSBE'
   -- * Memory operations
   , alloca
+  , load
+  , load'
+  , store
   , sizeof
   , mutateMem
   , mutateMem_
@@ -211,7 +214,12 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
       return []
     Nothing -> runNormalSymbol normalRetID calleeSym mreg genOrArgs
 
-runNormalSymbol :: (MonadIO m, Functor m, Functor sbe)
+runNormalSymbol ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => SymBlockID            -- ^ Normal call return block id
   -> L.Symbol              -- ^ Callee symbol
   -> Maybe (Typed Reg)     -- ^ Callee return type and result register
@@ -278,7 +286,7 @@ intrinsic intr mreg args0 =
   where
     memcpy = do
       let [dst, src, len, align, _isvol] = map typedValue args0
-      processMemCond =<< mutateMem (\sbe mem -> memCopy sbe mem dst src len align)
+      processMemCond =<< mutateMem (\s m -> memCopy s m dst src len align)
     memset = do
       let [dst, val, len, align, _isvol] = args0
       memSet (typedValue dst) val (typedValue len) (typedValue align)
@@ -293,15 +301,15 @@ memSet :: ( Monad m, Functor m, MonadIO m
        -> SBETerm sbe
        -> Simulator sbe m ()
 memSet dst val len align = do
-  lenVal <- withSBE' $ \sbe -> getUVal $ closeTerm sbe len
+  lenVal <- withSBE' $ \s -> getUVal $ closeTerm s len
   case lenVal of
     Just 0 -> return ()
     _ -> do
-      processMemCond =<< mutateMem (\sbe mem -> memStore sbe mem val dst)
+      store val dst
       ptrWidth <- withLC llvmAddrWidthBits
-      lenWidth <- withSBE' $ \sbe -> termWidth sbe len
-      one <- withSBE $ \sbe -> termInt sbe ptrWidth 1
-      negone <- withSBE $ \sbe -> termInt sbe (fromIntegral lenWidth) (-1)
+      lenWidth <- withSBE' $ \s -> termWidth s len
+      one <- withSBE $ \s -> termInt s ptrWidth 1
+      negone <- withSBE $ \s -> termInt s (fromIntegral lenWidth) (-1)
       dst' <- termAdd dst one
       len' <- termAdd len negone
       memSet dst' val len' align
@@ -353,12 +361,16 @@ run ::
 run = do
   mtop <- topMF <$> gets ctrlStk
   case mtop of
-    Nothing  -> error "run: empty control stack"
+    Nothing -> error "run: empty control stack"
     Just top
       | isExitFrame top -> do
           -- Normal program termination on at least one path. Set the exit merge
           -- frame return value (if any) and clear the merged state.
           modifyCS $ \(popMF -> (_, cs)) -> pushMF (finalizeExit top) cs
+
+          -- Report termination info at appropriate verbosity levels; also,
+          -- inform user about error paths when present and optionally dump
+          -- them.
           dumpCtrlStk' 5
           whenVerbosity (>=2) $ do
             dbugM "run terminating normally: found valid exit frame"
@@ -366,8 +378,6 @@ run = do
             case mrv of
               Nothing -> dbugM "Program had no return value."
               Just rv -> dbugTerm "Program returned value" rv
-
-          -- Let the user know about error paths.
           numErrs <- length <$> gets errorPaths
           showEPs <- optsErrorPathDetails <$> gets lssOpts
           when (numErrs > 0 && not showEPs) $
@@ -414,11 +424,16 @@ run = do
 
 -- | @pushMemFrame@ tells the memory model to push a new stack frame to the
 -- stack region.
-pushMemFrame :: (MonadIO m, Functor m, Functor sbe) => Simulator sbe m ()
+pushMemFrame ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Simulator sbe m ()
 pushMemFrame = do
   dbugM' 6 "Memory model: pushing stack frame"
-  cond <- mutateMem stackPushFrame
-  -- ^ if this fails, ran out of stack
+  processMemCond =<< mutateMem stackPushFrame
   return ()
 
 -- | @pushMemFrame@ tells the memory model to pop a stack frame from the stack
@@ -471,7 +486,7 @@ addPathConstraintSC p c@(HasConstValue v i) = do
   -- Construct the constraint term from the HasConstValue predicate
   Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (i1 =: v)
   Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
-  ct <- withSBE (\sbe -> applyICmp sbe L.Ieq vt it)
+  ct <- withSBE (\s -> applyICmp s L.Ieq vt it)
   addPathConstraint p (Just c) ct
 
 -- @addPathConstraint p msc ct@ adds the given condition term @ct@ to the path
@@ -628,11 +643,11 @@ mergePaths from (Just to) = do
   where
     infixl 5 <->
     t <-> f = do
-      meq <- withSBE  $ \sbe -> getBool . closeTerm sbe <$> applyICmp sbe L.Ieq t f
+      meq <- withSBE $ \s -> getBool . closeTerm s <$> applyICmp s L.Ieq t f
       case meq of
         Just True -> return t
-        _         -> withSBE $ \sbe ->
-                       applyIte sbe (pcTerm $ pathConstraint from) t f
+        _         ->
+          withSBE $ \s -> applyIte s (pcTerm $ pathConstraint from) t f
 
     mergeCFs = do
       merged <- mergeMapsBy (regs from) (regs to) mergeV
@@ -653,7 +668,7 @@ mergePaths from (Just to) = do
       dbugM $ "mergeMems: Memory B"
       withSBE $ \s -> memDump s b Nothing
       -}
-      withSBE $ \sbe -> memMerge sbe c a b
+      withSBE $ \s -> memMerge s c a b
 
     mergePCs (Constraint scs1 c1) (Constraint scs2 c2) = do
       Constraint (scs1 `SCEOr` scs2) <$> (return c1 ||| return c2)
@@ -773,25 +788,26 @@ getGlobalPtrTerm key@(sym, tys) = do
       cb <- gets codebase
       maybe err (either addGlobal addDef) (lookupSym sym cb)
   where
-    err = error $ "getGlobalPtrTerm: symbol resolution failed: "
-                  ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
+    err         = error $ "getGlobalPtrTerm: symbol resolution failed: "
+                          ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
+    noCodeSpace = error "Not enough space in code memory to allocate new definition."
+    noDataSpace = error "Not enough space in data segment to allocate new global."
 
     addDef def = do
       let argTys = map typedType $ sdArgs def
           fty    = L.FunTy (sdRetType def) argTys (sdVarArgs def)
           idl    = nub $ mapMaybe symBlockLabel $ M.keys (sdBody def)
-      ins fty $ \sbe mem ->
-        maybe (error "Not enough space in code memory to allocate new definition.") id
-          <$> memAddDefine sbe mem sym idl
+      ins fty $ \s m -> maybe noCodeSpace id <$> memAddDefine s m sym idl
+
     addGlobal g = do
       cb1 onMkGlobTerm g
       cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
       cb2 onPreGlobInit g cdata
-      r <- ins (L.globalType g) $ \sbe mem -> do
-             maybe (error "Not enough space in data segment to allocate new global.") id
-               <$> memInitGlobal sbe mem cdata
+      r <- ins (L.globalType g) $ \s m ->
+             maybe noDataSpace id <$> memInitGlobal s m cdata
       cb2 onPostGlobInit g cdata
       return r
+
     ins :: (Functor m, MonadIO m)
         => L.Type
         -> (SBE sbe -> SBEMemory sbe -> sbe (SBETerm sbe, SBEMemory sbe))
@@ -800,6 +816,7 @@ getGlobalPtrTerm key@(sym, tys) = do
       t <- Typed (L.PtrTo ty) <$> mutateMem act
       modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
       return t
+
 
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
@@ -878,7 +895,7 @@ step (Store val addr _malign) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
   valTerm          <- getTypedTerm val
   Typed _ addrTerm <- getTypedTerm addr
-  processMemCond =<< mutateMem (\sbe mem -> memStore sbe mem valTerm addrTerm)
+  store valTerm addrTerm
   whenVerbosity (<=6) $ dumpMem 6 "store post"
 
 step (IfThenElse cond thenStmts elseStmts) = do
@@ -929,8 +946,7 @@ eval (Alloca ty msztv malign ) = alloca ty msztv malign
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
-  (cond,v) <- load addrTerm
-  processMemCond cond
+  v <- load addrTerm
   return (Typed ty v) <* dumpMem 6 "load post"
 eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
 eval (ICmp op (Typed t v1) v2) = do
@@ -1101,14 +1117,40 @@ mutateMem f = do
 
 mutateMem_ :: (Functor m, MonadIO m, Functor sbe)
   => (SBE sbe -> SBEMemory sbe -> sbe (SBEMemory sbe)) -> Simulator sbe m ()
-mutateMem_ f = mutateMem (\sbe mem -> ((,) ()) <$> f sbe mem) >> return ()
+mutateMem_ f = mutateMem (\s m -> ((,) ()) <$> f s m) >> return ()
 
 withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
 withLC f = f <$> gets (cbLLVMCtx . codebase)
 
-load :: (Functor m, Monad m) =>
-        Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe, SBETerm sbe)
-load addr = withMem $ \sbe mem -> memLoad sbe mem addr
+load ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
+load addr = getMem >>= flip load' addr
+
+load' ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SBEMemory sbe -> Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
+load' m addr = do
+  (cond, v) <- withSBE $ \s -> memLoad s m addr
+  processMemCond cond
+  return v
+
+store ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Typed (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
+store val dst = processMemCond =<< mutateMem (\s m -> memStore s m val dst)
 
 --------------------------------------------------------------------------------
 -- Callbacks
@@ -1153,8 +1195,8 @@ alloca ty msztv malign = do
           Just ntv -> getTypedTerm ntv
   let parseFn SASymbolicCountUnsupported = error "alloca only supports concrete element count"
       parseFn (SAResult c t m') = ((c,t), m')
-  (cond,t) <- mutateMem $ \sbe m ->
-                parseFn <$> stackAlloca sbe m ty nt (maybe 0 lg malign)
+  (cond,t) <- mutateMem $ \s m ->
+                parseFn <$> stackAlloca s m ty nt (maybe 0 lg malign)
   processMemCond cond
   return (Typed (L.PtrTo ty) t)
 
@@ -1165,8 +1207,8 @@ malloc ty msztv malign = do
   let parseFn HASymbolicCountUnsupported = error "malloc only supports concrete element count"
       parseFn (HAResult c t m') = ((c,t), m')
   -- TODO: Handle 'size' result
-  (cond,t) <- mutateMem $ \sbe m ->
-    parseFn <$> heapAlloc sbe m ty nt (maybe 0 lg malign)
+  (cond,t) <- mutateMem $ \s m ->
+    parseFn <$> heapAlloc s m ty nt (maybe 0 lg malign)
   processMemCond cond
   return (Typed (L.PtrTo ty) t)
 
@@ -1196,7 +1238,7 @@ resolveCallee callee = case callee of
      case L.elimFunPtr t of
        Nothing -> err "Callee identifier referent is not a function pointer"
        Just (_rty, _argtys, _isVarArgs) -> do
-         pr <- withMem $ \sbe mem -> codeLookupDefine sbe mem fp
+         pr <- withMem $ \s m -> codeLookupDefine s m fp
          case pr of
            Result sym -> ok sym
            _          -> err "resolveCallee: Failed to resolve callee function pointer"
@@ -1290,14 +1332,14 @@ registerOverride :: (Functor m, Monad m, Functor sbe, MonadIO m) =>
                  -> Override sbe m
                  -> Simulator sbe m ()
 registerOverride sym retTy argTys va handler = do
-  t <- mutateMem $ \sbe mem ->
-         maybe (error "Not enough space in code memory to allocate new definition.") id
-           <$> memAddDefine sbe mem sym []
+  t <- mutateMem $ \s m -> maybe nospace id <$> memAddDefine s m sym []
   let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
   modify $ \s -> s { overrides = M.insert sym handler (overrides s)
                    , globalTerms =
                        M.insert (sym, Just argTys) t' (globalTerms s)
                    }
+  where
+    nospace = error "Not enough space in code memory to allocate new definition."
 
 --------------------------------------------------------------------------------
 -- Error handling
@@ -1342,17 +1384,17 @@ ppPathM :: (MonadIO m, Functor m) => String -> Path sbe -> Simulator sbe m ()
 ppPathM desc p = do
   sbe <- gets symBE
   dbugM $ desc ++ "\n" ++ show (ppPath sbe p)
-  withSBE (\sbe' -> memDump sbe' (pathMem p) Nothing)
+  withSBE (\s -> memDump s (pathMem p) Nothing)
 
 prettyTermSBE :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m Doc
-prettyTermSBE t = withSBE' $ \sbe -> prettyTermD sbe t
+prettyTermSBE t = withSBE' $ \s -> prettyTermD s t
 
 dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
 dumpMem v msg =
   whenVerbosity (>=v) $ do
     dbugM $ msg ++ ":"
-    mem <- getMem
-    withSBE (\sbe -> memDump sbe mem Nothing)
+    m <- getMem
+    withSBE (\s -> memDump s m Nothing)
 
 dbugStep ::
   ( LogMonad m
@@ -1435,11 +1477,10 @@ loadString ptr =
       cs <- go ptr
       return . map (toEnum . fromEnum) . catMaybes $ cs
       where go addr = do
-              (cond,t) <- load addr
-              processMemCond cond
-              c <- withSBE' $ \sbe -> getUVal $ closeTerm sbe t
+              t <- load addr
+              c <- withSBE' $ \s -> getUVal $ closeTerm s t
               ptrWidth <- withLC llvmAddrWidthBits
-              one <- withSBE $ \sbe -> termInt sbe ptrWidth 1
+              one <- withSBE $ \s -> termInt s ptrWidth 1
               addr' <- termAdd (typedValue addr) one
               case c of
                 Nothing -> return []
@@ -1472,7 +1513,7 @@ termToArg term = do
 
 termIntS :: (Functor m, Monad m, Integral a) =>
             Int -> a -> Simulator sbe m (SBETerm sbe)
-termIntS w n = withSBE $ \sbe -> termInt sbe w (fromIntegral n)
+termIntS w n = withSBE $ \s -> termInt s w (fromIntegral n)
 
 isSymbolic :: (ConstantProjection (SBEClosedTerm sbe)) =>
               SBE sbe -> L.Typed (SBETerm sbe) -> Bool
@@ -1506,7 +1547,7 @@ allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
 allocHandler fn = Override $ \_sym _rty args ->
   case args of
     [sizeTm] -> do
-      msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
+      msize <- withSBE' $ \s -> getUVal (closeTerm s (typedValue sizeTm))
       case msize of
         Just size -> do
           let sizeVal = Typed i32 (L.ValInteger size)
@@ -1544,7 +1585,7 @@ freshIntArray :: (Functor m, MonadIO m, Functor sbe,
 freshIntArray n = Override $ \_sym _rty args ->
   case args of
     [sizeTm, _] -> do
-      msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
+      msize <- withSBE' $ \s -> getUVal (closeTerm s (typedValue sizeTm))
       case msize of
         Just size -> do
           let sz = fromIntegral size
@@ -1556,8 +1597,7 @@ freshIntArray n = Override $ \_sym _rty args ->
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ flip termArray elts
           let typedArrTm = Typed ty arrTm
-          processMemCond =<<
-            mutateMem (\sbe mem -> memStore sbe mem typedArrTm arrPtr)
+          store typedArrTm arrPtr
           return (Just arrPtr)
         Nothing -> error "fresh_array_uint called with symbolic size"
     _ -> error "fresh_array_uint: wrong number of arguments"
@@ -1573,7 +1613,7 @@ writeIntAiger = Override $ \_sym _rty args ->
   case args of
     [t, fptr] -> do
       file <- loadString fptr
-      withSBE $ \sbe -> writeAiger sbe file (typedValue t)
+      withSBE $ \s -> writeAiger s file (typedValue t)
       return Nothing
     _ -> error "write_aiger_uint: wrong number of arguments"
 
@@ -1587,13 +1627,13 @@ writeIntArrayAiger ::
 writeIntArrayAiger _ety = Override $ \_sym _rty args ->
   case args of
     [tptr, sizeTm, fptr] -> do
-      msize <- withSBE' $ \sbe -> getUVal (closeTerm sbe (typedValue sizeTm))
+      msize <- withSBE' $ \s -> getUVal (closeTerm s (typedValue sizeTm))
       case (msize, typedType tptr) of
         (Just size, L.PtrTo tgtTy) -> do
           elems <- loadArray tptr tgtTy size
           arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
-          withSBE $ \sbe -> writeAiger sbe file arrTm
+          withSBE $ \s -> writeAiger s file arrTm
           return Nothing
         (Nothing, _) ->
           error "write_aiger_array_uint called with symbolic size"
@@ -1613,12 +1653,11 @@ loadArray ::
 loadArray ptr ety count = do
   ptrWidth <- withLC llvmAddrWidthBits
   elemWidth <- withLC (`llvmStoreSizeOf` ety)
-  inc <- withSBE $ \sbe -> termInt sbe ptrWidth elemWidth
+  inc <- withSBE $ \s -> termInt s ptrWidth elemWidth
   go inc ptr count
     where go _one _addr 0 = return []
           go one addr size = do
-            (cond,t) <- load addr
-            processMemCond cond
+            t     <- load addr
             addr' <- termAdd (typedValue addr) one
             (t:) <$> go one (typedAs addr addr') (size - 1)
 
@@ -1629,15 +1668,15 @@ evalAigerOverride =
   Override $ \_sym _rty args ->
     case args of
       [Typed _ tm, p@(Typed (L.PtrTo ety) _), Typed _ szTm] -> do
-        msz <- withSBE' $ \sbe -> getUVal . closeTerm sbe $ szTm
+        msz <- withSBE' $ \s -> getUVal . closeTerm s $ szTm
         case msz of
           Just sz -> do
             elems <- loadArray p ety sz
             ints <- mapM
-                    (\t -> withSBE' $ \sbe -> getUVal $ closeTerm sbe t)
+                    (\t -> withSBE' $ \s -> getUVal $ closeTerm s t)
                     elems
             let bools = map (not . (== 0)) $ catMaybes ints
-            Just <$> (withSBE $ \sbe -> evalAiger sbe bools tm)
+            Just <$> (withSBE $ \s -> evalAiger s bools tm)
           Nothing -> error "eval_aiger: symbolic size not supported"
       _ -> error "eval_aiger: wrong number of arguments"
 
