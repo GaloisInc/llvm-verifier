@@ -1164,7 +1164,7 @@ resolveCallee callee = case callee of
          pr <- withMem $ \sbe mem -> codeLookupDefine sbe mem fp
          case pr of
            Result sym -> ok sym
-           _          -> err "resolveCallee: Failed to resolve callee function pointer"
+           _          -> err $ "resolveCallee: Failed to resolve callee function pointer: " ++ show (L.ppValue callee)
    ok sym  = return $ Right $ sym
    err msg = return $ Left $ "resolveCallee: " ++ msg
 
