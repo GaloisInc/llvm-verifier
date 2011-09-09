@@ -549,6 +549,14 @@ addPathConstraintSC p c@(HasConstValue v i) = do
   Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
   ct <- withSBE (\s -> applyICmp s L.Ieq vt it)
   addPathConstraint p (Just c) ct
+addPathConstraintSC p (NotConstValues _ []) = return p
+addPathConstraintSC p c@(NotConstValues v (i:is)) = do
+  -- Construct the constraint term from the NotConstValues predicate
+  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (i1 =: v)
+  Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
+  ct <- withSBE (\s -> applyICmp s L.Ine vt it)
+  p' <- addPathConstraintSC p (NotConstValues v is)
+  addPathConstraint p' (Just c) ct
 
 -- @addPathConstraint p msc ct@ adds the given condition term @ct@ to the path
 -- constraint of @p@.  If msc is Just{}, it is added to the Constraint value
@@ -980,7 +988,13 @@ step (IfThenElse cond thenStmts elseStmts) = do
       CE.assert (t == i1) $ return ()
       maybe False (==i) . fmap (fromIntegral . fromEnum)
         <$> withSBE' (\sbe -> getBool $ closeTerm sbe v')
-
+    evalCond (NotConstValues v is) = do
+      Typed t v' <- getTypedTerm (Typed i1 v)
+      CE.assert (t == i1) $ return ()
+      mv'' <- withSBE' (\sbe -> getSVal $ closeTerm sbe v')
+      case mv'' of
+        Nothing -> return False
+        Just v'' -> return $ all (/= v'') is
 
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
