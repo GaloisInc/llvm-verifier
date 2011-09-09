@@ -377,19 +377,19 @@ addBlockLabels ptrWidth be def blocks base initMap =
 -- to the less significant bits.
 data Storage l
   = SBranch (Storage l) (Storage l) -- ^ Branch falseBranch trueBranch
-  | SValue (LV.Vector l) -- ^ SValue validBit definedBit value
+  | SValue l l (LV.Vector l) -- ^ SValue allocatedBit initializedBit value
   | SDefine LLVM.Symbol -- ^ Memory value for function definition.
   | SBlock LLVM.Symbol LLVM.BlockLabel -- ^ Memory value for block within function.
-  | SUninitialized -- ^ A memory byte that has not been initialized by LLVM.
   | SUnallocated -- ^ A memory section that has not been allocated to the program.
 
 -- A derived(Show)-like pretty printer for the Storage type
 ppStorageShow :: (Eq l, LV.Storable l) => BitEngine l -> Storage l -> Doc
 ppStorageShow be (SBranch f t) = text "SBranch" <+> parens (ppStorageShow be f) <+> parens (ppStorageShow be t)
-ppStorageShow be (SValue lv) = text "SValue" <+> parens (bePrettyLV be lv)
+ppStorageShow be (SValue a i v)
+  = text "SValue" <+> pl a <+> pl i <+> parens (bePrettyLV be v)
+  where pl = bePrettyLit be
 ppStorageShow _ (SDefine d) = text ("SDefine " ++ show d)
 ppStorageShow _ (SBlock d b) = text ("SBlock " ++ show d ++ " " ++ show b)
-ppStorageShow _ SUninitialized = text "SUninitialized"
 ppStorageShow _ SUnallocated = text "SUnallocated"
 
 -- A "sparse" pretty printer for the Storage type; skips unallocated regions and
@@ -403,16 +403,22 @@ ppStorage mranges be = impl 0 Nothing
     impl a mdoc (SBranch f t)        = let la = a `shiftL` 1
                                            ra = la `setBit` 0
                                        in impl ra (Just $ impl la mdoc f) t
-    impl a (Just doc) (SValue v)     = whenInRange a $ item doc a (bePrettyLV be v)
+    impl a (Just doc) (SValue al il v)
+      | il == beTrue be = whenInRange a $ item doc a (bePrettyLV be v)
+      | il == beFalse be = whenInRange a $ item doc a (text "uninitialized")
+      | otherwise = whenInRange a
+                  $ item doc a
+                  $ bePrettyLV be v <+> parens (text "allocated:" <+> pl al <> comma
+                                            <+> text "initialized:" <+> pl il)
     impl a (Just doc) (SDefine sym)  = whenInRange a $ item doc a $ LLVM.ppSymbol sym
     impl a (Just doc) (SBlock s l)   = whenInRange a
                                        $ item doc a
                                          $ LLVM.ppSymbol s
                                            <> char '/'
                                            <> LLVM.ppLabel l
-    impl a (Just doc) SUninitialized = whenInRange a $ item doc a $ text "uninitialized"
     impl _ (Just doc) SUnallocated   = doc
     item doc addr desc               = doc $+$ text (showHex addr "") <> colon <+> desc
+    pl = bePrettyLit be
     whenInRange a doc = case mranges of
       Nothing     -> doc
       Just ranges -> if inRangeAny a ranges then doc else empty
@@ -424,29 +430,21 @@ mergeStorage be c x y = impl x y
           f <- impl fx fy
           t <- impl tx ty
           return (SBranch f t)
-        impl (SValue vx) (SValue vy) =
-          SValue <$> beIteVector be c (return vx) (return vy)
+        impl (SValue ax ix vx) (SValue ay iy vy) =
+          return SValue `ap` beIte be c ax ay
+                        `ap` beIte be c ix iy
+                        `ap` beIteVector be c (return vx) (return vy)
         impl (SDefine dx) (SDefine dy)
           | dx == dy = return (SDefine dx)
           | otherwise = bmError "Attempt to merge memories with incompatible definitions."
         impl (SBlock dx bx) (SBlock dy by)
           | dx == dy && bx == by = return (SBlock dx bx)
           | otherwise = bmError "Attempt to merge memories with incompatible block values."
-        impl SUninitialized SUninitialized = return SUninitialized
         impl SUnallocated SUnallocated = return SUnallocated
-
-        -- TODO: FIXME: value <-> uninitialized ctor pairing: ite condition with
-        -- (actual value) (be don't care byte with the valid bit cleared.).  JHX
-        -- to add valid bit stuff.
-        impl (SValue a) SUninitialized =
-          SValue {- c -}     <$> beIteVector be c (return a) (return $ beDontCareByte be)
-        impl SUninitialized (SValue b) =
-          SValue {- not c -} <$> beIteVector be c (return $ beDontCareByte be) (return b)
-
-        -- Unallocated and a branch to two Unallocateds mean the same thing.
+        impl (SValue ax ix vx) SUnallocated = (\az -> SValue az ix vx) <$> beAnd be c ax
+        impl SUnallocated (SValue ay iy vy) = (\az -> SValue az iy vy) <$> beAnd be (beNeg be c) ay
+        impl b@SBranch{} SUnallocated = impl b (SBranch SUnallocated SUnallocated)
         impl SUnallocated b@SBranch{} = impl (SBranch SUnallocated SUnallocated) b
-        impl a@SBranch{} SUnallocated = impl a (SBranch SUnallocated SUnallocated)
-
         impl a b = do
           dbugM $ "mergeStorage failure case: a = " ++ show (ppStorageShow be a)
           dbugM $ "mergeStorage failure case: b = " ++ show (ppStorageShow be b)
@@ -458,13 +456,21 @@ loadBytes :: (Eq l, LV.Storable l)
           -> (LV.Vector l -> IO (l, LV.Vector l))
           -> BitTerm l
           -> Integer
-          -> IO (BitTerm l, LV.Vector l)
+          -> IO (l, LV.Vector l)
 loadBytes be byteLoader (BitTerm ptr) sz = impl [] (beTrue be) sz
-  where impl l c 0 = return (termFromLit c, LV.concat l)
+  where impl l c 0 = return (c, LV.concat l)
         impl l c i = do
           (bc, bv) <- byteLoader =<< beAddIntConstant be ptr (i-1)
           c' <- beAnd be c bc
           impl (bv:l) c' (i-1)
+
+-- | Returns condition under which store is permitted.
+storeByteCond :: (Eq l, LV.Storable l) => BitEngine l -> Storage l -> LV.Vector l -> IO l
+storeByteCond be mem ptr = impl mem (LV.length ptr)
+  where impl (SBranch f t) i =
+          beLazyMux be (beIte be) (ptr LV.! (i-1)) (impl t (i-1)) (impl f (i-1))
+        impl (SValue ax _ _) i = assert (i == 0) $ return ax
+        impl _ _ = return (beFalse be)
 
 -- | Return storage with individual byte changed.
 storeByte :: (Eq l, LV.Storable l)
@@ -475,42 +481,33 @@ storeByte :: (Eq l, LV.Storable l)
           -> IO (Storage l)
 storeByte be mem new ptr = impl mem (LV.length ptr) (beTrue be)
   where impl (SBranch f t) i c
-          | lo == beFalse be = do
-            fr <- impl f (i-1) c
-            return (SBranch fr t)
-          | lo == beTrue be = do
-            tr <- impl t (i-1) c
-            return (SBranch f tr)
+          | lo == beFalse be = (\fr -> SBranch fr t) <$> impl f (i-1) c
+          | lo == beTrue be  = (\tr -> SBranch f tr) <$> impl t (i-1) c
           | otherwise = do
             fr <- impl f (i-1) =<< beAnd be c (beNeg be lo)
             tr <- impl t (i-1) =<< beAnd be c lo
             return (SBranch fr tr)
           where lo = ptr LV.! (i-1)
-        impl (SValue old) _ c = SValue <$> beIteVector be c (return new) (return old)
-        impl SUninitialized  _ c
-          | c == beTrue be = return (SValue new)
-          | otherwise =
-              bmError "Attempt to store symbolically to address that has not been initialized."
-        impl (SDefine d) _ _ =
-          bmError $ "Attempt to store to address that may point to definition of " ++ show d ++ "."
-        impl (SBlock d b) _ _ =
-          bmError $ "Attempt to store to address that may point to block " ++ show b ++ " in " ++ show d ++ "."
-        impl SUnallocated _ _ =
-          bmError $ "Attempt to store to address that is invalid: " ++ show (bePrettyLV be ptr)
+        impl (SValue ax ix vx) i c = assert (i == 0) $
+          return (SValue ax) `ap` beOr be c ix
+                             `ap` beIteVector be c (return new) (return vx)
+        impl m _ _ = return m
 
 storeBytes :: (Eq l, LV.Storable l)
            => BitEngine l
            -> Storage l      -- ^ Base storage
            -> LV.Vector l    -- ^ Value to store
            -> LV.Vector l    -- ^ Address to store value in
-           -> IO (Storage l) -- ^ Storage with value written and condition under which it is true.
-storeBytes be mem value ptr =
-  let bv = sliceIntoBytes value
-      fn mm i = do
-        m <- mm
-        p <- beAddIntConstant be ptr (toInteger i)
-        storeByte be m (bv V.! i) p
-   in V.foldl fn (return mem) (V.enumFromN 0 (byteSize value))
+           -> IO (l, Storage l) -- ^ Storage with value written and condition under which it is true.
+storeBytes be mem value ptr = impl 0 (beTrue be) mem
+  where bv = sliceIntoBytes value
+        impl i c m
+          | i == byteSize value = return (c,m)
+          | otherwise = do
+            p <- beAddIntConstant be ptr (toInteger i)
+            c' <- beAnd be c =<< storeByteCond be m p
+            m' <- storeByte be m (bv V.! i) p
+            impl (i+1) c' m'
 
 loadDef :: Storage l -> Int -> Addr -> Maybe LLVM.Symbol
 loadDef s w a = impl s (w-1)
@@ -523,7 +520,7 @@ loadDef s w a = impl s (w-1)
 setBytes :: Int -> Addr -> Addr -> (Addr -> Storage l) -> Storage l -> Storage l
 setBytes w low high fn mem
    | low == high = mem
-   | otherwise = {- trace ("setBytes " ++ show low ++ " " ++ show high) $ -} impl mem (w-1) 0
+   | otherwise = impl mem (w-1) 0
   where impl _ (-1) v = fn v
         impl (SBranch f t) i v =
            SBranch (if low < mid  then impl f (i-1) v   else f)
@@ -540,9 +537,9 @@ setBytes w low high fn mem
 -- Allocator and allocation {{{2
 -- @uninitRegion w low high@ marks all bytes in [low..high) as uninitialized.
 -- N.B. @w@ is the width of pointers in bits.
-uninitRegion :: Int -> Addr -> Addr -> Storage l -> Storage l
-uninitRegion w low high =
-  setBytes w low high (\_ -> SUninitialized)
+uninitRegion :: LV.Storable l => BitEngine l -> Int -> Addr -> Addr -> Storage l -> Storage l
+uninitRegion be ptrWidth low high = setBytes ptrWidth low high (const v)
+  where v = SValue (beTrue be) (beFalse be) (beDontCareByte be)
 
 -- FreeList {{{2
 
@@ -635,8 +632,8 @@ bmLoadByte :: (Eq l, LV.Storable l)
 bmLoadByte be bm vi =
   let load (SBranch f t) i =
         mergeCondVector be (vi LV.! i) (load t (i-1)) (load f (i-1))
-      load (SValue v) _ = return (beTrue be, v)
-      load _ _ = return (beFalse be, LV.replicate 8 (beDontCare be))
+      load (SValue _ i v) _ = return (i, v)
+      load _ _ = return (beFalse be, beDontCareByte be)
    in load (bmStorage bm) (LV.length vi - 1)
 
 bmMerge :: (Eq l, LV.Storable l)
@@ -664,31 +661,32 @@ bmMerge be (BitTerm c) m m' = assert (LV.length c == 1) $ do
   return m { bmStorage = newStorage }
 
 bmInitGlobalBytes :: (Eq l, LV.Storable l)
-                  => Int         -- ^ Width of pointers in bits.
-                  -> BitEngine l -- ^ Bit engine for literals.
+                  => BitEngine l
+                  -> Int         -- ^ Width of pointers in bits.
                   -> BitMemory l
                   -> LV.Vector l
                   -> IO (Maybe (BitTerm l, BitMemory l))
-bmInitGlobalBytes ptrWidth be m bytes
+bmInitGlobalBytes be ptrWidth m bytes
   | newDataAddr > bmDataEnd m = return Nothing
   | otherwise = do
       let ptrv = beVectorFromInt be ptrWidth dataAddr
-          mem  = uninitRegion ptrWidth dataAddr newDataAddr (bmStorage m)
-      newStorage <- storeBytes be mem bytes ptrv
-      return $ Just ( BitTerm ptrv
-                    , m { bmStorage = newStorage, bmDataAddr = newDataAddr })
+          mem  = uninitRegion be ptrWidth dataAddr newDataAddr (bmStorage m)
+      (c,newStorage) <- storeBytes be mem bytes ptrv
+      assert (c == beTrue be) $
+        return $ Just ( BitTerm ptrv
+                      , m { bmStorage = newStorage, bmDataAddr = newDataAddr })
   where
     dataAddr    = bmDataAddr m
     newDataAddr = dataAddr + toInteger (byteSize bytes)
 
 bmAddDefine :: (Eq l, LV.Storable l)
-            => Int -- ^ Width of pointers
-            -> BitEngine l -- ^ Bit engine for literals.
+            => BitEngine l -- ^ Bit engine for literals.
+            -> Int -- ^ Width of pointers
             -> BitMemory l -- ^ Memory
             -> LLVM.Symbol -- ^ Definition
             -> V.Vector LLVM.BlockLabel -- ^ Labels for blocks
             -> Maybe (BitTerm l, BitMemory l)
-bmAddDefine ptrWidth be m def blocks
+bmAddDefine be ptrWidth m def blocks
     | newCodeAddr > bmCodeEnd m
     = Nothing
     | otherwise
@@ -721,19 +719,19 @@ bmLookupDefine be m (BitTerm a) = do
         Just d -> Result d
 
 bmStackAlloca :: (Eq l, LV.Storable l)
-              => Int       -- ^ Width of pointer in bits.
-              -> BitEngine l
+              => BitEngine l
+              -> Int       -- ^ Width of pointer in bits.
               -> BitMemory l
               -> Integer   -- ^ Element size
               -> BitTerm l -- ^ Number of elements
               -> Int       -- ^ Alignment constraint
               -> StackAllocaResult (BitTerm l) (BitMemory l)
-bmStackAlloca ptrWidth be bm eltSize (BitTerm cntVector) a =
+bmStackAlloca be ptrWidth bm eltSize (BitTerm cntVector) a =
   case beVectorToMaybeInt be cntVector of
     Nothing -> SASymbolicCountUnsupported
     Just (_,cnt) ->
       let mkRes c res endAddr newAddr =
-            let newStorage = uninitRegion ptrWidth res endAddr (bmStorage bm)
+            let newStorage = uninitRegion be ptrWidth res endAddr (bmStorage bm)
              in SAResult (BitTerm (LV.singleton (beLitFromBool be c)))
                          (BitTerm (beVectorFromInt be ptrWidth res))
                          bm { bmStorage = newStorage, bmStackAddr = newAddr }
@@ -779,14 +777,14 @@ blockPower v = go 0 1
                | otherwise = go (p + 1) (n `shiftL` 1)
 
 bmHeapAlloc :: (Eq l, LV.Storable l)
-            => Int       -- ^ Width of pointer in bits.
-            -> BitEngine l
+            => BitEngine l
+            -> Int       -- ^ Width of pointer in bits.
             -> BitMemory l
             -> Integer   -- ^ Element size
             -> BitTerm l -- ^ Number of elements
             -> Int       -- ^ Alignment constraint
             -> HeapAllocResult (BitTerm l) (BitMemory l)
-bmHeapAlloc ptrWidth be bm eltSize (BitTerm cntVector) a =
+bmHeapAlloc be ptrWidth bm eltSize (BitTerm cntVector) a =
   case beVectorToMaybeInt be cntVector of
     Nothing -> HASymbolicCountUnsupported
     Just (_, cnt) ->
@@ -808,7 +806,7 @@ bmHeapAlloc ptrWidth be bm eltSize (BitTerm cntVector) a =
         Just (freeList, addr) ->
           let endAddr = addr + size
               addrTerm = BitTerm $ beVectorFromInt be ptrWidth addr
-              newStorage = uninitRegion ptrWidth addr endAddr (bmStorage bm) in
+              newStorage = uninitRegion be ptrWidth addr endAddr (bmStorage bm) in
           HAResult true
                    addrTerm
                    bm { bmFreeList = freeList
@@ -826,9 +824,10 @@ bmMemCopy :: (Eq l, LV.Storable l)
           -> IO (BitTerm l, BitMemory l)
 bmMemCopy be m (BitTerm dst) src (BitTerm len0) (BitTerm _align) = do
   -- TODO: Alignment and overlap checks?
-  (c, bytes) <- loadBytes be (bmLoadByte be m) src len
-  newStorage <- storeBytes be (bmStorage m) bytes dst
-  return (c, m { bmStorage = newStorage })
+  (cr, bytes) <- loadBytes be (bmLoadByte be m) src len
+  (cw, newStorage) <- storeBytes be (bmStorage m) bytes dst
+  c <- beAnd be cr cw
+  return (termFromLit c, m { bmStorage = newStorage })
   where
     len = case beVectorToMaybeInt be len0 of
             Nothing    -> bmError $ "Symbolic memcpy len not supported"
@@ -843,19 +842,21 @@ buddyMemModel lc be = mm
  where ptrWidth = llvmAddrWidthBits lc
        mm = MemModel {
                 mmDump = bmDump be
-              , mmLoad = loadBytes be . bmLoadByte be
+              , mmLoad = \m ptr sz -> do
+                 (c,v) <- loadBytes be (bmLoadByte be m) ptr sz
+                 return (termFromLit c,v)
               , mmStore = \m bytes (BitTerm ptr) -> do
-                 newStorage <- storeBytes be (bmStorage m) bytes ptr
-                 return (termFromLit (beTrue be), m { bmStorage = newStorage })
+                 (c,newStorage) <- storeBytes be (bmStorage m) bytes ptr
+                 return (termFromLit c, m { bmStorage = newStorage })
               , mmMux = bmMerge be
-              , mmInitGlobal = bmInitGlobalBytes ptrWidth be
-              , mmAddDefine = return `c3` bmAddDefine ptrWidth be
+              , mmInitGlobal = bmInitGlobalBytes be ptrWidth
+              , mmAddDefine = return `c3` bmAddDefine be ptrWidth
               , mmBlockAddress = blockAddress . bmBasicBlockMap
               , mmLookupDefine = bmLookupDefine be
-              , mmStackAlloca = return `c4` bmStackAlloca ptrWidth be
+              , mmStackAlloca = return `c4` bmStackAlloca be ptrWidth
               , mmStackPush = \mem -> return (termFromLit (beTrue be), bmStackPush mem)
               , mmStackPop = return . bmStackPop (llvmAddrWidthBits lc)
-              , mmHeapAlloc = return `c4` bmHeapAlloc ptrWidth be
+              , mmHeapAlloc = return `c4` bmHeapAlloc be ptrWidth
               , mmMemCopy = bmMemCopy be
               }
 
