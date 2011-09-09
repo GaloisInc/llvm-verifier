@@ -1355,7 +1355,6 @@ memFailRsn desc terms = do
   pts <- mapM prettyTermSBE terms
   return $ FailRsn $ show $ text desc <+> ppTuple pts
 
-
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
@@ -1533,13 +1532,8 @@ unimpl, illegal ::
 unimpl msg  = errorPath $ FailRsn $ "UN{SUPPORTED,IMPLEMENTED}: " ++ msg
 illegal msg = errorPath $ FailRsn $ "ILLEGAL: " ++ msg
 
--- Called prior to raising an error path exception immediately before a call.
--- Because of the AST translation, we'll have set the post-call target block
--- already, so set the error path's current block to the previous so that the
--- correct location is displayed when we display error paths to the user.
-adjustTargetBlockForErr :: (Functor m, Monad m) => Simulator sbe m ()
-adjustTargetBlockForErr = modifyPath $ \p -> p{ pathCB = prevPathCB p }
-
+-- Intended to be called when raising an error path immediately before a call
+-- (e.g., one of our overrides).
 errorPathBeforeCall ::
   ( MonadIO m
   , Functor m
@@ -1548,6 +1542,12 @@ errorPathBeforeCall ::
   )
   => FailRsn -> Simulator sbe m a
 errorPathBeforeCall rsn = adjustTargetBlockForErr >> errorPath rsn
+  where
+    adjustTargetBlockForErr = modifyPath $ \p -> p{ pathCB = prevPathCB p }
+    -- ^ As a result of the AST translation, we'll have already set the
+    -- post-call target block in the path state before we reach a call, which
+    -- will result in an incorrect block being reported to the user when the
+    -- error path is displayed.  We hackily fix this here.
 
 errorPath ::
   ( MonadIO m
