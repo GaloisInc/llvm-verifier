@@ -73,6 +73,7 @@ int main(int argc, char *argv[])
 #include <openssl/cast.h>
 
 #define FULL_TEST
+#undef FULL_TEST
 
 static unsigned char k[16]={
 	0x01,0x23,0x45,0x67,0x12,0x34,0x56,0x78,
@@ -131,6 +132,31 @@ static unsigned char cfb_cipher64[CFB_TEST_SIZE]={
 	}; 
 #endif
 
+int test_memcmp(const void *s1, const void *s2, size_t n) {
+  const unsigned char* s1c = s1;
+  const unsigned char* s1e = s1c + n;
+  const unsigned char* s2c = s2;
+  while (s1c != s1e) {
+    if (*s1c != *s2c) return *s1c - *s2c;
+    ++s1c;
+    ++s2c;
+  }
+  return 0;
+}
+
+int test_memcpy(void *s1, const void *s2, size_t n) {
+  unsigned char* s1c = s1;
+  unsigned char* s1e = s1c + n;
+  const unsigned char* s2c = s2;
+  while (s1c != s1e) {
+    *s1c = *s2c;
+    ++s1c;
+    ++s2c;
+  }
+  return 0;
+}
+
+
 int main(int argc, char *argv[])
     {
 #ifdef FULL_TEST
@@ -145,7 +171,7 @@ int main(int argc, char *argv[])
 	CAST_set_key(&key,k_len[z],k);
 
 	CAST_ecb_encrypt(in,out,&key,CAST_ENCRYPT);
-	if (memcmp(out,&(c[z][0]),8) != 0)
+	if (test_memcmp(out,&(c[z][0]),8) != 0)
 	    {
 	    printf("ecb cast error encrypting for keysize %d\n",k_len[z]*8);
 	    printf("got     :");
@@ -160,7 +186,7 @@ int main(int argc, char *argv[])
 	    }
 
 	CAST_ecb_encrypt(out,out,&key,CAST_DECRYPT);
-	if (memcmp(out,in,8) != 0)
+	if (test_memcmp(out,in,8) != 0)
 	    {
 	    printf("ecb cast error decrypting for keysize %d\n",k_len[z]*8);
 	    printf("got     :");
@@ -182,10 +208,10 @@ int main(int argc, char *argv[])
       unsigned char out_a[16],out_b[16];
       static char *hex="0123456789ABCDEF";
       
-      printf("This test will take some time....");
-      fflush(stdout);
-      memcpy(out_a,in_a,sizeof(in_a));
-      memcpy(out_b,in_b,sizeof(in_b));
+      printf("This test will take some time....\n");
+      /*fflush(stdout);*/
+      test_memcpy(out_a,in_a,sizeof(in_a));
+      test_memcpy(out_b,in_b,sizeof(in_b));
       i=1;
 
       for (l=0; l<1000000L; l++)
@@ -199,13 +225,13 @@ int main(int argc, char *argv[])
 	  if ((l & 0xffff) == 0xffff)
 	      {
 	      printf("%c",hex[i&0x0f]);
-	      fflush(stdout);
+	      /*fflush(stdout);*/
 	      i++;
 	      }
 	  }
 
-      if (	(memcmp(out_a,c_a,sizeof(c_a)) != 0) ||
-		(memcmp(out_b,c_b,sizeof(c_b)) != 0))
+      if (	(test_memcmp(out_a,c_a,sizeof(c_a)) != 0) ||
+		(test_memcmp(out_b,c_b,sizeof(c_b)) != 0))
 	  {
 	  printf("\n");
 	  printf("Error\n");
