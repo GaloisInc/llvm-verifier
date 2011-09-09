@@ -868,7 +868,6 @@ getGlobalPtrTerm key@(sym, tys) = do
           idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody def)
           noCodeSpc = "Not enough space in code memory to allocate new definition."
       ins noCodeSpc fty $ \s m -> memAddDefine s m sym idl
---      ins fty $ \s m -> maybe noCodeSpace id <$> memAddDefine s m sym idl
 
     addGlobal g = do
       cb1 onMkGlobTerm g
@@ -876,7 +875,6 @@ getGlobalPtrTerm key@(sym, tys) = do
       cb2 onPreGlobInit g cdata
       let noDataSpc = "Not enough space in data segment to allocate new global."
       r <- ins noDataSpc (L.globalType g) $ \s m -> memInitGlobal s m cdata
-      --maybe noDataSpace id <$> memInitGlobal s m cdata
       cb2 onPostGlobInit g cdata
       return r
 
@@ -948,8 +946,7 @@ step (MergePostDominator pdid cond) = do
   mmerged <- mergePaths newp (getMergedState top)
   modifyMF $ setMergedState mmerged
 
-step MergeReturnVoidAndClear = mergeReturn Nothing >> clearCurrentExecution
-
+step MergeReturnVoidAndClear    = mergeReturn Nothing     >> clearCurrentExecution
 step (MergeReturnAndClear rslt) = mergeReturn (Just rslt) >> clearCurrentExecution
 
 step (PushPendingExecution cond) = pushMergeFrame =<< ppe =<< popMergeFrame
@@ -1242,47 +1239,8 @@ mutateMem_ f = mutateMem (\s m -> ((,) ()) <$> f s m) >> return ()
 withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
 withLC f = f <$> gets (cbLLVMCtx . codebase)
 
-load ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
-load addr = (getMem >>= flip load' addr)
-
-load' ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => SBEMemory sbe -> Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
-load' m addr = do
-  (cond, v) <- withSBE $ \s -> memLoad s m addr
-  fr <- memFailRsn "Invalid load address" [typedValue addr]
-  processMemCond fr cond
-  return v
-
-store ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Typed (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
-store val dst = do
-  fr <- memFailRsn "Invalid store address: " [dst]
-  processMemCond fr =<< mutateMem (\s m -> memStore s m val dst)
-
-memFailRsn :: (Functor m, Monad m)
-  => String -> [SBETerm sbe] -> Simulator sbe m FailRsn
-memFailRsn desc terms = do
-  pts <- mapM prettyTermSBE terms
-  return $ FailRsn $ show $ text desc <+> ppTuple pts
-
 --------------------------------------------------------------------------------
--- Callbacks and event handling code
+-- Callbacks and event handlers
 
 cb0 :: (Functor m, Monad m)
   => (SEH sbe m -> Simulator sbe m ()) -> Simulator sbe m ()
@@ -1357,6 +1315,46 @@ doAlloc ty msztv allocActFn = do
     err s = FailRsn
             $ s ++ " only support concrete element count "
                 ++ "(try a different memory model?)"
+
+load ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
+load addr = (getMem >>= flip load' addr)
+
+load' ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SBEMemory sbe -> Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
+load' m addr = do
+  (cond, v) <- withSBE $ \s -> memLoad s m addr
+  fr <- memFailRsn "Invalid load address" [typedValue addr]
+  processMemCond fr cond
+  return v
+
+store ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Typed (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
+store val dst = do
+  fr <- memFailRsn "Invalid store address: " [dst]
+  processMemCond fr =<< mutateMem (\s m -> memStore s m val dst)
+
+memFailRsn :: (Functor m, Monad m)
+  => String -> [SBETerm sbe] -> Simulator sbe m FailRsn
+memFailRsn desc terms = do
+  pts <- mapM prettyTermSBE terms
+  return $ FailRsn $ show $ text desc <+> ppTuple pts
+
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
