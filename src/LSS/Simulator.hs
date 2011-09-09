@@ -1348,6 +1348,7 @@ resolveCallee ::
 resolveCallee callee = case callee of
  L.ValSymbol sym -> ok sym
  L.ValIdent i    -> resolveIdent i
+ L.ValAsm{}      -> err $ "Inline assembly is not supported: " ++ show (L.ppValue callee)
  _               -> err $ "Unexpected callee value: " ++ show (L.ppValue callee)
  where
    resolveIdent i = do
