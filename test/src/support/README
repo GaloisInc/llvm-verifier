@@ -1,0 +1,5 @@
+- Bitcode files that the test harness executes are checked into .../support.
+- For the time being, individual tests that are not hooked into the test
+  harness yet (e.g., by-hand tests generated from C) live in
+  .../support/ctests, and the Makefile in that directory can be used to
+  produce transient bitcode files that can safely be removed.
