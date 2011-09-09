@@ -72,3 +72,4 @@ void lss_override_function_by_addr (void *from, void *to) {}
 
 void lss_print_symbolic (void *sym) {}
 void lss_abort () {}
+void lss_show_path() {}
