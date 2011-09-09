@@ -142,6 +142,7 @@ newSimState cb sbe mem lifter seh mopts =
   , evHandlers   = seh
   , errorPaths   = []
   , lssOpts      = maybe defaultLSSOpts id mopts
+  , pathCounter  = 0
   }
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
@@ -242,7 +243,11 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
 
-  path <- newPath (CallFrame calleeSym M.empty) =<< initMem
+  name <- do mp <- getPath
+             case mp of
+               Nothing -> return 0
+               Just p  -> return $ pathName p
+  path <- newPath name (CallFrame calleeSym M.empty) =<< initMem
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
@@ -946,7 +951,8 @@ step (PushPendingExecution cond) = pushMergeFrame =<< ppe =<< popMergeFrame
     ppe mf = do
       let (p, mf') = popPending mf
       divergent <- addPathConstraintSC p cond
-      return (pushPending p . pushPending divergent $ mf')
+      name      <- newPathName
+      return (pushPending p . pushPending divergent{ pathName = name } $ mf')
 
 step (SetCurrentBlock bid) = setCurrentBlockM bid
 
@@ -1341,6 +1347,12 @@ doAlloc ty msztv allocActFn = do
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
+newPathName :: Monad m => Simulator sbe m Integer
+newPathName = do
+  cnt <- gets pathCounter
+  modify $ \s -> s{ pathCounter = cnt + 1 }
+  return cnt
+
 unlessQuiet :: MonadIO m => Simulator sbe m () -> Simulator sbe m ()
 unlessQuiet act = getVerbosity >>= \v -> unless (v == 0) act
 
@@ -1417,11 +1429,11 @@ entryRsltReg :: Reg
 entryRsltReg = L.Ident "__galois_final_rslt"
 
 newPath :: (Functor m, Monad m)
-  => CF sbe -> SBEMemory sbe -> Simulator sbe m (Path sbe)
-newPath cf mem = do
+  => Integer -> CF sbe -> SBEMemory sbe -> Simulator sbe m (Path sbe)
+newPath name cf mem = do
   true <- boolTerm True
   return $ Path cf Nothing Nothing (Just initSymBlockID) Nothing mem
-             (Constraint (SCAtom TrueSymCond) true)
+             (Constraint (SCAtom TrueSymCond) true) name
 
 boolTerm :: (Functor m, Monad m) => Bool -> Simulator sbe m (SBETerm sbe)
 boolTerm = withSBE . flip termBool
@@ -1606,7 +1618,8 @@ dbugStep stmt = do
   case mp of
     Nothing -> dbugM' 2 $ "Executing: (no current path): " ++ show (ppSymStmt stmt)
     Just p  -> withCallFrame p $ \frm -> do
-      dbugM' 2 $ "Executing: "
+      dbugM' 2 $ "Executing ("
+                 ++ "#" ++ show (pathName p) ++ "): "
                  ++ show (L.ppSymbol (frmFuncSym frm))
                  ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
                  ++ ": " ++
