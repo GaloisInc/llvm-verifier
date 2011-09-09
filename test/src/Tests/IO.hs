@@ -18,8 +18,8 @@ ioTests =
   , test  1  False "printf-str"          $ testPrintfStr 1
   ]
   where
-    testPrintf v = runMain v "test-call-printf.bc" (Just 3)
-    testPrintfStr v = runMain v "test-printf-str.bc" (Just 8)
+    testPrintf v = runMain' True v "test-call-printf.bc" (RV 3)
+    testPrintfStr v = runMain' True v "test-printf-str.bc" (RV 8)
 
 --------------------------------------------------------------------------------
 -- Scratch

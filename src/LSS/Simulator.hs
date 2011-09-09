@@ -410,7 +410,7 @@ run = do
           numErrs <- length <$> gets errorPaths
           showEPs <- optsErrorPathDetails <$> gets lssOpts
           when (numErrs > 0 && not showEPs) $
-            dbugM "Warning: Some paths yielded errors. To see details, use --errpaths."
+            tellUser "Warning: Some paths yielded errors. To see details, use --errpaths."
           when (numErrs > 0 && showEPs) $ do
             dbugM $ showErrCnt numErrs
             dumpErrorPaths
@@ -418,12 +418,18 @@ run = do
           case topPending top of
             Just p  -> runPath p -- start/continue normal execution
             Nothing -> do        -- No pending path => all paths yielded errors
+              -- Eat the control stack up to the exit frame, and then finalize
+              -- it so we'll report termination when queried via
+              -- getProgramReturnValue, etc.
+              (ef:[]) <- dropWhile (not . isExitFrame) . mergeFrames <$> gets ctrlStk
+              modify $ \s -> s{ ctrlStk = CtrlStk [finalizeExit ef] }
+
               numErrs <- length <$> gets errorPaths
               CE.assert (numErrs > 0) $ return ()
               showEPs <- optsErrorPathDetails <$> gets lssOpts
               if showEPs
-                then dbugM "All paths yielded errors!" >> dumpErrorPaths
-                else dbugM "All paths yielded errors! To see details, use --errpaths."
+                then tellUser "All paths yielded errors!" >> dumpErrorPaths
+                else tellUser "All paths yielded errors! To see details, use --errpaths."
   where
     runPath (pathCB -> Nothing)    = error "runPath: no current block"
     runPath p@(pathCB -> Just pcb) = go `catchError` h
@@ -472,7 +478,7 @@ pushMemFrame ::
   => Simulator sbe m ()
 pushMemFrame = do
   dbugM' 6 "Memory model: pushing stack frame"
-  let fr = FailRsn $ "Stack push frame failure: insufficient stack space"
+  let fr = FailRsn "Stack push frame failure: insufficient stack space"
   processMemCond fr =<< mutateMem stackPushFrame
   return ()
 
@@ -1326,6 +1332,13 @@ doAlloc ty msztv allocActFn = do
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
+unlessQuiet :: MonadIO m => Simulator sbe m () -> Simulator sbe m ()
+unlessQuiet act = getVerbosity >>= \v -> unless (v == 0) act
+
+-- For user feedback that gets silenced when verbosity = 0.
+tellUser :: (MonadIO m) => String -> Simulator sbe m ()
+tellUser msg = unlessQuiet $ dbugM msg
+
 -- Evaluate the given term : i1 yields Nothing if the term is symbolic, Just
 -- (concrete bool) otherwise.
 condTerm :: (Functor m, Monad m, ConstantProjection (SBEClosedTerm sbe))
@@ -1466,7 +1479,7 @@ registerOverride sym retTy argTys va handler = do
   mt <- mmutateMem $ \s m -> memAddDefine s m sym []
   case mt of
     Nothing -> errorPath $ FailRsn
-               $ "Not enough space in code memory to allocate new definition."
+               "Not enough space in code memory to allocate new definition."
     Just t  -> do
       let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
       modify $ \s -> s { overrides = M.insert sym handler (overrides s)
@@ -1486,6 +1499,22 @@ unimpl, illegal ::
   => String -> Simulator sbe m a
 unimpl msg  = errorPath $ FailRsn $ "UN{SUPPORTED,IMPLEMENTED}: " ++ msg
 illegal msg = errorPath $ FailRsn $ "ILLEGAL: " ++ msg
+
+-- Called prior to raising an error path exception immediately before a call.
+-- Because of the AST translation, we'll have set the post-call target block
+-- already, so set the error path's current block to the previous so that the
+-- correct location is displayed when we display error paths to the user.
+adjustTargetBlockForErr :: (Functor m, Monad m) => Simulator sbe m ()
+adjustTargetBlockForErr = modifyPath $ \p -> p{ pathCB = prevPathCB p }
+
+errorPathBeforeCall ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => FailRsn -> Simulator sbe m a
+errorPathBeforeCall rsn = adjustTargetBlockForErr >> errorPath rsn
 
 errorPath ::
   ( MonadIO m
@@ -1603,7 +1632,6 @@ dbugTypedTerm desc (Typed ty t) =
 
 _nowarn_unused :: a
 _nowarn_unused = undefined
-  (nyiOverride :: Override IO IO)
   (dbugTerm undefined undefined :: Simulator IO IO ())
   (dbugTypedTerm undefined undefined :: Simulator IO IO ())
   (repl :: Simulator IO IO ())
@@ -1635,8 +1663,9 @@ loadString ptr =
                 Nothing -> return []
                 Just 0  -> return []
                 _       -> (c:) <$> go (typedAs addr addr')
-    ty -> error $ "loading string with invalid type: " ++
-                  show (L.ppType ty)
+    ty -> errorPath $ FailRsn
+          $ "loading string with invalid type: "
+            ++ show (L.ppType ty)
 
 termToArg ::
   ( Functor m
@@ -1682,9 +1711,9 @@ printfHandler = Override $ \_sym _rty args ->
       isSym <- withSBE' isSymbolic
       let fmtStr' = formatAsStrings fmtStr (map isSym rest)
       resString <- symPrintf fmtStr' <$> mapM termToArg rest
-      liftIO $ putStr resString
+      unlessQuiet $ liftIO $ putStr resString
       Just <$> termIntS 32 (length resString)
-    _ -> error "printf called with no arguments"
+    _ -> errorPathBeforeCall $ FailRsn "printf called with no arguments"
 
 printSymbolic ::
   ( Functor m
@@ -1701,7 +1730,8 @@ printSymbolic = Override $ \_sym _rty args ->
       d <- withSBE' $ \sbe -> prettyTermD sbe v
       liftIO $ print d
       return Nothing
-    _ -> error "lss_print_symbolic: wrong number of arguments"
+    _ -> errorPathBeforeCall
+         $ FailRsn "lss_print_symbolic: wrong number of arguments"
 
 allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
                   ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1719,10 +1749,10 @@ allocHandler fn = Override $ \_sym _rty args ->
           let sizeVal = Typed i32 (L.ValInteger size)
           (Just . typedValue) <$> fn i8 (Just sizeVal) Nothing
         Nothing -> do
-          adjustTargetBlockForErr
-          errorPath $ FailRsn
-            $ "malloc/alloca: symbolic size not supported (try a different memory model?)"
-    _ -> error "alloca: wrong number of arguments"
+          e $ "malloc/alloca: symbolic size not supported (try a different memory model?)"
+    _ -> e "alloca: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
 
 abortHandler ::
   ( Functor m
@@ -1736,17 +1766,29 @@ abortHandler = Override $ \_sym _rty args -> do
     [tv@(Typed t _)]
       | t == strTy -> do
           msg <- loadString tv
-          adjustTargetBlockForErr
-          errorPath $ FailRsn $ "lss_abort(): " ++ msg
-      | otherwise -> error "Incorrect type passed to lss_abort()."
-    _ -> error "Incorrect number of parameters passed to lss_abort()."
+          e $ "lss_abort(): " ++ msg
+      | otherwise -> e "Incorrect type passed to lss_abort()"
+    _ -> e "Incorrect number of parameters passed to lss_abort()"
+  where
+    e = errorPathBeforeCall . FailRsn
 
--- Called prior to raising an error path exception immediately before a call.
--- Because of the AST translation, we'll have set the post-call target block
--- already, so set the error path's current block to the previous so that the
--- correct location is displayed when we show error paths to the user.
-adjustTargetBlockForErr :: (Functor m, Monad m) => Simulator sbe m ()
-adjustTargetBlockForErr = modifyPath $ \p -> p{ pathCB = prevPathCB p }
+exitHandler ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+exitHandler = Override $ \_sym _rty args -> do
+  case args of
+    [Typed t v]
+      | not (isIntegerType t) -> e "Non-integer type passed to exit()"
+      | otherwise             -> do
+          rvt <- prettyTermSBE v
+          e $ "exit() invoked with argument " ++ show rvt
+    _ -> e "Incorrect number of parameters passed to exit()"
+  where
+    e = errorPathBeforeCall . FailRsn
 
 freshInt' :: (Functor m, Monad m) => Int -> Override sbe m
 freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
@@ -1771,8 +1813,11 @@ freshIntArray n = Override $ \_sym _rty args ->
           let typedArrTm = Typed ty arrTm
           store typedArrTm arrPtr
           return (Just arrPtr)
-        Nothing -> error "lss_fresh_array_uint called with symbolic size"
-    _ -> error "lss_fresh_array_uint: wrong number of arguments"
+        -- TODO: support symbolic size
+        Nothing -> e "lss_fresh_array_uint called with symbolic size"
+    _ -> e "lss_fresh_array_uint: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
 
 writeIntAiger ::
   ( Functor m
@@ -1787,7 +1832,8 @@ writeIntAiger = Override $ \_sym _rty args ->
       file <- loadString fptr
       withSBE $ \s -> writeAiger s file (typedValue t)
       return Nothing
-    _ -> error "lss_write_aiger_uint: wrong number of arguments"
+    _ -> errorPathBeforeCall
+         $ FailRsn "lss_write_aiger_uint: wrong number of arguments"
 
 writeIntArrayAiger ::
   ( Functor m
@@ -1808,9 +1854,11 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
           withSBE $ \s -> writeAiger s file arrTm
           return Nothing
         (Nothing, _) ->
-          error "lss_write_aiger_array_uint called with symbolic size"
-        _ -> error "lss_write_aiger_array_uint: invalid argument type"
-    _ -> error "lss_write_aiger_array_uint: wrong number of arguments"
+          e "lss_write_aiger_array_uint called with symbolic size"
+        _ -> e "lss_write_aiger_array_uint: invalid argument type"
+    _ -> e "lss_write_aiger_array_uint: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
 
 loadArray ::
   ( MonadIO m
@@ -1870,8 +1918,11 @@ evalAigerOverride =
                     elems
             let bools = map (not . (== 0)) $ catMaybes ints
             Just <$> (withSBE $ \s -> evalAiger s bools tm)
-          Nothing -> error "lss_eval_aiger: symbolic size not supported"
-      _ -> error "lss_eval_aiger: wrong number of arguments"
+          -- TODO: support symbolic size
+          Nothing -> e "lss_eval_aiger: symbolic size not supported"
+      _ -> e "lss_eval_aiger: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
 
 evalAigerArray :: (Functor m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1896,8 +1947,10 @@ evalAigerArray ty =
             res' <- withSBE $ \s -> termDecomp s tys res
             storeArray (typedValue dst) ety (map typedValue res')
             return Nothing
-          _ -> error "lss_eval_aiger_array: symbolic sizes not supported"
-      _ -> error "lss_eval_aiger_array: wrong number of arguments"
+          _ -> e "lss_eval_aiger_array: symbolic sizes not supported"
+      _ -> e "lss_eval_aiger_array: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
 
 overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1912,7 +1965,8 @@ overrideByName = Override $ \_sym _rty args ->
           handler = Redirect sym'
       modify $ \s -> s { overrides = M.insert sym handler (overrides s) }
       return Nothing
-    _ -> error "lss_override_function_by_name: wrong number of arguments"
+    _ -> errorPathBeforeCall
+         $ FailRsn "lss_override_function_by_name: wrong number of arguments"
 
 overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1922,20 +1976,15 @@ overrideByAddr = Override $ \_sym _rty args ->
     [_fromPtr, _toPtr] -> do
       dbugM "overrideByAddr: nyi"
       return Nothing
-    _ -> error "lss_override_function_by_addr: wrong number of arguments"
-
-nyiOverride :: Override sbe m
-nyiOverride = Override $ \sym _rty _args ->
-  error $ "override niy: " ++ show (L.ppSymbol sym)
+    _ -> errorPathBeforeCall
+         $ FailRsn "lss_override_function_by_addr: wrong number of arguments"
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                       ConstantProjection (SBEClosedTerm sbe)) =>
                      [OverrideEntry sbe m]
 standardOverrides =
-  [ ("exit", voidTy, [i32], False,
-     -- TODO: stub! Should be replaced with something useful.
-     Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing)
+  [ ("exit", voidTy, [i32], False, exitHandler)
   , ("alloca", voidPtr, [i32], False, allocHandler alloca)
   , ("malloc", voidPtr, [i32], False, allocHandler malloc)
   , ("free", voidTy, [voidPtr], False,
