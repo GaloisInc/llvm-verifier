@@ -293,6 +293,7 @@ intrinsic intr mreg args0 =
     -- TODO: Handle intrinsic overrides
     ("llvm.memcpy.p0i8.p0i8.i64", Nothing) -> memcpy
     ("llvm.memset.p0i8.i64", Nothing) -> memset
+    ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow reg
     _ -> unimpl $ "LLVM intrinsic: " ++ intr
   where
     memcpy = do
@@ -308,6 +309,15 @@ intrinsic intr mreg args0 =
     memset = do
       let [dst, val, len, align, _isvol] = args0
       memSet (typedValue dst) val (typedValue len) (typedValue align)
+    uaddWithOverflow reg = do
+      let [x, y] = map typedValue args0
+      b0 <- withSBE $ \sbe -> termBool sbe False
+      x' <- withSBE $ \sbe -> termArray sbe [b0, x]
+      y' <- withSBE $ \sbe -> termArray sbe [b0, y]
+      z <- termAdd x' y'
+      [ov, z'] <- withSBE $ \sbe -> termDecomp sbe [i1, i64] z
+      res <- withSBE $ \sbe -> termArray sbe [typedValue z', typedValue ov]
+      assign (typedValue reg) (Typed (L.Struct [i64, i1]) res)
 
 memSet :: ( Monad m, Functor m, MonadIO m
           , Functor sbe
@@ -1004,8 +1014,29 @@ eval (Select tc tv1 v2)        = do
     Just True  -> return (Typed t x)
     Just False -> return (Typed t y)
     Nothing    -> Typed t <$> withSBE (\s -> applyIte s c x y)
-eval (ExtractValue _tv _i    ) = unimpl "eval ExtractValue"
+eval (ExtractValue tv i      ) = evalExtractValue tv i
 eval (InsertValue _tv _ta _i ) = unimpl "eval InsertValue"
+
+evalExtractValue ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Typed SymValue -> [Int32] -> Simulator sbe m (Typed (SBETerm sbe))
+evalExtractValue tv idxs = do
+  sv <- getTypedTerm tv
+  go sv idxs
+    where go v [] = return v
+          go (Typed (L.Struct ftys) v) (i : is) = impl v ftys i is
+          go (Typed (L.PackedStruct ftys) v) (i : is) = impl v ftys i is
+          go (Typed (L.Array n ty) v) (i : is) =
+            impl v (replicate (fromIntegral n) ty) i is
+          go _ _ = error "non-composite type in extractvalue"
+          impl v tys i is =
+            CE.assert (fromIntegral i <= length tys) $ do
+              vs <- withSBE $ \sbe -> termDecomp sbe tys v
+              go (vs !! fromIntegral i) is
 
 evalGEP ::
   ( MonadIO m
@@ -1327,7 +1358,7 @@ resolveCallee callee = case callee of
          pr <- withMem $ \s m -> codeLookupDefine s m fp
          case pr of
            Result sym -> ok sym
-           _          -> err "resolveCallee: Failed to resolve callee function pointer"
+           _          -> err $ "resolveCallee: Failed to resolve callee function pointer: " ++ show (L.ppValue callee)
    ok sym  = return $ Right $ sym
    err msg = return $ Left $ "resolveCallee: " ++ msg
 
@@ -1571,6 +1602,7 @@ dbugTypedTerm desc (Typed ty t) =
 
 _nowarn_unused :: a
 _nowarn_unused = undefined
+  (nyiOverride :: Override IO IO)
   (dbugTerm undefined undefined :: Simulator IO IO ())
   (dbugTypedTerm undefined undefined :: Simulator IO IO ())
   (repl :: Simulator IO IO ())
@@ -1653,6 +1685,23 @@ printfHandler = Override $ \_sym _rty args ->
       Just <$> termIntS 32 (length resString)
     _ -> error "printf called with no arguments"
 
+printSymbolic ::
+  ( Functor m
+  , Monad m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+printSymbolic = Override $ \_sym _rty args ->
+  case args of
+    [ptr] -> do
+      v <- load ptr
+      d <- withSBE' $ \sbe -> prettyTermD sbe v
+      liftIO $ print d
+      return Nothing
+    _ -> error "lss_print_symbolic: wrong number of arguments"
+
 allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
                   ConstantProjection (SBEClosedTerm sbe)) =>
                 (L.Type
@@ -1721,8 +1770,8 @@ freshIntArray n = Override $ \_sym _rty args ->
           let typedArrTm = Typed ty arrTm
           store typedArrTm arrPtr
           return (Just arrPtr)
-        Nothing -> error "fresh_array_uint called with symbolic size"
-    _ -> error "fresh_array_uint: wrong number of arguments"
+        Nothing -> error "lss_fresh_array_uint called with symbolic size"
+    _ -> error "lss_fresh_array_uint: wrong number of arguments"
 
 writeIntAiger ::
   ( Functor m
@@ -1737,7 +1786,7 @@ writeIntAiger = Override $ \_sym _rty args ->
       file <- loadString fptr
       withSBE $ \s -> writeAiger s file (typedValue t)
       return Nothing
-    _ -> error "write_aiger_uint: wrong number of arguments"
+    _ -> error "lss_write_aiger_uint: wrong number of arguments"
 
 writeIntArrayAiger ::
   ( Functor m
@@ -1758,9 +1807,9 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
           withSBE $ \s -> writeAiger s file arrTm
           return Nothing
         (Nothing, _) ->
-          error "write_aiger_array_uint called with symbolic size"
-        _ -> error "write_aiger_array_uint: invalid argument type"
-    _ -> error "write_aiger_array_uint: wrong number of arguments"
+          error "lss_write_aiger_array_uint called with symbolic size"
+        _ -> error "lss_write_aiger_array_uint: invalid argument type"
+    _ -> error "lss_write_aiger_array_uint: wrong number of arguments"
 
 loadArray ::
   ( MonadIO m
@@ -1783,6 +1832,27 @@ loadArray ptr ety count = do
             addr' <- termAdd (typedValue addr) one
             (t:) <$> go one (typedAs addr addr') (size - 1)
 
+storeArray ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SBETerm sbe
+  -> L.Type
+  -> [SBETerm sbe]
+  -> Simulator sbe m ()
+storeArray ptr ety elems = do
+  ptrWidth <- withLC llvmAddrWidthBits
+  elemWidth <- withLC (`llvmStoreSizeOf` ety)
+  inc <- withSBE $ \s -> termInt s ptrWidth elemWidth
+  go inc ptr elems
+    where go _one _addr [] = return ()
+          go one addr (e:es) = do
+            store (Typed ety e) addr
+            addr' <- termAdd addr one
+            go one addr' es
+
 evalAigerOverride :: (Functor m, MonadIO m, Functor sbe,
                       ConstantProjection (SBEClosedTerm sbe)) =>
                      Override sbe m
@@ -1799,8 +1869,34 @@ evalAigerOverride =
                     elems
             let bools = map (not . (== 0)) $ catMaybes ints
             Just <$> (withSBE $ \s -> evalAiger s bools tm)
-          Nothing -> error "eval_aiger: symbolic size not supported"
-      _ -> error "eval_aiger: wrong number of arguments"
+          Nothing -> error "lss_eval_aiger: symbolic size not supported"
+      _ -> error "lss_eval_aiger: wrong number of arguments"
+
+evalAigerArray :: (Functor m, MonadIO m, Functor sbe,
+                   ConstantProjection (SBEClosedTerm sbe)) =>
+                  L.Type -> Override sbe m
+evalAigerArray ty =
+  Override $ \_sym _rty args ->
+    case args of
+      [sym, dst, szTm, input@(Typed (L.PtrTo ety) _), inputSz] -> do
+        msz <- withSBE' $ \s -> getUVal . closeTerm s . typedValue $ szTm
+        misz <- withSBE' $ \s -> getUVal . closeTerm s . typedValue $ inputSz
+        case (msz, misz) of
+          (Just sz, Just isz) -> do
+            inputs <- loadArray input ety isz
+            ints <- mapM
+                    (\t -> withSBE' $ \s -> getUVal $ closeTerm s t)
+                    inputs
+            let bools = map (not . (== 0)) $ catMaybes ints
+            tm <- loadArray sym ty sz
+            tm' <- withSBE $ \s -> termArray s tm
+            res <- withSBE $ \s -> evalAiger s bools tm'
+            let tys = replicate (fromIntegral sz) ety
+            res' <- withSBE $ \s -> termDecomp s tys res
+            storeArray (typedValue dst) ety (map typedValue res')
+            return Nothing
+          _ -> error "lss_eval_aiger_array: symbolic sizes not supported"
+      _ -> error "lss_eval_aiger_array: wrong number of arguments"
 
 overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1815,7 +1911,7 @@ overrideByName = Override $ \_sym _rty args ->
           handler = Redirect sym'
       modify $ \s -> s { overrides = M.insert sym handler (overrides s) }
       return Nothing
-    _ -> error "override_function_by_name: wrong number of arguments"
+    _ -> error "lss_override_function_by_name: wrong number of arguments"
 
 overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
@@ -1825,7 +1921,7 @@ overrideByAddr = Override $ \_sym _rty args ->
     [_fromPtr, _toPtr] -> do
       dbugM "overrideByAddr: nyi"
       return Nothing
-    _ -> error "override_function_by_addr: wrong number of arguments"
+    _ -> error "lss_override_function_by_addr: wrong number of arguments"
 
 nyiOverride :: Override sbe m
 nyiOverride = Override $ \sym _rty _args ->
@@ -1841,42 +1937,47 @@ standardOverrides =
      Override $ \_sym _rty _args -> dbugM "TODO: Exit!" >> return Nothing)
   , ("alloca", voidPtr, [i32], False, allocHandler alloca)
   , ("malloc", voidPtr, [i32], False, allocHandler malloc)
+  , ("free", voidTy, [voidPtr], False,
+     -- TODO: stub! Does this need to be implemented?
+     Override $ \_sym _rty _args -> return Nothing)
   , ("printf", i32, [strTy], True, printfHandler)
   , ("lss_abort", voidTy, [strTy], False, abortHandler)
-  , ("fresh_uint8",   i8,  [i8], False, freshInt'  8)
-  , ("fresh_uint16", i16, [i16], False, freshInt' 16)
-  , ("fresh_uint32", i32, [i32], False, freshInt' 32)
-  , ("fresh_uint64", i64, [i64], False, freshInt' 64)
-  , ("fresh_array_uint8",   i8p, [i32,  i8], False, freshIntArray 8)
-  , ("fresh_array_uint16", i16p, [i32, i16], False, freshIntArray 16)
-  , ("fresh_array_uint32", i32p, [i32, i32], False, freshIntArray 32)
-  , ("fresh_array_uint64", i64p, [i32, i64], False, freshIntArray 64)
-  , ("write_aiger_uint8",  voidTy, [i8,  strTy], False, writeIntAiger)
-  , ("write_aiger_uint16", voidTy, [i16, strTy], False, writeIntAiger)
-  , ("write_aiger_uint32", voidTy, [i32, strTy], False, writeIntAiger)
-  , ("write_aiger_uint64", voidTy, [i64, strTy], False, writeIntAiger)
-  , ("write_aiger_array_uint8", voidTy, [i8p, i32, strTy], False,
+  , ("lss_print_symbolic", voidTy, [voidPtr], False, printSymbolic)
+  , ("lss_fresh_uint8",   i8,  [i8], False, freshInt'  8)
+  , ("lss_fresh_uint16", i16, [i16], False, freshInt' 16)
+  , ("lss_fresh_uint32", i32, [i32], False, freshInt' 32)
+  , ("lss_fresh_uint64", i64, [i64], False, freshInt' 64)
+  , ("lss_fresh_array_uint8",   i8p, [i32,  i8], False, freshIntArray 8)
+  , ("lss_fresh_array_uint16", i16p, [i32, i16], False, freshIntArray 16)
+  , ("lss_fresh_array_uint32", i32p, [i32, i32], False, freshIntArray 32)
+  , ("lss_fresh_array_uint64", i64p, [i32, i64], False, freshIntArray 64)
+  , ("lss_write_aiger_uint8",  voidTy, [i8,  strTy], False, writeIntAiger)
+  , ("lss_write_aiger_uint16", voidTy, [i16, strTy], False, writeIntAiger)
+  , ("lss_write_aiger_uint32", voidTy, [i32, strTy], False, writeIntAiger)
+  , ("lss_write_aiger_uint64", voidTy, [i64, strTy], False, writeIntAiger)
+  , ("lss_write_aiger_array_uint8", voidTy, [i8p, i32, strTy], False,
      writeIntArrayAiger i8)
-  , ("write_aiger_array_uint16", voidTy, [i16p, i32, strTy], False,
+  , ("lss_write_aiger_array_uint16", voidTy, [i16p, i32, strTy], False,
      writeIntArrayAiger i16)
-  , ("write_aiger_array_uint32", voidTy, [i32p, i32, strTy], False,
+  , ("lss_write_aiger_array_uint32", voidTy, [i32p, i32, strTy], False,
      writeIntArrayAiger i32)
-  , ("write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
+  , ("lss_write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
      writeIntArrayAiger i64)
-  , ("eval_aiger_uint8",   i8, [i8,  i8p], False, evalAigerOverride)
-  , ("eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
-  , ("eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
-  , ("eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
-  , ("eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False,
-     nyiOverride)
-  , ("eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False,
-     nyiOverride)
-  , ("eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False,
-     nyiOverride)
-  , ("eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False,
-     nyiOverride)
-  , ("override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
-  , ("override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
+  , ("lss_eval_aiger_uint8",   i8, [i8,  i8p], False, evalAigerOverride)
+  , ("lss_eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
+  , ("lss_eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
+  , ("lss_eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
+  , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False,
+     evalAigerArray i8)
+  , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False,
+     evalAigerArray i16)
+  , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False,
+     evalAigerArray i32)
+  , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False,
+     evalAigerArray i64)
+  , ("lss_override_function_by_name", voidTy, [strTy, strTy], False,
+     overrideByName)
+  , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)
   ]
 

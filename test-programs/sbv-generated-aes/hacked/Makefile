@@ -4,18 +4,24 @@
 -include *.mk
 
 CC=gcc
-CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I.
+CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I../../../sym-api
 LSS?=../../../cabal-dev/bin/lss
 
 all: aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm aes.bc
 
 %.bc: %.c
-	clang -emit-llvm -I. -c $< -o $@
+	clang -emit-llvm -I../../../sym-api -c $< -o $@
+
+sym-api.bc: ../../../sym-api/sym-api.c
+	clang -emit-llvm -I../../../sym-api -c $< -o $@
 
 aes128BlockEncrypt.o: aes128BlockEncrypt.c aes128BlockEncrypt.h
 	${CC} ${CCFLAGS} -c $< -o $@
 
 %.o: %.c
+	${CC} ${CCFLAGS} -c $< -o $@
+
+sym-api.o: ../../../sym-api/sym-api.c
 	${CC} ${CCFLAGS} -c $< -o $@
 
 aes128BlockEncrypt_driver: aes128BlockEncrypt.o aes128BlockEncrypt_driver.o sym-api.o
