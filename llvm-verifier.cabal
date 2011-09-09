@@ -66,7 +66,7 @@ library
     LSS.SBEConcrete 
     LSS.SBESymbolic
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
@@ -106,7 +106,7 @@ executable Tests
   main-is        : Tests.hs
   hs-source-dirs : src test/src
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
@@ -131,7 +131,7 @@ executable bcdump
   main-is        : Main_bcdump.hs
   hs-source-dirs : src
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
