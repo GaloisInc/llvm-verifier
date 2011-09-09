@@ -170,7 +170,6 @@ data SBE m = SBE
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
-    -- TODO: Add support for malloc, new, etc.
   , stackAlloca :: SBEMemory m
                 -> LLVM.Type
                 -> LLVM.Typed (SBETerm m)

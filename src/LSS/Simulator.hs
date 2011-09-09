@@ -67,6 +67,7 @@ module LSS.Simulator
 where
 
 import           Control.Applicative
+import           Control.Monad.Error
 import           Control.Monad.State       hiding (State)
 import           Data.Int
 import           Data.LLVM.TargetData
@@ -87,6 +88,7 @@ import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..),
                                             CValue(..))
+import           Verinf.Utils.CatchMIO
 
 import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
@@ -105,11 +107,18 @@ runSimulator :: (Functor m, MonadIO m)
   -> Maybe LSSOpts         -- Simulation options
   -> Simulator sbe m a     -- ^ Simulator action to perform
   -> m a
-runSimulator cb sbe mem lifter seh mopts m =
-  evalStateT (runSM (setup >> m)) (newSimState cb sbe mem lifter seh mopts)
+runSimulator cb sbe mem lifter seh mopts m = do
+  ea <- runErrorT go `evalStateT` newSt
+  -- TODO: call exception handlers given by to-be-written SEH fields
+  case ea of
+    Left ErrorPathExc{}   -> error "internal: uncaught error path exception"
+    Left (UnknownExc mfr) -> error $ "internal: uncaught unknown exception: "
+                                     ++ maybe "(no details)" (show . ppFailRsn) mfr
+    Right x               -> return x
   where
-    setup = do
-      modifyCS $ pushMF emptyExitFrame
+    newSt = newSimState cb sbe mem lifter seh mopts
+    go    = runSM (setup >> m)
+    setup = modifyCS (pushMF emptyExitFrame)
 
 newSimState :: Codebase
             -> SBE sbe
@@ -142,6 +151,7 @@ type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
 callDefine ::
   ( LogMonad m
   , MonadIO m
+  , CatchMIO m
   , Functor m
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
@@ -161,6 +171,7 @@ callDefine calleeSym t argsGen = do
 callDefine_ ::
   ( LogMonad m
   , MonadIO m
+  , CatchMIO m
   , Functor m
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
@@ -283,11 +294,18 @@ intrinsic intr mreg args0 =
     ("llvm.memcpy.p0i8.p0i8.i64", Nothing) -> memcpy
     ("llvm.memset.p0i8.i64", Nothing) -> memset
     ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow reg
-    _ -> error $ "Unsupported LLVM intrinsic: " ++ intr
+    _ -> unimpl $ "LLVM intrinsic: " ++ intr
   where
     memcpy = do
       let [dst, src, len, align, _isvol] = map typedValue args0
-      processMemCond =<< mutateMem (\s m -> memCopy s m dst src len align)
+      fr <- do pts <- mapM prettyTermSBE [dst,src,len]
+               return $ FailRsn
+                 $ "memcopy operation was not valid: "
+                   ++ "(dst,src,len) = "
+                   ++ show (parens . hcat . punctuate comma $ pts)
+
+      processMemCond fr
+        =<< mutateMem (\sbe mem -> memCopy sbe mem dst src len align)
     memset = do
       let [dst, val, len, align, _isvol] = args0
       memSet (typedValue dst) val (typedValue len) (typedValue align)
@@ -318,10 +336,10 @@ memSet dst val len align = do
       store val dst
       ptrWidth <- withLC llvmAddrWidthBits
       lenWidth <- withSBE' $ \s -> termWidth s len
-      one <- withSBE $ \s -> termInt s ptrWidth 1
-      negone <- withSBE $ \s -> termInt s (fromIntegral lenWidth) (-1)
-      dst' <- termAdd dst one
-      len' <- termAdd len negone
+      one      <- withSBE  $ \s -> termInt s ptrWidth 1
+      negone   <- withSBE  $ \s -> termInt s (fromIntegral lenWidth) (-1)
+      dst'     <- termAdd dst one
+      len'     <- termAdd len negone
       memSet dst' val len' align
 
 getProgramReturnValue :: (Monad m, Functor m)
@@ -347,12 +365,12 @@ processMemCond ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => SBETerm sbe -> Simulator sbe m ()
-processMemCond cond = do
+  => FailRsn -> SBETerm sbe -> Simulator sbe m ()
+processMemCond rsn cond = do
   condv <- condTerm cond
   case condv of
     Just True  -> return ()
-    Just False -> error "Obtained constant-false memory model result (TODO: replace w/ error path handling)"
+    Just False -> errorPath rsn
     _          -> do
       -- TODO: provide more detail here?
       dbugM' 3 "Warning: Obtained symbolic validity result from memory model."
@@ -364,6 +382,7 @@ run ::
   ( LogMonad m
   , Functor m
   , MonadIO m
+  , CatchMIO m
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
@@ -371,7 +390,7 @@ run ::
 run = do
   mtop <- topMF <$> gets ctrlStk
   case mtop of
-    Nothing -> error "run: empty control stack"
+    Nothing -> error "internal: run: empty control stack"
     Just top
       | isExitFrame top -> do
           -- Normal program termination on at least one path. Set the exit merge
@@ -407,15 +426,25 @@ run = do
                 else dbugM "All paths yielded errors! To see details, use --errpaths."
   where
     runPath (pathCB -> Nothing)    = error "runPath: no current block"
-    runPath p@(pathCB -> Just pcb) = withCallFrame p $ \frm -> do
-      def <- lookupDefine (frmFuncSym frm) <$> gets codebase
-      runStmts $ sbStmts $ lookupSymBlock def pcb
-      run
+    runPath p@(pathCB -> Just pcb) = go `catchError` h
+      where
+        go = withCallFrame p $ \frm -> do
+               def <- lookupDefine (frmFuncSym frm) <$> gets codebase
+               runStmts $ sbStmts $ lookupSymBlock def pcb
+               run
+        h e = case e of
+                ErrorPathExc _rsn s -> do
+                  -- errorPath ensures that the simulator state provided in the
+                  -- exception data is correct for the next invocation of run,
+                  -- so overwrite the current state here.
+                  modify (const s)
+                  run
+                _ -> throwError e
     runPath _ = error "unreachable"
 
     showErrCnt x
-      | x == 1    = "Encountered errors on 1 path; details below."
-      | otherwise = "Encountered errors on " ++ show x ++ " paths; details below."
+      | x == 1    = "Encountered errors on exactly one path. Details below."
+      | otherwise = "Encountered errors on " ++ show x ++ " paths.  Details below."
 
     dumpErrorPaths = do
         dbugM $ replicate 80 '-'
@@ -423,7 +452,7 @@ run = do
         forM_ eps $ \ep -> do
           let p = epPath ep
           sbe <- gets symBE
-          dbugM $ "Error reason        : " ++ epRsn ep
+          dbugM $ "Error reason        : " ++ show (ppFailRsn (epRsn ep))
           dbugM $ "Error path state    :\n" ++ show (nest 2 $ ppPath sbe p)
           dumpMem 5 "Error path memory "
           when (length eps > 1) $ dbugM "--"
@@ -443,7 +472,8 @@ pushMemFrame ::
   => Simulator sbe m ()
 pushMemFrame = do
   dbugM' 6 "Memory model: pushing stack frame"
-  processMemCond =<< mutateMem stackPushFrame
+  let fr = FailRsn $ "Stack push frame failure: insufficient stack space"
+  processMemCond fr =<< mutateMem stackPushFrame
   return ()
 
 -- | @pushMemFrame@ tells the memory model to pop a stack frame from the stack
@@ -466,7 +496,7 @@ popMergeFrame = do
 pushMergeFrame :: Monad m => MF sbe -> Simulator sbe m ()
 pushMergeFrame = modifyCS . pushMF
 
-assign :: (Functor m, Monad m)
+assign :: (Functor m, MonadIO m)
   => Reg -> Typed (SBETerm sbe) -> Simulator sbe m ()
 assign reg v = modifyCallFrameM $ \frm ->
   frm{ frmRegs = M.insert reg v (frmRegs frm) }
@@ -733,7 +763,7 @@ getTypedTerm' _ (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol s
   = getGlobalPtrTerm (sym, Just argtys)
 
 getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
-  = error $ "getTypedTerm': Non-symbol ptr-to-fun nyi: " ++ show tv
+  = unimpl $ "getTypedTerm': Non-symbol ptr-to-fun: " ++ show tv
 
 getTypedTerm' mfrm (Typed ty@(L.Array len ety) (L.ValArray ety' es))
   = do
@@ -765,10 +795,10 @@ getTypedTerm' mfrm (Typed _ (L.ValConstExpr ce))
         evalGEP (GEP ptr idxs)
       L.ConstConv L.BitCast tv t ->
         Typed t . typedValue <$> getTypedTerm' mfrm tv
-      _ -> error $ "getTypedTerm: ConstExpr eval nyi : " ++ show ce
+      _ -> unimpl $ "getTypedTerm: ConstExpr eval: " ++ show ce
 
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
-  = return $ lkupIdent i frm
+  = lkupIdent i frm
 
 getTypedTerm' _mfrm (Typed ty L.ValUndef)
   = do
@@ -778,11 +808,10 @@ getTypedTerm' _mfrm (Typed ty L.ValUndef)
 getTypedTerm' mfrm tv@(Typed t v)
   = do
   sbe <- gets symBE
-  error $ "getTypedTerm': unsupported value / call frame presence: "
-          ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
-          ++ "\n" ++ show (parens $ text $ show tv)
-          ++ "\nmfrm = " ++ show (ppCallFrame sbe <$> mfrm)
-
+  unimpl $ "getTypedTerm': unsupported value / call frame presence: "
+            ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
+            ++ "\n" ++ show (parens $ text $ show tv)
+            ++ "\nmfrm = " ++ show (ppCallFrame sbe <$> mfrm)
 getGlobalPtrTerm ::
   ( Functor m
   , MonadIO m
@@ -796,37 +825,50 @@ getGlobalPtrTerm key@(sym, tys) = do
     Just t  -> return t
     Nothing -> do
       cb <- gets codebase
-      maybe err (either addGlobal addDef) (lookupSym sym cb)
+      case lookupSym sym cb of
+        Nothing  -> symResolutionFailed
+        Just eab -> either addGlobal addDef eab
   where
-    err         = error $ "getGlobalPtrTerm: symbol resolution failed: "
-                          ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
-    noCodeSpace = error "Not enough space in code memory to allocate new definition."
-    noDataSpace = error "Not enough space in data segment to allocate new global."
+    symResolutionFailed =
+      error $ "getGlobalPtrTerm: symbol resolution failed: "
+              ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
 
     addDef def = do
-      let argTys = map typedType $ sdArgs def
-          fty    = L.FunTy (sdRetType def) argTys (sdVarArgs def)
-          idl    = nub $ mapMaybe symBlockLabel $ M.keys (sdBody def)
-      ins fty $ \s m -> maybe noCodeSpace id <$> memAddDefine s m sym idl
+      let argTys    = map typedType $ sdArgs def
+          fty       = L.FunTy (sdRetType def) argTys (sdVarArgs def)
+          idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody def)
+          noCodeSpc = "Not enough space in code memory to allocate new definition."
+      ins noCodeSpc fty $ \s m -> memAddDefine s m sym idl
+--      ins fty $ \s m -> maybe noCodeSpace id <$> memAddDefine s m sym idl
 
     addGlobal g = do
       cb1 onMkGlobTerm g
       cdata <- getTypedTerm' Nothing (L.globalType g =: L.globalValue g)
       cb2 onPreGlobInit g cdata
-      r <- ins (L.globalType g) $ \s m ->
-             maybe noDataSpace id <$> memInitGlobal s m cdata
+      let noDataSpc = "Not enough space in data segment to allocate new global."
+      r <- ins noDataSpc (L.globalType g) $ \s m -> memInitGlobal s m cdata
+      --maybe noDataSpace id <$> memInitGlobal s m cdata
       cb2 onPostGlobInit g cdata
       return r
 
-    ins :: (Functor m, MonadIO m)
-        => L.Type
-        -> (SBE sbe -> SBEMemory sbe -> sbe (SBETerm sbe, SBEMemory sbe))
-        -> Simulator sbe m (Typed (SBETerm sbe))
-    ins ty act = do
-      t <- Typed (L.PtrTo ty) <$> mutateMem act
-      modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
-      return t
-
+    ins ::
+      ( Functor m
+      , MonadIO m
+      , Functor sbe
+      , ConstantProjection (SBEClosedTerm sbe)
+      )
+      => String
+      -> L.Type
+      -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
+      -> Simulator sbe m (Typed (SBETerm sbe))
+    ins errMsg ty act = do
+      mt <- mmutateMem act
+      case mt of
+        Nothing -> errorPath (FailRsn errMsg)
+        Just r  -> do
+          let t = Typed (L.PtrTo ty) r
+          modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
+          return t
 
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
@@ -848,13 +890,12 @@ step (PushCallFrame callee args mres) = do
   cb  <- getCurrentBlockM
   eab <- resolveCallee callee
   _ <- case eab of
-         Left msg        -> error $ "PushCallFrame: " ++ msg
+         Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
          Right calleeSym -> callDefine' cb calleeSym mres
                               =<< Right <$> mapM getTypedTerm args
   return ()
 
-step (PushInvokeFrame _fn _args _mres _e) =
-  error "PushInvokeFrame nyi"
+step (PushInvokeFrame _fn _args _mres _e) = unimpl "PushInvokeFrame"
 
 step (PushPostDominatorFrame pdid) = do
   p <- getPath' "step PushPostDominatorFrame"
@@ -923,8 +964,7 @@ step (IfThenElse cond thenStmts elseStmts) = do
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
 
-step Unwind
-  = error "Unwind nyi"
+step Unwind = unimpl "unwind"
 
 --------------------------------------------------------------------------------
 -- Symbolic expression evaluation
@@ -942,7 +982,7 @@ eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
-eval e@Arith{} = error $ "Unsupported arith expr type: " ++ show (ppSymExpr e)
+eval e@Arith{} = unimpl $ "Arithmetic expr type: " ++ show (ppSymExpr e)
 eval (Bit op tv1@(Typed t _) v2) = do
   [x, y] <- map typedValue <$> mapM getTypedTerm [tv1, typedType tv1 =: v2]
   Typed t <$> withSBE (\sbe -> applyBitwise sbe op x y)
@@ -951,20 +991,20 @@ eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{
   CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
-eval e@Conv{} = error $ "Unsupported/illegal conv expr type: " ++ show (ppSymExpr e)
+eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
 eval (Alloca ty msztv malign ) = alloca ty msztv malign
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
   v <- load addrTerm
   return (Typed ty v) <* dumpMem 6 "load post"
-eval e@(Load _ _) = error $ "Illegal load operand: " ++ show (ppSymExpr e)
+eval e@(Load _ _) = illegal $ "Load operand: " ++ show (ppSymExpr e)
 eval (ICmp op (Typed t v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2 && (isIntegerType t || L.isPointer t)) $ return ()
   Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
-eval (FCmp _op _tv1 _v2      ) = error "eval FCmp nyi"
+eval (FCmp _op _tv1 _v2      ) = unimpl "eval FCmp"
 eval (Val tv)                  = getTypedTerm tv
 eval e@GEP{}                   = evalGEP e
 eval (Select tc tv1 v2)        = do
@@ -975,7 +1015,7 @@ eval (Select tc tv1 v2)        = do
     Just False -> return (Typed t y)
     Nothing    -> Typed t <$> withSBE (\s -> applyIte s c x y)
 eval (ExtractValue tv i      ) = evalExtractValue tv i
-eval (InsertValue _tv _ta _i ) = error "eval InsertValue nyi"
+eval (InsertValue _tv _ta _i ) = unimpl "eval InsertValue"
 
 evalExtractValue ::
   ( MonadIO m
@@ -1021,18 +1061,18 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
       (skipFlds, head -> fldTy) <- do
         midxVal <- withSBE' (\sbe -> getSVal (closeTerm sbe idxTerm))
         case midxVal of
-          Nothing -> error "eval GEP: Failed to obtain value for GEP index"
+          Nothing -> illegal "Failed to obtain concrete value for GEP index"
           Just n  -> return $ splitAt (fromIntegral n) fldTys
       newPtrVal <- Typed fldTy <$> foldM addSz ptrVal skipFlds
       impl idxs newPtrVal
 
     impl idxs (Typed (L.Alias ident) v) = do
-      impl idxs =<< (`Typed` v) <$> withLC (\lc -> llvmLookupAlias lc ident)
+      impl idxs =<< (`Typed` v) <$> withLC (`llvmLookupAlias` ident)
 
     impl _ tv = do
-      error $ "GEP: support for aggregate type NYI: "
-              ++ show (L.ppType (typedType tv))
-              ++ " : " ++ show (typedType tv)
+      unimpl $ "GEP: support for aggregate type NYI: "
+               ++ show (L.ppType (typedType tv))
+               ++ " : " ++ show (typedType tv)
 
     -- @addSz p ty@ computes @p + sizeof(ty)
     addSz p ty = termAdd p . typedValue
@@ -1053,16 +1093,16 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
       Typed referentTy <$> (termAdd ptrVal =<< termMul idxTerm szTerm)
 
     -- @promote x@ promotes integer value x to the target's pointer width
-    promote :: (MonadIO m, Functor m)
+    promote :: (MonadIO m, Functor m, Functor sbe, ConstantProjection (SBEClosedTerm sbe))
       => Typed (SBETerm sbe) -> Simulator sbe m (Typed (SBETerm sbe))
     promote x@(Typed (L.PrimType (L.Integer iw)) v1) = do
       aw <- fromIntegral <$> withLC llvmAddrWidthBits
       if aw > iw
         then Typed (intn aw) <$> termConv L.ZExt v1 (intn aw)
         else return x
-    promote _ = error "internal: promotion of non-integer value"
+    promote _ = illegal "promotion of non-integer value"
 
-evalGEP e = error $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
+evalGEP e = illegal $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
 
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
@@ -1104,9 +1144,6 @@ mx ||| my = do
   let neg t = withSBE $ \sbe -> applyBNot sbe t
   neg =<< ((neg =<< mx) &&& (neg =<< my))
 
--- ^ FIX above: You need to mux the path constraints together with the
--- condition; it's not simply the OR.
-
 --------------------------------------------------------------------------------
 -- SBE lifters and helpers
 
@@ -1146,6 +1183,23 @@ mutateMem f = do
   dumpMem 7 "mutateMem post"
   return r
 
+mmutateMem :: (Functor m, MonadIO m)
+  => (SBE sbe -> SBEMemory sbe
+      -> sbe (Maybe (a, SBEMemory sbe)))
+  -> Simulator sbe m (Maybe a)
+mmutateMem f = do
+  dumpMem 7 "mmutateMem pre"
+  m0 <- getMem
+  mr <- withSBE (`f` m0)
+  case mr of
+    Nothing      -> do
+      dbugM' 7 "mmutateMem operation failed"
+      return Nothing
+    Just (r, m1) -> do
+      setMem m1
+      dumpMem 7 "mmutateMem post"
+      return (Just r)
+
 mutateMem_ :: (Functor m, MonadIO m, Functor sbe)
   => (SBE sbe -> SBEMemory sbe -> sbe (SBEMemory sbe)) -> Simulator sbe m ()
 mutateMem_ f = mutateMem (\s m -> ((,) ()) <$> f s m) >> return ()
@@ -1160,7 +1214,7 @@ load ::
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
-load addr = getMem >>= flip load' addr
+load addr = (getMem >>= flip load' addr)
 
 load' ::
   ( Functor m
@@ -1171,7 +1225,8 @@ load' ::
   => SBEMemory sbe -> Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
 load' m addr = do
   (cond, v) <- withSBE $ \s -> memLoad s m addr
-  processMemCond cond
+  fr <- memFailRsn "Invalid load address" [typedValue addr]
+  processMemCond fr cond
   return v
 
 store ::
@@ -1181,10 +1236,18 @@ store ::
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => Typed (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
-store val dst = processMemCond =<< mutateMem (\s m -> memStore s m val dst)
+store val dst = do
+  fr <- memFailRsn "Invalid store address: " [dst]
+  processMemCond fr =<< mutateMem (\s m -> memStore s m val dst)
+
+memFailRsn :: (Functor m, Monad m)
+  => String -> [SBETerm sbe] -> Simulator sbe m FailRsn
+memFailRsn desc terms = do
+  pts <- mapM prettyTermSBE terms
+  return $ FailRsn $ show $ text desc <+> ppTuple pts
 
 --------------------------------------------------------------------------------
--- Callbacks
+-- Callbacks and event handling code
 
 cb0 :: (Functor m, Monad m)
   => (SEH sbe m -> Simulator sbe m ()) -> Simulator sbe m ()
@@ -1210,6 +1273,12 @@ defaultSEH = SEH
 --------------------------------------------------------------------------------
 -- Memory operation helpers
 
+type AllocRslt sbe =
+  Either (StackAllocaResult (SBETerm sbe) (SBEMemory sbe))
+         (HeapAllocResult   (SBETerm sbe) (SBEMemory sbe))
+type AllocAct sbe =
+  SBE sbe -> SBEMemory sbe -> Typed (SBETerm sbe) -> sbe (AllocRslt sbe)
+
 alloca, malloc ::
   ( MonadIO m
   , Functor m
@@ -1220,28 +1289,39 @@ alloca, malloc ::
   -> Maybe (Typed L.Value)
   -> Maybe Int
   -> Simulator sbe m (Typed (SBETerm sbe))
-alloca ty msztv malign = do
-  nt <- case msztv of
-          Nothing  -> getTypedTerm (int32const 1)
-          Just ntv -> getTypedTerm ntv
-  let parseFn SASymbolicCountUnsupported = error "alloca only supports concrete element count"
-      parseFn (SAResult c t m') = ((c,t), m')
-  (cond,t) <- mutateMem $ \s m ->
-                parseFn <$> stackAlloca s m ty nt (maybe 0 lg malign)
-  processMemCond cond
-  return (Typed (L.PtrTo ty) t)
 
-malloc ty msztv malign = do
-  nt <- case msztv of
-          Nothing  -> getTypedTerm (int32const 1)
-          Just ntv -> getTypedTerm ntv
-  let parseFn HASymbolicCountUnsupported = error "malloc only supports concrete element count"
-      parseFn (HAResult c t m') = ((c,t), m')
-  -- TODO: Handle 'size' result
-  (cond,t) <- mutateMem $ \s m ->
-    parseFn <$> heapAlloc s m ty nt (maybe 0 lg malign)
-  processMemCond cond
+alloca ty msztv malign = doAlloc ty msztv $ \s m nt ->
+  Left <$> stackAlloca s m ty nt (maybe 0 lg malign)
+
+malloc ty msztv malign = doAlloc ty msztv $ \s m nt ->
+  Right <$> heapAlloc s m ty nt (maybe 0 lg malign)
+
+doAlloc ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Type -> Maybe (Typed L.Value) -> AllocAct sbe
+  -> Simulator sbe m (Typed (SBETerm sbe))
+doAlloc ty msztv allocActFn = do
+  nt            <- maybe (getTypedTerm (int32const 1)) getTypedTerm msztv
+  m             <- getMem
+  rslt          <- withSBE $ \s -> allocActFn s m nt
+
+  (c, t, m', e) <- case rslt of
+    Left SASymbolicCountUnsupported  -> errorPath $ err "alloca"
+    Right HASymbolicCountUnsupported -> errorPath $ err "malloc"
+    Left (SAResult c t m')           -> return (c, t, m', err "alloca")
+    Right (HAResult c t m')          -> return (c, t, m', err "malloc")
+
+  setMem m'
+  processMemCond e c
   return (Typed (L.PtrTo ty) t)
+  where
+    err s = FailRsn
+            $ s ++ " only support concrete element count "
+                ++ "(try a different memory model?)"
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
@@ -1258,14 +1338,21 @@ sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m (Typed L.Value)
 sizeof ty = Typed (L.PrimType (L.Integer 32))
               <$> L.ValInteger <$> withLC (`llvmAllocSizeOf` ty)
 
-resolveCallee :: (MonadIO m, Functor m) => SymValue -> Simulator sbe m (Either String L.Symbol)
+resolveCallee ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SymValue -> Simulator sbe m (Either String L.Symbol)
 resolveCallee callee = case callee of
  L.ValSymbol sym -> ok sym
  L.ValIdent i    -> resolveIdent i
+ L.ValAsm{}      -> err $ "Inline assembly is not supported: " ++ show (L.ppValue callee)
  _               -> err $ "Unexpected callee value: " ++ show (L.ppValue callee)
  where
    resolveIdent i = do
-     Typed t fp <- lkupIdent i <$> getCallFrame
+     Typed t fp <- lkupIdent i =<< getCallFrame
      case L.elimFunPtr t of
        Nothing -> err "Callee identifier referent is not a function pointer"
        Just (_rty, _argtys, _isVarArgs) -> do
@@ -1276,12 +1363,21 @@ resolveCallee callee = case callee of
    ok sym  = return $ Right $ sym
    err msg = return $ Left $ "resolveCallee: " ++ msg
 
-lkupIdent :: L.Ident -> CallFrame term -> Typed term
-lkupIdent i (frmRegs -> regs) = maybe err id $ M.lookup i regs
-  where
-    err = error $ "lkupIdent failure: "
-                ++ show (L.ppIdent i)
-                ++ " is not in regmap of given call frame."
+lkupIdent ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Ident -> CF sbe -> Simulator sbe m (Typed (SBETerm sbe))
+lkupIdent i (frmRegs -> regs) = do
+  case M.lookup i regs of
+    Just x  -> return x
+    Nothing -> illegal
+               $ "lkupIdent failure: "
+                 ++ show (L.ppIdent i)
+                 ++ " is not in regmap of given call frame."
+
 runStmts ::
   ( LogMonad m
   , Functor m
@@ -1358,22 +1454,38 @@ modifyPath f = modifyCS $ \cs ->
 modifyCallFrameM :: (Functor m, Monad m) => (CF sbe -> CF sbe) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
-registerOverride :: (Functor m, Monad m, Functor sbe, MonadIO m) =>
-                    L.Symbol -> L.Type -> [L.Type] -> Bool
-                 -> Override sbe m
-                 -> Simulator sbe m ()
+registerOverride ::
+  ( Functor m
+  , Functor sbe
+  , MonadIO m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Symbol -> L.Type -> [L.Type] -> Bool -> Override sbe m
+  -> Simulator sbe m ()
 registerOverride sym retTy argTys va handler = do
-  t <- mutateMem $ \s m -> maybe nospace id <$> memAddDefine s m sym []
-  let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
-  modify $ \s -> s { overrides = M.insert sym handler (overrides s)
-                   , globalTerms =
-                       M.insert (sym, Just argTys) t' (globalTerms s)
-                   }
-  where
-    nospace = error "Not enough space in code memory to allocate new definition."
+  mt <- mmutateMem $ \s m -> memAddDefine s m sym []
+  case mt of
+    Nothing -> errorPath $ FailRsn
+               $ "Not enough space in code memory to allocate new definition."
+    Just t  -> do
+      let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
+      modify $ \s -> s { overrides = M.insert sym handler (overrides s)
+                       , globalTerms =
+                           M.insert (sym, Just argTys) t' (globalTerms s)
+                       }
 
 --------------------------------------------------------------------------------
 -- Error handling
+
+unimpl, illegal ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => String -> Simulator sbe m a
+unimpl msg  = errorPath $ FailRsn $ "UN{SUPPORTED,IMPLEMENTED}: " ++ msg
+illegal msg = errorPath $ FailRsn $ "ILLEGAL: " ++ msg
 
 errorPath ::
   ( MonadIO m
@@ -1381,7 +1493,7 @@ errorPath ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => String -> Simulator sbe m ()
+  => FailRsn -> Simulator sbe m a
 errorPath rsn = do
   -- Pop the control stack and move the current path to the error paths list
   mmf     <- topMF <$> gets ctrlStk
@@ -1389,7 +1501,6 @@ errorPath rsn = do
                Nothing -> error "internal: errorPath invoked with no MF"
                _       -> popPending <$> popMergeFrame
   modify $ \s -> s{ errorPaths = EP rsn p : errorPaths s }
-
   case getMergedState mf of
     Nothing   -> do
       -- When there's no merged state in the current MF, then either (a) there
@@ -1407,6 +1518,12 @@ errorPath rsn = do
           -- @p@ was the last pending path in @mf@, so manually merge @mf@ with
           -- the merge frame below it on the control stack.
           pushMergeFrame =<< mergeMFs mf =<< popMergeFrame
+
+  -- NB: Since we've set up the control stack for the next invocation of run,
+  -- and explicitly captured the error path, we need to be sure to ship that
+  -- modified state back to the catch site so it execution can continue
+  -- correctly.
+  throwError =<< ErrorPathExc rsn <$> get
 
 --------------------------------------------------------------------------------
 -- Debugging
@@ -1601,7 +1718,10 @@ allocHandler fn = Override $ \_sym _rty args ->
         Just size -> do
           let sizeVal = Typed i32 (L.ValInteger size)
           (Just . typedValue) <$> fn i8 (Just sizeVal) Nothing
-        Nothing -> error "alloca: symbolic size not supported"
+        Nothing -> do
+          adjustTargetBlockForErr
+          errorPath $ FailRsn
+            $ "malloc/alloca: symbolic size not supported (try a different memory model?)"
     _ -> error "alloca: wrong number of arguments"
 
 abortHandler ::
@@ -1616,14 +1736,17 @@ abortHandler = Override $ \_sym _rty args -> do
     [tv@(Typed t _)]
       | t == strTy -> do
           msg <- loadString tv
-          -- We'll have set the post-call target block already, so set the error
-          -- path's current block to the previous so that the correct location
-          -- is displayed when we show error paths.
-          modifyPath $ \p -> p{ pathCB = prevPathCB p }
-          errorPath $ "lss_abort(): " ++ msg
-          return Nothing
+          adjustTargetBlockForErr
+          errorPath $ FailRsn $ "lss_abort(): " ++ msg
       | otherwise -> error "Incorrect type passed to lss_abort()."
     _ -> error "Incorrect number of parameters passed to lss_abort()."
+
+-- Called prior to raising an error path exception immediately before a call.
+-- Because of the AST translation, we'll have set the post-call target block
+-- already, so set the error path's current block to the previous so that the
+-- correct location is displayed when we show error paths to the user.
+adjustTargetBlockForErr :: (Functor m, Monad m) => Simulator sbe m ()
+adjustTargetBlockForErr = modifyPath $ \p -> p{ pathCB = prevPathCB p }
 
 freshInt' :: (Functor m, Monad m) => Int -> Override sbe m
 freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
@@ -1859,8 +1982,13 @@ standardOverrides =
      overrideByAddr)
   ]
 
-registerOverride' :: (MonadIO m, Functor m, Functor sbe) =>
-                     OverrideEntry sbe m -> Simulator sbe m ()
+registerOverride' ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => OverrideEntry sbe m -> Simulator sbe m ()
 registerOverride' (sym, rty, atys, va, handler) =
   registerOverride sym rty atys va handler
 

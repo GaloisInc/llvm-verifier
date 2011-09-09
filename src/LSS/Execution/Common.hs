@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
+{-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -19,6 +20,7 @@ module LSS.Execution.Common where
 
 import           Control.Applicative
 import           Control.Arrow             hiding ((<+>))
+import           Control.Monad.Error
 import           Control.Monad.State       hiding (State)
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
@@ -31,12 +33,15 @@ import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 import qualified Text.PrettyPrint.HughesPJ as PP
 
-newtype Simulator sbe m a = SM { runSM :: StateT (State sbe m) m a }
-  deriving ( Functor
-           , Monad
-           , MonadIO
-           , MonadState (State sbe m)
-           )
+newtype Simulator sbe m a =
+  SM { runSM :: ErrorT (InternalExc sbe m) (StateT (State sbe m) m) a }
+  deriving
+    ( Functor
+    , Monad
+    , MonadIO
+    , MonadState (State sbe m)
+    , MonadError (InternalExc sbe m)
+    )
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
 type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))
@@ -120,9 +125,19 @@ data Path' term mem = Path
                                           -- path
   }
 
-data ErrorPath sbe = EP { epRsn :: String, epPath :: Path sbe }
+data FailRsn       = FailRsn String deriving (Show)
+data ErrorPath sbe = EP { epRsn :: FailRsn, epPath :: Path sbe }
 
--- Simulation event handlers, useful for debugging nontrivial codes.
+-- | The exception type for errors that are both thrown and caught within the
+-- simulator.
+data InternalExc sbe m
+  = ErrorPathExc FailRsn (State sbe m)
+  | UnknownExc (Maybe FailRsn)
+instance Error (InternalExc sbe m) where
+  noMsg  = UnknownExc Nothing
+  strMsg = UnknownExc . Just . FailRsn
+
+-- | Simulation event handlers, useful for debugging nontrivial codes.
 data SEH sbe m = SEH
   {
     -- | Invoked after function overrides have been registered
@@ -185,6 +200,9 @@ instance (Monad m, Functor m) => Applicative (Simulator sbe m) where
 
 -----------------------------------------------------------------------------------------
 -- Pretty printing
+
+ppFailRsn :: FailRsn -> Doc
+ppFailRsn (FailRsn msg) = text msg
 
 ppCtrlStk :: SBE sbe -> CS sbe -> Doc
 ppCtrlStk sbe (CtrlStk mfs) =
@@ -284,6 +302,9 @@ ppSCExpr sbe (SCEAnd a b)                     = ppSCExpr sbe a <+> text "&" <+> 
 ppSCExpr sbe (SCEOr a@(SCAtom TrueSymCond) _) = ppSCExpr sbe a
 ppSCExpr sbe (SCEOr _ b@(SCAtom TrueSymCond)) = ppSCExpr sbe b
 ppSCExpr sbe (SCEOr a b)                      = ppSCExpr sbe a <+> text "|" <+> ppSCExpr sbe b
+
+ppTuple :: [Doc] -> Doc
+ppTuple = parens . hcat . punctuate comma
 
 -----------------------------------------------------------------------------------------
 -- Debugging
