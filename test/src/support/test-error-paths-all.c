@@ -2,9 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <assert.h>
-
-uint8_t fresh_uint8(uint8_t);
-void lss_abort(char* msg);
+#include <sym-api.h>
 
 int e1(int b)
 {
@@ -20,6 +18,6 @@ int e1(int b)
 
 int main(int argc, char **argv)
 {
-    int b = fresh_uint8(1);
+    int b = lss_fresh_uint8(1);
     return e1(b);
 }

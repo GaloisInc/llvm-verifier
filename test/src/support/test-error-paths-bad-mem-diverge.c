@@ -13,7 +13,7 @@ int foo(int b, int* p)
 
 int main(int argc, char** argv) 
 {
-    uint8_t b = fresh_uint8(1);
+    uint8_t b = lss_fresh_uint8(1);
     int x = 42;
     return 99 == foo(b, &x);
     /* lss should report that one path yielded errors, and main() should

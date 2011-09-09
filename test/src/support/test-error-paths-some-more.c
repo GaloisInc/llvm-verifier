@@ -30,8 +30,8 @@ int e1(uint8_t b0, uint8_t b1)
 
 int main(int argc, char **argv)
 {
-    int b0 = fresh_uint8(1);
-    int b1 = fresh_uint8(1);
+    int b0 = lss_fresh_uint8(1);
+    int b1 = lss_fresh_uint8(1);
     int r = e1(b0, b1);
     printf("Program result: %d\n", r);
     return 0;

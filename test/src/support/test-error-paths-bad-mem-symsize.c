@@ -17,8 +17,8 @@ int* foo(int b, int sz)
 
 int main(int argc, char** argv) 
 {
-    uint32_t symsz = fresh_uint32(1);
-    uint8_t b      = fresh_uint8(1);
+    uint32_t symsz = lss_fresh_uint32(1);
+    uint8_t b      = lss_fresh_uint8(1);
     int* p = foo(b, symsz);
     return 99 == *p;
     /* Assuming that a memory model that does not support symbolic
@@ -26,12 +26,3 @@ int main(int argc, char** argv)
        (the path in foo() in which a symbolic malloc size was used), and
        main() should return a concrete result of 1. */
 }
-
-/* TODO: check :
-
-   concrete indcies into a symbolic length array
-   symbolic indices into a concrete length array
-   symbolic indices into a symbolic length array
-
-   Ensure warnings and non-crashiness.
-*/
