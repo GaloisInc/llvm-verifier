@@ -18,6 +18,7 @@ import           Data.Char
 import           Data.Int
 import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
+import           Data.LLVM.Symbolic.Translation  (liftDefine)
 import           Data.Vector.Storable            (Storable)
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
@@ -42,6 +43,7 @@ data LSS = LSS
   , mname    :: Maybe String
   , memtype  :: Maybe String
   , errpaths :: Bool
+  , xlate    :: Bool
   } deriving (Show, Data, Typeable)
 
 data MemType = BitBlast | DagBased deriving (Show)
@@ -69,6 +71,7 @@ main = do
             , memtype  = def &= typ "[bitblast|dagbased]"
                              &= help "Memory model to use (default: bitblast)"
             , errpaths = def &= help "Dump error path details upon program completion (potentially very verbose)."
+            , xlate    = def &= help "Prints the symbolic AST translation to stdout, and then terminates."
             , mname    = def &= typ "Fully-linked .bc containing main()"
                              &= Args.args
             }
@@ -94,12 +97,24 @@ main = do
                 Left _e -> error "Unable to parse command-line arguments (argv)."
                 Right x -> "lss" : x
 
-  cb      <- loadCodebase bcFile
+  cb <- loadCodebase bcFile
+
+  when (xlate args) $ do
+    -- Dump the translated module and exit
+    let via s f = mapM_ (putStrLn . show  . f) (s $ origModule cb)
+    ((:[]) . L.modDataLayout) `via` L.ppDataLayout
+    L.modTypes                `via` L.ppTypeDecl
+    L.modGlobals              `via` L.ppGlobal
+    L.modDeclares             `via` L.ppDeclare
+    L.modDefines              `via` (ppSymDefine . liftDefine)
+    exitWith ExitSuccess
+
   mainDef <- case lookupDefine' (L.Symbol "main") cb of
                Nothing -> error "Provided bitcode does not contain main()."
                Just mainDef -> do
                  when (null (sdArgs mainDef) && length argv' > 1) warnNoArgv
                  return mainDef
+
   let lc = cbLLVMCtx cb
   be <- createBitEngine
   let mg = defaultMemGeom (cbLLVMCtx cb)

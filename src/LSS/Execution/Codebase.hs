@@ -47,6 +47,7 @@ data Codebase = Codebase {
     cbGlobalNameMap :: GlobalNameMap
   , cbTypeAliasMap  :: TypeAliasMap
   , cbLLVMCtx       :: LLVMContext
+  , origModule      :: LLVM.Module
   }
 
 -- For now, only take a single bytecode file argument and assume that the world
@@ -69,6 +70,7 @@ loadCodebase bcFile = do
                             , cbLLVMCtx       = buildLLVMContext
                                                   (`lookupAlias` cb)
                                                   (LLVM.modDataLayout mdl)
+                            , origModule      = mdl
                             }
 
       when (null $ LLVM.modDataLayout mdl) $
