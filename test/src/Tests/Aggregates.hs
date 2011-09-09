@@ -30,11 +30,11 @@ aggTests =
   , test 1 False "test-array-of-structs"       $ structArray      1
   ]
   where
-    arrayBaseIdx v        = t1 v "arr1" (Just 42)
-    arrayOffsetIdx v      = t1 v "arr2" (Just 141)
-    arrayInit1D v         = t1 v "onedim_init" (Just 3)
-    arrayInit2D v         = t1 v "twodim_init" (Just 21)
-    arrayMat4x4 v         = t2 v "matrix_mul_4x4" (Just 304)
+    arrayBaseIdx v        = t1 v "arr1" (RV 42)
+    arrayOffsetIdx v      = t1 v "arr2" (RV 141)
+    arrayInit1D v         = t1 v "onedim_init" (RV 3)
+    arrayInit2D v         = t1 v "twodim_init" (RV 21)
+    arrayMat4x4 v         = t2 v "matrix_mul_4x4" (RV 304)
     structInitAccess v    = psk v $ runStruct v structInitAccessImpl
     structArray v         = psk v $ runStruct v structArrayImpl
     t1                    = mkNullaryTest "test-arrays.bc"

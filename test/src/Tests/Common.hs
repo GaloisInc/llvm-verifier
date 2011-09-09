@@ -1,4 +1,5 @@
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE ViewPatterns  #-}
 
 module Tests.Common where
 
@@ -20,6 +21,8 @@ import           Verinf.Symbolic.Common        (ConstantProjection(..), Lit, cre
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
+
+data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
 
 newtype FailMsg = FailMsg String
 instance Show FailMsg where show (FailMsg s) = s
@@ -50,11 +53,13 @@ runTests tests = do
     then putStrLn "All tests successful."
     else putStrLn "One or more tests failed."
 
-chkRslt :: ConstantProjection t => L.Symbol -> Maybe Integer -> Maybe t -> PropertyM IO ()
-chkRslt _ (Just chk) (Just (getSVal -> Just v))
+chkRslt :: ConstantProjection t => L.Symbol -> ExpectedRV Integer -> Maybe t -> PropertyM IO ()
+chkRslt _ (RV chk) (Just (getSVal -> Just v))
   | v == chk  = assert True
   | otherwise = assertMsg False $ "Expected " ++ show chk ++ ", got " ++ show v
-chkRslt _ Nothing Nothing
+chkRslt _ VoidRV Nothing
+  = assert True
+chkRslt _ AllPathsErr Nothing
   = assert True
 chkRslt sym _ _
   = assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
@@ -67,7 +72,7 @@ chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
                -> Int
                -> FilePath
                -> L.Symbol
-               -> (Int32 -> Int32 -> Maybe Int32)
+               -> (Int32 -> Int32 -> ExpectedRV Int32)
                -> PropertyM IO ()
 chkBinCInt32Fn mgen v bcFile sym chkOp = do
   forAllM (maybe arbitrary id mgen) $ \(x,y) -> do
@@ -78,14 +83,14 @@ chkUnaryCInt32Fn :: Maybe (Gen Int32)
                  -> Int
                  -> FilePath
                  -> L.Symbol
-                 -> (Int32 -> Maybe Int32)
+                 -> (Int32 -> ExpectedRV Int32)
                  -> PropertyM IO ()
 chkUnaryCInt32Fn mgen v bcFile sym chkOp =
   forAllM (maybe arbitrary id mgen) $ \x -> do
     chkRslt sym (fromIntegral <$> chkOp x)
       =<< run (runCInt32Fn v bcFile sym [x])
 
-chkNullaryCInt32Fn :: Int -> FilePath -> L.Symbol -> Maybe Int32 -> PropertyM IO ()
+chkNullaryCInt32Fn :: Int -> FilePath -> L.Symbol -> ExpectedRV Int32 -> PropertyM IO ()
 chkNullaryCInt32Fn v bcFile sym chkVal =
   chkRslt sym (fromIntegral <$> chkVal)
     =<< run (runCInt32Fn v bcFile sym [])
@@ -97,11 +102,11 @@ runCInt32Fn v bcFile sym cargs = runBitBlastSim v bcFile defaultSEH $ \be -> do
   rv <- getProgramReturnValue
   return $ BitTermClosed . (,) be <$> rv
 
-type StdMemory     = BitMemory Lit
-type StdBitEngine     = BitEngine Lit
+type StdMemory            = BitMemory Lit
+type StdBitEngine         = BitEngine Lit
 type StdBitBlastSim mem a = Simulator (BitIO mem Lit) IO a
-type StdBitBlastTest = StdBitEngine -> StdBitBlastSim StdMemory Bool
-type StdBitBlastSEH mem = SEH (BitIO mem Lit) IO
+type StdBitBlastTest      = StdBitEngine -> StdBitBlastSim StdMemory Bool
+type StdBitBlastSEH mem   = SEH (BitIO mem Lit) IO
 
 runBitBlastSim :: Int
                -> FilePath
@@ -151,7 +156,10 @@ incomplete act = do
   act
   assert False
 
-runMain :: Int -> FilePath -> Maybe Int32 -> PropertyM IO ()
-runMain v bc = psk v . chkNullaryCInt32Fn v bc (L.Symbol "main")
+runMain :: Int -> FilePath -> ExpectedRV Int32 -> PropertyM IO ()
+runMain = runMain' False
 
+runMain' :: Bool -> Int -> FilePath -> ExpectedRV Int32 -> PropertyM IO ()
+runMain' quiet v bc erv =
+  psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) bc (L.Symbol "main") erv
 

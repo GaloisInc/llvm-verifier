@@ -44,7 +44,7 @@ primOpTests =
   , test  1  False "test-call-simple"      $ testCallSimple  1
   , test  1  False "test-ptr-simple"       $ testPtrSimple   1
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
-  , test  1  False "test-call-exit"        $ testCallExit    1
+  , test  1  False  "test-call-exit"        $ testCallExit    1
   , test  1  False "test-call-alloca"      $ testCallAlloca  1
   , test  1  False "test-call-malloc"      $ testCallMalloc  1
   ]
@@ -53,26 +53,26 @@ primOpTests =
     -- verbosity of '0' turns the test into a successful no-op, but issues a
     -- warning.
 
-    int32add v        = primB v "int32_add"    Nothing $ \x y -> Just (x + y)
-    int32sqr v        = primU v "int32_square" Nothing $ Just . sqr
-    int32muladd v     = primB v "int32_muladd" Nothing $ \x y -> Just $ sqr (x + y)
-    testFactorial v   = primU v "factorial" (Just $ elements [0..12]) (Just . fact)
+    int32add v        = primB v "int32_add"    Nothing $ \x y -> RV (x + y)
+    int32sqr v        = primU v "int32_square" Nothing $ RV . sqr
+    int32muladd v     = primB v "int32_muladd" Nothing $ \x y -> RV $ sqr (x + y)
+    testFactorial v   = primU v "factorial" (Just $ elements [0..12]) (RV . fact)
     dirInt32add v     = psk v $ chkArithBitEngineFn 32 True L.Add add
     dirInt32mul v     = psk v $ chkArithBitEngineFn 32 True L.Mul mul
     dirInt32sdiv v    = psk v $ chkArithBitEngineFn 32 True L.SDiv idiv
     dirInt32udiv v    = psk v $ chkArithBitEngineFn 32 False L.UDiv wdiv
     dirInt32srem v    = psk v $ chkArithBitEngineFn 32 True L.SRem irem
     dirInt32urem v    = psk v $ chkArithBitEngineFn 32 False L.URem wrem
-    testArith v       = runMain v "test-arith.bc" (Just 0)
-    testBranch v      = runMain v "test-branch.bc" (Just 0)
-    testCallVR v      = runMain v "test-call-voidrty.bc" Nothing
-    testCallSimple v  = runMain v "test-call-simple.bc" (Just 1)
-    testPtrSimple v   = runMain v "test-ptr-simple.bc" (Just 99)
+    testArith v       = runMain v "test-arith.bc" (RV 0)
+    testBranch v      = runMain v "test-branch.bc" (RV 0)
+    testCallVR v      = runMain v "test-call-voidrty.bc" VoidRV
+    testCallSimple v  = runMain v "test-call-simple.bc" (RV 1)
+    testPtrSimple v   = runMain v "test-ptr-simple.bc" (RV 99)
     testSetupPtrArg v = psk v $ runBitBlastSimTest v "test-primops.bc"
                                   defaultSEH testSetupPtrArgImpl
-    testCallExit v    = runMain v "test-call-exit.bc" (Just 1)
-    testCallAlloca v  = runMain v "test-call-alloca.bc" (Just 34289)
-    testCallMalloc v  = runMain v "test-call-malloc.bc" (Just 34289)
+    testCallExit v    = runMain' True v "test-call-exit.bc" AllPathsErr
+    testCallAlloca v  = runMain v "test-call-alloca.bc" (RV 34289)
+    testCallMalloc v  = runMain v "test-call-malloc.bc" (RV 34289)
 
     add, mul, idiv, irem :: Int32 -> Int32 -> Int32
     add               = (+)
