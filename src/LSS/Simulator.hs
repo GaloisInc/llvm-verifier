@@ -8,9 +8,11 @@ Point-of-contact : jstanley
 -- Debugging output at various verbosity levels:
 -- 1: No output, the lowest verbosity level
 -- 2: Instruction trace only
--- 3: Warnings on symbolic validity results from memory model; show
---    path state details when all paths yield errors.
--- 4: Path constraints on nontrivial path merges
+-- 3: Warnings on symbolic validity results from memory model; show path state
+--    details when all paths yield errors.  Memory model information for error
+--    paths.  Displays error paths as they are encountered rather than at the
+--    end of execution.
+-- 4: Path constraints on nontrivial path merges.
 -- 5: Simulator internal state (control stack dump per instruction); show
 --    memory model details in addition to path state details when all paths
 --    yield errors.
@@ -374,7 +376,7 @@ processMemCond rsn cond = do
     _          -> do
       -- TODO: provide more detail here?
       dbugM' 3 "Warning: Obtained symbolic validity result from memory model."
-      p <- getPath' "processMemCond"
+      p    <- getPath' "processMemCond"
       newp <- addPathConstraint p Nothing cond
       modifyPath $ const newp
 
@@ -434,10 +436,11 @@ run = do
     runPath (pathCB -> Nothing)    = error "runPath: no current block"
     runPath p@(pathCB -> Just pcb) = go `catchError` h
       where
-        go = withCallFrame p $ \frm -> do
-               def <- lookupDefine (frmFuncSym frm) <$> gets codebase
-               runStmts $ sbStmts $ lookupSymBlock def pcb
-               run
+        go = do killWhenInfeasible
+                withCallFrame p $ \frm -> do
+                  def <- lookupDefine (frmFuncSym frm) <$> gets codebase
+                  runStmts $ sbStmts $ lookupSymBlock def pcb
+                  run
         h e = case e of
                 ErrorPathExc _rsn s -> do
                   -- errorPath ensures that the simulator state provided in the
@@ -447,6 +450,13 @@ run = do
                   run
                 _ -> throwError e
     runPath _ = error "unreachable"
+
+    killWhenInfeasible = do
+        p <- getPath' "killWhenInfeasible"
+        mc <- condTerm (pcTerm . pathConstraint $ p)
+        case mc of
+          Just False -> errorPath $ FailRsn $ "This path is infeasible"
+          _          -> return ()
 
     showErrCnt x
       | x == 1    = "Encountered errors on exactly one path. Details below."
@@ -460,7 +470,7 @@ run = do
           sbe <- gets symBE
           dbugM $ "Error reason        : " ++ show (ppFailRsn (epRsn ep))
           dbugM $ "Error path state    :\n" ++ show (nest 2 $ ppPath sbe p)
-          dumpMem 5 "Error path memory "
+          dumpMem' (Just $ pathMem p) 3 "Error path memory "
           when (length eps > 1) $ dbugM "--"
         dbugM $ replicate 80 '-'
 
@@ -917,9 +927,8 @@ step (MergePostDominator pdid cond) = do
       Just _          -> error "merge postdom: expected postdom merge frame"
       Nothing         -> error "merge postdom: empty control stack"
 
-  p <- getPath' "step MergePostDominator"
-
   -- Construct the new path constraint for the current path
+  p    <- getPath' "step MergePostDominator"
   newp <- addPathConstraintSC p cond
 
   -- Merge the current path into the merged state for the current merge frame
@@ -1524,6 +1533,12 @@ errorPath ::
   )
   => FailRsn -> Simulator sbe m a
 errorPath rsn = do
+  whenVerbosity (>=3) $ do
+    p   <- getPath' "errorPath"
+    sbe <- gets symBE
+    dbugM $ "Error path encountered: " ++ show (ppFailRsn rsn)
+    dbugM $ show $ ppPath sbe p
+
   -- Pop the control stack and move the current path to the error paths list
   mmf     <- topMF <$> gets ctrlStk
   (p, mf) <- case mmf of
@@ -1567,10 +1582,15 @@ prettyTermSBE :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m Doc
 prettyTermSBE t = withSBE' $ \s -> prettyTermD s t
 
 dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
-dumpMem v msg =
+dumpMem = dumpMem' Nothing
+
+dumpMem' :: (Functor m, MonadIO m) => Maybe (SBEMemory sbe) -> Int -> String -> Simulator sbe m ()
+dumpMem' mm v msg =
   whenVerbosity (>=v) $ do
     dbugM $ msg ++ ":"
-    m <- getMem
+    m <- case mm of
+           Just m  -> return m
+           Nothing -> getMem
     withSBE (\s -> memDump s m Nothing)
 
 dbugStep ::
@@ -1771,6 +1791,19 @@ abortHandler = Override $ \_sym _rty args -> do
     _ -> e "Incorrect number of parameters passed to lss_abort()"
   where
     e = errorPathBeforeCall . FailRsn
+
+showPathOverride ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+showPathOverride = Override $ \_sym _rty _args -> do
+  p   <- getPath' "showPathOverride: no current path!"
+  sbe <- gets symBE
+  unlessQuiet $ dbugM $ show $ nest 2 $ ppPath sbe p
+  return Nothing
 
 exitHandler ::
   ( Functor m
@@ -2029,6 +2062,7 @@ standardOverrides =
      overrideByName)
   , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)
+  , ("lss_show_path", voidTy, [], False, showPathOverride)
   ]
 
 registerOverride' ::

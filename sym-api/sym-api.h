@@ -67,6 +67,8 @@ void lss_print_symbolic(void *sym) NO_INL;
 
 void lss_abort(const char* msg) NO_INL;
 
+void lss_show_path() NO_INL;
+
 #if defined(c_plusplus) || defined(__cplusplus)
 }
 #endif
