@@ -11,6 +11,7 @@ import Test.QuickCheck.Test
 import Tests.AES
 import Tests.Aggregates
 import Tests.IO
+import Tests.MemModel
 import Tests.PrimOps
 import Tests.Symbolic
 
@@ -39,6 +40,7 @@ runTests chooseTest = do
                    , ("Symbolic", symTests)
                    , ("AES", aesTests)
                    , ("I/O", ioTests)
+                   , ("MemModel", memModelTests)
                    ]
 
 

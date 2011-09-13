@@ -7,6 +7,7 @@ Point-of-contact : atomb, jhendrix
 
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE PatternGuards              #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
@@ -21,6 +22,7 @@ module LSS.SBEBitBlast
   , sbeBitBlast
   , liftSBEBitBlast
     -- Memmodel code
+  , MemModel(..)
   , BitBlastMemModel
   , BitMemory
   , buddyMemModel
@@ -54,6 +56,7 @@ import           Verinf.Symbolic.Common    (ConstantProjection(..),
                                             createBitEngine,
                                             CValue(..))
 import           Verinf.Symbolic.Lit
+import           Verinf.Symbolic.Lit.Functional
 import qualified Data.Map                  as Map
 import qualified Data.Set                  as Set
 import qualified Data.Vector               as V
@@ -86,16 +89,33 @@ sliceIntoBytes v = V.generate (byteSize v) $ \i -> LV.slice (i `shiftL` 3) 8 v
 -- | @alignUp addr i@ returns the smallest multiple of @2^i@ that it
 -- at least @addr@.
 alignUp :: Addr -> Int -> Addr
-alignUp addr i
-  | (addr .&. mask) /= 0 = ((addr `shiftR` i) + 1) `shiftL` i
-  | otherwise = (addr `shiftR` i) `shiftL` i
+alignUp addr i = (addr + mask) .&. complement mask
  where mask = (setBit 0 i) - 1
 
 -- | @alignDn addr i@ returns the largest multiple of @2^i@ that it
 -- at most @addr@.
 alignDn :: Addr -> Int -> Addr
-alignDn addr i = addr .&. (complement mask)
+alignDn addr i = addr .&. complement mask
  where mask = (setBit 0 i) - 1
+
+lvAnd :: (?be :: BitEngine l, LV.Storable l) 
+      => LV.Vector l -> LV.Vector l -> LV.Vector l
+lvAnd = LV.zipWith lAnd
+
+lvSetBits :: (?be :: BitEngine l, LV.Storable l) => Int -> (Int -> Bool) -> LV.Vector l
+lvSetBits n pr = LV.generate n (lFromBool . pr)
+
+-- | @lAlignUp addr i@ returns pair @(c,v)@ where @v@ is the smallest multiple of @2^i@
+-- not smaller than @addr@, and @c@ is set if computation overflowed.
+lAlignUp :: (?be :: BitEngine l, LV.Storable l) => LV.Vector l -> Int -> (l,LV.Vector l)
+lAlignUp addr i = (c, s `lvAnd` lvSetBits n (>= i))
+  where n = LV.length addr
+        (c,s) = addr `lFullAdd` lvSetBits n (< i)
+
+-- | @lAlignDown addr i@ returns pair @(c,v)@ where @v@ is the largest multiple of @2^i@
+-- not larger than @addr@, and @c@ is set if computation overflowed.
+lAlignDn :: (?be :: BitEngine l, LV.Storable l) => LV.Vector l -> Int -> LV.Vector l
+lAlignDn addr i = addr `lvAnd` lvSetBits (LV.length addr) (>= i)
 
 bmError :: String -> a
 bmError = error
@@ -732,7 +752,7 @@ bmStackAlloca be ptrWidth bm eltSize (BitTerm cntVector) a =
     Just (_,cnt) ->
       let mkRes c res endAddr newAddr =
             let newStorage = uninitRegion be ptrWidth res endAddr (bmStorage bm)
-             in SAResult (BitTerm (LV.singleton (beLitFromBool be c)))
+             in SAResult (termFromLit (beLitFromBool be c))
                          (BitTerm (beVectorFromInt be ptrWidth res))
                          bm { bmStorage = newStorage, bmStackAddr = newAddr }
           -- Get new bit memory.
@@ -1259,33 +1279,41 @@ dmStackAlloca :: (Ord l, LV.Storable l)
               -> BitTerm l
               -> Int
               -> IO (StackAllocaResult (BitTerm l) (DagMemory l))
-dmStackAlloca be ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCount) _align = do
+dmStackAlloca be ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCount) align = do
+  --TODO: Check alignment and overflow
   let stack = dmStack mem
       eltCountSize = LV.length eltCount
   newSizeExt <- beFullMulIntConstant be eltCount (ptrWidth,eltSize)
-  spaceRem <- if stackGrowsUp
-                then stackEnd `sub` stack
-                else stack `sub` stackEnd
-  let spaceRemExt = spaceRem LV.++ LV.replicate eltCountSize (beFalse be)
-  c <- beUnsignedLeq be newSizeExt spaceRemExt
-  let newSize = LV.take ptrWidth newSizeExt
-      mkMem app newStack =
+  let ?be = be
+  let extVector = (LV.++ LV.replicate eltCountSize lFalse)
+  let truncVector = LV.take ptrWidth
+  let stackEndExt = extVector stackEnd
+  let (.&&) = lAnd
+  let (.<=) = lUnsignedLeq
+  let (c,truncVector -> newStack)
+        | stackGrowsUp = 
+           let (ac, aStack) = lAlignUp stack align
+               (ao, newStackExt) = extVector aStack `lFullAdd` newSizeExt
+            in ( lNeg ac .&& lNeg ao .&& (newStackExt .<= stackEndExt)
+               , newStackExt)
+        | otherwise = 
+           let aStack = lAlignDn stack align
+               (ab, newStackExt) = extVector aStack `lFullSub` newSizeExt
+            in ( lNeg ab .&& (stackEndExt .<= newStackExt)
+               , newStackExt)
+  let mkMem app =
         dmGetMem ref mem app $ \m -> do
           allocRef <- newIORef Map.empty
           return m { dmStack = newStack, dmAllocCache = allocRef }
   case () of
-   _ | c == beFalse be -> do
+   _ | c == lFalse -> do
         return (SAResult (termFromLit c) (BitTerm stack) mem)
      | stackGrowsUp -> do
-        newStack <- stack `add` newSize
-        m <- mkMem (DMAlloc stack newStack mem) newStack
+        m <- mkMem (DMAlloc stack newStack mem)
         return (SAResult (termFromLit c) (BitTerm stack) m)
      | otherwise -> do
-        newStack <- stack `sub` newSize
-        m <- mkMem (DMAlloc newStack stack mem) newStack
+        m <- mkMem (DMAlloc newStack stack mem)
         return (SAResult (termFromLit c) (BitTerm newStack) m)
- where add = beAddInt be
-       sub = beSubInt be
 
 -- | Push stack frame to memory.
 -- N.B. To avoid empty deallocations in stack pop, we always add a byte to
