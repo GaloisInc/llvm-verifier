@@ -1268,9 +1268,8 @@ dmLookupDefine be mem (BitTerm a) = do
         Nothing -> Invalid
         Just d -> Result d
 
-dmStackAlloca :: (Ord l, LV.Storable l)
-              => BitEngine l -- ^ Bit engine
-              -> Int -- ^ Width of pointer in bits
+dmStackAlloca :: (Ord l, LV.Storable l, ?be :: BitEngine l)
+              => Int -- ^ Width of pointer in bits
               -> Bool -- ^ Flag indicates stack grows up
               -> LV.Vector l -- ^ End of stack
               -> IORef (DMDag l)
@@ -1279,14 +1278,13 @@ dmStackAlloca :: (Ord l, LV.Storable l)
               -> BitTerm l
               -> Int
               -> IO (StackAllocaResult (BitTerm l) (DagMemory l))
-dmStackAlloca be ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCount) align = do
-  --TODO: Check alignment and overflow
+dmStackAlloca ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCount) align = do
   let stack = dmStack mem
-      eltCountSize = LV.length eltCount
-  newSizeExt <- beFullMulIntConstant be eltCount (ptrWidth,eltSize)
-  let ?be = be
-  let extVector = (LV.++ LV.replicate eltCountSize lFalse)
-  let truncVector = LV.take ptrWidth
+  -- Declare functions for extending and truncating vectors.
+  let eltCountSize = LV.length eltCount
+      extVector = (LV.++ LV.replicate eltCountSize lFalse)
+      truncVector = LV.take ptrWidth
+  let newSizeExt = (lVectorFromInt ptrWidth eltSize) `lFullMul` eltCount
   let stackEndExt = extVector stackEnd
   let (.&&) = lAnd
   let (.<=) = lUnsignedLeq
@@ -1421,10 +1419,12 @@ createDagMemModel :: (Ord l, LV.Storable l)
                   -> MemGeom
                   -> IO (BitBlastMemModel (DagMemory l) l, DagMemory l)
 createDagMemModel lc be mg = do
+  let ?be = be
   let ptrWidth = llvmAddrWidthBits lc
   let stackGrowsUp = not (decreasing (mgStack mg))
   ref <- newIORef DMDag { dmAppNodeMap = Map.empty, dmNodeCount = 1 }
-  let ptrEnd range = beVectorFromInt be ptrWidth (end range)
+  let ptrStart range = lVectorFromInt ptrWidth (start range)
+  let ptrEnd range = lVectorFromInt ptrWidth (end range)
   let mm = MemModel {
                mmLoad = dmLoadBytes be
              , mmStore = dmStoreBytes be ref
@@ -1434,7 +1434,7 @@ createDagMemModel lc be mg = do
              , mmAddDefine = dmAddDefine be ptrWidth (end (mgCode mg)) ref
              , mmBlockAddress = blockAddress . dmBasicBlockMap
              , mmLookupDefine = dmLookupDefine be
-             , mmStackAlloca = dmStackAlloca be ptrWidth stackGrowsUp (ptrEnd (mgStack mg)) ref
+             , mmStackAlloca = dmStackAlloca ptrWidth stackGrowsUp (ptrEnd (mgStack mg)) ref
              , mmStackPush = dmStackPushFrame be ref
              , mmStackPop = dmStackPopFrame stackGrowsUp ref
              , mmHeapAlloc = dmHeapAlloc be ptrWidth (ptrEnd (mgHeap mg)) ref
@@ -1445,13 +1445,13 @@ createDagMemModel lc be mg = do
   loadRef <- newIORef Map.empty
   let mem = DagMemory { dmNodeIdx = 0
                       , dmNodeApp = DMInitial
-                      , dmStack = beVectorFromInt be ptrWidth (start (mgStack mg))
+                      , dmStack = ptrStart (mgStack mg)
                       , dmStackFrames = []
                       , dmCode = start (mgCode mg)
                       , dmDefineMap = Map.empty
                       , dmBasicBlockMap = Map.empty
                       , dmData = start (mgData mg)
-                      , dmHeap = beVectorFromInt be ptrWidth (start (mgHeap mg))
+                      , dmHeap = ptrStart (mgHeap mg)
                       , dmAllocCache = allocRef
                       , dmInitCache = initRef
                       , dmLoadCache = loadRef
