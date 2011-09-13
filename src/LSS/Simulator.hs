@@ -2031,7 +2031,7 @@ overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
 overrideByAddr = Override $ \_sym _rty args ->
   case args of
     [_fromPtr, _toPtr] -> do
-      dbugM "overrideByAddr: nyi"
+      _ <- unimpl "overrideByAddr"
       return Nothing
     _ -> errorPathBeforeCall
          $ FailRsn "lss_override_function_by_addr: wrong number of arguments"
