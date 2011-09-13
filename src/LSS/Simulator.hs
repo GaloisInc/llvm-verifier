@@ -1030,7 +1030,9 @@ eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
-eval (Alloca ty msztv malign ) = alloca ty msztv malign
+eval (Alloca ty msztv malign ) = do
+  sizeTm <- maybe (return Nothing) (\tv -> Just <$> getTypedTerm tv) msztv
+  alloca ty sizeTm malign
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
@@ -1324,14 +1326,14 @@ alloca, malloc ::
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => L.Type
-  -> Maybe (Typed L.Value)
+  -> Maybe (Typed (SBETerm sbe))
   -> Maybe Int
   -> Simulator sbe m (Typed (SBETerm sbe))
 
-alloca ty msztv malign = doAlloc ty msztv $ \s m nt ->
+alloca ty msztm malign = doAlloc ty msztm $ \s m nt ->
   Left <$> stackAlloca s m ty nt (maybe 0 lg malign)
 
-malloc ty msztv malign = doAlloc ty msztv $ \s m nt ->
+malloc ty msztm malign = doAlloc ty msztm $ \s m nt ->
   Right <$> heapAlloc s m ty nt (maybe 0 lg malign)
 
 doAlloc ::
@@ -1340,12 +1342,12 @@ doAlloc ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => L.Type -> Maybe (Typed L.Value) -> AllocAct sbe
+  => L.Type -> Maybe (Typed (SBETerm sbe)) -> AllocAct sbe
   -> Simulator sbe m (Typed (SBETerm sbe))
-doAlloc ty msztv allocActFn = do
-  nt            <- maybe (getTypedTerm (int32const 1)) getTypedTerm msztv
+doAlloc ty msztm allocActFn = do
+  one           <- getTypedTerm (int32const 1)
   m             <- getMem
-  rslt          <- withSBE $ \s -> allocActFn s m nt
+  rslt          <- withSBE $ \s -> allocActFn s m (fromMaybe one msztm)
 
   (c, t, m', e) <- case rslt of
     Left SASymbolicCountUnsupported  -> errorPath $ err "alloca"
@@ -1786,20 +1788,13 @@ printSymbolic = Override $ \_sym _rty args ->
 allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
                   ConstantProjection (SBEClosedTerm sbe)) =>
                 (L.Type
-                   -> Maybe (Typed L.Value)
+                   -> Maybe (Typed (SBETerm sbe))
                    -> Maybe Int
                    -> Simulator sbe m (Typed (SBETerm sbe)))
              -> Override sbe m
 allocHandler fn = Override $ \_sym _rty args ->
   case args of
-    [sizeTm] -> do
-      msize <- withSBE' $ \s -> getUVal (closeTerm s (typedValue sizeTm))
-      case msize of
-        Just size -> do
-          let sizeVal = Typed i32 (L.ValInteger size)
-          (Just . typedValue) <$> fn i8 (Just sizeVal) Nothing
-        Nothing -> do
-          e $ "malloc/alloca: symbolic size not supported (try a different memory model?)"
+    [sizeTm] -> (Just . typedValue) <$> fn i8 (Just sizeTm) Nothing
     _ -> e "alloca: wrong number of arguments"
   where
     e = errorPathBeforeCall . FailRsn
@@ -1869,8 +1864,7 @@ freshIntArray n = Override $ \_sym _rty args ->
               sz32 = fromIntegral size
               ety = intn . toEnum . fromEnum $ n
               ty = L.Array sz32 ety
-              sizeVal = Typed i32 (L.ValInteger size)
-          arrPtr <- typedValue <$> alloca ety (Just sizeVal) Nothing
+          arrPtr <- typedValue <$> alloca ety (Just sizeTm) Nothing
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ flip termArray elts
           let typedArrTm = Typed ty arrTm

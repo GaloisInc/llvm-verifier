@@ -175,7 +175,8 @@ buildArgv numArgs argv' = do
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   strVals  <- mapM (getTypedTerm' Nothing . cstring) argv'
   strPtrs  <- mapM (\ty -> tv <$> alloca ty Nothing Nothing) (tt <$> strVals)
-  argvBase <- alloca i8p (Just $ int32const numArgs) Nothing
+  num      <- getTypedTerm (int32const numArgs)
+  argvBase <- alloca i8p (Just num) Nothing
   argvArr  <- (L.Array numArgs i8p =:) <$> withSBE (\s -> termArray s strPtrs)
   -- Write argument string data and argument string pointers
   forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p
