@@ -781,6 +781,9 @@ getTypedTerm' ::
   )
   => Maybe (CF sbe) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
+getTypedTerm' mfrm (Typed (L.Alias i) v)
+  = getTypedTerm' mfrm =<< (`Typed` v) <$> withLC (`llvmLookupAlias` i)
+
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
 
