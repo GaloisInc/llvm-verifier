@@ -1,0 +1,496 @@
+\documentclass[11pt]{article}
+\usepackage{amsfonts}
+\usepackage{xspace}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage[headheight=90pt,headsep=12pt,includeheadfoot,top=24pt,left=1in,footskip=24pt]{geometry}
+\usepackage{verbatim}
+\usepackage{fancyvrb}
+\usepackage{amsmath, amsthm, amssymb}
+\usepackage{fancyhdr}
+\usepackage{xcolor}
+\usepackage[xetex,bookmarks=true,pagebackref=true,linktocpage=true]{hyperref}
+%\usepackage[style=list]{glossary}
+
+\newcommand{\titleline}{Generating Formal Models with the LLVM Symbolic Simulator}
+
+\hypersetup{%
+   pdftitle     = \titleline,
+   pdfkeywords  = {LLVM, Symbolic Simulation, Cryptography, Programming, Formal Methods, Formal Models},
+   pdfauthor    = {Galois, Inc.},
+   pdfpagemode  = UseOutlines
+}
+
+%\input{utils/Indexes.tex}
+%\input{utils/GlossaryItems.tex}
+%\input{utils/trickery.tex}
+
+% fonts
+\usepackage{fontspec}
+\usepackage{xunicode}
+\usepackage{xltxtra}
+%\setmainfont[Mapping=tex-text]{Garamond}
+\setsansfont[Mapping=tex-text]{Optima}
+\usepackage{sectsty}
+\allsectionsfont{\sffamily}
+
+\newcommand{\todo}[1]{\begin{center}\framebox{\begin{minipage}{0.8\textwidth}{{\bf TODO:} #1}\end{minipage}}\end{center}}
+
+\DefineVerbatimEnvironment{code}{Verbatim}{}
+
+% various little text sections:
+\newcommand{\draftdate}{DRAFT of \today}
+% \setlength{\voffset}{-1cm}
+% \setlength{\headsep}{2cm}
+% \setlength{\headheight}{15.2pt}
+% \renewcommand{\headrulewidth}{0pt} % no line on top
+% \renewcommand{\footrulewidth}{.5pt} % line on bottom
+% %\renewcommand{\chaptermark}[1]{\markboth{#1}{}}
+% %\renewcommand{\sectionmark}[1]{\markright{#1}{}}
+% \cfoot{}
+% \fancyfoot[LE,RO]{\fancyplain{}{\textsf{\thepage}}}
+% \fancyfoot[LO,RE]{\fancyplain{}{\textsf{\copyright\ 2010, Galois, Inc.}}}
+% %\fancyhead[LE]{\fancyplain{}{\textsf{\draftdate}}}
+% %\fancyhead[RO]{\fancyplain{}{\textsf{DO NOT DISTRIBUTE!}}}
+% \fancyhead[LE]{\fancyplain{}{\textsf{\titleline}}}
+% \fancyhead[RO]{\fancyplain{}{\textsf{\titleline}}}
+% \fancyhead[LO,RE]{}
+% \pagestyle{fancyplain}
+
+%\makeglossary
+%\makeindex
+
+\title{\LARGE{\bf \titleline}}
+\author{\\$ $\\$ $\\
+        Galois, Inc.\\
+        421 SW 6th Ave., Suite 300\\Portland, OR 97204}
+\date{
+\vspace*{2cm}$ $\\
+\includegraphics[height=1in]{images/Galois_logo_blue_box.pdf}
+\vspace*{2cm}$ $\\
+%\draftdate
+%\\
+%PLEASE DO NOT DISTRIBUTE!
+}
+
+\pagestyle{fancy}
+\fancyheadoffset[l]{1in}
+\fancyheadoffset[r]{0.2in}
+\fancyhead{}%clear
+\fancyfoot{}%clear
+\lhead{\sffamily\hspace{24pt}\includegraphics[height=1in]{images/Galois_logo_blue_box.pdf}}
+\rhead{\sffamily\titleline\\\vspace{12pt}}
+\rfoot{\sffamily\thepage}
+\lfoot{\sffamily\copyright 2011 Galois, Inc.}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{1pt}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\newpage
+
+\section{Introduction}
+
+This document describes how to use the Galois LLVM Symbolic Simulator's
+command-line interface, \texttt{lss}, to generate a formal model of a
+cryptographic algorithm compiled to LLVM from C, and to compare that
+model against a reference specification to verify that the LLVM version
+is correct. This brings benefits such as allowing programmers to
+experiment with efficient, customized implementations of an algorithm
+while retaining confidence that the changes do not affect the overall
+functionality.
+
+We assume some knowledge of C, a basic understanding of LLVM, and a
+passing familiarity with cryptography. However, we do not assume
+familiarity with symbolic simulation, formal modeling, or theorem
+proving.  We assume that the user has installed the LLVM 2.9 toolchain.
+Additionally, we assume that the user has installed the Cryptol tool set
+and the ABC logic synthesis system from UC Berkeley if she wishes to
+complete the equivalence checking.  Installation and configuration of
+those tools is outside the scope of this tutorial, although we will be
+discussing some of their use.
+
+In the examples of interaction with the simulator and other tools, lines
+beginning with a hash mark (\texttt{\#}) or short text followed by an
+angle bracket (such as \texttt{abc 01>}) indicate command-line prompts,
+and the following text is input provided by the user. All other
+monospaced text is the output of the associated tool.
+
+\section{Setting up the Environment}
+\label{sec:setup}
+ 
+Ensure that \texttt{clang}, \texttt{llvm-as}, and \texttt{llvm-dis} are
+in your path; these tools are part of the standard LLVM distribution.
+
+Similarly, make sure that the \texttt{lss} executable bundled with this
+document is in your path.  If you intend to run the equivalence checking
+part of the tutorial, \texttt{cryptol} will also need to be installed.
+
+All source code used by this tutorial can be found within the
+\texttt{lss-tutorial/code} subdirectory of the release.  There is a
+Makefile in that directory that can be used to compile everything with
+clang, link things together, and the \texttt{check} target can be used
+to start the equivalence checking process.
+
+\section{Symbolic Simulation}
+
+The LLVM Symbolic Simulator takes the place of a typical
+post-compilation execution environment, but makes it possible to reason
+about the behavior of programs on a wide range of potential inputs,
+rather than a fixed set of test vectors. A standard post-compilation
+execution environment for, e.g., clang-compiled programs, runs programs
+on concrete input values, producing concrete results. Symbolic
+simulation works similarly, but allows inputs to take the form of
+symbolic variables that represent arbitrary, unknown values. The result
+is then a mathematical formula that describes the output of the program
+in terms of the symbolic input variables.
+
+Given a formula representing a program's output, we can then either
+evaluate that formula with specific values in place of the symbolic
+input variables to get concrete output values, or compare the formula to
+another, using known mathematical transformations to prove that the two
+are equivalent.
+
+One downside of symbolic simulation, however, is that it cannot easily
+handle interaction with the outside world. If a program simply takes an
+input, performs some computation, and produces some output, symbolic
+simulation can reliably construct a model of that computation.
+Cryptographic algorithms typically fall into this category. In cases
+where a program does some computation, produces some output, reads some
+more input, and continues the computation based on the new information,
+we either need a model of the outside world, or to assume that the input
+could be completely arbitrary, and reason about what the program would
+do for any possible input.
+
+The LLVM Symbolic Simulator can evaluate simple output methods, such as
+the ubiquitous \texttt{printf()}.  If the value printed depends on the
+value of a symbolic input variable, a bit-level textual representation
+is shown with '?' marks to denote symbolic bits.
+
+The LLVM Symbolic Simulator provides a set of special functions for
+performing operations on symbolic values, and for emitting the formal
+model representing symbolic values of interest. The rest of this
+tutorial will demonstrate how to use these methods to generate a formal
+model of a simple AES128 implementation, and then compare this model to
+a reference specification.
+
+\section{Supplying Symbolic Input to AES128}
+
+In the code subdirectory of the directory containing this tutorial,
+there are some files and directories of note.  The file
+\texttt{aes128BlockEncrypt\_driver.c} contains the driver code that sets
+up the symbolic inputs to the AES128 block encrypt function;
+\texttt{aes128BlockEncrypt.[ch]} contains the block encrypt function
+implementation; the \texttt{sym-api} subdirectory contains copies of the
+``sigfuns API'' header and implementation files; finally, the
+\texttt{ref} subdirectory includes the cryptol reference specification
+and equivalence checking script.
+
+Let's start with \texttt{aes128BlockEncrypt\_driver.c}.  This code
+creates a simple wrapper around the \texttt{aes128BlockEncrypt}
+function.  We will use this source file as a running example, and step
+through what each line means in the context of symbolic simulation.
+
+Note that the driver includes \texttt{sym-api.h} to get access to the
+special functions used to interact with the symbolic simulator.
+
+The first two variable declarations in the \texttt{main} function are
+those with the most relevance to symbolic simulation.
+
+\begin{code}
+SWord32 *pt  = lss_fresh_array_uint32(4, 0x8899aabbUL);
+SWord32 *key = lss_fresh_array_uint32(4, 0x08090a0bUL);
+\end{code}
+
+These declarations each create a new array with entirely symbolic
+contents, intended to be used as the plaintext and key inputs to the
+block encrypt function.  Their size is fixed (4 elements of type
+uint32\_t, or 128 bits), but each element is a symbolic term
+representing an arbitrary 32-bit unsigned value.  The second parameter
+to the \texttt{lss\_fresh\_array\_uint32} function is the initial value
+for each element if this code is executed in a \emph{concrete} context
+(i.e., not via \texttt{lss}).  We can ignore it for our purposes here.
+
+The next declaration is standard C, and creates an uninitialized 128-bit
+array for holding the ciphertext result.  This does not hold symbolic
+values at the time of declaration, but the values stored inside it will
+be symbolic if they depend on the values in \texttt{pt} or \texttt{key},
+as we will expect them to.
+
+Next, calculation of the AES128 ciphertext occurs in a typical fashion,
+by calling the block encrypt function and passing both in parameters and
+out parameters by pointer.
+
+\begin{code}
+aes128BlockEncrypt(pt, key, ct);
+\end{code}
+
+The next and final statement does the work of creating a formal model
+from the AES128 block encrypt function.  This function instructs the
+symbolic simulator to generate a formula that describes how the elements
+of \texttt{ct} depend on the elements of \texttt{pt} and \texttt{key},
+and then writes that formula to a file called \texttt{aes.aig}:
+
+\begin{code}
+lss_write_aiger_array_uint32(ct, 4, "aes.aig");
+\end{code}
+
+Ultimately, we want to find a formal model that describes the output of
+the AES128 block encrypt function, in terms of whatever symbolic inputs
+it happens to depend on. In this case, this includes every byte of the
+input key and plaintext. However, for some algorithms, it could include
+only a subset of the symbolic variables in the program.
+
+The formal model that the simulator generates takes the form of an
+And-Inverter Graph (AIG), which is a way of representing a boolean
+function purely in terms of the logical operations ``and'' and
+``not''. The simplicity of this representation makes the models easy to
+reason about, and to compare to models from other sources.  However, the
+same simplicity means that the model files can be very large in
+comparison to the input source code.
+
+\section{Running the Simulator}
+
+To generate a formal model from the example described in the previous
+section, we can use the \texttt{lss} command, which forms the
+command-line front end of the LLVM Symbolic Simulator. At minimum, it
+needs to know where to find a fully-linked LLVM bitcode containing a
+\texttt{main} function.  Typing \texttt{make} inside the code
+subdirectory will produce a file called \texttt{aes.bc} that meets these
+criteria.
+
+The following command will then run \texttt{lss} to create a formal
+model:
+
+\begin{code}
+# lss aes.bc
+\end{code}
+
+This will result in a file called \texttt{aes.aig} that can be further
+analyzed using a variety of tools, including the Galois Cryptol tool set
+and the ABC logic synthesis system from UC Berkeley.
+
+\section{Viewing the Intermediate Representations}
+
+When working with input C source and linked LLVM bitcodes, it can be
+usefult to inspect two underlying intermediate representations: LLVM
+itself, and LLVM-Sym, the language to which LLVM programs are translated
+by \texttt{lss}.  For example, let's say we've compiled the AES128
+driver code by hand:
+
+\begin{code}
+clang -emit-llvm -I./sym-api -c aes128BlockEncrypt_driver.c \
+  -o aes128BlockEncrypt_driver.bc
+\end{code}
+
+To see the LLVM assembly langugage representation of this program, one
+can use \texttt{llvm-dis}, which produces a \texttt{.ll} file containing
+the disassembled bitcode:
+
+\begin{code}
+llvm-dis aes128BlockEncrypt_driver.bc
+\end{code}
+
+Similarly, to view the disassembly after it has been transformed into
+the LLVM-Sym representation, the \texttt{--xlate} option may be supplied
+to \texttt{lss}.  This option causes the LLVM-Sym representation to be
+displayed to stdout; the user may redirect output when convenient:
+
+\begin{code}
+lss --xlate aes128BlockEncrypt_driver.bc > aes128BlockEncrypt_driver.xlate
+\end{code}
+
+When viewing debugging output from \texttt{lss}, program locations are
+currently shown in reference to the LLVM-Sym representation, so it is
+sometimes useful to view that representation alongside \texttt{lss}
+feedback.
+
+\section{Verifying the Formal Model Using Cryptol}
+
+One easy way to verify an LLVM implementation against a reference
+specification is via the Cryptol tool set. Cryptol is a domain-specific
+language created by Galois for the purpose of writing high-level but
+precise specifications of cryptographic algorithms~\cite{cryptol}. The
+Cryptol tool set has built-in support for checking the equivalence of
+different Cryptol implementations, as well as comparing Cryptol
+implementations to external formal models.
+
+This tutorial comes with a handful of Cryptol files, most notably
+\texttt{Rijndael.cry} and \texttt{equivAES.cry}.  The former is a
+Cryptol specification of the Rijndael cipher.  In particular, it
+contains the function \texttt{blockEncrypt} which should have equivalent
+functionality to the \texttt{aes128BlockEncrypt} function in our C
+source.  Well, nearly equivalent: we write a small wrapper around this
+function, as can be seen in \texttt{equivAES.cry} that reorders the
+bytes of the inputs and outputs as needed to the form expected by the
+\texttt{blockEncrypt} function.  This essentially makes the calling
+convention and data layout assumptions of both functions identical
+before attempting to show equivalence.
+
+To compare the functionality of the two implementations, we have several
+options. As mentioned earlier, formal models can be evaluated on
+concrete inputs, or compared to other formal models using proof
+techniques to show equivalence for all possible inputs. The contents of
+\texttt{equivAES.cry} show how to compare the formal model of the C
+implementation against the Cryptol reference specification.
+
+\begin{code}
+...
+extern AIG llvm_aes("../aes.aig") : ([4][32], [4][32]) -> [4][32];
+theorem MatchesRef : {pt key}. llvm_aes (pt, key) == blockEncryptref_c (pt, key);
+blockEncryptref_c : ([4][32], [4][32]) -> [4][32];
+blockEncryptref_c (x, y) = ...
+...
+\end{code}
+
+The \texttt{extern AIG} line makes the contents of \texttt{aes.aig}
+available as a function called \texttt{llvm\_aes} that takes two
+4x32-bit values as input and produces one 4x32-bit value as
+output. Finally, the second line states a theorem: that the functions
+\texttt{llvm\_aes} and \texttt{blockEncryptref\_c} should produce the
+same ciphertext for all possible key and plaintext inputs.
+
+We can load \texttt{equivAES.cry} into the Cryptol tool set, yielding
+the following output:
+
+\begin{code}
+
+
+# cryptol equivAES.cry
+Cryptol version 1.8.22, Copyright (C) 2004-2011 Galois, Inc.
+                                            www.cryptol.net 
+Type :? for help
+Loading "equivAES.cry"..
+  Including "Rijndael.cry"..
+  Including "Cipher.cry"..
+  Including "AES.cry".. Checking types..
+  Loading extern aig from "../aes.aig".. Processing.. Done!
+*** Auto quickchecking 1 theorem.
+*** Checking "MatchesRef" ["equivAES.cry", line 5, col 1]
+Checking case 100 of 100 (100.00%) 
+100 tests passed OK
+[Coverage: 0.00%. (100/11579208923731619542357098500868790785326998466564056...)]
+\end{code}
+
+By default, the Cryptol interpreter processes every \texttt{theorem}
+declaration by automatically evaluating the associated expression on a
+series of random values, and ensuring that it always yields ``true''.
+In this case, it tried 100 random key and plaintext values, and the two
+functions yielded the same output in each case. However, the number of
+possible inputs is immense, so 100 test cases barely scratches the
+surface.
+
+To gain a higher degree of confidence that the functions do have the
+same functionality for all possible inputs, we can attempt to prove
+their equivalence deductively. From Cryptol's command line:
+
+\begin{code}
+equivAES> :set symbolic
+equivAES> :prove MatchesRef
+Q.E.D.
+equivAES> :fm blockEncryptref_c "aes-ref.aig"
+\end{code}
+
+This tells the Cryptol interpreter to switch to symbolic simulation mode
+(which is one way it can generate formal models from Cryptol functions)
+and then attempt to prove the theorem named \texttt{MatchesRef}. On a
+reasonably modern machine (as of September 2011), the proof should
+complete in less than 30 minutes. The output \texttt{Q.E.D.} means that
+the proof was successful.
+
+Finally, the \texttt{:fm} command tells the interpreter to generate a
+formal model of the \texttt{blockEncryptref\_c} function and store it in
+the file \texttt{aes-ref.aig}. We can then use this formal model to
+perform the same proof using an external tool such as ABC, as described
+next.
+
+Note that the above actions can be performed by running the
+\texttt{check} target of the Makefile in the code subdirectory.
+
+\section{Verifying the Formal Model Using ABC}
+
+ABC is a tool for logic synthesis and verification developed by
+researchers at UC Berkeley~\cite{abc}. It can perform a wide variety
+of transformations and queries on logic circuits, including those in
+the AIG form discussed earlier.
+
+As an alternative approach to the equivalence check from the previous
+section, we can use the \texttt{cec} command in ABC to attempt to
+prove the model generated by the symbolic simulator equivalent to the
+model generated from the Cryptol specification.
+
+\begin{code}
+# abc
+UC Berkeley, ABC 1.01 (compiled Oct 26 2010 13:07:15)
+abc 01> cec ./aes.aig ./aes-ref.aig
+Networks are equivalent.
+abc 01> 
+\end{code}
+
+% TODO: Add this section for final deliverable 
+% \section{Evaluating Formal Models on Concrete Inputs}
+
+% So far, we have demonstrated how to use the API of the symbolic
+% simulator to generate formal models, in the form of And-Inverter
+% Graphs, that describe the symbolic values of particular program
+% variables, and then use external tools to analyze those formal models.
+% The API also provides the ability to evaluate a formal model on
+% specific concrete inputs from within the simulator.
+
+% In the example from \texttt{JavaMD5.java}, the variable \texttt{out}
+% depends on symbolic inputs and is therefore represented by a symbolic
+% model. However, given concrete values for symbolic inputs that the
+% output depends on, the model can be reduced to a concrete final value.
+% Evaluation of a symbolic model to a concrete value uses one of the
+% \texttt{Symbolic.evalAig} methods, depending on the type of the output
+% variable of interest.
+
+% Because the symbolic model describing an output variable may have
+% inputs of various different types, the symbolic simulator API provides
+% a class hierarchy to represent possible input values. The
+% \texttt{CValue} class represents concrete input values, and has inner
+% subclasses \texttt{CBool}, \texttt{CByte}, \texttt{CInt}, and
+% \texttt{CLong}, to represent inputs of a variety of sizes.
+
+% Given a model output variable and an array of concrete inputs, the
+% \texttt{evalAig} function produces a new value of the same type as the
+% given output variable, but one that is guaranteed to contain a
+% concrete value from the perspective of the symbolic simulator. The
+% caller of \texttt{evalAig} is responsible for providing the correct
+% number of inputs. Otherwise, the simulator may throw a runtime error.
+
+% For example, if we replace the call to \texttt{Symbolic.writeAiger}
+% in the example above with the following code, the simulator will print
+% out the result of evaluating the symbolic model on a concrete message.
+
+% \begin{code}
+% byte[] result = Symbolic.evalAig(out,
+%   new CValue[] {
+%     new CValue.CByte((byte) 0x68), // h
+%     new CValue.CByte((byte) 0x65), // e
+%     new CValue.CByte((byte) 0x6c), // l
+%     new CValue.CByte((byte) 0x6c), // l
+%     new CValue.CByte((byte) 0x6f), // o
+%     new CValue.CByte((byte) 0x20), // 
+%     new CValue.CByte((byte) 0x77), // w
+%     new CValue.CByte((byte) 0x6f), // o
+%     new CValue.CByte((byte) 0x72), // r
+%     new CValue.CByte((byte) 0x6c), // l
+%     new CValue.CByte((byte) 0x64), // d
+%     new CValue.CByte((byte) 0x21), // !
+%     new CValue.CByte((byte) 0x21), // !
+%     new CValue.CByte((byte) 0x21), // !
+%     new CValue.CByte((byte) 0x21), // !
+%     new CValue.CByte((byte) 0x21)  // !
+%   });
+% for(int i = 0; i < result.length; i++) {
+%   System.out.println(result[i]);
+% }
+% \end{code}
+
+\bibliographystyle{plain}
+\bibliography{bib/lss-tutorial}
+
+\end{document}
