@@ -1,6 +1,6 @@
 #!/bin/sh
 
-TARGET=alpha-rc1
+TARGET=lss-alpha-rc1
 
 NM=`uname`
 
