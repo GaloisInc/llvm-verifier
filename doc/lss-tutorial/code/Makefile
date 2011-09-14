@@ -1,7 +1,6 @@
 CC=gcc
 CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I../../../sym-api
-# FIXME: adjust lss path to release location
-LSS?=../../../cabal-dev/bin/lss
+LSS?=../../bin/lss
 SYMAPI=./sym-api
 
 all: aes128BlockEncrypt_driver_llvm aes.bc
