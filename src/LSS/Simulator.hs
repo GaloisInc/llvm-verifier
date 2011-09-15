@@ -396,6 +396,7 @@ processMemCond rsn cond = do
       tellUser $ "This means that certain memory accesses were valid only on some paths."
       tellUser $ "In this case, the symbolic validity result was encountered at:"
       tellUser $ show $ ppPathLoc sbe p
+      tellUser ""
 
 run ::
   ( LogMonad m
