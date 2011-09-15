@@ -365,6 +365,11 @@ getProgramFinalMem = do
     ExitFrame _ _ mm -> return mm
     _                -> error "getProgramFinalMem: program not yet terminated"
 
+-- data PMCInfo = PMCIExpr SymExpr
+--              | PMCIStmt SymStmt
+--              | PMCIIntrinsic String
+--              | PMCIPushMemFrame
+
 -- Handle a condition returned by the memory model
 processMemCond ::
   ( Functor m
@@ -372,7 +377,8 @@ processMemCond ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => FailRsn -> SBETerm sbe -> Simulator sbe m ()
+  => -- Maybe PMCInfo ->
+    FailRsn -> SBETerm sbe -> Simulator sbe m ()
 processMemCond rsn cond = do
   condv <- condTerm cond
   case condv of
@@ -380,10 +386,16 @@ processMemCond rsn cond = do
     Just False -> errorPath rsn
     _          -> do
       -- TODO: provide more detail here?
-      dbugM' 3 "Warning: Obtained symbolic validity result from memory model."
-      p    <- getPath' "processMemCond"
+      sbe <- gets symBE
+      p   <- getPath' "processMemCond"
+
       newp <- addPathConstraint p Nothing cond
       modifyPath $ const newp
+
+      tellUser $ "Warning: Obtained symbolic validity result from memory model."
+      tellUser $ "This means that certain memory accesses were valid only on some paths."
+      tellUser $ "In this case, the symbolic validity result was encountered at:"
+      tellUser $ show $ ppPathLoc sbe p
 
 run ::
   ( LogMonad m

@@ -626,13 +626,13 @@ bmDump be sparse bm mranges = do
     $+$ text "Frame pointers:" <+> hcat (punctuate comma (map text $ map hx $ bmStackFrames bm))
     $+$ text "Storage:"
     $+$ (if sparse then ppStorage mranges else ppStorageShow) be (bmStorage bm)
-    $+$ text "Free List:"
-    $+$ vcat (V.toList (V.imap fl (bmFreeList bm)))
+--     $+$ text "Free List:"
+--     $+$ vcat (V.toList (V.imap fl (bmFreeList bm)))
   where
     h s  = showHex s ""
     hx s = "0x" ++ h s
-    fl i as = text "Size = 2^" <> int i <> colon <+>
-              sep (punctuate comma (map (text . h) as))
+--     fl i as = text "Size = 2^" <> int i <> colon <+>
+--               sep (punctuate comma (map (text . h) as))
 
 -- | @loadBytes be mem ptr size@ returns term representing all the bits with given size.
 bmLoadByte :: (Eq l, LV.Storable l)
@@ -889,16 +889,6 @@ buddyInitMemory mg =
                 , bmHeapEnd = end (mgHeap mg)
                 , bmFreeList = initFreeList (start (mgHeap mg)) (end (mgHeap mg))
 }
-
-ppFreeList :: FreeList -> String
-ppFreeList fl = fst $ foldr f ("",0) (V.toList fl)
-  where
-    f :: [Addr] -> (String, Int) -> (String, Int)
-    f addrs (acc, n) = ( acc ++ ("\nfl@idx#" ++ show n ++ ": "
-                                 ++ show (hcat $ punctuate comma $ map (text . s) addrs))
-                       , n + 1
-                       )
-    s = flip showHex ""
 
 createBuddyMemModel :: (Eq l, LV.Storable l)
                     => LLVMContext
@@ -1646,5 +1636,5 @@ testSBEBitBlast = do
     return ()
 
 __nowarn_unused :: a
-__nowarn_unused = undefined testSBEBitBlast ppFreeList trace c4
+__nowarn_unused = undefined testSBEBitBlast trace c4
 
