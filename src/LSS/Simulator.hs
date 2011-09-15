@@ -1789,6 +1789,10 @@ termToArg term = do
       return $ Arg (fromInteger n :: Int64)
     (L.PtrTo (L.PrimType (L.Integer 8)), _) ->
        Arg <$> loadString term
+    (L.PtrTo _, Just (CInt 32 n)) ->
+      return $ Arg (fromInteger n :: Int32)
+    (L.PtrTo _, Just (CInt 64 n)) ->
+      return $ Arg (fromInteger n :: Int64)
     _ -> Arg . show <$> prettyTermSBE (typedValue term)
 
 termIntS :: (Functor m, Monad m, Integral a) =>
@@ -1811,7 +1815,8 @@ printfHandler = Override $ \_sym _rty args ->
     (fmtPtr : rest) -> do
       fmtStr <- loadString fmtPtr
       isSym <- withSBE' isSymbolic
-      let fmtStr' = formatAsStrings fmtStr (map isSym rest)
+      ptrWidth <- withLC llvmAddrWidthBits
+      let fmtStr' = fixFormat (ptrWidth `div` 4) (map isSym rest) fmtStr
       resString <- symPrintf fmtStr' <$> mapM termToArg rest
       unlessQuiet $ liftIO $ putStr resString
       Just <$> termIntS 32 (length resString)
