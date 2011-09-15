@@ -827,6 +827,10 @@ getTypedTerm' mfrm (Typed _ (L.ValConstExpr ce))
         evalGEP (GEP ptr idxs)
       L.ConstConv L.BitCast tv t ->
         Typed t . typedValue <$> getTypedTerm' mfrm tv
+      L.ConstConv L.PtrToInt tv t ->
+        evalPtrToInt tv t
+      L.ConstConv L.IntToPtr tv t ->
+        evalIntToPtr tv t
       _ -> unimpl $ "getTypedTerm: ConstExpr eval: " ++ show ce
 
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
@@ -1028,6 +1032,10 @@ eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
+eval (Conv L.PtrToInt tv t2@(L.PrimType L.Integer{})) =
+  evalPtrToInt tv t2
+eval (Conv L.IntToPtr tv@(Typed (L.PrimType L.Integer{}) _) t2) =
+  evalIntToPtr tv t2
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
 eval (Alloca ty msztv malign ) = do
@@ -1056,6 +1064,36 @@ eval (Select tc tv1 v2)        = do
     Nothing    -> Typed t <$> withSBE (\s -> applyIte s c x y)
 eval (ExtractValue tv i      ) = evalExtractValue tv i
 eval (InsertValue _tv _ta _i ) = unimpl "eval InsertValue"
+
+evalPtrToInt, evalIntToPtr ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Typed L.Value -> L.Type -> Simulator sbe m (Typed (SBETerm sbe))
+
+evalPtrToInt tv@(Typed t1 _) t2@(L.PrimType (L.Integer tgtWidth)) = do
+  Typed t v <- getTypedTerm tv
+  CE.assert(t == t1) $ return ()
+  addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
+  Typed t2 <$>
+    if tgtWidth == addrWidth
+      then return v
+      else let op = if addrWidth > tgtWidth then L.Trunc else L.ZExt
+           in withSBE $ \s -> applyConv s op v t2
+evalPtrToInt _ _ = errorPath $ FailRsn "Invalid parameters to evalPtrToInt"
+
+evalIntToPtr tv@(Typed t1@(L.PrimType (L.Integer srcWidth)) _) t2 = do
+  Typed t v <- getTypedTerm tv
+  CE.assert (t == t1) $ return ()
+  addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
+  Typed t2 <$>
+    if srcWidth == addrWidth
+      then return v
+      else let op = if srcWidth > addrWidth then L.Trunc else L.ZExt
+           in withSBE $ \s -> applyConv s op v t2
+evalIntToPtr _ _ = errorPath $ FailRsn "Invalid parameters to evalIntToPtr"
 
 evalExtractValue ::
   ( MonadIO m
@@ -1862,7 +1900,6 @@ userSetVebosityOverride = Override $ \_sym _rty args -> do
     _ -> e "Incorrect number of parameters passed to lss_set_verbosity"
   where
     e = errorPathBeforeCall . FailRsn
-
 
 exitHandler ::
   ( Functor m
