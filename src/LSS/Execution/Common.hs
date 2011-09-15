@@ -72,6 +72,7 @@ data State sbe m = State
   , evHandlers   :: SEH sbe m       -- ^ Simulation event handlers
   , errorPaths   :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
   , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
+  , pathCounter  :: Integer         -- ^ Name supply for paths
   }
 
 data CtrlStk term mem = CtrlStk { mergeFrames :: [MergeFrame term mem] }
@@ -123,6 +124,7 @@ data Path' term mem = Path
   , pathConstraint  :: Constraint term    -- ^ The aggregated constraints
                                           -- necessary for execution of this
                                           -- path
+  , pathName        :: Integer            -- A unique name for this path
   }
 
 data FailRsn       = FailRsn String deriving (Show)
@@ -249,8 +251,9 @@ ppCallFrame sbe (CallFrame _sym regMap) =
   if M.null regMap then PP.empty else text "Locals:" $+$ nest 2 (ppRegMap sbe regMap)
 
 ppPath :: SBE sbe -> Path sbe -> Doc
-ppPath sbe (Path cf mrv _mexc mcb _mpcb _mem c) =
-  text "Path"
+ppPath sbe (Path cf mrv _mexc mcb _mpcb _mem c name) =
+  text "Path #"
+  <>  integer name
   <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID mcb
@@ -264,8 +267,9 @@ ppPath sbe (Path cf mrv _mexc mcb _mpcb _mem c) =
 
 -- Prints just the path's location and path constraints
 ppPathLoc :: SBE sbe -> Path sbe -> Doc
-ppPathLoc sbe (Path cf _ _ mcb _mpcb _ c) =
-  text "Path"
+ppPathLoc sbe (Path cf _ _ mcb _mpcb _ c name) =
+  text "Path #"
+  <>  integer name
   <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID mcb

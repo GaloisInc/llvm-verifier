@@ -8,9 +8,11 @@ Point-of-contact : jstanley
 -- Debugging output at various verbosity levels:
 -- 1: No output, the lowest verbosity level
 -- 2: Instruction trace only
--- 3: Warnings on symbolic validity results from memory model; show
---    path state details when all paths yield errors.
--- 4: Path constraints on nontrivial path merges
+-- 3: Warnings on symbolic validity results from memory model; show path state
+--    details when all paths yield errors.  Memory model information for error
+--    paths.  Displays error paths as they are encountered rather than at the
+--    end of execution.
+-- 4: Path constraints on nontrivial path merges.
 -- 5: Simulator internal state (control stack dump per instruction); show
 --    memory model details in addition to path state details when all paths
 --    yield errors.
@@ -140,6 +142,7 @@ newSimState cb sbe mem lifter seh mopts =
   , evHandlers   = seh
   , errorPaths   = []
   , lssOpts      = maybe defaultLSSOpts id mopts
+  , pathCounter  = 0
   }
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
@@ -240,7 +243,11 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   def  <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
 
-  path <- newPath (CallFrame calleeSym M.empty) =<< initMem
+  name <- do mp <- getPath
+             case mp of
+               Nothing -> return 0
+               Just p  -> return $ pathName p
+  path <- newPath name (CallFrame calleeSym M.empty) =<< initMem
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
@@ -374,7 +381,7 @@ processMemCond rsn cond = do
     _          -> do
       -- TODO: provide more detail here?
       dbugM' 3 "Warning: Obtained symbolic validity result from memory model."
-      p <- getPath' "processMemCond"
+      p    <- getPath' "processMemCond"
       newp <- addPathConstraint p Nothing cond
       modifyPath $ const newp
 
@@ -434,10 +441,11 @@ run = do
     runPath (pathCB -> Nothing)    = error "runPath: no current block"
     runPath p@(pathCB -> Just pcb) = go `catchError` h
       where
-        go = withCallFrame p $ \frm -> do
-               def <- lookupDefine (frmFuncSym frm) <$> gets codebase
-               runStmts $ sbStmts $ lookupSymBlock def pcb
-               run
+        go = do killWhenInfeasible
+                withCallFrame p $ \frm -> do
+                  def <- lookupDefine (frmFuncSym frm) <$> gets codebase
+                  runStmts $ sbStmts $ lookupSymBlock def pcb
+                  run
         h e = case e of
                 ErrorPathExc _rsn s -> do
                   -- errorPath ensures that the simulator state provided in the
@@ -447,6 +455,13 @@ run = do
                   run
                 _ -> throwError e
     runPath _ = error "unreachable"
+
+    killWhenInfeasible = do
+        p <- getPath' "killWhenInfeasible"
+        mc <- condTerm (pcTerm . pathConstraint $ p)
+        case mc of
+          Just False -> errorPath $ FailRsn $ "This path is infeasible"
+          _          -> return ()
 
     showErrCnt x
       | x == 1    = "Encountered errors on exactly one path. Details below."
@@ -460,7 +475,7 @@ run = do
           sbe <- gets symBE
           dbugM $ "Error reason        : " ++ show (ppFailRsn (epRsn ep))
           dbugM $ "Error path state    :\n" ++ show (nest 2 $ ppPath sbe p)
-          dumpMem 5 "Error path memory "
+          dumpMem' (Just $ pathMem p) 3 "Error path memory "
           when (length eps > 1) $ dbugM "--"
         dbugM $ replicate 80 '-'
 
@@ -534,6 +549,14 @@ addPathConstraintSC p c@(HasConstValue v i) = do
   Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
   ct <- withSBE (\s -> applyICmp s L.Ieq vt it)
   addPathConstraint p (Just c) ct
+addPathConstraintSC p (NotConstValues _ []) = return p
+addPathConstraintSC p c@(NotConstValues v (i:is)) = do
+  -- Construct the constraint term from the NotConstValues predicate
+  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (i1 =: v)
+  Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
+  ct <- withSBE (\s -> applyICmp s L.Ine vt it)
+  p' <- addPathConstraintSC p (NotConstValues v is)
+  addPathConstraint p' (Just c) ct
 
 -- @addPathConstraint p msc ct@ adds the given condition term @ct@ to the path
 -- constraint of @p@.  If msc is Just{}, it is added to the Constraint value
@@ -758,6 +781,9 @@ getTypedTerm' ::
   )
   => Maybe (CF sbe) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
+getTypedTerm' mfrm (Typed (L.Alias i) v)
+  = getTypedTerm' mfrm =<< (`Typed` v) <$> withLC (`llvmLookupAlias` i)
+
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
 
@@ -917,9 +943,8 @@ step (MergePostDominator pdid cond) = do
       Just _          -> error "merge postdom: expected postdom merge frame"
       Nothing         -> error "merge postdom: empty control stack"
 
-  p <- getPath' "step MergePostDominator"
-
   -- Construct the new path constraint for the current path
+  p    <- getPath' "step MergePostDominator"
   newp <- addPathConstraintSC p cond
 
   -- Merge the current path into the merged state for the current merge frame
@@ -937,7 +962,8 @@ step (PushPendingExecution cond) = pushMergeFrame =<< ppe =<< popMergeFrame
     ppe mf = do
       let (p, mf') = popPending mf
       divergent <- addPathConstraintSC p cond
-      return (pushPending p . pushPending divergent $ mf')
+      name      <- newPathName
+      return (pushPending p . pushPending divergent{ pathName = name } $ mf')
 
 step (SetCurrentBlock bid) = setCurrentBlockM bid
 
@@ -965,7 +991,13 @@ step (IfThenElse cond thenStmts elseStmts) = do
       CE.assert (t == i1) $ return ()
       maybe False (==i) . fmap (fromIntegral . fromEnum)
         <$> withSBE' (\sbe -> getBool $ closeTerm sbe v')
-
+    evalCond (NotConstValues v is) = do
+      Typed t v' <- getTypedTerm (Typed i1 v)
+      CE.assert (t == i1) $ return ()
+      mv'' <- withSBE' (\sbe -> getSVal $ closeTerm sbe v')
+      case mv'' of
+        Nothing -> return False
+        Just v'' -> return $ all (/= v'') is
 
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
@@ -998,7 +1030,9 @@ eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
-eval (Alloca ty msztv malign ) = alloca ty msztv malign
+eval (Alloca ty msztv malign ) = do
+  sizeTm <- maybe (return Nothing) (\tv -> Just <$> getTypedTerm tv) msztv
+  alloca ty sizeTm malign
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
@@ -1292,14 +1326,14 @@ alloca, malloc ::
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => L.Type
-  -> Maybe (Typed L.Value)
+  -> Maybe (Typed (SBETerm sbe))
   -> Maybe Int
   -> Simulator sbe m (Typed (SBETerm sbe))
 
-alloca ty msztv malign = doAlloc ty msztv $ \s m nt ->
+alloca ty msztm malign = doAlloc ty msztm $ \s m nt ->
   Left <$> stackAlloca s m ty nt (maybe 0 lg malign)
 
-malloc ty msztv malign = doAlloc ty msztv $ \s m nt ->
+malloc ty msztm malign = doAlloc ty msztm $ \s m nt ->
   Right <$> heapAlloc s m ty nt (maybe 0 lg malign)
 
 doAlloc ::
@@ -1308,12 +1342,12 @@ doAlloc ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => L.Type -> Maybe (Typed L.Value) -> AllocAct sbe
+  => L.Type -> Maybe (Typed (SBETerm sbe)) -> AllocAct sbe
   -> Simulator sbe m (Typed (SBETerm sbe))
-doAlloc ty msztv allocActFn = do
-  nt            <- maybe (getTypedTerm (int32const 1)) getTypedTerm msztv
+doAlloc ty msztm allocActFn = do
+  one           <- getTypedTerm (int32const 1)
   m             <- getMem
-  rslt          <- withSBE $ \s -> allocActFn s m nt
+  rslt          <- withSBE $ \s -> allocActFn s m (fromMaybe one msztm)
 
   (c, t, m', e) <- case rslt of
     Left SASymbolicCountUnsupported  -> errorPath $ err "alloca"
@@ -1331,6 +1365,12 @@ doAlloc ty msztv allocActFn = do
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+newPathName :: Monad m => Simulator sbe m Integer
+newPathName = do
+  cnt <- gets pathCounter
+  modify $ \s -> s{ pathCounter = cnt + 1 }
+  return cnt
 
 unlessQuiet :: MonadIO m => Simulator sbe m () -> Simulator sbe m ()
 unlessQuiet act = getVerbosity >>= \v -> unless (v == 0) act
@@ -1408,11 +1448,11 @@ entryRsltReg :: Reg
 entryRsltReg = L.Ident "__galois_final_rslt"
 
 newPath :: (Functor m, Monad m)
-  => CF sbe -> SBEMemory sbe -> Simulator sbe m (Path sbe)
-newPath cf mem = do
+  => Integer -> CF sbe -> SBEMemory sbe -> Simulator sbe m (Path sbe)
+newPath name cf mem = do
   true <- boolTerm True
   return $ Path cf Nothing Nothing (Just initSymBlockID) Nothing mem
-             (Constraint (SCAtom TrueSymCond) true)
+             (Constraint (SCAtom TrueSymCond) true) name
 
 boolTerm :: (Functor m, Monad m) => Bool -> Simulator sbe m (SBETerm sbe)
 boolTerm = withSBE . flip termBool
@@ -1524,6 +1564,12 @@ errorPath ::
   )
   => FailRsn -> Simulator sbe m a
 errorPath rsn = do
+  whenVerbosity (>=3) $ do
+    p   <- getPath' "errorPath"
+    sbe <- gets symBE
+    dbugM $ "Error path encountered: " ++ show (ppFailRsn rsn)
+    dbugM $ show $ ppPath sbe p
+
   -- Pop the control stack and move the current path to the error paths list
   mmf     <- topMF <$> gets ctrlStk
   (p, mf) <- case mmf of
@@ -1567,10 +1613,15 @@ prettyTermSBE :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m Doc
 prettyTermSBE t = withSBE' $ \s -> prettyTermD s t
 
 dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
-dumpMem v msg =
+dumpMem = dumpMem' Nothing
+
+dumpMem' :: (Functor m, MonadIO m) => Maybe (SBEMemory sbe) -> Int -> String -> Simulator sbe m ()
+dumpMem' mm v msg =
   whenVerbosity (>=v) $ do
     dbugM $ msg ++ ":"
-    m <- getMem
+    m <- case mm of
+           Just m  -> return m
+           Nothing -> getMem
     withSBE (\s -> memDump s m Nothing)
 
 dbugStep ::
@@ -1586,7 +1637,8 @@ dbugStep stmt = do
   case mp of
     Nothing -> dbugM' 2 $ "Executing: (no current path): " ++ show (ppSymStmt stmt)
     Just p  -> withCallFrame p $ \frm -> do
-      dbugM' 2 $ "Executing: "
+      dbugM' 2 $ "Executing ("
+                 ++ "#" ++ show (pathName p) ++ "): "
                  ++ show (L.ppSymbol (frmFuncSym frm))
                  ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
                  ++ ": " ++
@@ -1736,20 +1788,13 @@ printSymbolic = Override $ \_sym _rty args ->
 allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
                   ConstantProjection (SBEClosedTerm sbe)) =>
                 (L.Type
-                   -> Maybe (Typed L.Value)
+                   -> Maybe (Typed (SBETerm sbe))
                    -> Maybe Int
                    -> Simulator sbe m (Typed (SBETerm sbe)))
              -> Override sbe m
 allocHandler fn = Override $ \_sym _rty args ->
   case args of
-    [sizeTm] -> do
-      msize <- withSBE' $ \s -> getUVal (closeTerm s (typedValue sizeTm))
-      case msize of
-        Just size -> do
-          let sizeVal = Typed i32 (L.ValInteger size)
-          (Just . typedValue) <$> fn i8 (Just sizeVal) Nothing
-        Nothing -> do
-          e $ "malloc/alloca: symbolic size not supported (try a different memory model?)"
+    [sizeTm] -> (Just . typedValue) <$> fn i8 (Just sizeTm) Nothing
     _ -> e "alloca: wrong number of arguments"
   where
     e = errorPathBeforeCall . FailRsn
@@ -1771,6 +1816,19 @@ abortHandler = Override $ \_sym _rty args -> do
     _ -> e "Incorrect number of parameters passed to lss_abort()"
   where
     e = errorPathBeforeCall . FailRsn
+
+showPathOverride ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+showPathOverride = Override $ \_sym _rty _args -> do
+  p   <- getPath' "showPathOverride: no current path!"
+  sbe <- gets symBE
+  unlessQuiet $ dbugM $ show $ nest 2 $ ppPath sbe p
+  return Nothing
 
 exitHandler ::
   ( Functor m
@@ -1806,8 +1864,7 @@ freshIntArray n = Override $ \_sym _rty args ->
               sz32 = fromIntegral size
               ety = intn . toEnum . fromEnum $ n
               ty = L.Array sz32 ety
-              sizeVal = Typed i32 (L.ValInteger size)
-          arrPtr <- typedValue <$> alloca ety (Just sizeVal) Nothing
+          arrPtr <- typedValue <$> alloca ety (Just sizeTm) Nothing
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ flip termArray elts
           let typedArrTm = Typed ty arrTm
@@ -1974,7 +2031,7 @@ overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
 overrideByAddr = Override $ \_sym _rty args ->
   case args of
     [_fromPtr, _toPtr] -> do
-      dbugM "overrideByAddr: nyi"
+      _ <- unimpl "overrideByAddr"
       return Nothing
     _ -> errorPathBeforeCall
          $ FailRsn "lss_override_function_by_addr: wrong number of arguments"
@@ -2029,6 +2086,7 @@ standardOverrides =
      overrideByName)
   , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)
+  , ("lss_show_path", voidTy, [], False, showPathOverride)
   ]
 
 registerOverride' ::

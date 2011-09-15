@@ -1,0 +1,5 @@
+:l "equivAES.cry"
+:set symbolic
+:prove MatchesRef
+:fm blockEncryptref_c "aes-ref.aig"
+

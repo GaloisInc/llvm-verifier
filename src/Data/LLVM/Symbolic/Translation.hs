@@ -163,7 +163,11 @@ liftBB lti phiMap bb = do
            -> Int -- ^ Index of symbolic block that we are defining.
            -> [SymStmt] -- ^ Previously generated statements in reverse order.
            -> BlockGenerator ()
-      impl [] _ _ = liftError $ text "Missing terminal instruction."
+      impl [] idx il = liftError $
+                       text "Missing terminal instruction in block" <+>
+                       int idx <+>
+                       text "after generating the following statements:" $$
+                       (nest 2 . vcat . map ppSymStmt $ il)
       impl [Effect (LLVM.Ret tpv)] idx il =
         defineBlock (blockName idx) (reverse il ++ [MergeReturnAndClear tpv])
       impl [Effect LLVM.RetVoid] idx il =
@@ -197,6 +201,32 @@ liftBB lti phiMap bb = do
       impl [Effect (LLVM.Jump tgt)] idx il = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
+      impl [Effect (LLVM.Switch (Typed _ v) def cases)] idx il = do
+        defineBlock (blockName idx) $ reverse il ++ go cases
+        mapM_ (uncurry defineBlock) caseDefs
+          where go []            = [IfThenElse (NotConstValues v vs)
+                                               (brSymInstrs def)
+                                               symbolicCases]
+                go ((i, l) : cs) = [IfThenElse (HasConstValue v i)
+                                               (brSymInstrs l)
+                                               (go cs)]
+                symbolicCases    = concatMap mkCase caseConds ++
+                                   [ AddPathConstraint
+                                     (NotConstValues v vs) ] ++
+                                   brSymInstrs def
+                vs               = map fst cases
+                caseBlockIds     = [(idx + 1)..(idx + length cases)]
+                casePairs        = zip caseBlockIds cases
+                caseDefs         = map
+                                   (\(bid, (_, l)) ->
+                                      (blockName bid, brSymInstrs l))
+                                   casePairs
+                caseConds        = map
+                                   (\(bid, (cv, _)) -> (blockName bid, cv))
+                                   casePairs
+                mkCase (bid, cv) = [ SetCurrentBlock bid
+                                   , PushPendingExecution (HasConstValue v cv)
+                                   ]
       impl [Effect (LLVM.Br (Typed tc c) tgt1 tgt2)] idx il = do
         CE.assert (tc == i1) $ return ()
         let suspendSymBlockID = blockName (idx + 1)

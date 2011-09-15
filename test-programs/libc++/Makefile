@@ -1,3 +1,4 @@
+CLANG?=clang
 
 .PHONY: all
 all:
@@ -19,7 +20,7 @@ all: bitcode
 .PHONY: bitcode
 bitcode: libcxx/Makefile
 	for i in `find $(libcxx)/src -name \*.cpp`; do \
-	  clang -c -I$(libcxx)/include -c $$i -emit-llvm \
+	  $(CLANG) -c -I$(libcxx)/include -c $$i -emit-llvm \
 	    -o `echo $$(basename $$i) | sed 's|\(.*\)\.cpp|\1.bc|'`; \
 	done
 

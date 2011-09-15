@@ -1,0 +1,9 @@
+This directory contains executables and support files for the LLVM
+Symbolic Simulator (lss).
+
+CONTENTS (Version 0.1a Sep 2011)
+
+doc/         : lss man page
+tutorial/    : Tutorials on using lss
+bin/         : Command-line executables
+

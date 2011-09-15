@@ -143,11 +143,17 @@ ppSymExpr (InsertValue a v is) = text "insertvalue" <+> ppTypedValue a
 data SymCond
   -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.
   = HasConstValue SymValue Integer
+  -- | @NotConstValues v is@ holds if @v@ does not correspond to any
+  -- of the constants in @is@.
+  | NotConstValues SymValue [Integer]
+  -- | @TrueSymCond@ always holds.
   | TrueSymCond
 
 -- | Pretty print symbolic condition.
 ppSymCond :: SymCond -> Doc
 ppSymCond (HasConstValue v i) = ppSymValue v <+> text "==" <+> integer i
+ppSymCond (NotConstValues v is) = ppSymValue v <+> text "not in" <+>
+                                  brackets (commas (map integer is))
 ppSymCond TrueSymCond = text "true"
 
 -- | Instruction in symbolic level.
