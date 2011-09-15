@@ -105,12 +105,12 @@ functionality.
 We assume some knowledge of C, a basic understanding of LLVM, and a
 passing familiarity with cryptography. However, we do not assume
 familiarity with symbolic simulation, formal modeling, or theorem
-proving.  We assume that the user has installed the LLVM 2.9 toolchain.
+proving.  We assume that the user has installed the LLVM 2.9 toolchain
+(available from \texttt{http://http://llvm.org/releases}).
 Additionally, we assume that the user has installed the Cryptol tool set
 and the ABC logic synthesis system from UC Berkeley if she wishes to
 complete the equivalence checking.  Installation and configuration of
-those tools is outside the scope of this tutorial, although we will be
-discussing some of their use.
+those tools is outside the scope of this tutorial.
 
 In the examples of interaction with the simulator and other tools, lines
 beginning with a hash mark (\texttt{\#}) or short text followed by an
@@ -121,18 +121,16 @@ monospaced text is the output of the associated tool.
 \section{Setting up the Environment}
 \label{sec:setup}
  
-Ensure that \texttt{clang}, \texttt{llvm-as}, and \texttt{llvm-dis} are
-in your path; these tools are part of the standard LLVM distribution.
-
-Similarly, make sure that the \texttt{lss} executable bundled with this
-document is in your path.  If you intend to run the equivalence checking
-part of the tutorial, \texttt{cryptol} will also need to be installed.
+Ensure that \texttt{clang}, \texttt{llvm-dis}, \texttt{llvm-ld},
+\texttt{llvm-link}, etc., are in your path; these tools are part of the
+standard LLVM distribution.  Similarly, make sure that the \texttt{lss}
+executable bundled with this document is in your path.
 
 All source code used by this tutorial can be found within the
-\texttt{lss-tutorial/code} subdirectory of the release.  There is a
-Makefile in that directory that can be used to compile everything with
-clang, link things together, and the \texttt{check} target can be used
-to start the equivalence checking process.
+\texttt{tutorial/code} subdirectory of the release.  There is a Makefile
+in that directory that can be used to compile everything with
+\texttt{clang}, link things together, and the \texttt{check} target can
+be used to start the equivalence checking process.
 
 \section{Symbolic Simulation}
 
