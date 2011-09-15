@@ -23,7 +23,7 @@ Lightly tested:
 Limited or nonexistent support for:
 
 - Codes compiled from C++
-- Exception handling / setjmp / longjmp
+- Exception handling (including SJLJ-style exception handling)
 - Most Vector-typed operations
 - The insertvalue instruction
 - Some constant expression forms
