@@ -20,10 +20,10 @@ Lightly tested:
 - The lss_eval_aiger_array_* family of sigfuns
 - inttoptr / ptrtoint conversion operators
 
-Limited or nonexistent support for:
+Nonexistent, limited, or untested support for:
 
 - Codes compiled from C++
-- Exception handling (including SJLJ-style exception handling)
+- Exception handling (including setjmp/longjmp-style exception handling)
 - Most Vector-typed operations
 - The insertvalue instruction
 - Some constant expression forms
@@ -36,6 +36,8 @@ Limited or nonexistent support for:
   - llvm.memset.p0i8.i64
   - llvm.uadd.with.overflow.i64
 - User-definable memory segmentation
+- Big-endian architectures
+- Non-x86 architectures
 
 Quirks:
 
