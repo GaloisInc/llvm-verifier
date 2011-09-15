@@ -14,7 +14,7 @@ int main() {
     lss_show_path();
     int* p = (int*) 42;
     printf("ptr p = %u\n", (int) p);
-    printf("ptr a = %u\n", (int) a);
+    printf("ptr a = %u\n", (uint64_t) a);
     lss_show_mem();
     a[0] = 30991;
     a[1] = 3298;
