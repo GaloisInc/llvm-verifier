@@ -1830,6 +1830,40 @@ showPathOverride = Override $ \_sym _rty _args -> do
   unlessQuiet $ dbugM $ show $ nest 2 $ ppPath sbe p
   return Nothing
 
+showMemOverride ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+showMemOverride = Override $ \_sym _rty _args -> do
+  unlessQuiet $ dumpMem 1 "lss_show_mem()"
+  return Nothing
+
+userSetVebosityOverride ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+userSetVebosityOverride = Override $ \_sym _rty args -> do
+  sbe <- gets symBE
+  case args of
+    [tv@(Typed _t v)]
+      | isSymbolic sbe tv -> e "symbolic verbosity is illegal"
+      | otherwise         -> do
+          v' <- withSBE' $ \s -> getUVal $ closeTerm s v
+          case v' of
+            Nothing  -> error "unreachable"
+            Just v'' -> setVerbosity (fromIntegral v'')
+          return Nothing
+    _ -> e "Incorrect number of parameters passed to lss_set_verbosity"
+  where
+    e = errorPathBeforeCall . FailRsn
+
+
 exitHandler ::
   ( Functor m
   , MonadIO m
@@ -2087,6 +2121,8 @@ standardOverrides =
   , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)
   , ("lss_show_path", voidTy, [], False, showPathOverride)
+  , ("lss_show_mem", voidTy, [], False, showMemOverride)
+  , ("lss_set_verbosity", voidTy, [i32], False, userSetVebosityOverride)
   ]
 
 registerOverride' ::
