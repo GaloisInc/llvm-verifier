@@ -7,7 +7,7 @@ doc/         : lss man page
 tutorial/    : Tutorials on using lss
 bin/         : Command-line executables
 
-KNOWN ISSUES
+KNOWN ISSUES, LIMITATIONS, AND QUIRKS
 
 Lightly tested:
 
@@ -23,6 +23,7 @@ Lightly tested:
 Limited or nonexistent support for:
 
 - Codes compiled from C++
+- Exception handling
 - Most Vector-typed operations
 - The insertvalue instruction
 - Some constant expression forms
