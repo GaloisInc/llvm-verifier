@@ -626,9 +626,13 @@ bmDump be sparse bm mranges = do
     $+$ text "Frame pointers:" <+> hcat (punctuate comma (map text $ map hx $ bmStackFrames bm))
     $+$ text "Storage:"
     $+$ (if sparse then ppStorage mranges else ppStorageShow) be (bmStorage bm)
+    $+$ text "Free List:"
+    $+$ vcat (V.toList (V.imap fl (bmFreeList bm)))
   where
     h s  = showHex s ""
     hx s = "0x" ++ h s
+    fl i as = text "Size = 2^" <> int i <> colon <+>
+              sep (punctuate comma (map (text . h) as))
 
 -- | @loadBytes be mem ptr size@ returns term representing all the bits with given size.
 bmLoadByte :: (Eq l, LV.Storable l)

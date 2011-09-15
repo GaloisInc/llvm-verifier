@@ -52,12 +52,12 @@ defaultMemGeom lc =
           (heapStart,  heapEnd)
   where
     w           = llvmAddrWidthBits lc
-    addrSpace   = 2 ^ w - 1
+    addrSpace   = 2 ^ w
     stackStart  = 0
     stackEnd    = addrSpace `div` 4
-    codeStart   = stackEnd + 1
+    codeStart   = stackEnd
     codeEnd     = codeStart + addrSpace `div` 8
-    dataStart   = codeEnd + 1
+    dataStart   = codeEnd
     dataEnd     = dataStart + addrSpace `div` 8
-    heapStart   = dataEnd + 1
+    heapStart   = dataEnd
     heapEnd     = addrSpace
