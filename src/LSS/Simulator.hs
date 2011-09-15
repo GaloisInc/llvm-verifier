@@ -1028,6 +1028,14 @@ eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
+eval (Conv op@L.PtrToInt tv@(Typed t1 _) t2) = do
+  Typed t x <- getTypedTerm tv
+  CE.assert (t == t1) $ return ()
+  Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
+eval (Conv op@L.IntToPtr tv@(Typed t1 _) t2) = do
+  Typed t x <- getTypedTerm tv
+  CE.assert (t == t1) $ return ()
+  Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
 eval (Alloca ty msztv malign ) = do

@@ -1445,18 +1445,24 @@ bitArith be op (BitTerm a) (BitTerm b) = BitTerm <$> f be a b
               LLVM.FRem -> noFloats
         noFloats = bmError "floating point arithmetic not currently supported"
 
-bitConv :: (LV.Storable l, Eq l) =>
-           BitEngine l -> LLVM.ConvOp
-        -> BitTerm l -> LLVM.Type
-        -> IO (BitTerm l)
-bitConv be op (BitTerm x) (LLVM.PrimType (LLVM.Integer (fromIntegral -> w))) =
-  return $ BitTerm (f be w x)
-  where f = case op of
-              LLVM.Trunc -> assert (w < LV.length x) beTrunc
-              LLVM.ZExt  -> assert (w > LV.length x) beZext
-              LLVM.SExt  -> assert (w > LV.length x) beSext
+bitConv :: (LV.Storable l, Eq l)
+        => BitEngine l -> Int
+        -> LLVM.ConvOp -> BitTerm l -> LLVM.Type -> BitTerm l
+bitConv be ptrWidth op (BitTerm x) resType = BitTerm v
+  where LLVM.PrimType (LLVM.Integer (fromIntegral -> w)) = resType
+        l = LV.length x
+        v = case op of
+              LLVM.Trunc -> assert (w < l) $ beTrunc be w x
+              LLVM.ZExt  -> assert (w > l) $ beZext be w x
+              LLVM.SExt  -> assert (w > l) $ beSext be w x
+              LLVM.PtrToInt | w > l -> beZext be w x
+                            | w < l -> beTrunc be w x
+                            | otherwise -> x
+              LLVM.IntToPtr | ptrWidth > l -> beZext be ptrWidth x
+                            | ptrWidth < l -> beTrunc be ptrWidth x
+                            | otherwise -> x
+              LLVM.BitCast -> x
               _ -> bmError $ "Unsupported conv op: " ++ show op
-bitConv _ _ _ ty = bmError $ "Unsupported conv target type: " ++ show (LLVM.ppType ty)
 
 bitBNot :: (LV.Storable l, Eq l) =>
            BitEngine l -> BitTerm l
@@ -1481,6 +1487,7 @@ sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
             -> SBE (BitIO m l)
 sbeBitBlast lc be mm = sbe
   where
+    ptrWidth = llvmAddrWidthBits lc
     sbe = SBE
           { termInt          = (return . BitTerm) `c2` beVectorFromInt be
           , freshInt         = BitIO . fmap BitTerm . beInputVector be
@@ -1491,7 +1498,7 @@ sbeBitBlast lc be mm = sbe
           , applyICmp        = BitIO `c3` bitICmp be
           , applyBitwise     = BitIO `c3` bitBitwise be
           , applyArith       = BitIO `c3` bitArith be
-          , applyConv        = BitIO `c3` bitConv be
+          , applyConv        = return `c3` bitConv be ptrWidth
           , applyBNot        = BitIO . bitBNot be
           , termWidth        = fromIntegral . LV.length . btVector
           , closeTerm        = BitTermClosed . (,) be
