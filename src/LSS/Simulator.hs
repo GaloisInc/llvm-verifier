@@ -57,14 +57,15 @@ module LSS.Simulator
   , mutateMem_
   , processMemCond
   -- for testing
-  , withLC
+  , closeTermM
+  , dbugM
   , dbugTerm
   , dbugTypedTerm
-  , dbugM
   , dumpMem
   , getMem
   , getPath'
   , getTypedTerm
+  , withLC
   )
 where
 
@@ -1416,6 +1417,9 @@ doAlloc ty msztm allocActFn = do
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+closeTermM :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m (SBEClosedTerm sbe)
+closeTermM t = withSBE' $ \sbe -> closeTerm sbe t
 
 newPathName :: Monad m => Simulator sbe m Integer
 newPathName = do
