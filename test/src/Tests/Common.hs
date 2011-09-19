@@ -110,8 +110,7 @@ forAllMemModels _v bcFile testProp = do
     runMemTest lbl cb act = do
       run $ putStrLn $ "forAllMemModels: " ++ lbl
       be         <- run createBitEngine
-      (sbe, mem) <- first (sbeBitBlast (cbLLVMCtx cb) be)
-                      <$> run (act lc be mg)
+      (sbe, mem) <- first (sbeBitBlast lc be) <$> run (act lc be mg)
       testProp cb sbe mem
       where
         lc = cbLLVMCtx cb
