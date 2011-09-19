@@ -1,0 +1,16 @@
+include "Cipher.cry";
+
+extern AIG llvm_aes("../aes.aig") : ([4][32], [4][32]) -> [4][32];
+
+theorem MatchesRef : {pt key}. llvm_aes (pt, key) == blockEncryptref_c (pt, key);
+
+blockEncryptref_c : ([4][32], [4][32]) -> [4][32];
+blockEncryptref_c (x, y) = reverse (split (blockEncrypt (join y', join x')))
+  where {
+    x' = reverse x;
+    y' = reverse y;
+    include "Rijndael.cry";
+  };
+
+
+include "AES.cry";

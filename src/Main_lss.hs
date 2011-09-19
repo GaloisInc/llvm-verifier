@@ -122,15 +122,16 @@ main = do
     DagBased -> do
       (mm, mem') <- createDagMemModel lc be mg
       let sbe = sbeBitBlast lc be mm
-      runBitBlast sbe mem' cb mg argv' args mainDef
+      exitWith =<< runBitBlast sbe mem' cb mg argv' args mainDef
     BitBlast -> do
       (mm, mem') <- createBuddyMemModel lc be mg
       let sbe = sbeBitBlast lc be mm
-      runBitBlast sbe mem' cb mg argv' args mainDef
+      exitWith =<< runBitBlast sbe mem' cb mg argv' args mainDef
 
 runBitBlast :: (Eq l, Storable l)
             => SBE (BitIO mem l) -> mem
-            -> Codebase -> MemGeom -> [String] -> LSS -> SymDefine -> IO ()
+            -> Codebase -> MemGeom -> [String] -> LSS -> SymDefine
+            -> IO ExitCode
 runBitBlast sbe mem cb mg argv' args mainDef = do
   let opts = Just $ LSSOpts (errpaths args)
       seh' = defaultSEH
@@ -148,21 +149,20 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
     callDefine_ (L.Symbol "main") i32 $
       if mainHasArgv then buildArgv numArgs argv' else return []
 
-{-
-    -- tmp: hacky manual eval aiger until the overrides are all in place and working
     mrv <- getProgramReturnValue
     case mrv of
-      Nothing -> dbugM "no retval"
+      Nothing -> dbugM "Obtained no return value from main()" >> return ExitSuccess
       Just rv -> do
-        dbugTerm "rv" rv
-        -- for multiply-lss.c:multiply() with uint16_t VecTypes: manually check that 3 * 4 = 12.
-        eval <- withSBE $ \sbe -> evalAiger sbe ((True : True : replicate 14 False) ++ (False : False : True : replicate 13 False)) rv
-        dbugTerm "eval" eval
-    return ()
--}
+        let mval = getUVal . closeTerm sbe $ rv
+        case mval of
+          Nothing -> do
+            dbugM "Obtained symbolic return value from main()"
+            return ExitSuccess
+          Just 0 -> return ExitSuccess
+          Just n -> return . ExitFailure . fromIntegral $ n
   where
-      mainHasArgv              = not $ null $ sdArgs mainDef
-      numArgs                  = fromIntegral (length argv') :: Int32
+      mainHasArgv = not $ null $ sdArgs mainDef
+      numArgs     = fromIntegral (length argv') :: Int32
 
 buildArgv ::
   ( MonadIO m
@@ -175,7 +175,8 @@ buildArgv numArgs argv' = do
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   strVals  <- mapM (getTypedTerm' Nothing . cstring) argv'
   strPtrs  <- mapM (\ty -> tv <$> alloca ty Nothing Nothing) (tt <$> strVals)
-  argvBase <- alloca i8p (Just $ int32const numArgs) Nothing
+  num      <- getTypedTerm (int32const numArgs)
+  argvBase <- alloca i8p (Just num) Nothing
   argvArr  <- (L.Array numArgs i8p =:) <$> withSBE (\s -> termArray s strPtrs)
   -- Write argument string data and argument string pointers
   forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p

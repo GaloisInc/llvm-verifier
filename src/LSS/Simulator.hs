@@ -57,14 +57,15 @@ module LSS.Simulator
   , mutateMem_
   , processMemCond
   -- for testing
-  , withLC
+  , closeTermM
+  , dbugM
   , dbugTerm
   , dbugTypedTerm
-  , dbugM
   , dumpMem
   , getMem
   , getPath'
   , getTypedTerm
+  , withLC
   )
 where
 
@@ -365,6 +366,11 @@ getProgramFinalMem = do
     ExitFrame _ _ mm -> return mm
     _                -> error "getProgramFinalMem: program not yet terminated"
 
+-- data PMCInfo = PMCIExpr SymExpr
+--              | PMCIStmt SymStmt
+--              | PMCIIntrinsic String
+--              | PMCIPushMemFrame
+
 -- Handle a condition returned by the memory model
 processMemCond ::
   ( Functor m
@@ -372,7 +378,8 @@ processMemCond ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => FailRsn -> SBETerm sbe -> Simulator sbe m ()
+  => -- Maybe PMCInfo ->
+    FailRsn -> SBETerm sbe -> Simulator sbe m ()
 processMemCond rsn cond = do
   condv <- condTerm cond
   case condv of
@@ -380,10 +387,17 @@ processMemCond rsn cond = do
     Just False -> errorPath rsn
     _          -> do
       -- TODO: provide more detail here?
-      dbugM' 3 "Warning: Obtained symbolic validity result from memory model."
-      p    <- getPath' "processMemCond"
+      sbe <- gets symBE
+      p   <- getPath' "processMemCond"
+
       newp <- addPathConstraint p Nothing cond
       modifyPath $ const newp
+
+      tellUser $ "Warning: Obtained symbolic validity result from memory model."
+      tellUser $ "This means that certain memory accesses were valid only on some paths."
+      tellUser $ "In this case, the symbolic validity result was encountered at:"
+      tellUser $ show $ ppPathLoc sbe p
+      tellUser ""
 
 run ::
   ( LogMonad m
@@ -781,6 +795,9 @@ getTypedTerm' ::
   )
   => Maybe (CF sbe) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
+getTypedTerm' mfrm (Typed (L.Alias i) v)
+  = getTypedTerm' mfrm =<< (`Typed` v) <$> withLC (`llvmLookupAlias` i)
+
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
 
@@ -824,6 +841,10 @@ getTypedTerm' mfrm (Typed _ (L.ValConstExpr ce))
         evalGEP (GEP ptr idxs)
       L.ConstConv L.BitCast tv t ->
         Typed t . typedValue <$> getTypedTerm' mfrm tv
+      L.ConstConv L.PtrToInt tv t ->
+        evalPtrToInt tv t
+      L.ConstConv L.IntToPtr tv t ->
+        evalIntToPtr tv t
       _ -> unimpl $ "getTypedTerm: ConstExpr eval: " ++ show ce
 
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
@@ -1022,9 +1043,15 @@ eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
+eval (Conv L.PtrToInt tv t2@(L.PrimType L.Integer{})) =
+  evalPtrToInt tv t2
+eval (Conv L.IntToPtr tv@(Typed (L.PrimType L.Integer{}) _) t2) =
+  evalIntToPtr tv t2
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
-eval (Alloca ty msztv malign ) = alloca ty msztv malign
+eval (Alloca ty msztv malign ) = do
+  sizeTm <- maybe (return Nothing) (\tv -> Just <$> getTypedTerm tv) msztv
+  alloca ty sizeTm malign
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
@@ -1048,6 +1075,36 @@ eval (Select tc tv1 v2)        = do
     Nothing    -> Typed t <$> withSBE (\s -> applyIte s c x y)
 eval (ExtractValue tv i      ) = evalExtractValue tv i
 eval (InsertValue _tv _ta _i ) = unimpl "eval InsertValue"
+
+evalPtrToInt, evalIntToPtr ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Typed L.Value -> L.Type -> Simulator sbe m (Typed (SBETerm sbe))
+
+evalPtrToInt tv@(Typed t1 _) t2@(L.PrimType (L.Integer tgtWidth)) = do
+  Typed t v <- getTypedTerm tv
+  CE.assert(t == t1) $ return ()
+  addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
+  Typed t2 <$>
+    if tgtWidth == addrWidth
+      then return v
+      else let op = if addrWidth > tgtWidth then L.Trunc else L.ZExt
+           in withSBE $ \s -> applyConv s op v t2
+evalPtrToInt _ _ = errorPath $ FailRsn "Invalid parameters to evalPtrToInt"
+
+evalIntToPtr tv@(Typed t1@(L.PrimType (L.Integer srcWidth)) _) t2 = do
+  Typed t v <- getTypedTerm tv
+  CE.assert (t == t1) $ return ()
+  addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
+  Typed t2 <$>
+    if srcWidth == addrWidth
+      then return v
+      else let op = if srcWidth > addrWidth then L.Trunc else L.ZExt
+           in withSBE $ \s -> applyConv s op v t2
+evalIntToPtr _ _ = errorPath $ FailRsn "Invalid parameters to evalIntToPtr"
 
 evalExtractValue ::
   ( MonadIO m
@@ -1279,14 +1336,14 @@ alloca, malloc ::
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => L.Type
-  -> Maybe (Typed L.Value)
+  -> Maybe (Typed (SBETerm sbe))
   -> Maybe Int
   -> Simulator sbe m (Typed (SBETerm sbe))
 
-alloca ty msztv malign = doAlloc ty msztv $ \s m nt ->
+alloca ty msztm malign = doAlloc ty msztm $ \s m nt ->
   Left <$> stackAlloca s m ty nt (maybe 0 lg malign)
 
-malloc ty msztv malign = doAlloc ty msztv $ \s m nt ->
+malloc ty msztm malign = doAlloc ty msztm $ \s m nt ->
   Right <$> heapAlloc s m ty nt (maybe 0 lg malign)
 
 doAlloc ::
@@ -1295,12 +1352,12 @@ doAlloc ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => L.Type -> Maybe (Typed L.Value) -> AllocAct sbe
+  => L.Type -> Maybe (Typed (SBETerm sbe)) -> AllocAct sbe
   -> Simulator sbe m (Typed (SBETerm sbe))
-doAlloc ty msztv allocActFn = do
-  nt            <- maybe (getTypedTerm (int32const 1)) getTypedTerm msztv
+doAlloc ty msztm allocActFn = do
+  one           <- getTypedTerm (int32const 1)
   m             <- getMem
-  rslt          <- withSBE $ \s -> allocActFn s m nt
+  rslt          <- withSBE $ \s -> allocActFn s m (fromMaybe one msztm)
 
   (c, t, m', e) <- case rslt of
     Left SASymbolicCountUnsupported  -> errorPath $ err "alloca"
@@ -1357,6 +1414,9 @@ memFailRsn desc terms = do
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+closeTermM :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m (SBEClosedTerm sbe)
+closeTermM t = withSBE' $ \sbe -> closeTerm sbe t
 
 newPathName :: Monad m => Simulator sbe m Integer
 newPathName = do
@@ -1732,6 +1792,10 @@ termToArg term = do
       return $ Arg (fromInteger n :: Int64)
     (L.PtrTo (L.PrimType (L.Integer 8)), _) ->
        Arg <$> loadString term
+    (L.PtrTo _, Just (CInt 32 n)) ->
+      return $ Arg (fromInteger n :: Int32)
+    (L.PtrTo _, Just (CInt 64 n)) ->
+      return $ Arg (fromInteger n :: Int64)
     _ -> Arg . show <$> prettyTermSBE (typedValue term)
 
 termIntS :: (Functor m, Monad m, Integral a) =>
@@ -1754,7 +1818,8 @@ printfHandler = Override $ \_sym _rty args ->
     (fmtPtr : rest) -> do
       fmtStr <- loadString fmtPtr
       isSym <- withSBE' isSymbolic
-      let fmtStr' = formatAsStrings fmtStr (map isSym rest)
+      ptrWidth <- withLC llvmAddrWidthBits
+      let fmtStr' = fixFormat (ptrWidth `div` 4) (map isSym rest) fmtStr
       resString <- symPrintf fmtStr' <$> mapM termToArg rest
       unlessQuiet $ liftIO $ putStr resString
       Just <$> termIntS 32 (length resString)
@@ -1781,20 +1846,13 @@ printSymbolic = Override $ \_sym _rty args ->
 allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe,
                   ConstantProjection (SBEClosedTerm sbe)) =>
                 (L.Type
-                   -> Maybe (Typed L.Value)
+                   -> Maybe (Typed (SBETerm sbe))
                    -> Maybe Int
                    -> Simulator sbe m (Typed (SBETerm sbe)))
              -> Override sbe m
 allocHandler fn = Override $ \_sym _rty args ->
   case args of
-    [sizeTm] -> do
-      msize <- withSBE' $ \s -> getUVal (closeTerm s (typedValue sizeTm))
-      case msize of
-        Just size -> do
-          let sizeVal = Typed i32 (L.ValInteger size)
-          (Just . typedValue) <$> fn i8 (Just sizeVal) Nothing
-        Nothing -> do
-          e $ "malloc/alloca: symbolic size not supported (try a different memory model?)"
+    [sizeTm] -> (Just . typedValue) <$> fn i8 (Just sizeTm) Nothing
     _ -> e "alloca: wrong number of arguments"
   where
     e = errorPathBeforeCall . FailRsn
@@ -1830,6 +1888,39 @@ showPathOverride = Override $ \_sym _rty _args -> do
   unlessQuiet $ dbugM $ show $ nest 2 $ ppPath sbe p
   return Nothing
 
+showMemOverride ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+showMemOverride = Override $ \_sym _rty _args -> do
+  unlessQuiet $ dumpMem 1 "lss_show_mem()"
+  return Nothing
+
+userSetVebosityOverride ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+userSetVebosityOverride = Override $ \_sym _rty args -> do
+  sbe <- gets symBE
+  case args of
+    [tv@(Typed _t v)]
+      | isSymbolic sbe tv -> e "symbolic verbosity is illegal"
+      | otherwise         -> do
+          v' <- withSBE' $ \s -> getUVal $ closeTerm s v
+          case v' of
+            Nothing  -> error "unreachable"
+            Just v'' -> setVerbosity (fromIntegral v'')
+          return Nothing
+    _ -> e "Incorrect number of parameters passed to lss_set_verbosity"
+  where
+    e = errorPathBeforeCall . FailRsn
+
 exitHandler ::
   ( Functor m
   , MonadIO m
@@ -1864,8 +1955,7 @@ freshIntArray n = Override $ \_sym _rty args ->
               sz32 = fromIntegral size
               ety = intn . toEnum . fromEnum $ n
               ty = L.Array sz32 ety
-              sizeVal = Typed i32 (L.ValInteger size)
-          arrPtr <- typedValue <$> alloca ety (Just sizeVal) Nothing
+          arrPtr <- typedValue <$> alloca ety (Just sizeTm) Nothing
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ flip termArray elts
           let typedArrTm = Typed ty arrTm
@@ -2032,7 +2122,7 @@ overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
 overrideByAddr = Override $ \_sym _rty args ->
   case args of
     [_fromPtr, _toPtr] -> do
-      dbugM "overrideByAddr: nyi"
+      _ <- unimpl "overrideByAddr"
       return Nothing
     _ -> errorPathBeforeCall
          $ FailRsn "lss_override_function_by_addr: wrong number of arguments"
@@ -2088,6 +2178,8 @@ standardOverrides =
   , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)
   , ("lss_show_path", voidTy, [], False, showPathOverride)
+  , ("lss_show_mem", voidTy, [], False, showMemOverride)
+  , ("lss_set_verbosity", voidTy, [i32], False, userSetVebosityOverride)
   ]
 
 registerOverride' ::
