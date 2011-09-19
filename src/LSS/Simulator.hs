@@ -65,6 +65,7 @@ module LSS.Simulator
   , getMem
   , getPath'
   , getTypedTerm
+  , setSEH
   , withLC
   )
 where
@@ -1414,6 +1415,9 @@ memFailRsn desc terms = do
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+setSEH :: Monad m => SEH sbe m -> Simulator sbe m ()
+setSEH seh = modify $ \s -> s{ evHandlers = seh }
 
 closeTermM :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m (SBEClosedTerm sbe)
 closeTermM t = withSBE' $ \sbe -> closeTerm sbe t

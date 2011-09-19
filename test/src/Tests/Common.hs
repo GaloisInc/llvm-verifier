@@ -1,7 +1,8 @@
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE RankNTypes    #-}
-{-# LANGUAGE TypeFamilies  #-}
-{-# LANGUAGE ViewPatterns  #-}
+{-# LANGUAGE DeriveFunctor        #-}
+{-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE RankNTypes           #-}
+{-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE ViewPatterns         #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 
 module Tests.Common where
@@ -110,7 +111,7 @@ chkNullaryCInt32Fn v bcFile sym chkVal =
 runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> PropertyM IO [Maybe (BitTermClosed Lit)]
 runCInt32Fn v bcFile sym cargs =
   forAllMemModels v bcFile $ \cb s m -> run $ do
-    runSimulator cb s m liftSim defaultSEH Nothing $ do
+    runSimulator cb s m liftSim defaultSEH Nothing $ withVerbosity v $
       callCInt32Fn sym cargs
 
 callCInt32Fn sym cargs = do
@@ -159,56 +160,59 @@ type StdBitBlastSEH mem   = SEH (BitIO mem Lit) IO
 --                    -> PropertyM IO ()
 --runBitBlastSimTest v bcFile = assert <=< run . runBitBlastSim v bcFile
 
--- runBitBlastSimTest :: Int -> FilePath -> Simulator sbe IO Bool -> PropertyM IO ()
--- runBitBlastSimTest v bcFile act = do
+type AllMemModelTest =
+  forall sbe. (Functor sbe, ConstantProjection (SBEClosedTerm sbe))
+  => Simulator sbe IO Bool
 
-
-
+runAllMemModelTest :: Int -> FilePath -> AllMemModelTest -> PropertyM IO ()
+runAllMemModelTest v bcFile act =
+  assert . and =<< do
+    forAllMemModels v bcFile $ \cb s m -> run $
+      runSimulator cb s m liftSim defaultSEH Nothing (withVerbosity v >> act)
 
 -- stdBitBlastInit :: FilePath -> IO ( Codebase
 --                                   , StdBitEngine
 --                                   , BitBlastSBE StdMemory Lit
 --                                   , StdMemory
 --                                   )
-stdBitBlastInit bcFile = do
-  cb <- loadCodebase $ supportDir </> bcFile
-  be <- createBitEngine
-  let lc      = cbLLVMCtx cb
-      mg      = defaultMemGeom lc
-  --(mm, mem) <- dagMemModel lc be stack code gdata heap
-  let mm  = buddyMemModel lc be
-      mem = buddyInitMemory mg
-  return (cb, be, sbeBitBlast lc be mm, mem)
+-- stdBitBlastInit bcFile = do
+--   cb <- loadCodebase $ supportDir </> bcFile
+--   be <- createBitEngine
+--   let lc      = cbLLVMCtx cb
+--       mg      = defaultMemGeom lc
+--   --(mm, mem) <- dagMemModel lc be stack code gdata heap
+--   let mm  = buddyMemModel lc be
+--       mem = buddyInitMemory mg
+--   return (cb, be, sbeBitBlast lc be mm, mem)
 
 liftSim :: BitIO m l a -> Simulator sbe IO a
 liftSim = SM . lift . lift . liftSBEBitBlast
 
 -- here: should return type a, not Maybe (BitTermClosed l) so we can invoke
 -- e.g. simulator actions that return bool
-
 forAllMemModels ::
-  forall l. (l ~ Lit, Eq l, LV.Storable l)
+  forall a l. (l ~ Lit, Eq l, LV.Storable l)
   => Int
   -> FilePath
   -> ( forall sbe mem. (sbe ~ BitIO mem l)
        => Codebase
        -> SBE sbe
        -> SBEMemory sbe
-       -> PropertyM IO (Maybe (BitTermClosed l))
+       -> PropertyM IO a
      )
-  -> PropertyM IO [Maybe (BitTermClosed l)]
-forAllMemModels v bcFile testProp = do
+  -> PropertyM IO [a]
+forAllMemModels _v bcFile testProp = do
   cb <- run $ loadCodebase $ supportDir </> bcFile
   be <- run $ createBitEngine
   let lc = cbLLVMCtx cb
       mg = defaultMemGeom lc
   (bsbe, bmem) <- first (sbeBitBlast lc be) <$> run (createBuddyMemModel lc be mg)
   (dsbe, dmem) <- first (sbeBitBlast lc be) <$> run (createDagMemModel lc be mg)
-  run $ putStrLn $ "testing on buddy mem model"
-  r1 <- testProp cb bsbe bmem
+--   run $ putStrLn $ "testing on buddy mem model"
+--   r1 <- testProp cb bsbe bmem
   run $ putStrLn $ "testing on dag mem model"
   r2 <- testProp cb dsbe dmem
-  return [r1, r2]
+  return [r2]
 
 -- possibly skip a test
 psk :: Int -> PropertyM IO () -> PropertyM IO ()
@@ -230,4 +234,3 @@ runMain = runMain' False
 runMain' :: Bool -> Int -> FilePath -> ExpectedRV Int32 -> PropertyM IO ()
 runMain' quiet v bc erv =
   psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) bc (L.Symbol "main") erv
-

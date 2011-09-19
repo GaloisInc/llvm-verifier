@@ -29,41 +29,33 @@ symTests =
   , test 1 False "test-trivial-fresh-array"      $ trivFreshArr 1
   ]
   where
-    trivBranch v = psk v $ runSimple v trivBranchImpl
-    trivSymRd  v = psk v $ runSimple v trivSymRdImpl
+    trivBranch v = psk v $ runSimple v $ trivBranchImpl "trivial_branch" $
+                     \r0 r1 -> r0 == Just 0 && r1 == Just 1
+    trivSymRd  v = psk v $ runSimple v $ trivBranchImpl "sym_read" $
+                     \r0 r1 -> r0 == Just 99 && r1 == Just 42
     trivFreshInt v = psk v $ runMain v "test-fresh.bc" (RV 16)
     trivFreshArr v = psk v $ runMain v "test-fresh-array.bc" (RV 0)
-    runSimple v  = runBitBlastSimTest v "test-sym-simple.bc" defaultSEH
+    runSimple v  = runAllMemModelTest v "test-sym-simple.bc"
 
-trivBranchImpl :: StdBitBlastTest
-trivBranchImpl _be = do
+evalClosed ::
+  ( Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SBE sbe -> SBETerm sbe -> [Bool] -> sbe (Maybe Integer)
+evalClosed sbe v = fmap (getSVal . closeTerm sbe) . flip (evalAiger sbe) v
+
+trivBranchImpl :: String -> (Maybe Integer -> Maybe Integer -> Bool) -> AllMemModelTest
+trivBranchImpl symName chk = do
   b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine_ (L.Symbol "trivial_branch") i32 $ return [i32 =: b]
+  callDefine_ (L.Symbol symName) i32 $ return [i32 =: b]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
     Just rv -> do
-      (r0, r1) <- withSBE $ \sbe -> do
-        let inps0 = replicate 32 False
-            inps1 = replicate 31 False ++ [True]
-            q     = fmap (getSVal . closeTerm sbe) . flip (evalAiger sbe) rv
-        liftM2 (,) (q inps0) (q inps1)
-      return (r0 == Just 0 && r1 == Just 1)
-
-trivSymRdImpl :: StdBitBlastTest
-trivSymRdImpl _be = do
-  b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine_ (L.Symbol "sym_read") i32 $ return [i32 =: b]
-  mrv <- getProgramReturnValue
-  case mrv of
-    Nothing -> dbugM "No return value (fail)" >> return False
-    Just rv -> do
-      (r0, r1) <- withSBE $ \sbe -> do
-        let inps0 = replicate 32 False
-            inps1 = replicate 31 False ++ [True]
-            q     = fmap (getSVal . closeTerm sbe) . flip (evalAiger sbe) rv
-        liftM2 (,) (q inps0) (q inps1)
-      return (r0 == Just 99 && r1 == Just 42)
+      let inps0 = replicate 32 False
+          inps1 = replicate 31 False ++ [True]
+          f x   = withSBE $ \s -> evalClosed s rv x
+      liftM2 chk (f inps0) (f inps1)
 
 --------------------------------------------------------------------------------
 -- Scratch
