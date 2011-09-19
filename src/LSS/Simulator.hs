@@ -92,7 +92,6 @@ import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic.Common    (ConstantProjection(..),
                                             CValue(..))
-import           Verinf.Utils.CatchMIO
 
 import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
@@ -156,7 +155,6 @@ type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
 callDefine ::
   ( LogMonad m
   , MonadIO m
-  , CatchMIO m
   , Functor m
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
@@ -176,7 +174,6 @@ callDefine calleeSym t argsGen = do
 callDefine_ ::
   ( LogMonad m
   , MonadIO m
-  , CatchMIO m
   , Functor m
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
@@ -404,7 +401,6 @@ run ::
   ( LogMonad m
   , Functor m
   , MonadIO m
-  , CatchMIO m
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
