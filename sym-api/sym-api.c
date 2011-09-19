@@ -71,5 +71,7 @@ void lss_override_function_by_name (char *from, char *to) {}
 void lss_override_function_by_addr (void *from, void *to) {}
 
 void lss_print_symbolic (void *sym) {}
-void lss_abort () {}
+void lss_abort (const char *msg) {}
 void lss_show_path() {}
+void lss_show_mem() {}
+void lss_set_verbosity(int v) {}
