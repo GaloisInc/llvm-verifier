@@ -12,16 +12,15 @@ module Tests.AES (aesTests) where
 
 import           Control.Applicative
 import           Data.Maybe
+import           LSS.Execution.Debugging
 import           LSS.LLVMUtils
 import           LSS.SBEInterface
 import           LSS.Simulator
-import           Text.LLVM              ((=:), Typed(..), typedValue)
 import           Test.QuickCheck
 import           Tests.Common
-import           Verinf.Symbolic.Common    (ConstantProjection(..))
-import qualified Text.LLVM              as L
-
-import LSS.Execution.Debugging
+import           Text.LLVM               ((=:), Typed(..), typedValue)
+import           Verinf.Symbolic.Common  (ConstantProjection(..))
+import qualified Text.LLVM               as L
 
 aesTests :: [(Args, Property)]
 aesTests =
@@ -30,16 +29,18 @@ aesTests =
   ]
   where
     aes128Concrete v = psk v $ runAES v aes128ConcreteImpl
-    runAES v         = runBitBlastSimTest v "aes128BlockEncrypt.bc" sanityChecks
+    runAES v         = runAllMemModelTest v "aes128BlockEncrypt.bc"
 
-aes128ConcreteImpl :: StdBitBlastTest
-aes128ConcreteImpl _be = do
+aes128ConcreteImpl :: AllMemModelTest
+aes128ConcreteImpl = do
+  setSEH sanityChecks
   [_, _, typedValue -> ctRawPtr] <-
     callDefine (L.Symbol "aes128BlockEncrypt") voidTy $ do
       ptptr  <- initArr ptVals
       keyptr <- initArr keyVals
       ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
       return $ map (i32p =:) [ptptr, keyptr, ctptr]
+
   Just mem <- getProgramFinalMem
   ctarr  <- load' mem (L.PtrTo arrayTy =: ctRawPtr)
   ctVals <- withSBE $ \s ->
@@ -48,10 +49,12 @@ aes128ConcreteImpl _be = do
   where
     getVal s   = typedValue . fmap (fromJust . getUVal . closeTerm s)
     initArr xs = do
-       arr <- withSBE $ \s -> termArray s =<< mapM (termInt s 32) xs
+       arr <- withSBE . flip termArray
+                =<< mapM (withSBE . \x s -> termInt s 32 x) xs
        p   <- typedValue <$> alloca arrayTy Nothing (Just 4)
        store (arrayTy =: arr) p
        return p
+
     arrayTy = L.Array 4 i32
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]
     keyVals = [0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f]

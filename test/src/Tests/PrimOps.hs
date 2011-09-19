@@ -44,7 +44,7 @@ primOpTests =
   , test  1  False "test-call-simple"      $ testCallSimple  1
   , test  1  False "test-ptr-simple"       $ testPtrSimple   1
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
-  , test  1  False  "test-call-exit"        $ testCallExit    1
+  , test  1  False  "test-call-exit"       $ testCallExit    1
   , test  1  False "test-call-alloca"      $ testCallAlloca  1
   , test  1  False "test-call-malloc"      $ testCallMalloc  1
   ]
@@ -68,8 +68,8 @@ primOpTests =
     testCallVR v      = runMain v "test-call-voidrty.bc" VoidRV
     testCallSimple v  = runMain v "test-call-simple.bc" (RV 1)
     testPtrSimple v   = runMain v "test-ptr-simple.bc" (RV 99)
-    testSetupPtrArg v = psk v $ runBitBlastSimTest v "test-primops.bc"
-                                  defaultSEH testSetupPtrArgImpl
+    testSetupPtrArg v = psk v $ runAllMemModelTest v "test-primops.bc"
+                                  testSetupPtrArgImpl
     testCallExit v    = runMain' True v "test-call-exit.bc" AllPathsErr
     testCallAlloca v  = runMain v "test-call-alloca.bc" (RV 34289)
     testCallMalloc v  = runMain v "test-call-malloc.bc" (RV 34289)
@@ -106,8 +106,12 @@ chkArithBitEngineFn w s op fn = do
     r' <- run . liftSBEBitBlast $ applyArith sbe op x' y'
     assert (proj (BitTermClosed (be, r')) == Just (fromIntegral r))
 
-testSetupPtrArgImpl :: StdBitBlastTest
-testSetupPtrArgImpl be = do
+testSetupPtrArgImpl ::
+  ( Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Simulator sbe IO Bool
+testSetupPtrArgImpl = do
   callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) $ do
     a <- withLC llvmPtrAlign
     p <- alloca i32 Nothing (Just $ fromIntegral a)
@@ -121,7 +125,7 @@ testSetupPtrArgImpl be = do
       w <- withLC llvmAddrWidthBits
       p <- L.Typed (L.PtrTo i32) <$> withSBE (\sbe -> termInt sbe w 0)
       r <- load' mem p
-      return $ BitTermClosed (be, r) `constTermEq` 42
+      (`constTermEq` 42) <$> withSBE' (`closeTerm` r)
 
 --------------------------------------------------------------------------------
 -- Scratch

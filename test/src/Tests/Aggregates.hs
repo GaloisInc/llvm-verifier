@@ -5,18 +5,19 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ViewPatterns     #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE Rank2Types          #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns        #-}
 
 module Tests.Aggregates (aggTests) where
 
+import           Control.Applicative
 import           LSS.LLVMUtils
 import           LSS.SBEInterface
-import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
--- import           Verinf.Utils.LogMonad
 import qualified Text.LLVM        as L
 
 aggTests :: [(Args, Property)]
@@ -39,11 +40,12 @@ aggTests =
     structArray v         = psk v $ runStruct v structArrayImpl
     t1                    = mkNullaryTest "test-arrays.bc"
     t2                    = mkNullaryTest "test-mat4x4.bc"
-    runStruct v           = runBitBlastSimTest v "test-structs.bc" defaultSEH
     mkNullaryTest fn v nm = psk v . chkNullaryCInt32Fn v fn (L.Symbol nm)
+    runStruct v           = \(f :: AllMemModelTest) ->
+                              runAllMemModelTest v "test-structs.bc" f
 
-structInitAccessImpl :: StdBitBlastTest
-structInitAccessImpl be = do
+structInitAccessImpl :: AllMemModelTest
+structInitAccessImpl = do
   callDefine_ (L.Symbol "struct_test") i64 (return [])
   mrv <- getProgramReturnValue
   case mrv of
@@ -51,17 +53,19 @@ structInitAccessImpl be = do
     Just rv -> do
       [L.Typed _ bx, L.Typed _ by, _] <- do
         withSBE $ \sbe -> termDecomp sbe [i32, i8, padTy 3] rv
-      return $ bx `teq` 42 && by `teq` fromIntegral (fromEnum 'z')
-  where
-    teq t v = BitTermClosed (be, t) `constTermEq` v
+      bxc <- withSBE' (`closeTerm` bx)
+      byc <- withSBE' (`closeTerm` by)
+      return $ bxc `constTermEq` 42
+               &&
+               byc `constTermEq` fromIntegral (fromEnum 'z')
 
-structArrayImpl :: StdBitBlastTest
-structArrayImpl be = do
+structArrayImpl :: AllMemModelTest
+structArrayImpl = do
   callDefine_ (L.Symbol "struct_test_two") i32 (return [])
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
-    Just rv -> return $ BitTermClosed (be, rv) `constTermEq` 1
+    Just rv -> (`constTermEq` 1) <$> withSBE' (`closeTerm` rv)
 
 --------------------------------------------------------------------------------
 -- Scratch
