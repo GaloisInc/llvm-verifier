@@ -10,6 +10,7 @@ import Test.QuickCheck.Test
 
 import Tests.AES
 import Tests.Aggregates
+import Tests.Errors
 import Tests.IO
 import Tests.MemModel
 import Tests.PrimOps
@@ -41,9 +42,5 @@ runTests chooseTest = do
                    , ("AES", aesTests)
                    , ("I/O", ioTests)
                    , ("MemModel", memModelTests)
+--                   , ("Errors", errorTests)
                    ]
-
-
-
-
-

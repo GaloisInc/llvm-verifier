@@ -182,5 +182,5 @@ runMain :: Int -> FilePath -> ExpectedRV Int32 -> PropertyM IO ()
 runMain = runMain' False
 
 runMain' :: Bool -> Int -> FilePath -> ExpectedRV Int32 -> PropertyM IO ()
-runMain' quiet v bc erv =
+runMain' quiet v bc erv = do
   psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) bc (L.Symbol "main") erv

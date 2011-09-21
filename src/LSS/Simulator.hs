@@ -264,6 +264,8 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
     bindArgs formals actuals
       | length formals /= length actuals =
           err $ text "incorrect number of actual parameters"
+            $+$ text "formals: " <> text (show formals)
+
       | otherwise =
           foldr bindArg M.empty (formals `zip` actuals)
 
