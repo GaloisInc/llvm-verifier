@@ -107,8 +107,8 @@ forAllMemModels _v bcFile testProp = do
   where
     runMemTest :: forall mem.
                   String -> Codebase -> MemCreator mem l -> PropertyM IO a
-    runMemTest lbl cb act = do
-      run $ putStrLn $ "forAllMemModels: " ++ lbl
+    runMemTest _lbl cb act = do
+--       run $ putStrLn $ "forAllMemModels: " ++ lbl
       be         <- run createBitEngine
       (sbe, mem) <- first (sbeBitBlast lc be) <$> run (act lc be mg)
       testProp cb sbe mem
