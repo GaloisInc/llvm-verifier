@@ -18,7 +18,6 @@ Point-of-contact : jstanley
 module LSSImpl where
 
 import           Control.Applicative             hiding (many)
-import           Control.Arrow
 import           Control.Monad.State
 import           Data.Int
 import           Data.LLVM.Memory
@@ -31,7 +30,7 @@ import           LSS.Simulator
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           Text.LLVM                       ((=:), Typed(..))
-import           Verinf.Symbolic.Common          (ConstantProjection(..), Lit, createBitEngine)
+import           Verinf.Symbolic.Common          (ConstantProjection(..), Lit)
 import           Verinf.Utils.LogMonad
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
@@ -59,29 +58,26 @@ data ExecRslt sbe crt
   | SymRV    [ErrorPath sbe] (Maybe (SBEMemory sbe)) (SBETerm sbe)
   | ConcRV   [ErrorPath sbe] (Maybe (SBEMemory sbe)) crt
 
-type ExecRsltHndlr crt a =
-  forall sbe.
-     SBE sbe                  -- ^ SBE that was used used during a test
-  -> (MemType, SBEMemory sbe) -- ^ Typed initial memory that was used during a test
-  -> ExecRslt sbe crt         -- ^ Execution results; final memory is embedded here
+type ExecRsltHndlr sbe crt a =
+     SBE sbe          -- ^ SBE that was used used during a test
+  -> SBEMemory sbe    -- ^ Typed initial memory that was used during a test
+  -> ExecRslt sbe crt -- ^ Execution results; final memory is embedded here
   -> IO a
 
-lssImpl :: Codebase -> [String] -> MemType -> LSS -> ExecRsltHndlr Integer a -> IO a
-lssImpl cb argv0 memType args hndlr = do
-  be      <- createBitEngine
+lssImpl :: SBE (BitIO mem Lit)
+        -> SBEMemory (BitIO mem Lit)
+        -> Codebase
+        -> [String]
+        -> MemType
+        -> LSS
+        -> IO (ExecRslt (BitIO mem Lit) Integer)
+lssImpl sbe mem cb argv0 _memType args = do
   mainDef <- case lookupDefine' (L.Symbol "main") cb of
                Nothing -> error "Provided bitcode does not contain main()."
                Just mainDef -> do
                  when (null (sdArgs mainDef) && length argv' > 1) warnNoArgv
                  return mainDef
-  case memType of
-    BitBlastDagBased -> do
-      (sbe, mem) <- first (sbeBitBlast lc be) <$> createDagMemModel lc be mg
-      hndlr sbe (memType, mem) =<< runBitBlast sbe mem cb mg argv' args mainDef
-
-    BitBlastBuddyAlloc -> do
-      (sbe, mem) <- first (sbeBitBlast lc be) <$> createBuddyMemModel lc be mg
-      hndlr sbe (memType, mem) =<< runBitBlast sbe mem cb mg argv' args mainDef
+  runBitBlast sbe mem cb mg argv' args mainDef
   where
     argv' = "lss" : argv0
     lc    = cbLLVMCtx cb

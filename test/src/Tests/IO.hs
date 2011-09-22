@@ -14,12 +14,14 @@ import           Tests.Common
 ioTests :: [(Args, Property)]
 ioTests =
   [
-    test  1  False "printf"              $ testPrintf    1
-  , test  1  False "printf-str"          $ testPrintfStr 1
+    lssTest 0 "test-call-printf" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 3)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 3)
+
+  , lssTest 0 "test-printf-str" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 8)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 8)
   ]
-  where
-    testPrintf v = runMain' True v "test-call-printf.bc" (RV 3)
-    testPrintfStr v = runMain' True v "test-printf-str.bc" (RV 8)
 
 --------------------------------------------------------------------------------
 -- Scratch

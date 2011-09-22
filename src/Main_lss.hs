@@ -19,11 +19,13 @@ import           Data.LLVM.Symbolic.Translation  (liftDefine)
 import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
+import           LSS.SBEBitBlast
 import           LSSImpl
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           System.Environment              (getArgs)
 import           System.Exit
 import           Text.ParserCombinators.Parsec
+import           Verinf.Symbolic.Common          (createBitEngine)
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
 
@@ -52,13 +54,13 @@ main = do
   let eatWS (' ':cs) = eatWS cs
       eatWS cs       = cs
 
-  mem <- case eatWS <$> memtype args of
-           Just "dagbased" -> return BitBlastDagBased
-           Just "bitblast" -> return BitBlastBuddyAlloc
-           Nothing         -> return BitBlastBuddyAlloc
-           _               -> do
-             putStrLn "Invalid memory model specified.  Please choose 'bitblast' or 'dagbased'."
-             exitFailure
+  memType <- case eatWS <$> memtype args of
+    Just "dagbased" -> return BitBlastDagBased
+    Just "bitblast" -> return BitBlastBuddyAlloc
+    Nothing         -> return BitBlastBuddyAlloc
+    _               -> do
+      putStrLn "Invalid memory model specified.  Please choose 'bitblast' or 'dagbased'."
+      exitFailure
 
   bcFile <- case mname args of
     Nothing -> do putStrLn $ "lss: No LLVM bitcode file provided. "
@@ -83,16 +85,32 @@ main = do
     L.modDefines              `via` (ppSymDefine . liftDefine)
     exitWith ExitSuccess
 
-  lssImpl cb argv' mem args $ \sbe (_initialMem, _memType) execRslt -> do
-    case execRslt of
-        NoMainRV _eps _mm -> do
-          unless (dbug args == 0) $ dbugM "Obtained no return value from main()."
-          exitWith ExitSuccess >> return ()
-        SymRV _eps _mm rv -> do
-          unless (dbug args == 0) $ dbugM "Obtained symbolic return value from main():"
-          dbugM $ show $ prettyTermD sbe rv
-          exitWith ExitSuccess >> return ()
-        ConcRV _eps _mm (fromIntegral -> rv) -> do
-          unless (dbug args == 0) $ dbugM $ "Obtained concrete return value from main(): " ++ show rv
-          exitWith (if rv == 0 then ExitSuccess else ExitFailure rv) >> return ()
+  be <- createBitEngine
+  let lc = cbLLVMCtx cb
+      mg = defaultMemGeom lc
+      processRslt sbe execRslt = do
+        case execRslt of
+            NoMainRV _eps _mm -> do
+              unless (dbug args == 0) $
+                dbugM "Obtained no return value from main()."
+              _ <- exitWith ExitSuccess
+              return ()
+            SymRV _eps _mm rv -> do
+              unless (dbug args == 0) $
+                dbugM "Obtained symbolic return value from main():"
+              dbugM $ show $ prettyTermD sbe rv
+              _ <- exitWith ExitSuccess
+              return ()
+            ConcRV _eps _mm (fromIntegral -> rv) -> do
+              unless (dbug args == 0) $
+                dbugM $ "Obtained concrete return value from main(): " ++ show rv
+              _ <- exitWith (if rv == 0 then ExitSuccess else ExitFailure rv)
+              return ()
+  case memType of
+    BitBlastDagBased -> do
+      (sbe, mem) <- createDagAll be lc mg --first (sbeBitBlast lc be) <$> createDagMemModel lc be mg
+      processRslt sbe =<< lssImpl sbe mem cb argv' memType args
+    BitBlastBuddyAlloc -> do
+       (sbe, mem) <- createBuddyAll be lc mg
+       processRslt sbe =<< lssImpl sbe mem cb argv' memType args
 

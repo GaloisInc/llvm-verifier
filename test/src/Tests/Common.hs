@@ -96,24 +96,62 @@ runAllMemModelTest v getCB act = do
       runSimulator cb s m liftBitBlastSim defaultSEH
         Nothing (withVerbosity v act)
 
-runAllMemModelTestLSS :: Maybe Int
-                      -> PropertyM IO Codebase
-                      -> [String]
-                      -> ExecRsltHndlr Integer Bool
-                      -> PropertyM IO ()
-runAllMemModelTestLSS mv getCB argv' chk = assert . and =<< do
-  cb <- getCB
-  b0 <- run $ lssImpl cb argv' BitBlastBuddyAlloc cmdLineOpts chk
-  b1 <- run $ lssImpl cb argv' BitBlastDagBased cmdLineOpts chk
-  return [b0, b1]
+runTestLSSCommon :: Int
+                 -> Codebase
+                 -> PropertyM IO
+                      ( LLVMContext
+                      , MemGeom
+                      , BitEngine Lit
+                      , LSS
+                      )
+runTestLSSCommon v cb = do
+  be <- run $ createBitEngine
+  return (lc cb, defaultMemGeom (lc cb), be, cmdLineOpts)
   where
-    dbugLvl     = DbugLvl (maybe 0 fromIntegral mv)
+    lc          = cbLLVMCtx
+    dbugLvl     = DbugLvl (fromIntegral v)
     cmdLineOpts = LSS dbugLvl "" Nothing Nothing False False
 
-forAllMemModelsNoCreate ::
-  (MemType -> PropertyM IO a) -> PropertyM IO [a]
-forAllMemModelsNoCreate testProp =
-  mapM testProp [BitBlastBuddyAlloc, BitBlastDagBased]
+type RunLSSTest sbe = Int
+                    -> Codebase
+                    -> [String]
+                    -> ExecRsltHndlr sbe Integer Bool
+                    -> PropertyM IO ()
+
+runTestLSSBuddy :: RunLSSTest (BitIO (BitMemory Lit) Lit)
+runTestLSSBuddy v cb argv' hndlr = do
+  when (v >= 2) $ run $ putStrLn "runTestLSSBuddy"
+  assert =<< do
+    (lc, mg, be, cmdLineOpts) <- runTestLSSCommon v cb
+    run $ do
+      (sbe, mem) <- createBuddyAll be lc mg
+      rslt       <- lssImpl sbe mem cb argv' BitBlastBuddyAlloc cmdLineOpts
+      hndlr sbe mem rslt
+
+runTestLSSDag :: RunLSSTest (BitIO (DagMemory Lit) Lit)
+runTestLSSDag v cb argv' hndlr = do
+  when (v >= 2) $ run $ putStrLn "runTestLSSDag"
+  assert =<< do
+    (lc, mg, be, cmdLineOpts) <- runTestLSSCommon v cb
+    run $ do
+      (sbe, mem) <- createDagAll be lc mg
+      rslt       <- lssImpl sbe mem cb argv' BitBlastDagBased cmdLineOpts
+      hndlr sbe mem rslt
+
+lssTest :: Int -> String -> (Int -> Codebase -> PropertyM IO ()) -> (Args, Property)
+lssTest v bc act = test 1 False bc $ act v =<< ctestCB (bc <.> "bc")
+
+-- TODO: At some point we may want to inspect error paths and ensure
+-- that they are the /right/ error paths, rather just checking the
+-- count!.  We'll need something better than FailRsn to do that, though.
+chkLSS :: MonadIO m => Maybe Int -> Maybe Integer -> SBE sbe -> SBEMemory sbe -> ExecRslt sbe Integer -> m Bool
+chkLSS mepsLen mexpectedRV _ _ execRslt = do
+  return $
+    case (mepsLen, mexpectedRV, execRslt) of
+      (Just epsLen, Just expectedRV, ConcRV eps _mm r) -> length eps == epsLen && expectedRV == r
+      (Just epsLen, Nothing, NoMainRV eps _mm)         -> length eps == epsLen
+      (Nothing, Just expectedRV, ConcRV _ _ r)         -> expectedRV == r
+      _                                                -> False
 
 type SBEPropM a =
   forall mem.
@@ -132,8 +170,8 @@ forAllMemModels _v cb testProp = do
     ]
   where
     runMemTest :: String -> MemCreator mem -> PropertyM IO a
-    runMemTest lbl act = do
-      run $ putStrLn $ "forAllMemModels: " ++ lbl
+    runMemTest _lbl act = do
+--       run $ putStrLn $ "forAllMemModels: " ++ lbl
       be         <- run createBitEngine
       (sbe, mem) <- first (sbeBitBlast lc be) <$> run (act lc be mg)
       testProp sbe mem

@@ -45,8 +45,18 @@ primOpTests =
   , test  1  False "test-ptr-simple"       $ testPtrSimple   1
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
   , test  1  False  "test-call-exit"       $ testCallExit    1
-  , test  1  False "test-call-alloca"      $ testCallAlloca  1
-  , test  1  False "test-call-malloc"      $ testCallMalloc  1
+  , lssTest 0 "test-call-alloca" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 34289)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 34289)
+  , lssTest 0 "test-call-malloc" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 34289)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 34289)
+  , lssTest 0 "test-main-return" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 42)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 42)
+  , lssTest 0 "test-select" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
   ]
   where
     -- The 'v' parameter to all of these tests controls the verbosity; a
@@ -71,8 +81,6 @@ primOpTests =
     testSetupPtrArg v = psk v $ runAllMemModelTest v (commonCB "test-primops.bc")
                                   testSetupPtrArgImpl
     testCallExit v    = runMain' True v "test-call-exit.bc" AllPathsErr
-    testCallAlloca v  = runMain v "test-call-alloca.bc" (RV 34289)
-    testCallMalloc v  = runMain v "test-call-malloc.bc" (RV 34289)
 
     add, mul, idiv, irem :: Int32 -> Int32 -> Int32
     add               = (+)

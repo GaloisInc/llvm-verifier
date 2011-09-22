@@ -28,14 +28,17 @@ module LSS.SBEBitBlast
   , buddyMemModel
   , buddyInitMemory
   , createBuddyMemModel
+  , createBuddyAll
   , DagMemory
   , createDagMemModel
+  , createDagAll
   -- for testing only
   , BitIO
   , bmDataAddr
   ) where
 
 import           Control.Applicative       ((<$>))
+import           Control.Arrow             (first)
 import           Control.Exception         (assert)
 import           Control.Monad
 import           Control.Monad.IO.Class
@@ -922,6 +925,14 @@ buddyInitMemory mg =
                 , bmFreeList = initFreeList (start (mgHeap mg)) (end (mgHeap mg))
 }
 
+createBuddyAll :: (Ord l, LV.Storable l)
+               => BitEngine l
+               -> LLVMContext
+               -> MemGeom
+               -> IO (BitBlastSBE (BitMemory l) l, BitMemory l)
+createBuddyAll be lc mg = do
+  first (sbeBitBlast lc be) <$> createBuddyMemModel lc be mg
+
 createBuddyMemModel :: (Eq l, LV.Storable l)
                     => LLVMContext
                     -> BitEngine l
@@ -1345,6 +1356,14 @@ dmMemCopy ptrWidth ref mem (BitTerm dest) (BitTerm src) (BitTerm l) (BitTerm _)
                  }
     -- Return result
     return (termFromLit c,m)
+
+createDagAll :: (Ord l, LV.Storable l)
+             => BitEngine l
+             -> LLVMContext
+             -> MemGeom
+             -> IO (BitBlastSBE (DagMemory l) l, DagMemory l)
+createDagAll be lc mg = do
+  first (sbeBitBlast lc be) <$> createDagMemModel lc be mg
 
 createDagMemModel :: (Ord l, LV.Storable l)
                   => LLVMContext

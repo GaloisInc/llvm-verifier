@@ -25,16 +25,29 @@ symTests =
   [
     test 1 False "test-trivial-divergent-branch" $ trivBranch 1
   , test 1 False "test-trivial-symbolic-read"    $ trivSymRd 1
-  , test 1 False "test-trivial-fresh-int"        $ trivFreshInt 1
-  , test 1 False "test-trivial-fresh-array"      $ trivFreshArr 1
+  , lssTest 0 "test-symbolic-alloc" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 1) Nothing
+       -- This seems to hang in GHCI but not from the command line =/
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 0)
+  , lssTest 0 "test-fresh" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 16)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 16)
+  , lssTest 0 "test-fresh-array" $ \v cb -> do
+      -- NB: This test writes an .aig file; we are just testing
+      -- essentially that we don't crash.  At some point this really
+      -- should be beefed up to automatically equivalence check the
+      -- output against a golden AIG file.
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 0)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 0)
+  , lssTest 0 "test-const-false-path" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 1)
+      runTestLSSDag v cb []   $ chkLSS (Just 1) (Just 1)
   ]
   where
     trivBranch v = psk v $ runSimple v $ trivBranchImpl "trivial_branch" $
                      \r0 r1 -> r0 == Just 0 && r1 == Just 1
     trivSymRd  v = psk v $ runSimple v $ trivBranchImpl "sym_read" $
                      \r0 r1 -> r0 == Just 99 && r1 == Just 42
-    trivFreshInt v = psk v $ runMain v "test-fresh.bc" (RV 16)
-    trivFreshArr v = psk v $ runMain v "test-fresh-array.bc" (RV 0)
     runSimple v  = runAllMemModelTest v (commonCB "test-sym-simple.bc")
 
 evalClosed ::
