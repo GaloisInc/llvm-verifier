@@ -19,6 +19,7 @@ import           LSS.Execution.Utils
 import           LSS.LLVMUtils
 import           LSS.SBEBitBlast
 import           LSS.Simulator
+import           LSSImpl
 import           System.FilePath
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
@@ -39,8 +40,14 @@ padTy bytes = L.Array (fromIntegral bytes) i8
 supportDir :: FilePath
 supportDir = "test" </> "src" </> "support"
 
+ctestsDir :: FilePath
+ctestsDir = supportDir </> "ctests"
+
 commonCB :: FilePath -> PropertyM IO Codebase
 commonCB bcFile = run $ loadCodebase $ supportDir </> bcFile
+
+ctestCB :: FilePath -> PropertyM IO Codebase
+ctestCB bcFile = run $ loadCodebase $ ctestsDir </> bcFile
 
 assertMsg :: Bool -> String -> PropertyM IO ()
 assertMsg b s = when (not b) (run $ putStrLn s) >> assert b
@@ -77,9 +84,6 @@ constTermEq :: ConstantProjection t => t -> Integer -> Bool
 constTermEq (getSVal -> Just v) = (==v)
 constTermEq _                   = const False
 
-liftSim :: BitIO m l a -> Simulator sbe IO a
-liftSim = SM . lift . lift . liftSBEBitBlast
-
 type AllMemModelTest =
   (Functor sbe, ConstantProjection (SBEClosedTerm sbe))
   => Simulator sbe IO Bool
@@ -89,11 +93,33 @@ runAllMemModelTest v getCB act = do
   cb <- getCB
   assert . and =<< do
     forAllMemModels v cb $ \s m -> run $
-      runSimulator cb s m liftSim defaultSEH Nothing (withVerbosity v act)
+      runSimulator cb s m liftBitBlastSim defaultSEH
+        Nothing (withVerbosity v act)
+
+runAllMemModelTestLSS :: Maybe Int
+                      -> PropertyM IO Codebase
+                      -> [String]
+                      -> ExecRsltHndlr Integer Bool
+                      -> PropertyM IO ()
+runAllMemModelTestLSS mv getCB argv' chk = assert . and =<< do
+  cb <- getCB
+  b0 <- run $ lssImpl cb argv' BitBlastBuddyAlloc cmdLineOpts chk
+  b1 <- run $ lssImpl cb argv' BitBlastDagBased cmdLineOpts chk
+  return [b0, b1]
+  where
+    dbugLvl     = DbugLvl (maybe 0 fromIntegral mv)
+    cmdLineOpts = LSS dbugLvl "" Nothing Nothing False False
+
+forAllMemModelsNoCreate ::
+  (MemType -> PropertyM IO a) -> PropertyM IO [a]
+forAllMemModelsNoCreate testProp =
+  mapM testProp [BitBlastBuddyAlloc, BitBlastDagBased]
 
 type SBEPropM a =
   forall mem.
-  SBE (BitIO mem Lit) -> SBEMemory (BitIO mem Lit) -> PropertyM IO a
+  SBE (BitIO mem Lit)          -- ^ SBE used for the given prop
+  -> SBEMemory (BitIO mem Lit) -- ^ Initial memory for prop
+  -> PropertyM IO a
 
 type MemCreator mem =
   LLVMContext -> BitEngine Lit -> MemGeom -> IO (BitBlastMemModel mem Lit, mem)
@@ -145,7 +171,7 @@ runCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM 
 runCInt32Fn v getCB sym cargs = do
   cb <- getCB
   forAllMemModels v cb $ \s m -> run $ do
-    runSimulator cb s m liftSim defaultSEH Nothing $ withVerbosity v $
+    runSimulator cb s m liftBitBlastSim defaultSEH Nothing $ withVerbosity v $
       callCInt32Fn sym cargs
 
 callCInt32Fn ::

@@ -115,6 +115,7 @@ executable Tests
     , Verinf
     , base >= 4
     , bytestring
+    , cmdargs == 0.8
     , containers
     , filepath
     , fingertree
