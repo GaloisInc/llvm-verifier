@@ -25,7 +25,6 @@ import           Test.QuickCheck.Monadic
 import           Text.LLVM                     ((=:))
 import           Verinf.Symbolic.Common        (ConstantProjection(..), Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes
-import qualified Data.Vector.Storable          as LV
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
 
@@ -39,6 +38,9 @@ padTy bytes = L.Array (fromIntegral bytes) i8
 
 supportDir :: FilePath
 supportDir = "test" </> "src" </> "support"
+
+commonCB :: FilePath -> PropertyM IO Codebase
+commonCB bcFile = run $ loadCodebase $ supportDir </> bcFile
 
 assertMsg :: Bool -> String -> PropertyM IO ()
 assertMsg b s = when (not b) (run $ putStrLn s) >> assert b
@@ -79,72 +81,70 @@ liftSim :: BitIO m l a -> Simulator sbe IO a
 liftSim = SM . lift . lift . liftSBEBitBlast
 
 type AllMemModelTest =
-  forall sbe. (Functor sbe, ConstantProjection (SBEClosedTerm sbe))
+  (Functor sbe, ConstantProjection (SBEClosedTerm sbe))
   => Simulator sbe IO Bool
 
-runAllMemModelTest :: Int -> FilePath -> AllMemModelTest -> PropertyM IO ()
-runAllMemModelTest v bcFile act =
+runAllMemModelTest :: Int -> PropertyM IO Codebase -> AllMemModelTest -> PropertyM IO ()
+runAllMemModelTest v getCB act = do
+  cb <- getCB
   assert . and =<< do
-    forAllMemModels v bcFile $ \cb s m -> run $
+    forAllMemModels v cb $ \s m -> run $
       runSimulator cb s m liftSim defaultSEH Nothing (withVerbosity v act)
 
-type SBEPropM l a =
-  forall sbe mem. (sbe ~ BitIO mem l)
-  => Codebase -> SBE sbe -> SBEMemory sbe -> PropertyM IO a
+type SBEPropM a =
+  forall mem.
+  SBE (BitIO mem Lit) -> SBEMemory (BitIO mem Lit) -> PropertyM IO a
 
-type MemCreator mem l =
-  LLVMContext -> BitEngine l -> MemGeom -> IO (BitBlastMemModel mem l, mem)
+type MemCreator mem =
+  LLVMContext -> BitEngine Lit -> MemGeom -> IO (BitBlastMemModel mem Lit, mem)
 
-forAllMemModels ::
-  forall a l. (l ~ Lit, Eq l, LV.Storable l)
-  => Int -> FilePath -> SBEPropM l a -> PropertyM IO [a]
-forAllMemModels _v bcFile testProp = do
-  cb <- run $ loadCodebase $ supportDir </> bcFile
+forAllMemModels :: forall a. Int -> Codebase -> SBEPropM a -> PropertyM IO [a]
+forAllMemModels _v cb testProp = do
   sequence
-    [ runMemTest "buddy" cb createBuddyMemModel
-    , runMemTest "dag"   cb createDagMemModel
+    [ runMemTest "buddy" createBuddyMemModel
+    , runMemTest "dag"   createDagMemModel
     ]
   where
-    runMemTest :: forall mem.
-                  String -> Codebase -> MemCreator mem l -> PropertyM IO a
-    runMemTest _lbl cb act = do
---       run $ putStrLn $ "forAllMemModels: " ++ lbl
+    runMemTest :: String -> MemCreator mem -> PropertyM IO a
+    runMemTest lbl act = do
+      run $ putStrLn $ "forAllMemModels: " ++ lbl
       be         <- run createBitEngine
       (sbe, mem) <- first (sbeBitBlast lc be) <$> run (act lc be mg)
-      testProp cb sbe mem
+      testProp sbe mem
       where
         lc = cbLLVMCtx cb
         mg = defaultMemGeom lc
 
 chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
                -> Int
-               -> FilePath
+               -> PropertyM IO Codebase
                -> L.Symbol
                -> (Int32 -> Int32 -> ExpectedRV Int32)
                -> PropertyM IO ()
-chkBinCInt32Fn mgen v bcFile sym chkOp = do
+chkBinCInt32Fn mgen v getCB sym chkOp = do
   forAllM (maybe arbitrary id mgen) $ \(x,y) -> do
     mapM_ (chkRslt sym (fromIntegral <$> x `chkOp` y))
-      =<< runCInt32Fn v bcFile sym [x, y]
+      =<< runCInt32Fn v getCB sym [x, y]
 
 chkUnaryCInt32Fn :: Maybe (Gen Int32)
                  -> Int
-                 -> FilePath
+                 -> PropertyM IO Codebase
                  -> L.Symbol
                  -> (Int32 -> ExpectedRV Int32)
                  -> PropertyM IO ()
-chkUnaryCInt32Fn mgen v bcFile sym chkOp =
+chkUnaryCInt32Fn mgen v getCB sym chkOp =
   forAllM (maybe arbitrary id mgen) $ \x -> do
     mapM_ (chkRslt sym (fromIntegral <$> chkOp x))
-      =<< runCInt32Fn v bcFile sym [x]
+      =<< runCInt32Fn v getCB sym [x]
 
-chkNullaryCInt32Fn :: Int -> FilePath -> L.Symbol -> ExpectedRV Int32 -> PropertyM IO ()
-chkNullaryCInt32Fn v bcFile sym chkVal =
-  mapM_ (chkRslt sym (fromIntegral <$> chkVal)) =<< runCInt32Fn v bcFile sym []
+chkNullaryCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> ExpectedRV Int32 -> PropertyM IO ()
+chkNullaryCInt32Fn v getCB sym chkVal =
+  mapM_ (chkRslt sym (fromIntegral <$> chkVal)) =<< runCInt32Fn v getCB sym []
 
-runCInt32Fn :: Int -> FilePath -> L.Symbol -> [Int32] -> PropertyM IO [Maybe (BitTermClosed Lit)]
-runCInt32Fn v bcFile sym cargs =
-  forAllMemModels v bcFile $ \cb s m -> run $ do
+runCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM IO [Maybe (BitTermClosed Lit)]
+runCInt32Fn v getCB sym cargs = do
+  cb <- getCB
+  forAllMemModels v cb $ \s m -> run $ do
     runSimulator cb s m liftSim defaultSEH Nothing $ withVerbosity v $
       callCInt32Fn sym cargs
 
@@ -183,4 +183,4 @@ runMain = runMain' False
 
 runMain' :: Bool -> Int -> FilePath -> ExpectedRV Int32 -> PropertyM IO ()
 runMain' quiet v bc erv = do
-  psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) bc (L.Symbol "main") erv
+  psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) (commonCB bc) (L.Symbol "main") erv

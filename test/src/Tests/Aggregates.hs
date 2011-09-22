@@ -40,9 +40,9 @@ aggTests =
     structArray v         = psk v $ runStruct v structArrayImpl
     t1                    = mkNullaryTest "test-arrays.bc"
     t2                    = mkNullaryTest "test-mat4x4.bc"
-    mkNullaryTest fn v nm = psk v . chkNullaryCInt32Fn v fn (L.Symbol nm)
+    mkNullaryTest bc v nm = psk v . chkNullaryCInt32Fn v (commonCB bc) (L.Symbol nm)
     runStruct v           = \(f :: AllMemModelTest) ->
-                              runAllMemModelTest v "test-structs.bc" f
+                              runAllMemModelTest v (commonCB "test-structs.bc") f
 
 structInitAccessImpl :: AllMemModelTest
 structInitAccessImpl = do
