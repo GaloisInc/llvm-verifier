@@ -35,7 +35,7 @@ symTests =
                      \r0 r1 -> r0 == Just 99 && r1 == Just 42
     trivFreshInt v = psk v $ runMain v "test-fresh.bc" (RV 16)
     trivFreshArr v = psk v $ runMain v "test-fresh-array.bc" (RV 0)
-    runSimple v  = runAllMemModelTest v "test-sym-simple.bc"
+    runSimple v  = runAllMemModelTest v (commonCB "test-sym-simple.bc")
 
 evalClosed ::
   ( Functor sbe

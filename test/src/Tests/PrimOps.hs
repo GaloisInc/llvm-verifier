@@ -68,7 +68,7 @@ primOpTests =
     testCallVR v      = runMain v "test-call-voidrty.bc" VoidRV
     testCallSimple v  = runMain v "test-call-simple.bc" (RV 1)
     testPtrSimple v   = runMain v "test-ptr-simple.bc" (RV 99)
-    testSetupPtrArg v = psk v $ runAllMemModelTest v "test-primops.bc"
+    testSetupPtrArg v = psk v $ runAllMemModelTest v (commonCB "test-primops.bc")
                                   testSetupPtrArgImpl
     testCallExit v    = runMain' True v "test-call-exit.bc" AllPathsErr
     testCallAlloca v  = runMain v "test-call-alloca.bc" (RV 34289)
@@ -86,8 +86,8 @@ primOpTests =
     fact 0            = 1
     fact x            = x * fact (x-1)
 
-    primU v nm mg f = psk v $ chkUnaryCInt32Fn mg v "test-primops.bc" (L.Symbol nm) f
-    primB v nm mg f = psk v $ chkBinCInt32Fn   mg v "test-primops.bc" (L.Symbol nm) f
+    primU v nm mg f = psk v $ chkUnaryCInt32Fn mg v (commonCB "test-primops.bc") (L.Symbol nm) f
+    primB v nm mg f = psk v $ chkBinCInt32Fn   mg v (commonCB "test-primops.bc") (L.Symbol nm) f
 
 chkArithBitEngineFn :: (Integral a, Arbitrary a) =>
                        Int -> Bool -> L.ArithOp -> (a -> a -> a)
