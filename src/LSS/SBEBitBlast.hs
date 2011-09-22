@@ -118,7 +118,7 @@ alignDn :: Addr -> Int -> Addr
 alignDn addr i = addr .&. complement mask
  where mask = (setBit 0 i) - 1
 
-lvAnd :: (?be :: BitEngine l, LV.Storable l) 
+lvAnd :: (?be :: BitEngine l, LV.Storable l)
       => LV.Vector l -> LV.Vector l -> LV.Vector l
 lvAnd = LV.zipWith lAnd
 
@@ -1079,7 +1079,7 @@ dmLoadByteFromStore :: (?be :: BitEngine l, Ord l, LV.Storable l)
                     -> V.Vector (LV.Vector l)
                     -> DagMemory l
                     -> (LV.Vector l -> LV.Vector l)
-dmLoadByteFromStore (s,e) bytes mem = memo $ \p -> 
+dmLoadByteFromStore (s,e) bytes mem = memo $ \p ->
   lIteVector (p `lInRange` (s, e))
              (beMuxGeneral lIteVector
                            (toInteger (V.length bytes - 1))
@@ -1097,7 +1097,7 @@ dmStoreBytes ref mem flatBytes (BitTerm ptr)
     --TODO: Figure out how to handle possibility that ptrEnd addition overflows.
     let (_of, ptrEnd) = ptr `lFullAdd` lVectorFromInt (LV.length ptr) (toInteger byteCount)
     m <- dmGetMem ref mem (DMStore ptr ptrEnd bytes mem) $ \m -> do
-           return m { dmIsInitialized = \range -> 
+           return m { dmIsInitialized = \range ->
                        lRangeCovered (dmIsInitialized mem) range (ptr,ptrEnd)
                     , dmLoadByte = dmLoadByteFromStore (ptr,ptrEnd) bytes mem
                     }
@@ -1142,7 +1142,7 @@ dmInitGlobal ptrWidth dataEnd ref mem flatBytes
       -- Allocate space in data segment
       mem1 <- dmGetMem ref mem (DMAlloc ptr ptrEnd mem) $ \m -> do
         return m { dmData = nextData
-                 , dmIsAllocated = memo $ \range -> 
+                 , dmIsAllocated = memo $ \range ->
                     lRangeCovered (dmIsAllocated mem) range (ptr,ptrEnd)
                  }
       -- Store bytes
@@ -1217,12 +1217,12 @@ dmStackAlloca ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCount) 
   let (&&&) = lAnd
   let (.<=) = lUnsignedLeq
   let (c, truncVector -> newStack)
-        | stackGrowsUp = 
+        | stackGrowsUp =
            let (ac, aStack) = lAlignUp stack align
                (ao, newStackExt) = extVector aStack `lFullAdd` newSizeExt
             in ( lNeg ac &&& lNeg ao &&& (newStackExt .<= stackEndExt)
                , newStackExt)
-        | otherwise = 
+        | otherwise =
            let aStack = lAlignDn stack align
                (ab, newStackExt) = extVector aStack `lFullSub` newSizeExt
             in ( lNeg ab &&& (stackEndExt .<= newStackExt)
@@ -1230,7 +1230,7 @@ dmStackAlloca ptrWidth stackGrowsUp stackEnd ref mem eltSize (BitTerm eltCount) 
   let mkMem s e =
         dmGetMem ref mem (DMAlloc s e mem) $ \m -> do
           return m { dmStack = newStack
-                   , dmIsAllocated = memo $ \range -> 
+                   , dmIsAllocated = memo $ \range ->
                        lRangeCovered (dmIsAllocated mem) range (s,e)
                    }
   case () of
@@ -1302,7 +1302,7 @@ dmHeapAlloc ptrWidth heapEnd ref mem eltSize (BitTerm eltCount) _align = do
      | otherwise -> do
         m <- dmGetMem ref mem (DMAlloc heap newHeap mem) $ \m -> do
                return m { dmHeap = newHeap
-                        , dmIsAllocated = memo $ \range -> 
+                        , dmIsAllocated = memo $ \range ->
                             lRangeCovered (dmIsAllocated mem) range (heap, newHeap)
                         }
         return (HAResult (termFromLit c) (BitTerm heap) m)
@@ -1338,7 +1338,7 @@ dmMemCopy ptrWidth ref mem (BitTerm dest) (BitTerm src) (BitTerm l) (BitTerm _)
     m <- dmGetMem ref mem (DMMemCopy dest destEnd src mem) $ \m -> do
         return m { dmIsInitialized = memo $ \range ->
                      lRangeCovered (dmIsInitialized mem) range (dest, destEnd)
-                 , dmLoadByte = memo $ \p -> 
+                 , dmLoadByte = memo $ \p ->
                      let (b,offset) = p `lFullSub` dest
                          inRange = lNeg b `lAnd` (p `lUnsignedLt` destEnd)
                       in dmLoadByte mem (lIteVector inRange (snd (src `lFullAdd` offset)) p)

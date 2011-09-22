@@ -36,8 +36,6 @@ import           Verinf.Utils.LogMonad
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
 
-data MemType = BitBlast | DagBased deriving (Show)
-
 data LSS = LSS
   { dbug    :: DbugLvl
 --   , stack   :: StackSz
@@ -56,18 +54,20 @@ instance Default DbugLvl where def = DbugLvl 1
 --   deriving (Data, Enum, Eq, Integral, Num, Ord, Real, Show, Typeable)
 -- instance Default StackSz where def = StackSz 8
 
-liftSim :: BitIO m l a -> Simulator sbe IO a
-liftSim = SM . lift . lift . liftSBEBitBlast
-
 data ExecRslt sbe crt
   = NoMainRV [ErrorPath sbe] (Maybe (SBEMemory sbe))
   | SymRV    [ErrorPath sbe] (Maybe (SBEMemory sbe)) (SBETerm sbe)
   | ConcRV   [ErrorPath sbe] (Maybe (SBEMemory sbe)) crt
 
-type ExecRsltHndlr crt a = forall sbe. SBE sbe -> (ExecRslt sbe crt) -> IO a
+type ExecRsltHndlr crt a =
+  forall sbe.
+     SBE sbe                  -- ^ SBE that was used used during a test
+  -> (MemType, SBEMemory sbe) -- ^ Typed initial memory that was used during a test
+  -> ExecRslt sbe crt         -- ^ Execution results; final memory is embedded here
+  -> IO a
 
 lssImpl :: Codebase -> [String] -> MemType -> LSS -> ExecRsltHndlr Integer a -> IO a
-lssImpl cb argv' memType args hndlr = do
+lssImpl cb argv0 memType args hndlr = do
   be      <- createBitEngine
   mainDef <- case lookupDefine' (L.Symbol "main") cb of
                Nothing -> error "Provided bitcode does not contain main()."
@@ -75,16 +75,17 @@ lssImpl cb argv' memType args hndlr = do
                  when (null (sdArgs mainDef) && length argv' > 1) warnNoArgv
                  return mainDef
   case memType of
-    DagBased -> do
+    BitBlastDagBased -> do
       (sbe, mem) <- first (sbeBitBlast lc be) <$> createDagMemModel lc be mg
-      hndlr sbe =<< runBitBlast sbe mem cb mg argv' args mainDef
+      hndlr sbe (memType, mem) =<< runBitBlast sbe mem cb mg argv' args mainDef
 
-    BitBlast -> do
+    BitBlastBuddyAlloc -> do
       (sbe, mem) <- first (sbeBitBlast lc be) <$> createBuddyMemModel lc be mg
-      hndlr sbe =<< runBitBlast sbe mem cb mg argv' args mainDef
+      hndlr sbe (memType, mem) =<< runBitBlast sbe mem cb mg argv' args mainDef
   where
-    lc = cbLLVMCtx cb
-    mg = defaultMemGeom lc
+    argv' = "lss" : argv0
+    lc    = cbLLVMCtx cb
+    mg    = defaultMemGeom lc
 
 runBitBlast :: BitBlastSBE mem Lit           -- ^ SBE to use
             -> mem                           -- ^ SBEMemory to use
@@ -95,7 +96,7 @@ runBitBlast :: BitBlastSBE mem Lit           -- ^ SBE to use
             -> SymDefine                     -- ^ Define of main()
             -> IO (ExecRslt (BitIO mem Lit) Integer)
 runBitBlast sbe mem cb mg argv' args mainDef = do
-  runSimulator cb sbe mem liftSim seh' opts $ do
+  runSimulator cb sbe mem liftBitBlastSim seh' opts $ do
     setVerbosity $ fromIntegral $ dbug args
 
     whenVerbosity (>=5) $ do

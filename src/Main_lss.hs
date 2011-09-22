@@ -53,9 +53,9 @@ main = do
       eatWS cs       = cs
 
   mem <- case eatWS <$> memtype args of
-           Just "dagbased" -> return DagBased
-           Just "bitblast" -> return BitBlast
-           Nothing         -> return BitBlast
+           Just "dagbased" -> return BitBlastDagBased
+           Just "bitblast" -> return BitBlastBuddyAlloc
+           Nothing         -> return BitBlastBuddyAlloc
            _               -> do
              putStrLn "Invalid memory model specified.  Please choose 'bitblast' or 'dagbased'."
              exitFailure
@@ -69,7 +69,7 @@ main = do
   let p     = many $ between spaces spaces $ many1 $ satisfy $ not . isSpace
       argv' = case runParser p () "argv values" (argv args) of
                 Left _e -> error "Unable to parse command-line arguments (argv)."
-                Right x -> "lss" : x
+                Right x -> x
 
   cb <- loadCodebase bcFile
 
@@ -83,7 +83,7 @@ main = do
     L.modDefines              `via` (ppSymDefine . liftDefine)
     exitWith ExitSuccess
 
-  lssImpl cb argv' mem args $ \sbe execRslt -> do
+  lssImpl cb argv' mem args $ \sbe (_initialMem, _memType) execRslt -> do
     case execRslt of
         NoMainRV _eps _mm -> do
           unless (dbug args == 0) $ dbugM "Obtained no return value from main()."

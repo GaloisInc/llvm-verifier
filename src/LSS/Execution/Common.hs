@@ -26,6 +26,7 @@ import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
 import           LSS.SBEInterface
+import           LSS.SBEBitBlast           (BitIO(..))
 import           Text.LLVM                 (Typed(..))
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Utils.LogMonad
@@ -42,6 +43,9 @@ newtype Simulator sbe m a =
     , MonadState (State sbe m)
     , MonadError (InternalExc sbe m)
     )
+
+liftBitBlastSim :: BitIO m l a -> Simulator sbe IO a
+liftBitBlastSim = SM . lift . lift . liftSBEBitBlast
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
 type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))

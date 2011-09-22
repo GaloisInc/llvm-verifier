@@ -14,6 +14,8 @@ module LSS.SBEInterface where
 import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM.AST   as LLVM
 
+data MemType = BitBlastBuddyAlloc | BitBlastDagBased deriving (Show)
+
 -- | SBETerm yields the type used to represent terms in particular SBE interface
 -- implementation.
 type family SBETerm (sbe :: * -> *)
