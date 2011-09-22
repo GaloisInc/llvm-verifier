@@ -10,30 +10,36 @@ Point-of-contact : jstanley
 
 module Tests.Errors (errorTests) where
 
-import           Control.Monad
-import           LSS.LLVMUtils
-import           LSS.SBEBitBlast
-import           LSS.Simulator
-import           LSSImpl
-import           System.FilePath
 import           Test.QuickCheck
-import           Test.QuickCheck.Monadic
 import           Tests.Common
-import           Text.LLVM              ((=:))
-import           Verinf.Symbolic.Common (ConstantProjection(..))
-import qualified Text.LLVM              as L
 
 errorTests :: [(Args, Property)]
 errorTests =
   [
-    test 1 False "test-error-paths-all" $ let v = 1 in psk v $ do
-      let chk sbe (memType, mem) execRslt = do
-            dbugM $ "runAllMemModelTestLSS on mem" ++ show memType
-            -- any way to do something ~ (memDump sbe mem Nothing) here?
-            case execRslt of
-              NoMainRV eps _ -> return (length eps == 2)
-              _              -> return False
-      runAllMemModelTestLSS Nothing (ctestCB "test-error-paths-all.bc") [] chk
+    lssTest 0 "test-error-paths-all" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 2) Nothing
+      runTestLSSDag v cb []   $ chkLSS (Just 2) Nothing
+
+  , lssTest 0 "test-error-paths-some" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 0)
+      runTestLSSDag v cb [] $ chkLSS (Just 1) (Just 0)
+
+  , lssTest 0 "test-error-paths-some-more" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 2) (Just 0)
+      runTestLSSDag v cb []   $ chkLSS (Just 2) (Just 0)
+
+  , lssTest 0 "test-error-paths-bad-mem-trivial" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 1) Nothing
+      runTestLSSDag v cb []   $ chkLSS (Just 1) Nothing
+
+  , lssTest 0 "test-error-paths-bad-mem-symsize" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 1)
+       -- This seems to hang in GHCI but not from the command line =/
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
+
+  , lssTest 0 "test-error-paths-bad-mem-diverge" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 1)
+      runTestLSSDag v cb []   $ chkLSS (Just 1) (Just 1)
   ]
 
 --------------------------------------------------------------------------------

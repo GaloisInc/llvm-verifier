@@ -4,8 +4,9 @@
 
 void f(int *a) {
     int i;
-    a[0] = a[0];
-    a[1] = a[1];
+    int t = a[0];
+    a[0] = a[1];
+    a[1] = t;
 }
 
 int main() {
