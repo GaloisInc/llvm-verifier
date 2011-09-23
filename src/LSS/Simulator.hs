@@ -96,6 +96,7 @@ import           Verinf.Symbolic.Common    (ConstantProjection(..),
 import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
 import qualified Data.Foldable             as DF
+import qualified Data.LLVM.CFG             as CFG
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 
@@ -625,8 +626,11 @@ mergeReturn mtv = do
   mtop <- topMF <$> gets ctrlStk
   top  <- case mtop of
             Just rf@ReturnFrame{} -> return rf
-            Just _                -> error "mergeReturn: expected return merge frame"
-            Nothing               -> error "mergeReturn: empty control stack"
+            Just pf@PostdomFrame{ pdfLabel = sbi }
+              | isDummyExit sbi -> return pf
+              | otherwise       -> err
+            Just _  -> err
+            Nothing -> error "mergeReturn: empty control stack"
   case mtv of
     Nothing -> return ()
     Just tv -> do
@@ -638,6 +642,9 @@ mergeReturn mtv = do
   p       <- getPath' "mergeReturn"
   mmerged <- mergePaths p (getMergedState top)
   modifyMF $ setMergedState mmerged
+
+  where
+    err = error "mergeReturn: expected return MF / postdom MF of dummy exit"
 
 -- | @mergeMFs src dst@ merges the @src@ merge frame into @dst@
 mergeMFs ::
@@ -652,22 +659,32 @@ mergeMFs src dst = do
     ReturnFrame{} -> do
       case dst of
         ExitFrame{} -> do
-          -- Exit frames have no pending paths and represent the program termination
-          -- point, so merge src's merged state with dst's merge state.
+          -- Exit frames have no pending paths and represent the program
+          -- termination point, so merge src's merged state with dst's merge
+          -- state.
           (`setMergedState` dst) <$> mergePaths srcMerged (getMergedState dst)
         ReturnFrame{}  -> mergeRetMF
         PostdomFrame{} -> mergeRetMF
-    PostdomFrame{}
-      |isExitFrame dst -> error "mergeMFs: postdom MF => exit MF is not allowed"
-      | otherwise      -> modifyDstPath (const srcMerged)
+    PostdomFrame{ pdfLabel = sbi }
+      | isExitFrame dst -> error "mergeMFs: postdom MF => exit MF is not allowed"
+      | isDummyExit sbi -> do
+          -- We treat the dummy exit frame like a pass-through
+          -- destination return frame.
+          src' <- setMergedState (Just srcMerged)
+                    <$> modifyDstPath (const srcMerged)
+          dst' <- popMergeFrame
+          CE.assert (isReturnFrame dst') $ return ()
+          mergeMFs src' dst'
+      | otherwise -> modifyDstPath (const srcMerged)
     ExitFrame{} -> error "mergeMFs: exit frames can not be merge sources"
   where
     modifyDstPath  = return . (`modifyPending` dst)
     Just srcMerged = getMergedState src -- NB: src /must/ have a merged state.
+
+    -- mergeRetMF dumps up our merged state over dst's current path, being
+    -- careful to pick up a few pieces of data from it: execution context (call
+    -- frame / current block), and return value if any.
     mergeRetMF     = do
-      -- In both cases, we dump up our merged state over dst's current path,
-      -- being careful to pick up a few pieces of data from it: execution
-      -- context (call frame / current block), and return value if any.
       case pathRetVal srcMerged of
         Nothing -> rfReplace id
         Just rv -> case rfRetReg src of
@@ -1424,6 +1441,11 @@ memFailRsn desc terms = do
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
+
+isDummyExit :: SymBlockID -> Bool
+isDummyExit sbi = case symBlockLabel sbi of
+  Just (L.Named (L.Ident nm)) -> nm == CFG.dummyExitName
+  _                           -> False
 
 setSEH :: Monad m => SEH sbe m -> Simulator sbe m ()
 setSEH seh = modify $ \s -> s{ evHandlers = seh }
