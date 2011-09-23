@@ -834,17 +834,8 @@ getTypedTerm' mfrm (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
 getTypedTerm' _ (Typed _ (L.ValSymbol sym))
   = getGlobalPtrTerm (sym, Nothing)
 
-getTypedTerm' mfrm (Typed _ (L.ValConstExpr ce))
-  = case ce of
-      L.ConstGEP _inbounds (splitAt 1 -> ((head -> ptr), idxs)) ->
-        evalGEP (GEP ptr idxs)
-      L.ConstConv L.BitCast tv t ->
-        Typed t . typedValue <$> getTypedTerm' mfrm tv
-      L.ConstConv L.PtrToInt tv t ->
-        evalPtrToInt tv t
-      L.ConstConv L.IntToPtr tv t ->
-        evalIntToPtr tv t
-      _ -> unimpl $ "getTypedTerm: ConstExpr eval: " ++ show ce
+getTypedTerm' mfrm (Typed _ ce@L.ValConstExpr{})
+  = evalCE mfrm ce
 
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
   = lkupIdent i frm
@@ -1192,6 +1183,26 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
 
 evalGEP e = illegal $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
 
+evalCE ::
+  ( ConstantProjection (SBEClosedTerm sbe)
+  , MonadIO m
+  , Functor sbe
+  , Functor m
+  )
+  => Maybe (CF sbe) -> L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+evalCE mfrm (L.ValConstExpr ce)
+  = case ce of
+      L.ConstGEP _inbounds (splitAt 1 -> ((head -> ptr), idxs)) ->
+        evalGEP (GEP ptr idxs)
+      L.ConstConv L.BitCast tv t ->
+        Typed t . typedValue <$> getTypedTerm' mfrm tv
+      L.ConstConv L.PtrToInt tv t ->
+        evalPtrToInt tv t
+      L.ConstConv L.IntToPtr tv t ->
+        evalIntToPtr tv t
+      _ -> unimpl $ "evalCE: " ++ show ce
+evalCE _ e = illegal $ "evalCE: value expression is not const" ++ show (L.ppValue e)
+
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
 
@@ -1453,20 +1464,21 @@ resolveCallee ::
   )
   => SymValue -> Simulator sbe m (Either String L.Symbol)
 resolveCallee callee = case callee of
- L.ValSymbol sym -> ok sym
- L.ValIdent i    -> resolveIdent i
- L.ValAsm{}      -> err $ "Inline assembly is not supported: " ++ show (L.ppValue callee)
- _               -> err $ "Unexpected callee value: " ++ show (L.ppValue callee)
+ L.ValSymbol sym   -> ok sym
+ L.ValIdent i      -> resolveIdent i
+ L.ValConstExpr{}  -> findDefineByPtr =<< evalCE Nothing callee
+ L.ValAsm{}        -> err $ "Inline assembly is not supported: " ++ show (L.ppValue callee)
+ _                 -> err $ "Unexpected callee value: " ++ show (L.ppValue callee) ++ ":" ++ show callee
  where
-   resolveIdent i = do
-     Typed t fp <- lkupIdent i =<< getCallFrame
-     case L.elimFunPtr t of
-       Nothing -> err "Callee identifier referent is not a function pointer"
-       Just (_rty, _argtys, _isVarArgs) -> do
-         pr <- withMem $ \s m -> codeLookupDefine s m fp
-         case pr of
-           Result sym -> ok sym
-           _          -> err $ "resolveCallee: Failed to resolve callee function pointer: " ++ show (L.ppValue callee)
+   resolveIdent i = findDefineByPtr =<< lkupIdent i =<< getCallFrame
+   findDefineByPtr (Typed ty fp) = case L.elimFunPtr ty of
+     Nothing -> err "Callee is not a function pointer"
+     _       -> do pr <- withMem $ \s m -> codeLookupDefine s m fp
+                   case pr of
+                     Result sym -> ok sym
+                     _          -> err $ "resolveCallee: Failed to resolve "
+                                       ++ "callee function pointer: "
+                                       ++ show (L.ppValue callee)
    ok sym  = return $ Right $ sym
    err msg = return $ Left $ "resolveCallee: " ++ msg
 
