@@ -42,6 +42,9 @@ symTests =
   , lssTest 0 "test-const-false-path" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 1)
       runTestLSSDag v cb []   $ chkLSS (Just 1) (Just 1)
+  , lssTest 0 "test-divergent-unreachables" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 2) (Just 1)
+      runTestLSSDag v cb []   $ chkLSS (Just 2) (Just 1)
   ]
   where
     trivBranch v = psk v $ runSimple v $ trivBranchImpl "trivial_branch" $

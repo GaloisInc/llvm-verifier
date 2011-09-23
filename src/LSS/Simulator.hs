@@ -240,12 +240,9 @@ runNormalSymbol ::
   -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m [Typed (SBETerm sbe)]
 runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
-  def  <- lookupDefine calleeSym <$> gets codebase
-  dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
-
   name <- do mp <- getPath
              case mp of
-               Nothing -> return 0
+               Nothing -> newPathName
                Just p  -> return $ pathName p
   path <- newPath name (CallFrame calleeSym M.empty) =<< initMem
   modifyCS $ pushPendingPath path
@@ -256,6 +253,8 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
             Left gen   -> gen
             Right args -> return args
 
+  def <- lookupDefine calleeSym <$> gets codebase
+  dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs (sdArgs def) args }
   pushMemFrame
   return args
@@ -673,14 +672,13 @@ mergeMFs src dst = do
           src' <- setMergedState (Just srcMerged)
                     <$> modifyDstPath (const srcMerged)
           dst' <- popMergeFrame
-          CE.assert (isReturnFrame dst') $ return ()
+          CE.assert (not . isPostdomFrame $ dst') $ return ()
           mergeMFs src' dst'
       | otherwise -> modifyDstPath (const srcMerged)
     ExitFrame{} -> error "mergeMFs: exit frames can not be merge sources"
   where
     modifyDstPath  = return . (`modifyPending` dst)
     Just srcMerged = getMergedState src -- NB: src /must/ have a merged state.
-
     -- mergeRetMF dumps up our merged state over dst's current path, being
     -- careful to pick up a few pieces of data from it: execution context (call
     -- frame / current block), and return value if any.
@@ -738,7 +736,8 @@ mergePaths from (Just to) = do
                   <*> mergePCs c1 c2
 
   whenVerbosity (>=6) $ ppPathM "mergedPath" mergedPath
-  return (Just mergedPath)
+  nm <- newPathName
+  return (Just mergedPath{ pathName = nm })
   where
     infixl 5 <->
     t <-> f = do
@@ -946,8 +945,8 @@ step (PushCallFrame callee args mres) = do
   eab <- resolveCallee callee
   _ <- case eab of
          Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
-         Right calleeSym -> callDefine' cb calleeSym mres
-                              =<< Right <$> mapM getTypedTerm args
+         Right calleeSym -> do callDefine' cb calleeSym mres
+                                 =<< Right <$> mapM getTypedTerm args
   return ()
 
 step (PushInvokeFrame _fn _args _mres _e) = unimpl "PushInvokeFrame"
@@ -1975,6 +1974,31 @@ exitHandler = Override $ \_sym _rty args -> do
   where
     e = errorPathBeforeCall . FailRsn
 
+assertHandler__assert_rtn ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+assertHandler__assert_rtn = Override $ \_sym _rty args -> do
+  case args of
+    [Typed t1 v1, Typed t2 v2, Typed t3 v3, Typed t4 v4] ->
+      if t1 == i8p && t2 == i8p && t3 == i32 && t4 == i8p
+        then do
+          fname     <- loadString (i8p =: v1)
+          file      <- loadString (i8p =: v2)
+          Just line <- withSBE' (\s -> getSVal (closeTerm s v3))
+          err       <- loadString (i8p =: v4)
+          e $ unwords [ "__assert_rtn:"
+                      , file ++ ":" ++ show line ++ ":" ++ fname ++ ":"
+                      , err
+                      ]
+        else e "Argument(s) of wrong type passed to __assert_rtn"
+    _ -> e "Incorrect number of parameters passed to __assert_rtn()"
+  where
+    e = errorPathBeforeCall . FailRsn
+
 freshInt' :: (Functor m, Monad m) => Int -> Override sbe m
 freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
 
@@ -2169,6 +2193,7 @@ standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                      [OverrideEntry sbe m]
 standardOverrides =
   [ ("exit", voidTy, [i32], False, exitHandler)
+  , ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
   , ("alloca", voidPtr, [i32], False, allocHandler alloca)
   , ("malloc", voidPtr, [i32], False, allocHandler malloc)
   , ("free", voidTy, [voidPtr], False,

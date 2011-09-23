@@ -33,6 +33,7 @@ module LSS.Execution.MergeFrame
   , getExcMergedState
   , setExcMergedState
   , isExitFrame
+  , isPostdomFrame
   , isReturnFrame
   , finalizeExit
 
@@ -111,6 +112,10 @@ popPending mf = case mf of
   ReturnFrame rr nl ns el es (p:ps) -> (p, ReturnFrame rr nl ns el es ps)
   where
     err = error "popPendingPath: empty path list"
+
+isPostdomFrame :: MergeFrame term mem -> Bool
+isPostdomFrame PostdomFrame{} = True
+isPostdomFrame _              = False
 
 isReturnFrame :: MergeFrame term mem -> Bool
 isReturnFrame ReturnFrame{} = True

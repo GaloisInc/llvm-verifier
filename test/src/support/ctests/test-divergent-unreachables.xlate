@@ -1,0 +1,98 @@
+target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
+@.str = global [4 x i8] c"rah\00"
+@__func__.main = global [5 x i8] c"main\00"
+@.str1 = global [30 x i8] c"test-divergent-unreachables.c\00"
+@.str2 = global [6 x i8] c"x > 5\00"
+declare i8 @lss_fresh_uint8(i8)
+declare i32 @printf(i8*, ...)
+declare void @__assert_rtn(i8*, i8*, i32, i8*)
+define i32 @main(i32 %argc, i8** %argv) {
+init
+  pushPostDominatorFrame %_dummy_exit.0
+  setCurrentBlock %0.0
+%_dummy_exit.0
+  unreachable
+%0.0
+  %1 = alloca i32, align 4
+  %2 = alloca i32, align 4
+  %3 = alloca i8**, align 8
+  %x = alloca i8, align 1
+  store i32 0, i32* %1
+  store i32 %argc, i32* %2, align 4
+  store i8** %argv, i8*** %3, align 8
+  setCurrentBlock %0.1
+  pushCallFrame @lss_fresh_uint8(i8 0) i8 %4
+%0.1
+  store i8 %4, i8* %x, align 1
+  %5 = load i8* %x, align 1
+  %6 = zext i8 %5, i32
+  %7 = icmp sgt i32 %6, 5
+  if %7 == 1{
+    setCurrentBlock %8.0
+    pushPostDominatorFrame %22.0
+  } else {
+    if %7 == 0{
+      setCurrentBlock %10.0
+    } else {
+      setCurrentBlock %0.2
+      pushPendingExecution %7 == 0
+      addPathConstraint %7 == 1
+      setCurrentBlock %8.0
+      pushPostDominatorFrame %22.0
+    }
+  }
+%0.2
+  setCurrentBlock %10.0
+%8.0
+  setCurrentBlock %8.1
+  pushCallFrame @printf(i8* getelementptr inbounds ([4 x i8]* @.str, i32 0, i32 0)) i32 %9
+%8.1
+  setCurrentBlock %22.0
+  mergePostDominator %22.0, true
+  clearCurrentExecution
+%10.0
+  %11 = load i8* %x, align 1
+  %12 = zext i8 %11, i32
+  %13 = icmp sgt i32 %12, 5
+  %14 = xor i1 %13, -1
+  %15 = zext i1 %14, i32
+  %16 = sext i32 %15, i64
+  %17 = icmp ne i64 %16, 0
+  if %17 == 1{
+    setCurrentBlock %18.0
+  } else {
+    if %17 == 0{
+      setCurrentBlock %20.0
+      pushPostDominatorFrame %22.0
+      pushPostDominatorFrame %21.0
+    } else {
+      setCurrentBlock %10.1
+      pushPendingExecution %17 == 0
+      addPathConstraint %17 == 1
+      setCurrentBlock %18.0
+    }
+  }
+%10.1
+  setCurrentBlock %20.0
+  pushPostDominatorFrame %22.0
+  pushPostDominatorFrame %21.0
+%18.0
+  setCurrentBlock %18.1
+  pushCallFrame @__assert_rtn(i8* getelementptr inbounds ([5 x i8]* @__func__.main, i32 0, i32 0), i8* getelementptr inbounds ([30 x i8]* @.str1, i32 0, i32 0), i32 14, i8* getelementptr inbounds ([6 x i8]* @.str2, i32 0, i32 0)) void
+%18.1
+  unreachable
+%19.0
+  setCurrentBlock %21.0
+  mergePostDominator %21.0, true
+  clearCurrentExecution
+%20.0
+  setCurrentBlock %21.0
+  mergePostDominator %21.0, true
+  clearCurrentExecution
+%21.0
+  setCurrentBlock %22.0
+  mergePostDominator %22.0, true
+  clearCurrentExecution
+%22.0
+  mergeReturnAndClear i32 1
+}
