@@ -240,10 +240,8 @@ runNormalSymbol ::
   -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m [Typed (SBETerm sbe)]
 runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
-  name <- do mp <- getPath
-             case mp of
-               Nothing -> newPathName
-               Just p  -> return $ pathName p
+  mp   <- getPath
+  name <- maybe newPathName (return . pathName) mp
   path <- newPath name (CallFrame calleeSym M.empty) =<< initMem
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
@@ -253,7 +251,19 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
             Left gen   -> gen
             Right args -> return args
 
-  def <- lookupDefine calleeSym <$> gets codebase
+  mdef <- lookupDefine' calleeSym <$> gets codebase
+  def  <- case mdef of
+            Just def -> return def
+            Nothing  -> do
+              -- Drop the return frame we just added unless it was the
+              -- very first path.
+              _ <- maybe undefined (const popMergeFrame) mp
+              errorPathBeforeCall $ FailRsn
+                $ "Failed to find define for symbol "
+                  ++ show (L.ppSymbol calleeSym)
+                  ++ " in codebase"
+
+--   def <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs (sdArgs def) args }
   pushMemFrame
@@ -1682,10 +1692,10 @@ errorPath rsn = do
           -- the merge frame below it on the control stack.
           pushMergeFrame =<< mergeMFs mf =<< popMergeFrame
 
-  -- NB: Since we've set up the control stack for the next invocation of run,
-  -- and explicitly captured the error path, we need to be sure to ship that
-  -- modified state back to the catch site so it execution can continue
-  -- correctly.
+  -- NB: Since we've set up the control stack for the next invocation of
+  -- run, and explicitly captured the error path, we need to be sure to
+  -- ship that modified state back to the catch site so it execution can
+  -- continue correctly.
   throwError =<< ErrorPathExc rsn <$> get
 
 --------------------------------------------------------------------------------
