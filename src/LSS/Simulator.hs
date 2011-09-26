@@ -2037,6 +2037,19 @@ freshIntArray n = Override $ \_sym _rty args ->
   where
     e = errorPathBeforeCall . FailRsn
 
+checkAigFile ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => String -> Simulator sbe m ()
+checkAigFile filename = do
+  eab <- liftIO $ CE.try (openFile filename WriteMode)
+  case eab of
+    Left (e :: CE.SomeException)  -> errorPath $ FailRsn $ "checkAigFile: " ++ show e
+    Right h                       -> liftIO $ hClose h
+
 writeIntAiger ::
   ( Functor m
   , MonadIO m
@@ -2048,6 +2061,7 @@ writeIntAiger = Override $ \_sym _rty args ->
   case args of
     [t, fptr] -> do
       file <- loadString fptr
+      checkAigFile file
       withSBE $ \s -> writeAiger s file (typedValue t)
       return Nothing
     _ -> errorPathBeforeCall
@@ -2069,6 +2083,7 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
           elems <- loadArray tptr tgtTy size
           arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
+          checkAigFile file
           withSBE $ \s -> writeAiger s file arrTm
           return Nothing
         (Nothing, _) ->
