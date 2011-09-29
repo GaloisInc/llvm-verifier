@@ -19,7 +19,6 @@ import           Data.Int
 import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
 import           Data.LLVM.Symbolic.Translation  (liftDefine)
-import           Data.Maybe                      (fromMaybe)
 import           Data.Vector.Storable            (Storable)
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
@@ -147,22 +146,23 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
 
-    callDefine (L.Symbol "main") i32 $
+    callDefine_ (L.Symbol "main") i32 $
       if mainHasArgv then buildArgv numArgs argv' else return []
+
     mrv <- getProgramReturnValue
     case mrv of
-      Nothing -> dbugM "no return value from main" >> return ExitSuccess
+      Nothing -> dbugM "Obtained no return value from main()" >> return ExitSuccess
       Just rv -> do
         let mval = getUVal . closeTerm sbe $ rv
         case mval of
           Nothing -> do
-            dbugM "symbolic return value from main"
+            dbugM "Obtained symbolic return value from main()"
             return ExitSuccess
           Just 0 -> return ExitSuccess
           Just n -> return . ExitFailure . fromIntegral $ n
   where
-      mainHasArgv              = not $ null $ sdArgs mainDef
-      numArgs                  = fromIntegral (length argv') :: Int32
+      mainHasArgv = not $ null $ sdArgs mainDef
+      numArgs     = fromIntegral (length argv') :: Int32
 
 buildArgv ::
   ( MonadIO m

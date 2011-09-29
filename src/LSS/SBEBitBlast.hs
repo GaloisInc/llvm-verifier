@@ -629,6 +629,11 @@ data BitMemory l = BitMemory {
   , bmDataAddr :: Addr
     -- | Maximum address for data pointers.
   , bmDataEnd :: Addr
+    -- | Starting address for heap pointers
+  , bmHeapAddr :: Addr
+    -- | Maximum address for heap pointers
+  , bmHeapEnd  :: Addr
+    -- | The heap freelist
   , bmFreeList :: V.Vector [Addr]
     -- | Frames on stack.
   , bmStackFrames :: [Integer]
@@ -649,11 +654,17 @@ bmDump be sparse bm mranges = do
     $+$ text "Stack Range:" <+> text (h $ bmStackAddr bm) <> comma <+> text (h $ bmStackEnd bm)
     $+$ text "Code Range:"  <+> text (h $ bmCodeAddr bm) <> comma <+> text (h $ bmCodeEnd bm)
     $+$ text "Data Range:"  <+> text (h $ bmDataAddr bm) <> comma <+> text (h $ bmDataEnd bm)
-    $+$ text "Frame pointers:" <+> text (show (bmStackFrames bm))
+    $+$ text "Heap Range:"  <+> text (h $ bmHeapAddr bm) <> comma <+> text (h $ bmHeapEnd bm)
+    $+$ text "Frame pointers:" <+> hcat (punctuate comma (map text $ map hx $ bmStackFrames bm))
     $+$ text "Storage:"
     $+$ (if sparse then ppStorage mranges else ppStorageShow) be (bmStorage bm)
+--     $+$ text "Free List:"
+--     $+$ vcat (V.toList (V.imap fl (bmFreeList bm)))
   where
-    h s = showHex s ""
+    h s  = showHex s ""
+    hx s = "0x" ++ h s
+--     fl i as = text "Size = 2^" <> int i <> colon <+>
+--               sep (punctuate comma (map (text . h) as))
 
 -- | @loadBytes be mem ptr size@ returns term representing all the bits with given size.
 bmLoadByte :: (Eq l, LV.Storable l)
@@ -906,8 +917,10 @@ buddyInitMemory mg =
                 , bmCodeEnd = end (mgCode mg)
                 , bmDataAddr = start (mgData mg)
                 , bmDataEnd = end (mgData mg)
+                , bmHeapAddr = start (mgHeap mg)
+                , bmHeapEnd = end (mgHeap mg)
                 , bmFreeList = initFreeList (start (mgHeap mg)) (end (mgHeap mg))
-                }
+}
 
 createBuddyMemModel :: (Eq l, LV.Storable l)
                     => LLVMContext
@@ -1575,4 +1588,5 @@ testSBEBitBlast = do
     return ()
 
 __nowarn_unused :: a
-__nowarn_unused = undefined testSBEBitBlast allocBlock trace c4
+__nowarn_unused = undefined testSBEBitBlast trace c4
+

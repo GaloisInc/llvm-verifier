@@ -7,3 +7,47 @@ doc/         : lss man page
 tutorial/    : Tutorials on using lss
 bin/         : Command-line executables
 
+KNOWN ISSUES, LIMITATIONS, AND QUIRKS
+
+Lightly tested:
+
+- DAG memory model
+- Execution of code generated with -m32 (or on 32 bit architectures); we suspect
+  that there will be a few small tweaks needed to fully support this (sanity
+  check parsed target data, implement additional intrinsic forms, etc.).
+- llvm-optimized versions of our test codes (may expose missing
+  instruction/intrinsic support)
+- The lss_eval_aiger_array_* family of sigfuns
+- inttoptr / ptrtoint conversion operators
+
+Nonexistent, limited, or untested support for:
+
+- Codes compiled from C++
+- Exception handling (including setjmp/longjmp-style exception handling)
+- Most Vector-typed operations
+- The insertvalue instruction
+- Some constant expression forms
+- clang and gcc builtins that can show up in compiled codes; we do not have
+  implementations of these yet, and so cannot support them.  A short-term
+  workaround is for the user to provide small implementations of these in C and
+  link them into the final program executed by lss.
+- LLVM intrinsics other than:
+  - llvm.memcpy.p0i8.p0i8.i64
+  - llvm.memset.p0i8.i64
+  - llvm.uadd.with.overflow.i64
+- User-definable memory segmentation
+- Big-endian architectures
+- Non-x86 architectures
+
+Quirks:
+
+- Our printf implementation of format string %p will currently fail if given a
+  pointer to a uint8_t.
+- Information displayed to the user in a warning regarding symbolic memory
+  validity conditions does probably not provide enough detail to assist in
+  understanding the conditions under which memory accesses are legal/illegal.
+- Global data is currently initialized "on demand" rather than up front during
+  simulator initialization.  This is a design choice that must be revisited
+  because memory operations on global data (e.g., a printf()) that do not occur
+  on all paths can lead to memory model merging errors.  We have a fix planned
+  for this, but it is not implemented in this release.
