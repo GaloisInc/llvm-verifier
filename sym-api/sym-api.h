@@ -69,6 +69,10 @@ void lss_abort(const char* msg) NO_INL;
 
 void lss_show_path() NO_INL;
 
+void lss_show_mem() NO_INL;
+
+void lss_set_verbosity(int v) NO_INL;
+
 #if defined(c_plusplus) || defined(__cplusplus)
 }
 #endif
