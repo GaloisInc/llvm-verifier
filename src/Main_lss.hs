@@ -31,7 +31,7 @@ import           System.Environment              (getArgs)
 import           System.Exit
 import           Text.LLVM                       ((=:), Typed(..))
 import           Text.ParserCombinators.Parsec
-import           Verinf.Symbolic.Common          (ConstantProjection(..), createBitEngine)
+import           Verinf.Symbolic                 (ConstantProjection(..), createBitEngine)
 import           Verinf.Utils.LogMonad
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
