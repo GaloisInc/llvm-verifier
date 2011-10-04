@@ -21,7 +21,7 @@ import           LSS.Simulator
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import           Tests.Common
-import           Verinf.Symbolic.Common  (ConstantProjection(..), createBitEngine)
+import           Verinf.Symbolic         (ConstantProjection(..), createBitEngine)
 import qualified Control.Exception       as CE
 import qualified Text.LLVM               as L
 

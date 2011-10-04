@@ -13,7 +13,7 @@ import Data.LLVM.Memory
 import Data.LLVM.TargetData
 import LSS.SBEBitBlast
 import qualified Text.LLVM.AST as LLVM
-import Verinf.Symbolic.Common (createBitEngine)
+import Verinf.Symbolic (createBitEngine)
 import Verinf.Symbolic.Lit
 import Verinf.Symbolic.Lit.Functional
 
@@ -106,7 +106,7 @@ memModelTests =
       -- Check result of merge
       (c2, v) <- run $ mmLoad m2 ptr 1 
       assert (c2 == tTrue)
-      assert (lEvalAigV (LV.fromList [False]) v == bfi 8 0)
-      assert (lEvalAigV (LV.fromList [True ]) v == bfi 8 1)
+      assert (lEvalAig (LV.fromList [False]) v == bfi 8 0)
+      assert (lEvalAig (LV.fromList [True ]) v == bfi 8 1)
   ] 
  where runSBE = run . liftSBEBitBlast
