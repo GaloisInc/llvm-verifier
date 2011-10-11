@@ -197,19 +197,9 @@ callDefine' ::
   -> Maybe (Typed Reg)                            -- ^ Callee return type and result register
   -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m [Typed (SBETerm sbe)]
-callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
-  | isPrefixOf "llvm." calleeName
-  = do
-  CE.assert (isNothing mreg) $ return ()
-  let args = case genOrArgs of
-               Left{}      -> error "internal: ArgsGen use for intrinsic"
-               Right args' -> args'
-  intrinsic calleeName mreg args
-  return []
-  | otherwise
-  = do
+callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs = do
+  -- NB: Check overrides before anything else so we catch overriden intrinsics
   override <- M.lookup calleeSym <$> gets fnOverrides
-  let normal = runNormalSymbol normalRetID calleeSym mreg genOrArgs
   case override of
     Nothing -> normal
     Just (Redirect calleeSym', _)
@@ -232,6 +222,17 @@ callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg genOrA
                  }
         _ -> return ()
       return []
+  where
+    normal
+      | isPrefixOf "llvm." calleeName = do
+          CE.assert (isNothing mreg) $ return ()
+          let args = case genOrArgs of
+                       Left{}      -> error "internal: ArgsGen use for intrinsic"
+                       Right args' -> args'
+          intrinsic calleeName mreg args
+          return []
+      | otherwise = do
+          runNormalSymbol normalRetID calleeSym mreg genOrArgs
 
 runNormalSymbol ::
   ( MonadIO m
@@ -268,7 +269,6 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
                   ++ show (L.ppSymbol calleeSym)
                   ++ " in codebase"
 
---   def <- lookupDefine calleeSym <$> gets codebase
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs (sdArgs def) args }
   pushMemFrame
@@ -313,7 +313,6 @@ intrinsic ::
   -> Simulator sbe m ()
 intrinsic intr mreg args0 =
   case (intr, mreg) of
-    -- TODO: Handle intrinsic overrides
     ("llvm.memcpy.p0i8.p0i8.i64", Nothing)    -> memcpy
     ("llvm.memset.p0i8.i64", Nothing)         -> memset
     ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow reg
@@ -2148,7 +2147,7 @@ overrideByName = Override $ \_sym _rty args ->
     [fromNamePtr, toNamePtr] -> do
       from <- fromString <$> loadString fromNamePtr
       to   <- fromString <$> loadString toNamePtr
-      from `userOverrides` to
+      from `userRedirectTo` to
     _ -> errorPathBeforeCall
          $ FailRsn "lss_override_function_by_name: wrong number of arguments"
 
@@ -2158,7 +2157,7 @@ overrideByAddr = Override $ \_sym _rty args ->
     [_, _] -> do
       [mfromSym, mtoSym] <- mapM (resolveFunPtrTerm . typedValue) args
       case (mfromSym, mtoSym) of
-        (Just from, Just to) -> from `userOverrides` to
+        (Just from, Just to) -> from `userRedirectTo` to
         _                    -> resolveErr
     _ -> argsErr
   where
@@ -2166,9 +2165,22 @@ overrideByAddr = Override $ \_sym _rty args ->
     resolveErr = e "overrideByAddr: Failed to resolve function pointer"
     argsErr    = e "lss_override_function_by_addr: wrong number of arguments"
 
-userOverrides :: MonadIO m
+overrideIntrinsic :: StdOvd sbe m
+overrideIntrinsic = Override $ \_sym _rty args ->
+  case args of
+    [nmPtr, fp] -> do
+      nm  <- fromString <$> loadString nmPtr
+      msym <- resolveFunPtrTerm (typedValue fp)
+      case msym of
+        Just sym -> nm `userRedirectTo` sym
+        _ -> e "overrideIntrinsic: Failed to resolve function pointer"
+    _ -> e "lss_override_llvm_intrinsic: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
+
+userRedirectTo :: MonadIO m
   => L.Symbol -> L.Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
-userOverrides from to = do
+userRedirectTo from to = do
   modify $ \s ->
     s{ fnOverrides = M.insert from (Redirect to, True) (fnOverrides s) }
   return Nothing
@@ -2178,7 +2190,7 @@ overrideResetByName = Override $ \_sym _rty args ->
   case args of
     [fnNamePtr] -> do
       fnSym <- fromString <$> loadString fnNamePtr
-      fnSym `userOverrides` fnSym
+      fnSym `userRedirectTo` fnSym
     _ -> errorPathBeforeCall
          $ FailRsn "lss_override_reset_by_name: wrong number of arguments"
 
@@ -2188,12 +2200,14 @@ overrideResetByAddr = Override $ \_sym _rty args ->
     [fp] -> do
       msym <- resolveFunPtrTerm (typedValue fp)
       case msym of
-        Just sym -> sym `userOverrides` sym
+        Just sym -> sym `userRedirectTo` sym
         _        -> e "overrideResetByAddr: Failed to resolve function pointer"
     _ -> e "lss_override_reset_by_addr: wrong number of arguments"
   where
     e = errorPathBeforeCall . FailRsn
 
+-- TODO (?): We may want to avoid retraction of overridden intrinsics, since
+-- presumably the user always wants the overridden version.
 overrideResetAll :: StdOvd sbe m
 overrideResetAll = Override $ \_sym _rty args ->
   case args of
@@ -2245,18 +2259,13 @@ standardOverrides =
   , ("lss_eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
   , ("lss_eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
   , ("lss_eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
-  , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False,
-     evalAigerArray i8)
-  , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False,
-     evalAigerArray i16)
-  , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False,
-     evalAigerArray i32)
-  , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False,
-     evalAigerArray i64)
-  , ("lss_override_function_by_name", voidTy, [strTy, strTy], False,
-     overrideByName)
-  , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
-     overrideByAddr)
+  , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False, evalAigerArray i8)
+  , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False, evalAigerArray i16)
+  , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False, evalAigerArray i32)
+  , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False, evalAigerArray i64)
+  , ("lss_override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
+  , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False, overrideByAddr)
+  , ("lss_override_llvm_intrinsic", voidTy, [strTy, voidPtr], False, overrideIntrinsic)
   , ("lss_override_reset_by_name", voidTy, [strTy], False, overrideResetByName)
   , ("lss_override_reset_by_addr", voidTy, [voidPtr], False, overrideResetByAddr)
   , ("lss_override_reset_all", voidTy, [], False, overrideResetAll)

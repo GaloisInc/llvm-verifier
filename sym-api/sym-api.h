@@ -62,8 +62,11 @@ void lss_eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
 
 void lss_override_function_by_name(char *from, char *to) NO_INL;
 void lss_override_function_by_addr(void *from, void *to) NO_INL;
+void lss_override_llvm_intrinsic(char* name, void* impl) NO_INL;
 void lss_override_reset_by_name(char *name) NO_INL; /* Equivalent to lss_override_function_by_name(x,x) */
 void lss_override_reset_by_addr(void* fp) NO_INL; /* Equivalent to lss_override_function_by_addr(x,x) */
+
+/* NB: This resets all user-overridden functions AND intrinsics */
 void lss_override_reset_all() NO_INL;
 
 void lss_print_symbolic(void *sym) NO_INL;
