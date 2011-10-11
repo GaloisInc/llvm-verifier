@@ -149,6 +149,19 @@ newSimState cb sbe mem lifter seh mopts =
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
 
+callDefine_ ::
+  ( LogMonad m
+  , MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Symbol     -- ^ Callee symbol
+  -> L.Type       -- ^ Callee return type
+  -> ArgsGen sbe m -- ^ Callee argument generator
+  -> Simulator sbe m ()
+callDefine_ c t ag = callDefine c t ag >> return ()
+
 -- | External entry point for a function call.  The argument generator is used
 -- to create actuals passed to the function, and the return value is those
 -- arguments.  In the case when no arguments created or invoking
@@ -169,21 +182,8 @@ callDefine calleeSym t argsGen = do
         registerStandardOverrides
         cb0 onPostOverrideReg
         argsGen
-  callDefine' entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left gen)
+  callDefine' False entryRetNormalID calleeSym (Just $ t =: entryRsltReg) (Left gen)
     <* run
-
-callDefine_ ::
-  ( LogMonad m
-  , MonadIO m
-  , Functor m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => L.Symbol     -- ^ Callee symbol
-  -> L.Type       -- ^ Callee return type
-  -> ArgsGen sbe m -- ^ Callee argument generator
-  -> Simulator sbe m ()
-callDefine_ c t ag = callDefine c t ag >> return ()
 
 callDefine' ::
   ( MonadIO m
@@ -191,12 +191,13 @@ callDefine' ::
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => SymBlockID        -- ^ Normal call return block id
-  -> L.Symbol          -- ^ Callee symbol
-  -> Maybe (Typed Reg) -- ^ Callee return type and result register
+  => Bool                                         -- ^ Is this a redirected call?
+  -> SymBlockID                                   -- ^ Normal call return block id
+  -> L.Symbol                                     -- ^ Callee symbol
+  -> Maybe (Typed Reg)                            -- ^ Callee return type and result register
   -> Either (ArgsGen sbe m) [Typed (SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m [Typed (SBETerm sbe)]
-callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
+callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   | isPrefixOf "llvm." calleeName
   = do
   CE.assert (isNothing mreg) $ return ()
@@ -208,9 +209,13 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   | otherwise
   = do
   override <- M.lookup calleeSym <$> gets fnOverrides
+  let normal = runNormalSymbol normalRetID calleeSym mreg genOrArgs
   case override of
-    Just (Redirect calleeSym') ->
-      callDefine' normalRetID calleeSym' mreg genOrArgs
+    Nothing -> normal
+    Just (Redirect calleeSym')
+      -- NB: We break transitive redirection to avoid cycles
+      | isRedirected -> normal
+      | otherwise    -> callDefine' True normalRetID calleeSym' mreg genOrArgs
     Just (Override f) -> do
       let args = case genOrArgs of
                Left{}      -> error "internal: ArgsGen use for override"
@@ -219,14 +224,14 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
       case (mreg, r) of
         (Just reg, Just rv) ->
           modifyPath $ \path ->
-            path { pathCallFrame = setReg
-                                   (typedValue reg)
-                                   (typedAs reg rv)
-                                   (pathCallFrame path)
+            path { pathCallFrame =
+                     setReg
+                       (typedValue reg)
+                       (typedAs reg rv)
+                       (pathCallFrame path)
                  }
-        (_, _) -> return ()
+        _ -> return ()
       return []
-    Nothing -> runNormalSymbol normalRetID calleeSym mreg genOrArgs
 
 runNormalSymbol ::
   ( MonadIO m
@@ -955,7 +960,7 @@ step (PushCallFrame callee args mres) = do
   eab <- resolveCallee callee
   _ <- case eab of
          Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
-         Right calleeSym -> do callDefine' cb calleeSym mres
+         Right calleeSym -> do callDefine' False cb calleeSym mres
                                  =<< Right <$> mapM getTypedTerm args
   return ()
 
@@ -2227,7 +2232,6 @@ overrideByAddr = Override $ \_sym _rty args ->
     e          = errorPathBeforeCall . FailRsn
     resolveErr = e "overrideByAddr: Failed to resolve function pointer"
     argsErr    = e "lss_override_function_by_addr: wrong number of arguments"
-
 
 overrides :: MonadIO m => L.Symbol -> L.Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
 overrides from to = do
