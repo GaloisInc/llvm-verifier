@@ -57,6 +57,12 @@ primOpTests =
   , lssTest 0 "test-select" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
+  , lssTest 0 "test-user-override-by-name" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
+  , lssTest 0 "test-user-override-by-addr" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
   ]
   where
     -- The 'v' parameter to all of these tests controls the verbosity; a
