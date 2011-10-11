@@ -69,6 +69,9 @@ void lss_eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
 
 void lss_override_function_by_name (char *from, char *to) {}
 void lss_override_function_by_addr (void *from, void *to) {}
+void lss_override_reset_by_name(char *name) {}
+void lss_override_reset_by_addr(void* fp) {}
+void lss_override_reset_all() {}
 
 void lss_print_symbolic (void *sym) {}
 void lss_abort (const char *msg) {}
