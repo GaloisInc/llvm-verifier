@@ -55,9 +55,9 @@ import           LSS.Execution.Utils
 import           LSS.SBEInterface
 import           Numeric                   (showHex)
 import           Text.PrettyPrint.HughesPJ
-import           Verinf.Symbolic.Common    (ConstantProjection(..),
-                                            createBitEngine,
-                                            CValue(..))
+import           Verinf.Symbolic    (ConstantProjection(..),
+                                     createBitEngine,
+                                     CValue(..))
 import           Verinf.Symbolic.Lit
 import           Verinf.Symbolic.Lit.Functional
 import qualified Data.Map                  as Map

@@ -25,7 +25,7 @@ import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, ver
 import           System.Environment              (getArgs)
 import           System.Exit
 import           Text.ParserCombinators.Parsec
-import           Verinf.Symbolic.Common          (createBitEngine)
+import           Verinf.Symbolic                 (createBitEngine)
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
 

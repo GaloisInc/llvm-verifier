@@ -24,8 +24,8 @@ import           System.FilePath
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import           Text.LLVM                     ((=:))
-import           Verinf.Symbolic.Common        (ConstantProjection(..), Lit, createBitEngine)
-import           Verinf.Symbolic.Lit.DataTypes
+import           Verinf.Symbolic               (ConstantProjection(..), Lit, createBitEngine)
+import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
 

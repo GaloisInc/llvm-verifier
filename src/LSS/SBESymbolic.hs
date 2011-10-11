@@ -11,7 +11,6 @@ Point-of-contact : atomb
 module LSS.SBESymbolic
   ( module LSS.SBEInterface
   , sbeSymbolic
-  , liftSBESymbolic
   )
 
 where
@@ -23,9 +22,9 @@ import LSS.SBEInterface
 --------------------------------------------------------------------------------
 -- Word-level symbolic backend
 
-type instance SBETerm S.SymbolicMonad       = S.SymbolicTerm
-type instance SBEClosedTerm S.SymbolicMonad = S.SymbolicTerm
-type instance SBEMemory S.SymbolicMonad     = S.SymbolicTerm
+type instance SBETerm S.SymbolicMonad       = S.Node
+type instance SBEClosedTerm S.SymbolicMonad = S.Node
+type instance SBEMemory S.SymbolicMonad     = S.Node
 
 -- | Symbolic interface with all operations at the word level.
 sbeSymbolic :: SBE S.SymbolicMonad
@@ -83,6 +82,3 @@ sbeSymbolic = SBE
   where
     nyi :: forall a. String -> a
     nyi msg = error $ unwords ["SBESymbolic:", msg, "not yet supported"]
-
-liftSBESymbolic :: S.SymbolicMonad a -> IO a
-liftSBESymbolic = S.runSymbolic

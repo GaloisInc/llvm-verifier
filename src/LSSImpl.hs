@@ -30,8 +30,9 @@ import           LSS.Simulator
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           Text.LLVM                       ((=:), Typed(..))
-import           Verinf.Symbolic.Common          (ConstantProjection(..), Lit)
+import           Verinf.Symbolic.Common          (ConstantProjection(..))
 import           Verinf.Utils.LogMonad
+import qualified Data.Vector.Storable as SV
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
 
@@ -64,13 +65,14 @@ type ExecRsltHndlr sbe crt a =
   -> ExecRslt sbe crt -- ^ Execution results; final memory is embedded here
   -> IO a
 
-lssImpl :: SBE (BitIO mem Lit)
-        -> SBEMemory (BitIO mem Lit)
+lssImpl :: (Eq l, SV.Storable l)
+        => SBE (BitIO mem l)
+        -> SBEMemory (BitIO mem l)
         -> Codebase
         -> [String]
         -> MemType
         -> LSS
-        -> IO (ExecRslt (BitIO mem Lit) Integer)
+        -> IO (ExecRslt (BitIO mem l) Integer)
 lssImpl sbe mem cb argv0 _memType args = do
   mainDef <- case lookupDefine' (L.Symbol "main") cb of
                Nothing -> error "Provided bitcode does not contain main()."
@@ -83,14 +85,15 @@ lssImpl sbe mem cb argv0 _memType args = do
     lc    = cbLLVMCtx cb
     mg    = defaultMemGeom lc
 
-runBitBlast :: BitBlastSBE mem Lit           -- ^ SBE to use
-            -> mem                           -- ^ SBEMemory to use
+runBitBlast :: (Eq l, SV.Storable l)
+            => BitBlastSBE mem l -- ^ SBE to use
+            -> mem               -- ^ SBEMemory to use
             -> Codebase
             -> MemGeom
-            -> [String]                      -- ^ argv
-            -> LSS                           -- ^ LSS command-line arguments
-            -> SymDefine                     -- ^ Define of main()
-            -> IO (ExecRslt (BitIO mem Lit) Integer)
+            -> [String]          -- ^ argv
+            -> LSS               -- ^ LSS command-line arguments
+            -> SymDefine         -- ^ Define of main()
+            -> IO (ExecRslt (BitIO mem l) Integer)
 runBitBlast sbe mem cb mg argv' args mainDef = do
   runSimulator cb sbe mem liftBitBlastSim seh' opts $ do
     setVerbosity $ fromIntegral $ dbug args
