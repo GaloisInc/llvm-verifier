@@ -212,11 +212,11 @@ callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg genOrA
   let normal = runNormalSymbol normalRetID calleeSym mreg genOrArgs
   case override of
     Nothing -> normal
-    Just (Redirect calleeSym')
+    Just (Redirect calleeSym', _)
       -- NB: We break transitive redirection to avoid cycles
       | isRedirected -> normal
       | otherwise    -> callDefine' True normalRetID calleeSym' mreg genOrArgs
-    Just (Override f) -> do
+    Just (Override f, _) -> do
       let args = case genOrArgs of
                Left{}      -> error "internal: ArgsGen use for override"
                Right args' -> args'
@@ -314,10 +314,10 @@ intrinsic ::
 intrinsic intr mreg args0 =
   case (intr, mreg) of
     -- TODO: Handle intrinsic overrides
-    ("llvm.memcpy.p0i8.p0i8.i64", Nothing) -> memcpy
-    ("llvm.memset.p0i8.i64", Nothing) -> memset
+    ("llvm.memcpy.p0i8.p0i8.i64", Nothing)    -> memcpy
+    ("llvm.memset.p0i8.i64", Nothing)         -> memset
     ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow reg
-    _ -> unimpl $ "LLVM intrinsic: " ++ intr
+    _                                         -> unimpl $ "LLVM intrinsic: " ++ intr
   where
     memcpy = do
       let [dst, src, len, align, _isvol] = map typedValue args0
@@ -1622,6 +1622,14 @@ modifyPath f = modifyCS $ \cs ->
 modifyCallFrameM :: (Functor m, Monad m) => (CF sbe -> CF sbe) -> Simulator sbe m ()
 modifyCallFrameM = modifyPath . modifyCallFrame
 
+type StdOvd m sbe =
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Override sbe m
+
 registerOverride ::
   ( Functor m
   , Functor sbe
@@ -1637,10 +1645,10 @@ registerOverride sym retTy argTys va handler = do
                "Not enough space in code memory to allocate new definition."
     Just t  -> do
       let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
-      modify $ \s -> s { fnOverrides = M.insert sym handler (fnOverrides s)
-                       , globalTerms =
-                           M.insert (sym, Just argTys) t' (globalTerms s)
-                       }
+      modify $ \s ->
+        s { fnOverrides = M.insert sym (handler, False) (fnOverrides s)
+          , globalTerms = M.insert (sym, Just argTys) t' (globalTerms s)
+          }
 
 --------------------------------------------------------------------------------
 -- Error handling
@@ -1869,13 +1877,7 @@ isSymbolic :: (ConstantProjection (SBEClosedTerm sbe)) =>
               SBE sbe -> L.Typed (SBETerm sbe) -> Bool
 isSymbolic sbe = not . isConst . closeTerm sbe . typedValue
 
-printfHandler ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+printfHandler :: StdOvd sbe m
 printfHandler = Override $ \_sym _rty args ->
   case args of
     (fmtPtr : rest) -> do
@@ -1888,14 +1890,7 @@ printfHandler = Override $ \_sym _rty args ->
       Just <$> termIntS 32 (length resString)
     _ -> errorPathBeforeCall $ FailRsn "printf called with no arguments"
 
-printSymbolic ::
-  ( Functor m
-  , Monad m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+printSymbolic :: StdOvd sbe m
 printSymbolic = Override $ \_sym _rty args ->
   case args of
     [ptr] -> do
@@ -1920,13 +1915,7 @@ allocHandler fn = Override $ \_sym _rty args ->
   where
     e = errorPathBeforeCall . FailRsn
 
-abortHandler ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+abortHandler :: StdOvd sbe m
 abortHandler = Override $ \_sym _rty args -> do
   case args of
     [tv@(Typed t _)]
@@ -1938,37 +1927,19 @@ abortHandler = Override $ \_sym _rty args -> do
   where
     e = errorPathBeforeCall . FailRsn
 
-showPathOverride ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+showPathOverride :: StdOvd sbe m
 showPathOverride = Override $ \_sym _rty _args -> do
   p   <- getPath' "showPathOverride: no current path!"
   sbe <- gets symBE
   unlessQuiet $ dbugM $ show $ nest 2 $ ppPath sbe p
   return Nothing
 
-showMemOverride ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+showMemOverride :: StdOvd sbe m
 showMemOverride = Override $ \_sym _rty _args -> do
   unlessQuiet $ dumpMem 1 "lss_show_mem()"
   return Nothing
 
-userSetVebosityOverride ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+userSetVebosityOverride :: StdOvd sbe m
 userSetVebosityOverride = Override $ \_sym _rty args -> do
   sbe <- gets symBE
   case args of
@@ -1984,13 +1955,7 @@ userSetVebosityOverride = Override $ \_sym _rty args -> do
   where
     e = errorPathBeforeCall . FailRsn
 
-exitHandler ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+exitHandler :: StdOvd sbe m
 exitHandler = Override $ \_sym _rty args -> do
   case args of
     [Typed t v]
@@ -2002,13 +1967,7 @@ exitHandler = Override $ \_sym _rty args -> do
   where
     e = errorPathBeforeCall . FailRsn
 
-assertHandler__assert_rtn ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+assertHandler__assert_rtn :: StdOvd sbe m
 assertHandler__assert_rtn = Override $ \_sym _rty args -> do
   case args of
     [Typed t1 v1, Typed t2 v2, Typed t3 v3, Typed t4 v4] ->
@@ -2027,12 +1986,10 @@ assertHandler__assert_rtn = Override $ \_sym _rty args -> do
   where
     e = errorPathBeforeCall . FailRsn
 
-freshInt' :: (Functor m, Monad m) => Int -> Override sbe m
+freshInt' :: Int -> StdOvd sbe m
 freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
 
-freshIntArray :: (Functor m, MonadIO m, Functor sbe,
-                  ConstantProjection (SBEClosedTerm sbe))
-              => Int -> Override sbe m
+freshIntArray :: Int -> StdOvd sbe m
 freshIntArray n = Override $ \_sym _rty args ->
   case args of
     [sizeTm, _] -> do
@@ -2049,7 +2006,6 @@ freshIntArray n = Override $ \_sym _rty args ->
           let typedArrTm = Typed ty arrTm
           store typedArrTm arrPtr
           return (Just arrPtr)
-        -- TODO: support symbolic size
         Nothing -> e "lss_fresh_array_uint called with symbolic size"
     _ -> e "lss_fresh_array_uint: wrong number of arguments"
   where
@@ -2068,13 +2024,7 @@ checkAigFile filename = do
     Left (e :: CE.SomeException)  -> errorPath $ FailRsn $ "checkAigFile: " ++ show e
     Right h                       -> liftIO $ hClose h
 
-writeIntAiger ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => Override sbe m
+writeIntAiger :: StdOvd sbe m
 writeIntAiger = Override $ \_sym _rty args ->
   case args of
     [t, fptr] -> do
@@ -2085,13 +2035,7 @@ writeIntAiger = Override $ \_sym _rty args ->
     _ -> errorPathBeforeCall
          $ FailRsn "lss_write_aiger_uint: wrong number of arguments"
 
-writeIntArrayAiger ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => L.Type -> Override sbe m
+writeIntArrayAiger :: L.Type -> StdOvd sbe m
 writeIntArrayAiger _ety = Override $ \_sym _rty args ->
   case args of
     [tptr, sizeTm, fptr] -> do
@@ -2153,9 +2097,7 @@ storeArray ptr ety elems = do
             addr' <- termAdd addr one
             go one addr' es
 
-evalAigerOverride :: (Functor m, MonadIO m, Functor sbe,
-                      ConstantProjection (SBEClosedTerm sbe)) =>
-                     Override sbe m
+evalAigerOverride :: StdOvd m sbe
 evalAigerOverride =
   Override $ \_sym _rty args ->
     case args of
@@ -2169,15 +2111,12 @@ evalAigerOverride =
                     elems
             let bools = map (not . (== 0)) $ catMaybes ints
             Just <$> (withSBE $ \s -> evalAiger s bools tm)
-          -- TODO: support symbolic size
           Nothing -> e "lss_eval_aiger: symbolic size not supported"
       _ -> e "lss_eval_aiger: wrong number of arguments"
   where
     e = errorPathBeforeCall . FailRsn
 
-evalAigerArray :: (Functor m, MonadIO m, Functor sbe,
-                   ConstantProjection (SBEClosedTerm sbe)) =>
-                  L.Type -> Override sbe m
+evalAigerArray :: L.Type -> StdOvd sbe m
 evalAigerArray ty =
   Override $ \_sym _rty args ->
     case args of
@@ -2203,29 +2142,23 @@ evalAigerArray ty =
   where
     e = errorPathBeforeCall . FailRsn
 
--- TODO: typecheck new vs. old callees
-overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
-                   ConstantProjection (SBEClosedTerm sbe)) =>
-                  Override sbe m
+overrideByName :: StdOvd sbe m
 overrideByName = Override $ \_sym _rty args ->
   case args of
     [fromNamePtr, toNamePtr] -> do
       from <- fromString <$> loadString fromNamePtr
       to   <- fromString <$> loadString toNamePtr
-      from `overrides` to
+      from `userOverrides` to
     _ -> errorPathBeforeCall
          $ FailRsn "lss_override_function_by_name: wrong number of arguments"
 
--- TODO: typecheck new vs. old callees
-overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
-                   ConstantProjection (SBEClosedTerm sbe)) =>
-                  Override sbe m
+overrideByAddr :: StdOvd sbe m
 overrideByAddr = Override $ \_sym _rty args ->
   case args of
     [_, _] -> do
       [mfromSym, mtoSym] <- mapM (resolveFunPtrTerm . typedValue) args
       case (mfromSym, mtoSym) of
-        (Just from, Just to) -> from `overrides` to
+        (Just from, Just to) -> from `userOverrides` to
         _                    -> resolveErr
     _ -> argsErr
   where
@@ -2233,11 +2166,45 @@ overrideByAddr = Override $ \_sym _rty args ->
     resolveErr = e "overrideByAddr: Failed to resolve function pointer"
     argsErr    = e "lss_override_function_by_addr: wrong number of arguments"
 
-overrides :: MonadIO m => L.Symbol -> L.Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
-overrides from to = do
+userOverrides :: MonadIO m
+  => L.Symbol -> L.Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
+userOverrides from to = do
   modify $ \s ->
-    s{ fnOverrides = M.insert from (Redirect to) (fnOverrides s) }
+    s{ fnOverrides = M.insert from (Redirect to, True) (fnOverrides s) }
   return Nothing
+
+overrideResetByName :: StdOvd sbe m
+overrideResetByName = Override $ \_sym _rty args ->
+  case args of
+    [fnNamePtr] -> do
+      fnSym <- fromString <$> loadString fnNamePtr
+      fnSym `userOverrides` fnSym
+    _ -> errorPathBeforeCall
+         $ FailRsn "lss_override_reset_by_name: wrong number of arguments"
+
+overrideResetByAddr :: StdOvd sbe m
+overrideResetByAddr = Override $ \_sym _rty args ->
+  case args of
+    [fp] -> do
+      msym <- resolveFunPtrTerm (typedValue fp)
+      case msym of
+        Just sym -> sym `userOverrides` sym
+        _        -> e "overrideResetByAddr: Failed to resolve function pointer"
+    _ -> e "lss_override_reset_by_addr: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
+
+overrideResetAll :: StdOvd sbe m
+overrideResetAll = Override $ \_sym _rty args ->
+  case args of
+    [] -> do ovds <- gets fnOverrides
+             forM_ (M.assocs ovds) $ \(sym, (_, userOvd)) ->
+               when userOvd $ modify $ \s ->
+                 s{ fnOverrides = M.delete sym (fnOverrides s)}
+             return Nothing
+    _ -> e "lss_override_reset_all: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
@@ -2290,6 +2257,9 @@ standardOverrides =
      overrideByName)
   , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False,
      overrideByAddr)
+  , ("lss_override_reset_by_name", voidTy, [strTy], False, overrideResetByName)
+  , ("lss_override_reset_by_addr", voidTy, [voidPtr], False, overrideResetByAddr)
+  , ("lss_override_reset_all", voidTy, [], False, overrideResetAll)
   , ("lss_show_path", voidTy, [], False, showPathOverride)
   , ("lss_show_mem", voidTy, [], False, showMemOverride)
   , ("lss_set_verbosity", voidTy, [i32], False, userSetVebosityOverride)

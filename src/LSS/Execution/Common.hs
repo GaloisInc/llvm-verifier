@@ -53,7 +53,7 @@ type CS sbe        = CtrlStk (SBETerm sbe) (SBEMemory sbe)
 type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
 type Path sbe      = Path' (SBETerm sbe) (SBEMemory sbe)
 type CF sbe        = CallFrame (SBETerm sbe)
-type OvrMap sbe m  = M.Map L.Symbol (Override sbe m)
+type OvrMap sbe m  = M.Map L.Symbol (Override sbe m, Bool {- user override? -})
 
 -- | Symbolic simulator options
 data LSSOpts = LSSOpts {
