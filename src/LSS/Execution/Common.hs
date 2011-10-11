@@ -71,7 +71,7 @@ data State sbe m = State
   , liftSymBE    :: LiftSBE sbe m   -- ^ Lift SBE operations into the Simulator monad
   , ctrlStk      :: CS sbe          -- ^ Control stack for tracking merge points
   , globalTerms  :: GlobalMap sbe   -- ^ Global ptr terms
-  , overrides    :: OvrMap sbe m    -- ^ Function override table
+  , fnOverrides  :: OvrMap sbe m    -- ^ Function override table
   , verbosity    :: Int             -- ^ Verbosity level
   , evHandlers   :: SEH sbe m       -- ^ Simulation event handlers
   , errorPaths   :: [ErrorPath sbe] -- ^ Terminated paths due to errors.

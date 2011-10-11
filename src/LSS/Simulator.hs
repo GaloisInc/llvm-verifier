@@ -139,7 +139,7 @@ newSimState cb sbe mem lifter seh mopts =
   , liftSymBE    = lifter
   , ctrlStk      = emptyCtrlStk
   , globalTerms  = M.empty
-  , overrides    = M.empty
+  , fnOverrides  = M.empty
   , verbosity    = 1
   , evHandlers   = seh
   , errorPaths   = []
@@ -207,7 +207,7 @@ callDefine' normalRetID calleeSym@(L.Symbol calleeName) mreg genOrArgs
   return []
   | otherwise
   = do
-  override <- M.lookup calleeSym <$> gets overrides
+  override <- M.lookup calleeSym <$> gets fnOverrides
   case override of
     Just (Redirect calleeSym') ->
       callDefine' normalRetID calleeSym' mreg genOrArgs
@@ -1504,14 +1504,27 @@ resolveCallee callee = case callee of
    resolveIdent i = findDefineByPtr =<< lkupIdent i =<< getCallFrame
    findDefineByPtr (Typed ty fp) = case L.elimFunPtr ty of
      Nothing -> err "Callee is not a function pointer"
-     _       -> do pr <- withMem $ \s m -> codeLookupDefine s m fp
-                   case pr of
-                     Result sym -> ok sym
-                     _          -> err $ "resolveCallee: Failed to resolve "
-                                       ++ "callee function pointer: "
-                                       ++ show (L.ppValue callee)
+     _       -> do r <- resolveFunPtrTerm fp
+                   case r of
+                     Just sym -> ok sym
+                     _        -> err $ "resolveCallee: Failed to resolve "
+                                     ++ "callee function pointer: "
+                                     ++ show (L.ppValue callee)
    ok sym  = return $ Right $ sym
    err msg = return $ Left $ "resolveCallee: " ++ msg
+
+resolveFunPtrTerm ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => SBETerm sbe -> Simulator sbe m (Maybe L.Symbol)
+resolveFunPtrTerm fp = do
+  pr <- withMem $ \s m -> codeLookupDefine s m fp
+  case pr of
+    Result sym -> return (Just sym)
+    _          -> return Nothing
 
 lkupIdent ::
   ( MonadIO m
@@ -1619,7 +1632,7 @@ registerOverride sym retTy argTys va handler = do
                "Not enough space in code memory to allocate new definition."
     Just t  -> do
       let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
-      modify $ \s -> s { overrides = M.insert sym handler (overrides s)
+      modify $ \s -> s { fnOverrides = M.insert sym handler (fnOverrides s)
                        , globalTerms =
                            M.insert (sym, Just argTys) t' (globalTerms s)
                        }
@@ -2185,32 +2198,42 @@ evalAigerArray ty =
   where
     e = errorPathBeforeCall . FailRsn
 
+-- TODO: typecheck new vs. old callees
 overrideByName :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
                   Override sbe m
 overrideByName = Override $ \_sym _rty args ->
   case args of
-    [fromPtr, toPtr] -> do
-      from <- loadString fromPtr
-      to <- loadString toPtr
-      let sym = fromString from
-          sym' = fromString to
-          handler = Redirect sym'
-      modify $ \s -> s { overrides = M.insert sym handler (overrides s) }
-      return Nothing
+    [fromNamePtr, toNamePtr] -> do
+      from <- fromString <$> loadString fromNamePtr
+      to   <- fromString <$> loadString toNamePtr
+      from `overrides` to
     _ -> errorPathBeforeCall
          $ FailRsn "lss_override_function_by_name: wrong number of arguments"
 
+-- TODO: typecheck new vs. old callees
 overrideByAddr :: (Functor m, Monad m, MonadIO m, Functor sbe,
                    ConstantProjection (SBEClosedTerm sbe)) =>
                   Override sbe m
 overrideByAddr = Override $ \_sym _rty args ->
   case args of
-    [_fromPtr, _toPtr] -> do
-      _ <- unimpl "overrideByAddr"
-      return Nothing
-    _ -> errorPathBeforeCall
-         $ FailRsn "lss_override_function_by_addr: wrong number of arguments"
+    [_, _] -> do
+      [mfromSym, mtoSym] <- mapM (resolveFunPtrTerm . typedValue) args
+      case (mfromSym, mtoSym) of
+        (Just from, Just to) -> from `overrides` to
+        _                    -> resolveErr
+    _ -> argsErr
+  where
+    e          = errorPathBeforeCall . FailRsn
+    resolveErr = e "overrideByAddr: Failed to resolve function pointer"
+    argsErr    = e "lss_override_function_by_addr: wrong number of arguments"
+
+
+overrides :: MonadIO m => L.Symbol -> L.Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
+overrides from to = do
+  modify $ \s ->
+    s{ fnOverrides = M.insert from (Redirect to) (fnOverrides s) }
+  return Nothing
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
