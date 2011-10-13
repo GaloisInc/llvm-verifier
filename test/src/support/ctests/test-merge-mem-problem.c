@@ -8,14 +8,12 @@ int f(uint32_t x)
 {
     if (x == 5)
         return 1;
-    printf ("The presence of this call results in a merge memory failure\n");
+    printf ("If we do not pre-initialize global data properly, the use of this string will result in a merge memory failure\n");
     return 1;
 }
 
 int main(int argc, char **argv)
 {
     uint32_t x = lss_fresh_uint32(1);
-    int r = f(x);
-    printf("Program result: %d\n", r);
-    return r;
+    return f(x) == 1;
 }
