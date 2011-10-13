@@ -1419,14 +1419,16 @@ doAlloc ty msztm allocActFn = do
   m             <- getMem
   rslt          <- withSBE $ \s -> allocActFn s m (fromMaybe one msztm)
 
-  (c, t, m', e) <- case rslt of
+  (c, t, m', s) <- case rslt of
     Left SASymbolicCountUnsupported  -> errorPath $ err "alloca"
     Right HASymbolicCountUnsupported -> errorPath $ err "malloc"
-    Left (SAResult c t m')           -> return (c, t, m', err "alloca")
-    Right (HAResult c t m')          -> return (c, t, m', err "malloc")
+    Left (SAResult c t m')           -> return (c, t, m', "alloca")
+    Right (HAResult c t m')          -> return (c, t, m', "malloc")
 
   setMem m'
-  processMemCond e c
+
+  fr <- memFailRsn ("Failed " ++ s ++ " allocation of type " ++ show (L.ppType ty)) []
+  processMemCond fr c
   return (Typed (L.PtrTo ty) t)
   where
     err s = FailRsn
