@@ -100,7 +100,12 @@ import qualified Data.LLVM.CFG             as CFG
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 
-runSimulator :: (Functor m, MonadIO m)
+runSimulator ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
   => Codebase              -- ^ Post-transform LLVM code, memory alignment, and
                            -- type aliasing info
   -> SBE sbe               -- ^ A symbolic backend
@@ -122,7 +127,9 @@ runSimulator cb sbe mem lifter seh mopts m = do
   where
     newSt = newSimState cb sbe mem lifter seh mopts
     go    = runSM (setup >> m)
-    setup = modifyCS (pushMF emptyExitFrame)
+    setup = do
+      modifyCS (pushMF emptyExitFrame)
+      initGlobals
 
 newSimState :: Codebase
             -> SBE sbe
@@ -146,6 +153,19 @@ newSimState cb sbe mem lifter seh mopts =
   , lssOpts      = maybe defaultLSSOpts id mopts
   , pathCounter  = 0
   }
+
+initGlobals ::
+  ( MonadIO m
+  , Functor sbe
+  , Functor m
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => Simulator sbe m ()
+initGlobals = do
+  nms <- cbGlobalNameMap <$> gets codebase
+  forM_ (M.elems nms) $ \nm -> case nm of
+    Left g -> getGlobalPtrTerm (L.globalSym g, Nothing) >> return ()
+    _      -> return ()
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
 
@@ -248,7 +268,7 @@ runNormalSymbol ::
 runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   mp   <- getPath
   name <- maybe newPathName (return . pathName) mp
-  path <- newPath name (CallFrame calleeSym M.empty) =<< initMem
+  path <- newPath name (CallFrame calleeSym M.empty) =<< getMem
   modifyCS $ pushPendingPath path
            . pushMF (ReturnFrame mreg normalRetID
                        Nothing Nothing Nothing [])
@@ -298,10 +318,6 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
       | otherwise = err
           $ text "formal/actual type mismatch:"
             <+> L.ppType ft <+> text "vs." <+> L.ppType at
-
-    initMem = do
-      Just mf <- topMF <$> gets ctrlStk
-      if isExitFrame mf then gets initMemModel else getMem
 
 intrinsic ::
   ( MonadIO m
@@ -1287,14 +1303,18 @@ withSBE' f = gets symBE >>= \sbe -> return (f sbe)
 
 -- @getMem@ yields the memory model of the current path, which must exist.
 getMem :: (Functor m, Monad m) => Simulator sbe m (SBEMemory sbe)
-getMem = pathMem <$> getPath' "getMem"
+getMem = do
+  mp <- getPath
+  case mp of
+    Nothing -> gets initMemModel
+    Just p  -> return (pathMem p)
 
 -- @setMem@ sets the memory model in the current path, which must exist.
 setMem :: (Functor m, Monad m) => SBEMemory sbe -> Simulator sbe m ()
 setMem mem = do
   mp <- getPath
   case mp of
-    Nothing -> error "setMem: no current path"
+    Nothing -> modify $ \s -> s{ initMemModel = mem }
     _       -> modifyPath $ \p -> p{ pathMem = mem }
 
 -- @withMem@ performs the given action on the memory as provided by @getMem@.

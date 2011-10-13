@@ -72,6 +72,9 @@ primOpTests =
   , lssTest 0 "test-user-override-intrinsic" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
+  , lssTest 0 "test-merge-mem-problem" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
   ]
   where
     -- The 'v' parameter to all of these tests controls the verbosity; a
