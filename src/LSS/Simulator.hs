@@ -8,17 +8,16 @@ Point-of-contact : jstanley
 -- Debugging output at various verbosity levels:
 -- 1: No output, the lowest verbosity level
 -- 2: Instruction trace only
--- 3: Warnings on symbolic validity results from memory model; show path state
---    details when all paths yield errors.  Memory model information for error
---    paths.  Displays error paths as they are encountered rather than at the
---    end of execution.
+-- 3: Show path state details when all paths yield errors.  Memory model
+--    information for error paths.  Displays error paths as they are
+--    encountered rather than at the end of execution.
 -- 4: Path constraints on nontrivial path merges.
 -- 5: Simulator internal state (control stack dump per instruction); show
 --    memory model details in addition to path state details when all paths
 --    yield errors.
 -- 6: Memory model dump on load/store operations only (for nontrivial codes,
 --    this generates a /lot/ of output).  Complete path dumps on nontrivial path
---    merges.
+--    merges.  Warnings on symbolic validity results from memory model
 -- 7: Memory model dump pre/post every operation (for nontrivial codes, this
 --    generates a /lot/ of output -- now with more output than level 6!)
 
@@ -423,11 +422,12 @@ processMemCond rsn cond = do
       newp <- addPathConstraint p Nothing cond
       modifyPath $ const newp
 
-      tellUser $ "Warning: Obtained symbolic validity result from memory model."
-      tellUser $ "This means that certain memory accesses were valid only on some paths."
-      tellUser $ "In this case, the symbolic validity result was encountered at:"
-      tellUser $ show $ ppPathLoc sbe p
-      tellUser ""
+      whenVerbosity (>= 6) $ do
+        tellUser $ "Warning: Obtained symbolic validity result from memory model."
+        tellUser $ "This means that certain memory accesses were valid only on some paths."
+        tellUser $ "In this case, the symbolic validity result was encountered at:"
+        tellUser $ show $ ppPathLoc sbe p
+        tellUser ""
 
 run ::
   ( LogMonad m
