@@ -8,8 +8,8 @@
 
 int main()
 {
-  SWord32 *pt  = lss_fresh_array_uint32(4, 0x8899aabbUL);
-  SWord32 *key = lss_fresh_array_uint32(4, 0x08090a0bUL);
+  SWord32 *pt  = lss_fresh_array_uint32(4, 0x8899aabbUL, NULL);
+  SWord32 *key = lss_fresh_array_uint32(4, 0x08090a0bUL, NULL);
   SWord32 ct[4];
 
   aes128BlockEncrypt(pt, key, ct);

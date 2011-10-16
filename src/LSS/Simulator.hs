@@ -2013,7 +2013,7 @@ freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
 freshIntArray :: Int -> StdOvd sbe m
 freshIntArray n = Override $ \_sym _rty args ->
   case args of
-    [sizeTm, _] -> do
+    [sizeTm, _, _] -> do
       msize <- withSBE' $ \s -> getUVal (closeTerm s (typedValue sizeTm))
       case msize of
         Just size -> do

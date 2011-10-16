@@ -19,10 +19,17 @@ uint16_t lss_fresh_uint16 (uint16_t def) NO_INL;
 uint32_t lss_fresh_uint32 (uint32_t def) NO_INL;
 uint64_t lss_fresh_uint64 (uint64_t def) NO_INL;
 
-uint8_t  *lss_fresh_array_uint8  (uint32_t size, uint8_t def) NO_INL;
-uint16_t *lss_fresh_array_uint16 (uint32_t size, uint16_t def) NO_INL;
-uint32_t *lss_fresh_array_uint32 (uint32_t size, uint32_t def) NO_INL;
-uint64_t *lss_fresh_array_uint64 (uint32_t size, uint64_t def) NO_INL;
+/* Note: the lss_fresh_array_* functions take an optional third
+   parameter for supplying array values during concrete execution.  If
+   'defs' is null, the 'def' parameter is used to populate the array
+   entirely with the same value.  If 'defs' non-null, the 'def'
+   parameter is ignored, and 'defs' is expected to point to an array of
+   the appropriate concrete size.
+ */
+uint8_t  *lss_fresh_array_uint8  (uint32_t size, uint8_t def, uint8_t *defs) NO_INL;
+uint16_t *lss_fresh_array_uint16 (uint32_t size, uint16_t def, uint16_t *defs) NO_INL;
+uint32_t *lss_fresh_array_uint32 (uint32_t size, uint32_t def, uint32_t *defs) NO_INL;
+uint64_t *lss_fresh_array_uint64 (uint32_t size, uint64_t def, uint64_t *defs) NO_INL;
 
 void lss_write_aiger_uint8  (uint8_t  sym, char *filename) NO_INL;
 void lss_write_aiger_uint16 (uint16_t sym, char *filename) NO_INL;

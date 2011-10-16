@@ -14,7 +14,7 @@ int main() {
 
 	byte cxt[512] = {0};
 	byte *res;
-	byte *text = lss_fresh_array_uint8(4, 0);
+	byte *text = lss_fresh_array_uint8(4, 0, NULL);
 	text[3] = '\0';
 	byte res2[48];
 	byte input[32] = {0};
