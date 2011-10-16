@@ -29,8 +29,8 @@ int main(int argc, char** argv) {
   //dummy_memset(in, 0, 16);
   //in[15] = 2;
 
-  unsigned char *in = lss_fresh_array_uint8(16, 0);
-  unsigned char *userKey = lss_fresh_array_uint8(16, 0);
+  unsigned char *in = lss_fresh_array_uint8(16, 0, NULL);
+  unsigned char *userKey = lss_fresh_array_uint8(16, 0, NULL);
 
   AES_set_encrypt_key(userKey, 128, &key);
   AES_encrypt(in, out, &key);

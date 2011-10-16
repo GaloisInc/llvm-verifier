@@ -1,4 +1,5 @@
 #include <sym-api.h>
+#include <stdio.h>
 
 #define FRESH(ty, def) { return def; }
 #define EVAL(ty, sym)  { return sym; }
@@ -6,11 +7,11 @@
         int i;                                          \
         for(i = 0; i < size; i++) out[i] = sym[i];      \
     }
-#define FRESH_ARRAY(ty, size, def) {                    \
-        ty *buf = malloc(size * sizeof(ty));            \
-        int i;                                          \
-        for (i = 0; i < size; i++) buf[i] = def;        \
-        return buf;                                     \
+#define FRESH_ARRAY(ty, size, def, defs) {                  \
+        ty *buf = malloc(size * sizeof(ty));                \
+        for(int i; i < size; ++i)                           \
+            buf[i] = defs ? defs[i] : def;                  \
+        return buf;                                         \
     }
 
 uint8_t  lss_fresh_uint8  (uint8_t def)  FRESH(uint8_t,  def);
@@ -18,14 +19,14 @@ uint16_t lss_fresh_uint16 (uint16_t def) FRESH(uint16_t, def);
 uint32_t lss_fresh_uint32 (uint32_t def) FRESH(uint32_t, def);
 uint64_t lss_fresh_uint64 (uint64_t def) FRESH(uint64_t, def);
 
-uint8_t*  lss_fresh_array_uint8  (uint32_t size, uint8_t def)
-    FRESH_ARRAY(uint8_t,  size, def);
-uint16_t* lss_fresh_array_uint16 (uint32_t size, uint16_t def)
-    FRESH_ARRAY(uint16_t, size, def);
-uint32_t* lss_fresh_array_uint32 (uint32_t size, uint32_t def)
-    FRESH_ARRAY(uint32_t, size, def);
-uint64_t* lss_fresh_array_uint64 (uint32_t size, uint64_t def)
-    FRESH_ARRAY(uint64_t, size, def);
+uint8_t*  lss_fresh_array_uint8  (uint32_t size, uint8_t def, uint8_t *defs)
+    FRESH_ARRAY(uint8_t,  size, def, defs);
+uint16_t* lss_fresh_array_uint16 (uint32_t size, uint16_t def, uint16_t *defs)
+    FRESH_ARRAY(uint16_t, size, def, defs);
+uint32_t* lss_fresh_array_uint32 (uint32_t size, uint32_t def, uint32_t *defs) 
+    FRESH_ARRAY(uint32_t, size, def, defs);
+uint64_t* lss_fresh_array_uint64 (uint32_t size, uint64_t def, uint64_t *defs)
+    FRESH_ARRAY(uint64_t, size, def, defs);
 
 void lss_write_aiger_uint8  (uint8_t  sym, char *filename) {}
 void lss_write_aiger_uint16 (uint16_t sym, char *filename) {}

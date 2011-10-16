@@ -2,7 +2,7 @@
 
 #define SIZE 10
 int main() {
-    uint32_t *x = lss_fresh_array_uint32(SIZE, 22);
+    uint32_t *x = lss_fresh_array_uint32(SIZE, 22, NULL);
     uint32_t i;
     for(i = 0; i < SIZE; i++) {
         x[i] &= 0x01;
