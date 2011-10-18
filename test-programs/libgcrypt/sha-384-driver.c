@@ -4,15 +4,14 @@
 
 #include "sha512.h"
 
-char text[] = "Hello, world";
+char text[] = "foo";
 
 int main() {
-
 	byte cxt[512] = {0};
 	byte *res;
 
 	sha384.init(cxt);
-	sha384.write(cxt, text, 12);
+	sha384.write(cxt, text, 3);
 	sha384.final(cxt);
 
 	res = sha384.read(cxt);

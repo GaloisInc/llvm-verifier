@@ -11,6 +11,14 @@ typedef void(*HASH_WRITE)(void *, const void *, size_t);
 typedef void(*HASH_FINAL)(void *);
 typedef byte *(*HASH_READ)(void *);
 
+typedef struct
+{
+  u64 h0, h1, h2, h3, h4, h5, h6, h7;
+  u64 nblocks;
+  byte buf[128];
+  int count;
+} SHA512_CONTEXT;
+
 struct hash {
 	HASH_INIT  init;
 	HASH_WRITE write;
