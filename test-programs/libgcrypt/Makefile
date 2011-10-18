@@ -2,11 +2,11 @@
 libgcrypt     := libgcrypt-1.5.0
 libgcrypt_pkg := $(libgcrypt).tar.bz2
 libgcrypt_url ?= ftp://ftp.gnupg.org/gcrypt/libgcrypt/$(libgcrypt_pkg)
+extra_include := /opt/local/include
 
 LSS := ../../cabal-dev/bin/lss
 CC := clang
-CFLAGS := -I$(libgcrypt) -I$(libgcrypt)/src -I$(libgcrypt)/cipher -Wall \
-          -I../../sym-api -O0
+CFLAGS := -I$(libgcrypt) -I$(libgcrypt)/src -I$(libgcrypt)/cipher -I$(extra_include) -Wall -I../../sym-api -O0
 
 .PHONY: all
 all:

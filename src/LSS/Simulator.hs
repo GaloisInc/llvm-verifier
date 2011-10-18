@@ -153,6 +153,7 @@ newSimState cb sbe mem lifter seh mopts =
   , pathCounter  = 0
   }
 
+-- | Initialize all global data and register all defines.
 initGlobals ::
   ( MonadIO m
   , Functor sbe
@@ -162,9 +163,21 @@ initGlobals ::
   => Simulator sbe m ()
 initGlobals = do
   nms <- cbGlobalNameMap <$> gets codebase
+  -- For ease of debugging/clarity, register all functions that are not standard
+  -- overrides before initializing global data.
   forM_ (M.elems nms) $ \nm -> case nm of
-    Left g -> getGlobalPtrTerm (L.globalSym g, Nothing) >> return ()
-    _      -> return ()
+    Left{}  -> return ()
+    Right d -> do
+      -- Don't register overrides here, despite their presence in the codebase.
+      -- This is done elsewhere via registerStandardOverrides.
+      isStdOvd <- snd <$> standardOverrides
+      unless (isStdOvd $ sdName d) $
+        getGlobalPtrTerm (sdName d, Just $ map typedType $ sdArgs d) >> return ()
+
+  -- And then initialize global data
+  forM_ (M.elems nms) $ \nm -> case nm of
+    Right{} -> return ()
+    Left g  -> getGlobalPtrTerm (L.globalSym g, Nothing) >> return ()
 
 type ArgsGen sbe m = Simulator sbe m [Typed (SBETerm sbe)]
 
@@ -841,7 +854,7 @@ getTypedTerm' ::
   => Maybe (CF sbe) -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 
 getTypedTerm' mfrm (Typed (L.Alias i) v)
-  = getTypedTerm' mfrm =<< (`Typed` v) <$> withLC (`llvmLookupAlias` i)
+  =  getTypedTerm' mfrm =<< (`Typed` v) <$> withLC (`llvmLookupAlias` i)
 
 getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = Typed t <$> withSBE (\sbe -> termInt sbe w x)
@@ -1533,7 +1546,7 @@ resolveCallee callee = case callee of
      _       -> do r <- resolveFunPtrTerm fp
                    case r of
                      Just sym -> ok sym
-                     _        -> err $ "resolveCallee: Failed to resolve "
+                     _        -> err $ "Failed to resolve "
                                      ++ "callee function pointer: "
                                      ++ show (L.ppValue callee)
    ok sym  = return $ Right $ sym
@@ -2245,56 +2258,58 @@ overrideResetAll = Override $ \_sym _rty args ->
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                       ConstantProjection (SBEClosedTerm sbe)) =>
-                     [OverrideEntry sbe m]
-standardOverrides =
-  [ ("exit", voidTy, [i32], False, exitHandler)
-  , ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
-  , ("alloca", voidPtr, [i32], False, allocHandler alloca)
-  , ("malloc", voidPtr, [i32], False, allocHandler malloc)
-  , ("free", voidTy, [voidPtr], False,
-     -- TODO: stub! Does this need to be implemented?
-     Override $ \_sym _rty _args -> return Nothing)
-  , ("printf", i32, [strTy], True, printfHandler)
-  , ("lss_abort", voidTy, [strTy], False, abortHandler)
-  , ("lss_print_symbolic", voidTy, [voidPtr], False, printSymbolic)
-  , ("lss_fresh_uint8",   i8,  [i8], False, freshInt'  8)
-  , ("lss_fresh_uint16", i16, [i16], False, freshInt' 16)
-  , ("lss_fresh_uint32", i32, [i32], False, freshInt' 32)
-  , ("lss_fresh_uint64", i64, [i64], False, freshInt' 64)
-  , ("lss_fresh_array_uint8",   i8p, [i32,  i8], False, freshIntArray 8)
-  , ("lss_fresh_array_uint16", i16p, [i32, i16], False, freshIntArray 16)
-  , ("lss_fresh_array_uint32", i32p, [i32, i32], False, freshIntArray 32)
-  , ("lss_fresh_array_uint64", i64p, [i32, i64], False, freshIntArray 64)
-  , ("lss_write_aiger_uint8",  voidTy, [i8,  strTy], False, writeIntAiger)
-  , ("lss_write_aiger_uint16", voidTy, [i16, strTy], False, writeIntAiger)
-  , ("lss_write_aiger_uint32", voidTy, [i32, strTy], False, writeIntAiger)
-  , ("lss_write_aiger_uint64", voidTy, [i64, strTy], False, writeIntAiger)
-  , ("lss_write_aiger_array_uint8", voidTy, [i8p, i32, strTy], False,
-     writeIntArrayAiger i8)
-  , ("lss_write_aiger_array_uint16", voidTy, [i16p, i32, strTy], False,
-     writeIntArrayAiger i16)
-  , ("lss_write_aiger_array_uint32", voidTy, [i32p, i32, strTy], False,
-     writeIntArrayAiger i32)
-  , ("lss_write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
-     writeIntArrayAiger i64)
-  , ("lss_eval_aiger_uint8",   i8, [i8,  i8p], False, evalAigerOverride)
-  , ("lss_eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
-  , ("lss_eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
-  , ("lss_eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
-  , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False, evalAigerArray i8)
-  , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False, evalAigerArray i16)
-  , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False, evalAigerArray i32)
-  , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False, evalAigerArray i64)
-  , ("lss_override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
-  , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False, overrideByAddr)
-  , ("lss_override_llvm_intrinsic", voidTy, [strTy, voidPtr], False, overrideIntrinsic)
-  , ("lss_override_reset_by_name", voidTy, [strTy], False, overrideResetByName)
-  , ("lss_override_reset_by_addr", voidTy, [voidPtr], False, overrideResetByAddr)
-  , ("lss_override_reset_all", voidTy, [], False, overrideResetAll)
-  , ("lss_show_path", voidTy, [], False, showPathOverride)
-  , ("lss_show_mem", voidTy, [], False, showMemOverride)
-  , ("lss_set_verbosity", voidTy, [i32], False, userSetVebosityOverride)
-  ]
+                     Simulator sbe m ([OverrideEntry sbe m], L.Symbol -> Bool)
+standardOverrides = return (ovds, f)
+  where
+    ovds = [ ("exit", voidTy, [i32], False, exitHandler)
+           , ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
+           , ("alloca", voidPtr, [i32], False, allocHandler alloca)
+           , ("malloc", voidPtr, [i32], False, allocHandler malloc)
+           , ("free", voidTy, [voidPtr], False,
+              -- TODO: stub! Does this need to be implemented?
+              Override $ \_sym _rty _args -> return Nothing)
+           , ("printf", i32, [strTy], True, printfHandler)
+           , ("lss_abort", voidTy, [strTy], False, abortHandler)
+           , ("lss_print_symbolic", voidTy, [voidPtr], False, printSymbolic)
+           , ("lss_fresh_uint8",   i8,  [i8], False, freshInt'  8)
+           , ("lss_fresh_uint16", i16, [i16], False, freshInt' 16)
+           , ("lss_fresh_uint32", i32, [i32], False, freshInt' 32)
+           , ("lss_fresh_uint64", i64, [i64], False, freshInt' 64)
+           , ("lss_fresh_array_uint8",   i8p, [i32,  i8], False, freshIntArray 8)
+           , ("lss_fresh_array_uint16", i16p, [i32, i16], False, freshIntArray 16)
+           , ("lss_fresh_array_uint32", i32p, [i32, i32], False, freshIntArray 32)
+           , ("lss_fresh_array_uint64", i64p, [i32, i64], False, freshIntArray 64)
+           , ("lss_write_aiger_uint8",  voidTy, [i8,  strTy], False, writeIntAiger)
+           , ("lss_write_aiger_uint16", voidTy, [i16, strTy], False, writeIntAiger)
+           , ("lss_write_aiger_uint32", voidTy, [i32, strTy], False, writeIntAiger)
+           , ("lss_write_aiger_uint64", voidTy, [i64, strTy], False, writeIntAiger)
+           , ("lss_write_aiger_array_uint8", voidTy, [i8p, i32, strTy], False,
+              writeIntArrayAiger i8)
+           , ("lss_write_aiger_array_uint16", voidTy, [i16p, i32, strTy], False,
+              writeIntArrayAiger i16)
+           , ("lss_write_aiger_array_uint32", voidTy, [i32p, i32, strTy], False,
+              writeIntArrayAiger i32)
+           , ("lss_write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
+              writeIntArrayAiger i64)
+           , ("lss_eval_aiger_uint8",   i8, [i8,  i8p], False, evalAigerOverride)
+           , ("lss_eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
+           , ("lss_eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
+           , ("lss_eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
+           , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False, evalAigerArray i8)
+           , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False, evalAigerArray i16)
+           , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False, evalAigerArray i32)
+           , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False, evalAigerArray i64)
+           , ("lss_override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
+           , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False, overrideByAddr)
+           , ("lss_override_llvm_intrinsic", voidTy, [strTy, voidPtr], False, overrideIntrinsic)
+           , ("lss_override_reset_by_name", voidTy, [strTy], False, overrideResetByName)
+           , ("lss_override_reset_by_addr", voidTy, [voidPtr], False, overrideResetByAddr)
+           , ("lss_override_reset_all", voidTy, [], False, overrideResetAll)
+           , ("lss_show_path", voidTy, [], False, showPathOverride)
+           , ("lss_show_mem", voidTy, [], False, showMemOverride)
+           , ("lss_set_verbosity", voidTy, [i32], False, userSetVebosityOverride)
+           ]
+    f = flip elem (map (\(s,_,_,_,_) -> s) ovds)
 
 registerOverride' ::
   ( MonadIO m
@@ -2310,4 +2325,4 @@ registerStandardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe,
                               ConstantProjection (SBEClosedTerm sbe)) =>
                              Simulator sbe m ()
 registerStandardOverrides = do
-  mapM_ registerOverride' standardOverrides
+  mapM_ registerOverride' =<< (fst <$> standardOverrides)

@@ -19,11 +19,12 @@ int main() {
 	byte res2[48];
 	byte input[32] = {0};
 
-	sha384_init(cxt);
-	sha512_write(cxt, text, 3);
-	sha512_final(cxt);
+	sha384.init(cxt);
 
-	res = sha512_read(cxt);
+	sha384.write(cxt, text, 3);
+	sha384.final(cxt);
+
+	res = sha384.read(cxt);
 
 	lss_write_aiger_array_uint8(res, 48, "sha384.aig");
 	lss_eval_aiger_array_uint8(res, res2, 48, input, 32);
