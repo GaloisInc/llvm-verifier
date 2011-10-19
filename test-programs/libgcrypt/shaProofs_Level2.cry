@@ -1,0 +1,11 @@
+include "shaProofs_Level1.cry";
+
+extern AIG sha384_gcrypt_Block512_Inner("impl_AIGs/Block512_Inner.aig") : ([80][64], [9][64]) -> [9][64];
+theorem sha384_Block512_Inner_eq : {Ws h g f e d c b a t}. 
+  if (t >= 80) then True else 
+    sha384_gcrypt_Block512_Inner (Ws, [h g f e d c b a t]) == Block512_Inner (Ws, [h g f e d c b a t]);
+
+
+
+
+

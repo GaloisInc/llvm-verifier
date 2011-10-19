@@ -6,7 +6,7 @@
 
 #include "sha512.c"
 
-#define MSG_LEN (1024)
+#define MSG_LEN (1)
 
 uint64_t llvm_objectsize_i64(uint8_t* obj,  bool maxOrMin) 
 {

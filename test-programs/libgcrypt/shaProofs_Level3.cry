@@ -1,0 +1,18 @@
+include "shaProofs_Level2.cry";
+
+extern AIG sha384_gcrypt_Transform("impl_AIGs/Transform.aig") : ([8][64], [16][64]) -> [8][64];
+
+sha384_ref_Transform_Wrapped (hs, data) = sha384_gcrypt_Transform (hs, data')
+    where {
+      data' = [| join (reverse (splitBy(8, d))) || d <- data |];
+    };
+
+theorem sha384_Transform_eq : {hs data}. 
+    sha384_gcrypt_Transform (hs, data) == Transform (hs, data')
+    where {
+      data' = [| join (reverse (splitBy(8, d))) || d <- data |];
+    };
+
+
+
+

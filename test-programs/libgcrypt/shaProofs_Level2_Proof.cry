@@ -1,0 +1,4 @@
+include "shaProofs_Level2.cry";
+
+pragma Block512_T1 : SBV assumeEquals sha384_gcrypt_Block512_T1;
+pragma Block512_T2 : SBV assumeEquals sha384_gcrypt_Block512_T2;

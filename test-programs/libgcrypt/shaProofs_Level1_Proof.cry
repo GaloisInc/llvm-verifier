@@ -1,0 +1,10 @@
+include "shaProofs_Level1.cry";
+
+pragma Ch           : SBV assumeEquals sha384_gcrypt_Ch;
+pragma Maj          : SBV assumeEquals sha384_gcrypt_Maj;
+pragma UpperSigma_0 : SBV assumeEquals sha384_gcrypt_UpperSigma_0;
+pragma UpperSigma_1 : SBV assumeEquals sha384_gcrypt_UpperSigma_1;
+pragma LowerSigma_0 : SBV assumeEquals sha384_gcrypt_LowerSigma_0;
+pragma LowerSigma_1 : SBV assumeEquals sha384_gcrypt_LowerSigma_1;
+
+

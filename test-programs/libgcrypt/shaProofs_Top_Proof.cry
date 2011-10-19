@@ -1,0 +1,6 @@
+include "shaProofs_Top.cry";
+pragma block512 : SBV assumeEquals sha384_ref_Transform_Wrapped;
+extern AIG sha384_gcrypt_top("impl_AIGs/sha384_top.aig") : ([msg_len][8] -> [384]);
+theorem sha384_eq : {x}. sha384_gcrypt_top (x) == sha384_top(x);
+
+
