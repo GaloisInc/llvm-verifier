@@ -1,0 +1,60 @@
+include "SHA384.cry";
+
+block512_wrapped : ([8][64], [16][64]) -> [8][64];
+block512_wrapped (ctx, data) = block512 (ctx, data')
+  where {
+    data' = [| join (reverse (splitBy(8, d))) || d <- data |];
+  };
+
+Transform : ([8][64], [16][64]) -> [8][64];
+Transform ([H0 H1 H2 H3 H4 H5 H6 H7], M) =
+  [ (H0+A) (H1+B) (H2+C) (H3+D)
+    (H4+E) (H5+F) (H6+G) (H7+H) ]
+ where {
+  Ws : [80][64];
+  Ws = M # [| Block512_W [W2 W7 W15 W16]
+           || W16 <- drop (16 - 16, Ws)
+           || W15 <- drop (16 - 15, Ws)
+           || W7  <- drop (16 -  7, Ws)
+           || W2  <- drop (16 -  2, Ws)
+           || t <- [16..79]
+           |];
+  A = (inner_step@80)@7;
+  B = (inner_step@80)@6;
+  C = (inner_step@80)@5;
+  D = (inner_step@80)@4;
+  E = (inner_step@80)@3;
+  F = (inner_step@80)@2;
+  G = (inner_step@80)@1;
+  H = (inner_step@80)@0;
+
+  inner_step = [initial] # [| Block512_Inner(Ws, x) ||  x <- inner_step |];
+  initial    = [ H7 H6 H5 H4 H3 H2 H1 H0 0 ];
+ };
+
+Block512_T1 : [6][64] -> [64];
+Block512_T1 [h e f g w k] = h + UpperSigma_1(e) + Ch(e,f,g) + k + w;
+
+Block512_T2 : [3][64] -> [64];
+Block512_T2 [a b c] = UpperSigma_0(a) + Maj(a,b,c);
+
+Block512_W : [4][64] -> [64];
+Block512_W [W2 W7 W15 W16] = LowerSigma_1(W2) + W7 + LowerSigma_0(W15) + W16;
+
+Block512_Inner : ([80][64],[9][64]) -> [9][64];
+Block512_Inner (Ws, [h g f e d c b a t]) = [h' g' f' e' d' c' b' a' t']
+  where {
+    a' = t1 + t2;
+    b' = a;
+    c' = b;
+    d' = c;
+    e' = d + t1;
+    f' = e;
+    g' = f;
+    h' = g;
+    t1 = Block512_T1 [ h e f g (Ws@t) (Ks512@t) ];
+    t2 = Block512_T2 [ a b c ];
+    t' = t + 1;
+  };
+  
+

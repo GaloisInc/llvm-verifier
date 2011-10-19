@@ -2,8 +2,11 @@
 # against the Cryptol reference implementation (SHA384.cry).
 
 all: aigs
+just-abc: aigs
+	time abc -c "cec -v impl_AIGs/sha384_top.aig spec_AIGs/sha384_top.aig"
 prove: aigs
 	time abc -c "cec -v impl_AIGs/sha384_top.aig spec_AIGs/sha384_top.aig"
+	time cryptol -n shaProofs.cry -c ":s sbv_abc" -c ":prove"
 
 include libgcrypt.mk
 LSS    := ../../cabal-dev/bin/lss --dbug=0 --errpaths
@@ -12,17 +15,23 @@ CFLAGS := $(libgcrypt_flags) -Wall -I../../sym-api -O0
 
 ### AIG rules
 
-FUNCTIONS :=   \
-  Ch           \
-  Maj          \
-  UpperSigma_0 \
-  UpperSigma_1 \
-  LowerSigma_0 \
-  LowerSigma_1 \
+FUNCTIONS :=     \
+  Ch             \
+  Maj            \
+  UpperSigma_0   \
+  UpperSigma_1   \
+  LowerSigma_0   \
+  LowerSigma_1   \
+  Block512_T1    \
+  Block512_T2    \
+  Block512_W     \
+  Block512_Inner \
+  Transform      \
   sha384_top   # NB: Keep sha384_top at the end of this list.
 
 IMPL_AIGS := $(patsubst %,impl_AIGs/%.aig,$(FUNCTIONS))
-SPEC_AIGS := $(patsubst %,spec_AIGs/%.aig,$(FUNCTIONS))
+# NB: Keep spec_AIGs/block512.aig at the start of this list
+SPEC_AIGS := spec_AIGs/block512.aig $(patsubst %,spec_AIGs/%.aig,$(FUNCTIONS)) 
 
 aigs: prep $(IMPL_AIGS) $(SPEC_AIGS)
 prep: 
@@ -32,7 +41,15 @@ impl_AIGs/%.aig: sha384op-%.bc
 	@echo Generating implementation AIG $*.aig via LSS...
 	@${LSS} $<
 
-spec_AIGs/sha384_top.aig: shaProofs.cry
+spec_AIGs/block512.aig: SHA384-Ops.cry SHA384.cry
+	@echo Generating implementation AIG block512.aig specification AIG via Cryptol...
+	@cryptol -n SHA384-Ops.cry                             \
+           -c ":s sbv"                                         \
+           -c ":set sbv_targetLanguage=AIG"                    \
+           -c ":set sbv_aigVCMode=Ignore"                      \
+           -c ":trans block512 \"spec_AIGs/block512.aig\""
+
+spec_AIGs/sha384_top.aig: shaProofs.cry SHA384-Ops.cry SHA384.cry 
 	@echo Generating toplevel grafted specification AIG via Cryptol...
 	@cryptol -n shaProofs.cry                              \
            -c ":s sbv"                                         \
@@ -40,9 +57,13 @@ spec_AIGs/sha384_top.aig: shaProofs.cry
            -c ":set sbv_aigVCMode=Ignore"                      \
            -c ":trans sha384_top \"spec_AIGs/sha384_top.aig\""
 
-spec_AIGs/%.aig: SHA384.cry
+spec_AIGs/%.aig: SHA384-Ops.cry SHA384.cry
 	@echo Generating specification AIG $*.aig via Cryptol...
-	@cryptol -q SHA384.cry -c ":s sym" -c ":fm $* \"spec_AIGs/$*.aig\""
+	@cryptol -q SHA384-Ops.cry		\
+           -c ":s sbv"				\
+           -c ":set sbv_targetLanguage=AIG"	\
+           -c ":set sbv_aigVCMode=Ignore"       \
+           -c ":trans $* \"spec_AIGs/$*.aig\""
 
 ### LLVM bitcode rules
 

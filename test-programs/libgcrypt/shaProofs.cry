@@ -1,13 +1,52 @@
-include "SHA384.cry";
+include "SHA384-Ops.cry";
+msg_len = 1024;
 
-extern AIG sha384_gcrypt("impl_AIGs/sha384_top.aig") : [1][8] -> [384];
-
-sha384_top : [1][8] -> [384];
+sha384_top : [msg_len][8] -> [384];
 sha384_top msg = join (reverse(bytes))
   where {
       bytes : [48][8];
       bytes = split (sha384(msg));
   };
+
+extern AIG sha384_gcrypt_Block512_T1("impl_AIGs/Block512_T1.aig") : [6][64] -> [64];
+extern AIG sha384_ref_Block512_T1("spec_AIGs/Block512_T1.aig"): [6][64] -> [64];
+theorem sha384_Block512_T1_eq : {xs}. sha384_gcrypt_Block512_T1 (xs) == sha384_ref_Block512_T1 (xs);
+pragma Block512_T1 : SBV assumeEquals sha384_gcrypt_Block512_T1;
+
+extern AIG sha384_gcrypt_Block512_T2("impl_AIGs/Block512_T2.aig") : [3][64] -> [64];
+extern AIG sha384_ref_Block512_T2("spec_AIGs/Block512_T2.aig"): [3][64] -> [64];
+theorem sha384_Block512_T2_eq : {xs}. sha384_gcrypt_Block512_T2 (xs) == sha384_ref_Block512_T2 (xs);
+pragma Block512_T2 : SBV assumeEquals sha384_gcrypt_Block512_T2;
+
+extern AIG sha384_gcrypt_Block512_W("impl_AIGs/Block512_W.aig") : [4][64] -> [64];
+extern AIG sha384_ref_Block512_W("spec_AIGs/Block512_W.aig"): [4][64] -> [64];
+theorem sha384_Block512_W_eq : {xs}. sha384_gcrypt_Block512_W (xs) == sha384_ref_Block512_W (xs);
+pragma Block512_W : SBV assumeEquals sha384_gcrypt_Block512_W;
+
+extern AIG sha384_gcrypt_Block512_Inner("impl_AIGs/Block512_Inner.aig") : ([80][64], [9][64]) -> [9][64];
+extern AIG sha384_ref_Block512_Inner("spec_AIGs/Block512_Inner.aig"): ([80][64], [9][64]) -> [9][64];
+theorem sha384_Block512_Inner_eq : {Ws h g f e d c b a t}. 
+  if (t >= 80) then True else 
+    sha384_gcrypt_Block512_Inner (Ws, [h g f e d c b a t]) == sha384_ref_Block512_Inner (Ws, [h g f e d c b a t]);
+pragma Block512_Inner : SBV assumeEquals sha384_gcrypt_Block512_Inner;
+
+extern AIG sha384_gcrypt_Transform("impl_AIGs/Transform.aig") : ([8][64], [16][64]) -> [8][64];
+extern AIG sha384_ref_Transform("spec_AIGs/Transform.aig"): ([8][64], [16][64]) -> [8][64];
+
+sha384_ref_Transform_Wrapped (hs, data) = sha384_gcrypt_Transform (hs, data')
+    where {
+      data' = [| join (reverse (splitBy(8, d))) || d <- data |];
+    };
+
+theorem sha384_Transform_eq : {hs data}. 
+    sha384_gcrypt_Transform (hs, data) == sha384_ref_Transform (hs, data')
+    where {
+      data' = [| join (reverse (splitBy(8, d))) || d <- data |];
+    };
+
+extern AIG sha384_ref_block512("spec_AIGs/block512.aig") : ([8][64], [16][64]) -> [8][64];
+theorem block512s_eq : {x}. sha384_ref_block512(x) == sha384_ref_Transform(x);
+pragma block512 : SBV assumeEquals sha384_ref_Transform_Wrapped;
 
 extern AIG sha384_gcrypt_Ch("impl_AIGs/Ch.aig") : ([64],[64],[64]) -> [64];
 extern AIG sha384_ref_Ch("spec_AIGs/Ch.aig"): ([64],[64],[64]) -> [64];
@@ -38,13 +77,3 @@ extern AIG sha384_gcrypt_LowerSigma_1("impl_AIGs/LowerSigma_1.aig") : [64] -> [6
 extern AIG sha384_ref_LowerSigma_1("spec_AIGs/LowerSigma_1.aig"): [64] -> [64];
 theorem sha384_LowerSigma_1_eq : {x}. sha384_gcrypt_LowerSigma_1 (x) == sha384_ref_LowerSigma_1 (x);
 pragma LowerSigma_1 : SBV assumeEquals sha384_gcrypt_LowerSigma_1;
-
-
-
-
-
-
-
-    
-
-
