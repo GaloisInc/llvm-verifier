@@ -6,5 +6,5 @@ int main(int argc, char** argv)
     uint64_t x = lss_fresh_uint64(0);
 
     uint64_t r = S0(x);
-    lss_write_aiger_uint64(r, "gcrypt_impl_AIGs/LowerSigma_0.aig");
+    lss_write_aiger_uint64(r, "impl_AIGs/LowerSigma_0.aig");
 }

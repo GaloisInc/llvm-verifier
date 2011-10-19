@@ -17,6 +17,6 @@ int main()
 
     res = sha384.read(cxt);
 
-    lss_write_aiger_array_uint8(res, 48, "gcrypt_impl_AIGs/sha384_top.aig");
+    lss_write_aiger_array_uint8(res, 48, "impl_AIGs/sha384_top.aig");
     return 0;
 }

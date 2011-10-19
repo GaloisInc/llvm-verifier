@@ -8,5 +8,5 @@ int main(int argc, char** argv)
     uint64_t z = lss_fresh_uint64(0);
 
     uint64_t r = Maj(x, y, z);
-    lss_write_aiger_uint64(r, "gcrypt_impl_AIGs/Maj.aig");
+    lss_write_aiger_uint64(r, "impl_AIGs/Maj.aig");
 }

@@ -5,6 +5,6 @@ int main(int argc, char** argv)
 {
     uint64_t x = lss_fresh_uint64(0);
 
-    uint64_t r = S1(x);
-    lss_write_aiger_uint64(r, "gcrypt_impl_AIGs/LowerSigma_1.aig");
+    uint64_t r = Sum1(x);
+    lss_write_aiger_uint64(r, "impl_AIGs/UpperSigma_1.aig");
 }
