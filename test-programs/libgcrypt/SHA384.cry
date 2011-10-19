@@ -15,17 +15,17 @@ Ch(x,y,z) = (x & y) ^ ((~x) & z);
 Maj : ([64],[64],[64]) -> [64];
 Maj(x,y,z) = (x & y) ^ (x & z) ^ (y & z);
 
-Sigma_0 : [64] -> [64];
-Sigma_0(x) = (x >>> 28) ^ (x >>> 34) ^ (x >>> 39);
+UpperSigma_0 : [64] -> [64];
+UpperSigma_0(x) = (x >>> 28) ^ (x >>> 34) ^ (x >>> 39);
 
-Sigma_1 : [64] -> [64];
-Sigma_1(x) = (x >>> 14) ^ (x >>> 18) ^ (x >>> 41);
+UpperSigma_1 : [64] -> [64];
+UpperSigma_1(x) = (x >>> 14) ^ (x >>> 18) ^ (x >>> 41);
 
-sigma_0 : [64] -> [64];
-sigma_0(x) = (x >>> 1) ^ (x >>> 8) ^ (x >> 7);
+LowerSigma_0 : [64] -> [64];
+LowerSigma_0(x) = (x >>> 1) ^ (x >>> 8) ^ (x >> 7);
 
-sigma_1 : [64] -> [64];
-sigma_1(x) = (x >>> 19) ^ (x >>> 61) ^ (x >> 6);
+LowerSigma_1 : [64] -> [64];
+LowerSigma_1(x) = (x >>> 19) ^ (x >>> 61) ^ (x >> 6);
 
 iv384 : [8][64];
 iv384 = [ 0xcbbb9d5dc1059ed8
@@ -53,7 +53,7 @@ block512 ([H0 H1 H2 H3 H4 H5 H6 H7], M) = [ (H0+As@80) (H1+Bs@80) (H2+Cs@80) (H3
                                             (H4+Es@80) (H5+Fs@80) (H6+Gs@80) (H7+Hs@80) ]
  where {
   Ws : [80][64];
-  Ws = M # [| sigma_1(W2) + W7 + sigma_0(W15) + W16 
+  Ws = M # [| LowerSigma_1(W2) + W7 + LowerSigma_0(W15) + W16 
            || W16 <- drop (16 - 16, Ws)
            || W15 <- drop (16 - 15, Ws)
            || W7  <- drop (16 -  7, Ws)
@@ -68,7 +68,7 @@ block512 ([H0 H1 H2 H3 H4 H5 H6 H7], M) = [ (H0+As@80) (H1+Bs@80) (H2+Cs@80) (H3
   Fs = [H5] # Es;
   Gs = [H6] # Fs;
   Hs = [H7] # Gs;
-  T1s = [| h + Sigma_1(e) + Ch(e,f,g) + k + w
+  T1s = [| h + UpperSigma_1(e) + Ch(e,f,g) + k + w
         || e <- Es
         || f <- Fs
         || g <- Gs
@@ -77,7 +77,7 @@ block512 ([H0 H1 H2 H3 H4 H5 H6 H7], M) = [ (H0+As@80) (H1+Bs@80) (H2+Cs@80) (H3
         || w <- Ws
         |];
   T2s : [81][64];
-  T2s = [| Sigma_0(a) + Maj(a,b,c)
+  T2s = [| UpperSigma_0(a) + Maj(a,b,c)
         || a <- As
         || b <- Bs
         || c <- Cs

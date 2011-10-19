@@ -1,0 +1,50 @@
+include "SHA384.cry";
+
+extern AIG sha384_gcrypt("gcrypt_impl_AIGs/sha384_top.aig") : [1][8] -> [384];
+
+sha384_top : [1][8] -> [384];
+sha384_top msg = join (reverse(bytes))
+  where {
+      bytes : [48][8];
+      bytes = split (sha384(msg));
+  };
+
+extern AIG sha384_gcrypt_Ch("gcrypt_impl_AIGs/Ch.aig") : ([64],[64],[64]) -> [64];
+extern AIG sha384_ref_Ch("spec_AIGs/Ch.aig"): ([64],[64],[64]) -> [64];
+theorem sha384_Ch_eq : {x y z}. sha384_gcrypt_Ch (x,y,z) == sha384_ref_Ch (x,y,z);
+pragma Ch : SBV assumeEquals sha384_gcrypt_Ch;
+
+extern AIG sha384_gcrypt_Maj("gcrypt_impl_AIGs/Maj.aig") : ([64],[64],[64]) -> [64];
+extern AIG sha384_ref_Maj("spec_AIGs/Maj.aig"): ([64],[64],[64]) -> [64];
+theorem sha384_Maj_eq : {x y z}. sha384_gcrypt_Maj (x,y,z) == sha384_ref_Maj (x,y,z);
+pragma Maj : SBV assumeEquals sha384_gcrypt_Maj;
+
+extern AIG sha384_gcrypt_UpperSigma_0("gcrypt_impl_AIGs/UpperSigma_0.aig") : [64] -> [64];
+extern AIG sha384_ref_UpperSigma_0("spec_AIGs/UpperSigma_0.aig"): [64] -> [64];
+theorem sha384_UpperSigma_0_eq : {x}. sha384_gcrypt_UpperSigma_0 (x) == sha384_ref_UpperSigma_0 (x);
+pragma UpperSigma_0 : SBV assumeEquals sha384_gcrypt_UpperSigma_0;
+
+extern AIG sha384_gcrypt_UpperSigma_1("gcrypt_impl_AIGs/UpperSigma_1.aig") : [64] -> [64];
+extern AIG sha384_ref_UpperSigma_1("spec_AIGs/UpperSigma_1.aig"): [64] -> [64];
+theorem sha384_UpperSigma_1_eq : {x}. sha384_gcrypt_UpperSigma_1 (x) == sha384_ref_UpperSigma_1 (x);
+pragma UpperSigma_1 : SBV assumeEquals sha384_gcrypt_UpperSigma_1;
+
+extern AIG sha384_gcrypt_LowerSigma_0("gcrypt_impl_AIGs/LowerSigma_0.aig") : [64] -> [64];
+extern AIG sha384_ref_LowerSigma_0("spec_AIGs/LowerSigma_0.aig"): [64] -> [64];
+theorem sha384_LowerSigma_0_eq : {x}. sha384_gcrypt_LowerSigma_0 (x) == sha384_ref_LowerSigma_0 (x);
+pragma LowerSigma_0 : SBV assumeEquals sha384_gcrypt_LowerSigma_0;
+
+extern AIG sha384_gcrypt_LowerSigma_1("gcrypt_impl_AIGs/LowerSigma_1.aig") : [64] -> [64];
+extern AIG sha384_ref_LowerSigma_1("spec_AIGs/LowerSigma_1.aig"): [64] -> [64];
+theorem sha384_LowerSigma_1_eq : {x}. sha384_gcrypt_LowerSigma_1 (x) == sha384_ref_LowerSigma_1 (x);
+pragma LowerSigma_1 : SBV assumeEquals sha384_gcrypt_LowerSigma_1;
+
+
+
+
+
+
+
+    
+
+
