@@ -1,2 +1,0 @@
-include "SHA384-Ops.cry";
-theorem block512s_eq : {x}. block512(x) == Transform(x);
