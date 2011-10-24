@@ -28,7 +28,7 @@ FUNCTIONS :=     \
 
 IMPL_AIGS := $(patsubst %,impl_AIGs/%.aig,$(FUNCTIONS))
 
-aigs: prep $(IMPL_AIGS)
+aigs: $(libgcrypt)/config.h prep $(IMPL_AIGS) 
 prep: 
 	@mkdir -p impl_AIGs 
 
