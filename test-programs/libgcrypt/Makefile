@@ -3,7 +3,7 @@
 
 all: aigs
 prove: aigs
-	time cryptol -b shaProofs.sry
+	time cryptol -n shaProofs.cry -c ':s sbv_abc' -c ':prove' 
 
 include libgcrypt.mk
 LSS    := ../../cabal-dev/bin/lss --dbug=0 --errpaths
