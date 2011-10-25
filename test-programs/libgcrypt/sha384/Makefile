@@ -7,7 +7,7 @@ prove: aigs
 
 TOP := ../../..
 include ../libgcrypt.mk
-LSS    := $(TOP)/cabal-dev/bin/lss --dbug=0 --errpaths
+LSS    := $(TOP)/cabal-dev/bin/lss --errpaths
 CC     := clang
 CFLAGS := $(libgcrypt_flags) -Wall -I$(TOP)/sym-api -O0
 

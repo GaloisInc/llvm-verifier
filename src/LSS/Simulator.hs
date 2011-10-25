@@ -358,6 +358,8 @@ intrinsic intr mreg args0 =
     ("llvm.memcpy.p0i8.p0i8.i64", Nothing)    -> memcpy
     ("llvm.memset.p0i8.i64", Nothing)         -> memset
     ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow reg
+    ("llvm.objectsize.i32", Just reg)         -> objSz True reg
+    ("llvm.objectsize.i64", Just reg)         -> objSz False reg
     _                                         -> unimpl $ "LLVM intrinsic: " ++ intr
   where
     memcpy = do
@@ -367,7 +369,6 @@ intrinsic intr mreg args0 =
                  $ "memcopy operation was not valid: "
                    ++ "(dst,src,len) = "
                    ++ show (parens . hcat . punctuate comma $ pts)
-
       processMemCond fr
         =<< mutateMem (\sbe mem -> memCopy sbe mem dst src len align)
     memset = do
@@ -382,6 +383,16 @@ intrinsic intr mreg args0 =
       [ov, z'] <- withSBE $ \sbe -> termDecomp sbe [i1, i64] z
       res <- withSBE $ \sbe -> termArray sbe [typedValue z', typedValue ov]
       assign (typedValue reg) (Typed (L.Struct [i64, i1]) res)
+    objSz is32 reg = do
+      let [_ptr, maxOrMin] = map typedValue args0
+      mval <- withSBE' $ \s -> getUVal $ closeTerm s maxOrMin
+      case mval of
+        Nothing -> errorPath $ FailRsn $ "llvm.objectsize.i{32,64} expects concrete 2nd parameter"
+        Just v  -> let tv = if is32
+                              then int32const $ if v == 0 then -1 else 0
+                              else int64const $ if v == 0 then -1 else 0
+                   in
+                     assign (typedValue reg) =<< getTypedTerm tv
 
 memSet :: ( Monad m, Functor m, MonadIO m
           , Functor sbe
