@@ -1,11 +1,13 @@
+# NB: Have not yet simulated the libgcrypt implementation, but this is a
+# driver to use as a starting point for when we decide to do so.
 
 .PHONY: all
 all:
 
 include ../libgcrypt.mk
-LSS := ../../cabal-dev/bin/lss
 CC := clang
-CFLAGS := $(libgcrypt_flags) -I$(extra_include) -Wall -I../../../sym-api -O0
+TOP := ../../..
+CFLAGS := $(libgcrypt_flags) -I$(extra_include) -Wall -I$(TOP)/sym-api -O0
 
 .PHONY: clean
 clean: $(clean-targets)
@@ -13,7 +15,7 @@ clean: $(clean-targets)
 %.bc: %.c
 	$(CC) $(CFLAGS) -emit-llvm -c -o $@ $<
 
-sym-api.bc: ../../../sym-api/sym-api.c
+sym-api.bc: $(TOP)/sym-api/sym-api.c
 	$(CC) $(CFLAGS) -emit-llvm -c -o $@ $<
 
 .PHONY: distclean

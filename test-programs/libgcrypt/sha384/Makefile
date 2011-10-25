@@ -5,10 +5,11 @@ all: aigs
 prove: aigs
 	time cryptol -n shaProofs.cry -c ':s sbv_abc' -c ':prove' 
 
-include libgcrypt.mk
-LSS    := ../../cabal-dev/bin/lss --dbug=0 --errpaths
+TOP := ../../..
+include ../libgcrypt.mk
+LSS    := $(TOP)/cabal-dev/bin/lss --dbug=0 --errpaths
 CC     := clang
-CFLAGS := $(libgcrypt_flags) -Wall -I../../sym-api -O0
+CFLAGS := $(libgcrypt_flags) -Wall -I$(TOP)/sym-api -O0
 
 ### AIG rules
 
@@ -43,7 +44,7 @@ sha384op-sha384_top.bc: sha384op-sha384_top.c sha512.c compat.bc sym-api.bc
 	@$(CC) $(CFLAGS) -emit-llvm -c -o tmp.bc sha384op-sha384_top.c
 	@llvm-link -o $@ tmp.bc compat.bc sym-api.bc
 
-sym-api.bc: ../../sym-api/sym-api.c
+sym-api.bc: $(TOP)/sym-api/sym-api.c
 	@echo Generating sym-api.bc...
 	@$(CC) $(CFLAGS) -emit-llvm -c -o $@ $<
 
