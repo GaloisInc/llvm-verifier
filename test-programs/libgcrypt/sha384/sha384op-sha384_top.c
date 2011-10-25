@@ -6,12 +6,7 @@
 
 #include "sha512.c"
 
-#define MSG_LEN (1)
-
-uint64_t llvm_objectsize_i64(uint8_t* obj,  bool maxOrMin) 
-{
-    return 128;
-}
+#define MSG_LEN (127)
 
 void* __memset_chk (void* dest, int val, size_t len, size_t slen)
 {
@@ -25,8 +20,6 @@ int main()
     byte cxt[512] = {0};
     byte *res;
     byte *text = lss_fresh_array_uint8(MSG_LEN, 0, NULL);
-
-    lss_override_llvm_intrinsic("llvm.objectsize.i64", llvm_objectsize_i64);
 
     sha384.init(cxt);
     sha384.write(cxt, text, MSG_LEN);

@@ -1,6 +1,6 @@
 include "SHA384-Ops.cry";
 
-msg_len = 1;
+msg_len = 127;
 
 // Level 0 externs
 extern AIG sha384_gcrypt_Ch("impl_AIGs/Ch.aig")                     : ([64],[64],[64]) -> [64];
