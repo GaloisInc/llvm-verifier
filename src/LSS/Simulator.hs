@@ -302,21 +302,28 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
                   ++ " in codebase"
 
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
-  modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs (sdArgs def) args }
+  lc <- gets (cbLLVMCtx . codebase)
+  modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs lc (sdArgs def) args }
   pushMemFrame
   return args
   where
     err doc = error $ "callDefine/bindArgs: " ++ render doc
 
-    bindArgs formals actuals
+    bindArgs lc formals actuals
       | length formals /= length actuals =
           err $ text "incorrect number of actual parameters"
             $+$ text "formals: " <> text (show formals)
 
       | otherwise =
-          foldr bindArg M.empty (formals `zip` actuals)
+          foldr (bindArg lc) M.empty (formals `zip` actuals)
 
-    bindArg (Typed ft reg, v@(Typed at _)) mp
+    bindArg lc (Typed (L.Alias a) reg, v) mp =
+      bindArg lc (Typed (llvmLookupAlias lc a) reg, v) mp
+
+    bindArg lc (reg, Typed (L.Alias a) v) mp =
+      bindArg lc (reg, Typed (llvmLookupAlias lc a) v) mp
+
+    bindArg _ (Typed ft reg, v@(Typed at _)) mp
       | ft == at =
           let ok = M.insert reg v mp
           in
@@ -330,6 +337,7 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
       | otherwise = err
           $ text "formal/actual type mismatch:"
             <+> L.ppType ft <+> text "vs." <+> L.ppType at
+            $+$ text (show ft) <+> text "vs." <+> text (show at)
 
 intrinsic ::
   ( MonadIO m
@@ -900,9 +908,10 @@ getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
   = lkupIdent i frm
 
 getTypedTerm' _mfrm (Typed ty L.ValUndef)
-  = do
-  szBytes <- fromIntegral <$> withLC (`llvmAllocSizeOf` ty)
-  Typed ty <$> withSBE (\sbe -> termInt sbe (szBytes * 8) 0)
+  = zeroInit ty
+
+getTypedTerm' _mfrm (Typed ty L.ValZeroInit)
+  = zeroInit ty
 
 getTypedTerm' mfrm tv@(Typed t v)
   = do
@@ -911,6 +920,18 @@ getTypedTerm' mfrm tv@(Typed t v)
             ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
             ++ "\n" ++ show (parens $ text $ show tv)
             ++ "\nmfrm = " ++ show (ppCallFrame sbe <$> mfrm)
+
+zeroInit ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  , ConstantProjection (SBEClosedTerm sbe)
+  )
+  => L.Type -> Simulator sbe m (Typed (SBETerm sbe))
+zeroInit ty = do
+  szBytes <- fromIntegral <$> withLC (`llvmAllocSizeOf` ty)
+  Typed ty <$> withSBE (\sbe -> termInt sbe (szBytes * 8) 0)
+
 getGlobalPtrTerm ::
   ( Functor m
   , MonadIO m
@@ -1079,15 +1100,27 @@ eval ::
   , Functor sbe
   )
   => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
+eval (Arith op (Typed (L.Alias a) v1) v2) = do
+  ty <- withLC (`llvmLookupAlias` a)
+  eval (Arith op (Typed ty v1) v2)
 eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
   Typed t2 y <- getTypedTerm (Typed t v2)
   CE.assert (t == t1 && t == t2) $ return ()
   Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
 eval e@Arith{} = unimpl $ "Arithmetic expr type: " ++ show (ppSymExpr e)
+eval (Bit op (Typed (L.Alias a) v1) v2) = do
+  t1 <- withLC (`llvmLookupAlias` a)
+  eval (Bit op (Typed t1 v1) v2)
 eval (Bit op tv1@(Typed t _) v2) = do
   [x, y] <- map typedValue <$> mapM getTypedTerm [tv1, typedType tv1 =: v2]
   Typed t <$> withSBE (\sbe -> applyBitwise sbe op x y)
+eval (Conv op (Typed (L.Alias a) v) t2) = do
+  t1 <- withLC (`llvmLookupAlias` a)
+  eval (Conv op (Typed t1 v) t2)
+eval (Conv op tv (L.Alias a)) = do
+  t2 <- withLC (`llvmLookupAlias` a)
+  eval (Conv op tv t2)
 eval (Conv op tv@(Typed t1@(L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{})) = do
   Typed t x <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
@@ -1098,15 +1131,24 @@ eval (Conv L.IntToPtr tv@(Typed (L.PrimType L.Integer{}) _) t2) =
   evalIntToPtr tv t2
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
+eval (Alloca (L.Alias a) msztv malign) = do
+  ty <- withLC (`llvmLookupAlias` a)
+  eval (Alloca ty msztv malign)
 eval (Alloca ty msztv malign ) = do
   sizeTm <- maybe (return Nothing) (\tv -> Just <$> getTypedTerm tv) msztv
   alloca ty sizeTm malign
+eval (Load (Typed (L.Alias a) v) malign) = do
+  ty <- withLC (`llvmLookupAlias` a)
+  eval (Load (Typed ty v) malign)
 eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
   addrTerm <- getTypedTerm tv
   dumpMem 6 "load pre"
   v <- load addrTerm
   return (Typed ty v) <* dumpMem 6 "load post"
 eval e@(Load _ _) = illegal $ "Load operand: " ++ show (ppSymExpr e)
+eval (ICmp op (Typed (L.Alias a) v1) v2) = do
+  t <- withLC (`llvmLookupAlias` a)
+  eval (ICmp op (Typed t v1) v2)
 eval (ICmp op (Typed t v1) v2) = do
   Typed t1 x <- getTypedTerm (Typed t v1)
   Typed t2 y <- getTypedTerm (Typed t v2)
@@ -1115,6 +1157,9 @@ eval (ICmp op (Typed t v1) v2) = do
 eval (FCmp _op _tv1 _v2      ) = unimpl "eval FCmp"
 eval (Val tv)                  = getTypedTerm tv
 eval e@GEP{}                   = evalGEP e
+eval (Select tc (Typed (L.Alias a) v1) v2) = do
+  t <- withLC (`llvmLookupAlias` a)
+  eval (Select tc (Typed t v1) v2)
 eval (Select tc tv1 v2)        = do
   [Typed _ c, Typed t x, Typed _ y] <- mapM getTypedTerm [tc, tv1, typedAs tv1 v2]
   mc <- condTerm c
@@ -1133,6 +1178,11 @@ evalPtrToInt, evalIntToPtr ::
   )
   => Typed L.Value -> L.Type -> Simulator sbe m (Typed (SBETerm sbe))
 
+evalPtrToInt (Typed (L.Alias a) v) t2 = do
+  t1 <- withLC (`llvmLookupAlias` a)
+  evalPtrToInt (Typed t1 v) t2
+evalPtrToInt tv (L.Alias a) = do
+  evalPtrToInt tv =<< withLC (`llvmLookupAlias` a)
 evalPtrToInt tv@(Typed t1 _) t2@(L.PrimType (L.Integer tgtWidth)) = do
   Typed t v <- getTypedTerm tv
   CE.assert(t == t1) $ return ()
@@ -1144,6 +1194,11 @@ evalPtrToInt tv@(Typed t1 _) t2@(L.PrimType (L.Integer tgtWidth)) = do
            in withSBE $ \s -> applyConv s op v t2
 evalPtrToInt _ _ = errorPath $ FailRsn "Invalid parameters to evalPtrToInt"
 
+evalIntToPtr (Typed (L.Alias a) v) t2 = do
+  t1 <- withLC (`llvmLookupAlias` a)
+  evalIntToPtr (Typed t1 v) t2
+evalIntToPtr tv (L.Alias a) = do
+  evalIntToPtr tv =<< withLC (`llvmLookupAlias` a)
 evalIntToPtr tv@(Typed t1@(L.PrimType (L.Integer srcWidth)) _) t2 = do
   Typed t v <- getTypedTerm tv
   CE.assert (t == t1) $ return ()
@@ -1162,6 +1217,9 @@ evalExtractValue ::
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => Typed SymValue -> [Int32] -> Simulator sbe m (Typed (SBETerm sbe))
+evalExtractValue (Typed (L.Alias a) v) idxs = do
+  t <- withLC (`llvmLookupAlias` a)
+  evalExtractValue (Typed t v) idxs
 evalExtractValue tv idxs = do
   sv <- getTypedTerm tv
   go sv idxs
@@ -1183,6 +1241,9 @@ evalGEP ::
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
+evalGEP (GEP (Typed (L.Alias a) v) idxs) = do
+  t <- withLC (`llvmLookupAlias` a)
+  evalGEP (GEP (Typed t v) idxs)
 evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
   where
     impl [] (Typed referentTy ptrVal) = do
@@ -1239,7 +1300,6 @@ evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm tv0
         then Typed (intn aw) <$> termConv L.ZExt v1 (intn aw)
         else return x
     promote _ = illegal "promotion of non-integer value"
-
 evalGEP e = illegal $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
 
 evalCE ::
@@ -1732,7 +1792,14 @@ errorPath rsn = do
   mmf     <- topMF <$> gets ctrlStk
   (p, mf) <- case mmf of
                Nothing -> error "internal: errorPath invoked with no MF"
-               _       -> popPending <$> popMergeFrame
+               Just mf -> do
+                          when (isExitFrame mf) $ do
+                            -- If we only have an exit frame, the error
+                            -- occurred before we started execution, so
+                            -- report it and terminate.
+                            error $ "Encountered unrecoverable error during bootstrap:\n"
+                                  ++ show (ppFailRsn rsn)
+                          popPending <$> popMergeFrame
   modify $ \s -> s{ errorPaths = EP rsn p : errorPaths s }
   case getMergedState mf of
     Nothing   -> do

@@ -1,8 +1,17 @@
 
 #include <stdio.h>
 #include <string.h>
-
+#include <stdlib.h>
+#include <sym-api.h>
 #include "aes.h"
+
+/* NB: Added for LSS on Mac OS X */
+void* __memcpy_chk (void* dst, void* src, size_t n, size_t slen)
+{
+    for(uint32_t i = 0; i < n; ++i)
+        ((uint8_t*)dst)[i] = ((uint8_t*)src)[i];
+    return dst;
+}
 
 void hexdump(byte *, int);
 
