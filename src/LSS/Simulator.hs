@@ -317,6 +317,12 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
       | otherwise =
           foldr (bindArg lc) M.empty (formals `zip` actuals)
 
+    bindArg lc (Typed (L.PtrTo (L.Alias a)) reg, v) mp =
+      bindArg lc (Typed (L.PtrTo (llvmLookupAlias lc a)) reg, v) mp
+
+    bindArg lc (reg, Typed (L.PtrTo (L.Alias a)) v) mp =
+      bindArg lc (reg, Typed (L.PtrTo (llvmLookupAlias lc a)) v) mp
+
     bindArg lc (Typed (L.Alias a) reg, v) mp =
       bindArg lc (Typed (llvmLookupAlias lc a) reg, v) mp
 
