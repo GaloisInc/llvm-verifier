@@ -31,6 +31,23 @@ uint16_t *lss_fresh_array_uint16 (uint32_t size, uint16_t def, uint16_t *defs) N
 uint32_t *lss_fresh_array_uint32 (uint32_t size, uint32_t def, uint32_t *defs) NO_INL;
 uint64_t *lss_fresh_array_uint64 (uint32_t size, uint64_t def, uint64_t *defs) NO_INL;
 
+/* This familiy of functions allows incremental designation of AIG
+   outputs; the collected AIG outputs are cleared upon writing the AIG
+   via the lss_write_aiger() function. */
+void lss_aiger_add_output_uint8(uint8_t sym)   NO_INL;
+void lss_aiger_add_output_uint16(uint16_t sym) NO_INL;
+void lss_aiger_add_output_uint32(uint32_t sym) NO_INL;
+void lss_aiger_add_output_uint64(uint64_t sym) NO_INL;
+void lss_aiger_add_output_array_uint8 (uint8_t *sym, uint32_t size)  NO_INL;
+void lss_aiger_add_output_array_uint16(uint16_t *sym, uint32_t size) NO_INL;
+void lss_aiger_add_output_array_uint32(uint32_t *sym, uint32_t size) NO_INL;
+void lss_aiger_add_output_array_uint64(uint64_t *sym, uint32_t size) NO_INL;
+    
+/* Write collected AIG outputs (i.e., those collected via the
+   lss_aiger_add_output* functions).  Note that upon return from this
+   function, the list of collected outputs is cleared. */
+void lss_write_aiger(char *filename) NO_INL;
+
 void lss_write_aiger_uint8  (uint8_t  sym, char *filename) NO_INL;
 void lss_write_aiger_uint16 (uint16_t sym, char *filename) NO_INL;
 void lss_write_aiger_uint32 (uint32_t sym, char *filename) NO_INL;

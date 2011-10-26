@@ -1,0 +1,18 @@
+
+
+
+extern AIG f("test-fresh-incremental-1.aig") : ([32],[32],[32]) -> ([32],[32]);
+extern AIG g("test-fresh-incremental-2.aig") : ([32],[32],[32]) -> [32];
+
+f' : ([32],[32],[32]) -> ([32],[32]);
+f' (x,y,z) = (x+42,y+99);
+
+g' : ([32],[32],[32]) -> [32];
+g' (x,y,z) = x+y+z+4299;
+
+theorem one : {x y z}. f(x,y,z) == f'(x,y,z);
+theorem two : {x y z}. g(x,y,z) == g'(x,y,z);
+
+
+
+
