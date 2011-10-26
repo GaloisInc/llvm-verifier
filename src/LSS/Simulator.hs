@@ -151,6 +151,7 @@ newSimState cb sbe mem lifter seh mopts =
   , errorPaths   = []
   , lssOpts      = maybe defaultLSSOpts id mopts
   , pathCounter  = 0
+  , aigOutputs   = []
   }
 
 -- | Initialize all global data and register all defines.
@@ -2148,10 +2149,53 @@ writeIntAiger = Override $ \_sym _rty args ->
     [t, fptr] -> do
       file <- loadString fptr
       checkAigFile file
-      withSBE $ \s -> writeAiger s file (typedValue t)
+      withSBE $ \s -> writeAiger s file [typedValue t]
       return Nothing
     _ -> errorPathBeforeCall
          $ FailRsn "lss_write_aiger_uint: wrong number of arguments"
+
+addAigOutput :: StdOvd sbe m
+addAigOutput = Override $ \_sym _rty args ->
+  case args of
+    [t] -> do
+      modify $ \s -> s{ aigOutputs = typedValue t : aigOutputs s }
+      return Nothing
+    _   -> errorPathBeforeCall
+           $ FailRsn "lss_aiger_add_output: wrong number of arguments"
+
+addAigArrayOutput :: StdOvd sbe m
+addAigArrayOutput = Override $ \_sym _rty args ->
+  case args of
+    [tptr, sizeTm] -> do
+      msize <- withSBE' $ \s -> getUVal (closeTerm s (typedValue sizeTm))
+      case (msize, typedType tptr) of
+        (Just size, L.PtrTo tgtTy) -> do
+          elems <- loadArray tptr tgtTy size
+          arrTm <- withSBE $ flip termArray elems
+          modify $ \s -> s{ aigOutputs = arrTm : aigOutputs s }
+          return Nothing
+        (Nothing, _) ->
+          e "lss_aiger_add_output_array called with symbolic size"
+        _ -> e "lss_aiger_add_output_array: invalid argument type"
+    _ -> e "lss_aiger_add_output_array: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
+
+writeCollectedAigerOutputs :: StdOvd sbe m
+writeCollectedAigerOutputs = Override $ \_sym _rty args ->
+  case args of
+    [fptr] -> do
+      outputTerms <- reverse <$> gets aigOutputs
+      if null outputTerms
+        then e "lss_write_aiger: no AIG outputs have been collected"
+        else do
+          file <- loadString fptr
+          withSBE $ \s -> writeAiger s file outputTerms
+          modify $ \s -> s{ aigOutputs = [] }
+          return Nothing
+    _ -> e "lss_write_aiger: wrong number of arguments"
+  where
+    e = errorPathBeforeCall . FailRsn
 
 writeIntArrayAiger :: L.Type -> StdOvd sbe m
 writeIntArrayAiger _ety = Override $ \_sym _rty args ->
@@ -2164,7 +2208,7 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
           arrTm <- withSBE $ flip termArray elems
           file <- loadString fptr
           checkAigFile file
-          withSBE $ \s -> writeAiger s file arrTm
+          withSBE $ \s -> writeAiger s file [arrTm]
           return Nothing
         (Nothing, _) ->
           e "lss_write_aiger_array_uint called with symbolic size"
@@ -2363,6 +2407,15 @@ standardOverrides = return (ovds, f)
            , ("lss_fresh_array_uint16", i16p, [i32, i16], False, freshIntArray 16)
            , ("lss_fresh_array_uint32", i32p, [i32, i32], False, freshIntArray 32)
            , ("lss_fresh_array_uint64", i64p, [i32, i64], False, freshIntArray 64)
+           , ("lss_aiger_add_output_uint8",  voidTy,  [i8], False, addAigOutput)
+           , ("lss_aiger_add_output_uint16", voidTy, [i16], False, addAigOutput)
+           , ("lss_aiger_add_output_uint32", voidTy, [i32], False, addAigOutput)
+           , ("lss_aiger_add_output_uint64", voidTy, [i64], False, addAigOutput)
+           , ("lss_aiger_add_output_array_uint8" , voidTy, [ i8p, i32], False, addAigArrayOutput)
+           , ("lss_aiger_add_output_array_uint16", voidTy, [i16p, i32], False, addAigArrayOutput)
+           , ("lss_aiger_add_output_array_uint32", voidTy, [i32p, i32], False, addAigArrayOutput)
+           , ("lss_aiger_add_output_array_uint64", voidTy, [i64p, i32], False, addAigArrayOutput)
+           , ("lss_write_aiger", voidTy, [strTy], False, writeCollectedAigerOutputs)
            , ("lss_write_aiger_uint8",  voidTy, [i8,  strTy], False, writeIntAiger)
            , ("lss_write_aiger_uint16", voidTy, [i16, strTy], False, writeIntAiger)
            , ("lss_write_aiger_uint32", voidTy, [i32, strTy], False, writeIntAiger)

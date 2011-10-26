@@ -1551,7 +1551,7 @@ sbeBitBlast lc be mm = sbe
           , heapAlloc        = \m eltTp (LLVM.typedValue -> cnt) ->
               BitIO . mmHeapAlloc mm m (llvmAllocSizeOf lc eltTp) cnt
           , memCopy          = BitIO `c5` mmMemCopy mm
-          , writeAiger       = \f t -> BitIO $ beWriteAigerV be f (btVector t)
+          , writeAiger       = \f ts -> BitIO $ beWriteAigerV be f $ map btVector ts
           , evalAiger        = BitIO `c2` evalAigerImpl be
           }
     termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"

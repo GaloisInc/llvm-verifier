@@ -77,6 +77,8 @@ data State sbe m = State
   , errorPaths   :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
   , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
   , pathCounter  :: Integer         -- ^ Name supply for paths
+  , aigOutputs   :: [SBETerm sbe]   -- ^ Current list of AIG outputs, discharged
+                                    -- via lss_write_aiger() sym api calls
   }
 
 data CtrlStk term mem = CtrlStk { mergeFrames :: [MergeFrame term mem] }
