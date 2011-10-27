@@ -89,8 +89,7 @@ import           System.Exit
 import           System.IO
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
-import           Verinf.Symbolic.Common    (ConstantProjection(..),
-                                            CValue(..))
+import           Verinf.Symbolic.Common    (ConstantProjection(..))
 
 import qualified Control.Arrow             as A
 import qualified Control.Exception         as CE
@@ -282,8 +281,7 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
   name <- maybe newPathName (return . pathName) mp
   path <- newPath name (CallFrame calleeSym M.empty) =<< getMem
   modifyCS $ pushPendingPath path
-           . pushMF (ReturnFrame mreg normalRetID
-                       Nothing Nothing Nothing [])
+           . pushMF (ReturnFrame mreg normalRetID Nothing Nothing Nothing [])
 
   args <- case genOrArgs of
             Left gen   -> gen
@@ -996,7 +994,8 @@ step (PushInvokeFrame _fn _args _mres _e) = unimpl "PushInvokeFrame"
 
 step (PushPostDominatorFrame pdid) = do
   p <- getPath' "step PushPostDominatorFrame"
-  pushMergeFrame $ pushPending p $ emptyPdomFrame pdid
+  newm <- withSBE (\s -> memPushMergeFrame s (pathMem p))
+  pushMergeFrame $ pushPending p { pathMem = newm } $ emptyPdomFrame pdid
 
 step (MergePostDominator pdid cond) = do
   mtop <- topMF <$> gets ctrlStk
@@ -1011,9 +1010,10 @@ step (MergePostDominator pdid cond) = do
   -- Construct the new path constraint for the current path
   p    <- getPath' "step MergePostDominator"
   newp <- addPathConstraintSC p cond
-
+  --- Pop merge frame in newp
+  newm <- withSBE (\s -> memPopMergeFrame s (pathMem newp))
   -- Merge the current path into the merged state for the current merge frame
-  mmerged <- mergePaths newp (getMergedState top)
+  mmerged <- mergePaths (newp { pathMem = newm }) (getMergedState top)
   modifyMF $ setMergedState mmerged
 
 step MergeReturnVoidAndClear    = mergeReturn Nothing     >> clearCurrentExecution
@@ -1886,21 +1886,14 @@ termToArg ::
   => L.Typed (SBETerm sbe) -> Simulator sbe m Arg
 termToArg term = do
   mc <- withSBE' $ flip closeTerm (typedValue term)
-  case (typedType term, termConst mc) of
-    (L.PrimType (L.Integer 8), Just (CInt 8 n)) ->
-      return $ Arg (fromInteger n :: Int8)
-    (L.PrimType (L.Integer 16), Just (CInt 16 n)) ->
-      return $ Arg (fromInteger n :: Int16)
-    (L.PrimType (L.Integer 32), Just (CInt 32 n)) ->
-      return $ Arg (fromInteger n :: Int32)
-    (L.PrimType (L.Integer 64), Just (CInt 64 n)) ->
-      return $ Arg (fromInteger n :: Int64)
-    (L.PtrTo (L.PrimType (L.Integer 8)), _) ->
-       Arg <$> loadString term
-    (L.PtrTo _, Just (CInt 32 n)) ->
-      return $ Arg (fromInteger n :: Int32)
-    (L.PtrTo _, Just (CInt 64 n)) ->
-      return $ Arg (fromInteger n :: Int64)
+  case (typedType term, getSValW mc) of
+    (L.PrimType (L.Integer 8),  Just ( 8, n)) -> return $ Arg (fromInteger n :: Int8)
+    (L.PrimType (L.Integer 16), Just (16, n)) -> return $ Arg (fromInteger n :: Int16)
+    (L.PrimType (L.Integer 32), Just (32, n)) -> return $ Arg (fromInteger n :: Int32)
+    (L.PrimType (L.Integer 64), Just (64, n)) -> return $ Arg (fromInteger n :: Int64)
+    (L.PtrTo (L.PrimType (L.Integer 8)), _) -> Arg <$> loadString term
+    (L.PtrTo _, Just (32, n)) -> return $ Arg (fromInteger n :: Int32)
+    (L.PtrTo _, Just (64, n)) -> return $ Arg (fromInteger n :: Int64)
     _ -> Arg . show <$> prettyTermSBE (typedValue term)
 
 termIntS :: (Functor m, Monad m, Integral a) =>

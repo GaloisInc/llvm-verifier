@@ -141,9 +141,6 @@ data SBE m = SBE
              -> LLVM.Typed (SBETerm m)
              -> SBETerm m
              -> m (SBEPartialResult m (SBEMemory m))
-    -- | @memMerge c t f@ returns a memory that corresponds to @t@ if @c@ is
-    -- true and @f@ otherwise.
-  , memMerge :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
     -- labels @blocks@ to the memory @mem@ and returns a pointer to
     -- the definition, and updated memory if space is available.  If space
@@ -200,6 +197,17 @@ data SBE m = SBE
             -> SBETerm m -- ^ Number of bytes to copy
             -> SBETerm m -- ^ Alignment in bytes
             -> m (SBEPartialResult m (SBEMemory m))
+    -- | @memPushMerge mem@ returns a memory with an intra-procedural merge frame
+    -- pushed.  Merge frames should have no impact on the semantics of the memory,
+    -- but let the memory modify it's behavior based on when it may be shared
+    -- across multiple symbolic path executions.
+  , memPushMergeFrame :: SBEMemory m -> m (SBEMemory m)
+    -- | @memPopMerge mem@ returns a memory with the top merge frame removed.
+  , memPopMergeFrame :: SBEMemory m -> m (SBEMemory m)
+    -- | @memMerge c t f@ returns a memory that corresponds to @t@ if @c@ is
+    -- true and @f@ otherwise.  The memory should have the same number of stack
+    -- and merge frames.
+  , memMerge :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
 
     ----------------------------------------------------------------------------
     -- Output functions
