@@ -1,7 +1,8 @@
+TOP=../../..
+SYMAPI=${TOP}/sym-api
 CC=gcc
-CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I../../../sym-api
+CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I${SYMAPI}
 LSS?=../../bin/lss
-SYMAPI=./sym-api
 
 all: aes128BlockEncrypt_driver_llvm aes.bc
 
