@@ -1,12 +1,13 @@
 #!/bin/sh
 
-TARGET=lss-alpha-rc1
+TARGET=lss-alpha-rc2
 
 NM=`uname`
 
 mkdir -p ${TARGET}/bin
 mkdir -p ${TARGET}/doc
 mkdir -p ${TARGET}/tutorial
+mkdir -p ${TARGET}/test-programs
 
 if [ "${OS}" == "Windows_NT" ]; then
   EXEDIR=windows
@@ -25,6 +26,13 @@ cp doc/lss-usage.txt                           ${TARGET}/doc
 cp doc/lss-tutorial/out/lss-tutorial.pdf       ${TARGET}/tutorial
 cp -r doc/lss-tutorial/code                    ${TARGET}/tutorial/code
 cp dist/build/lss/lss                          ${TARGET}/bin
+cp -r test-programs/libgcrypt                  ${TARGET}/test-programs
+cp -r sym-api                                  ${TARGET}/sym-api
+
+sed -e 's/TOP=\.\.\/\.\.\/\.\./TOP=\.\.\/\.\./' ${TARGET}/tutorial/code/Makefile > t
+mv t ${TARGET}/tutorial/code/Makefile
+sed -e 's/cabal-dev\///' ${TARGET}/test-programs/libgcrypt/sha384/Makefile > t
+mv t ${TARGET}/test-programs/libgcrypt/sha384/Makefile
 
 if [ "${OS}" == "Windows_NT" ]; then
   zip -r ${TARGET}-${EXEDIR}.zip ${TARGET}
