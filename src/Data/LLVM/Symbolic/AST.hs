@@ -139,6 +139,7 @@ ppSymExpr (ExtractValue v is) = text "extractvalue" <+> ppTypedValue v
 ppSymExpr (InsertValue a v is) = text "insertvalue" <+> ppTypedValue a
                                <> comma <+> ppTypedValue v
                                <> comma <+> text (show is)
+
 -- | Predicates in symbolic simulator context.
 data SymCond
   -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.
