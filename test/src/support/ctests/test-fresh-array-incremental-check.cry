@@ -1,0 +1,18 @@
+
+extern AIG f("test-fresh-array-incremental-1.aig") : ([10][64],[32]) -> ([10][64],[32]);
+extern AIG g("test-fresh-array-incremental-2.aig") : ([10][64],[32],[8]) -> [8];
+
+f' : ([10][64],[32]) -> ([10][64],[32]);
+f' (arr,x) = ([| v + 1 || v <- arr |], x + 99);
+
+g' : ([10][64],[32],[8]) -> [8];
+g' (arr,x,y) = y + 42;
+
+theorem one : {arr x}. f(arr,x) == f'(arr,x);
+theorem two : {arr x y}. g(arr,x,y) == g'(arr,x,y);
+
+
+
+
+
+
