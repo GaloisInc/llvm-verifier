@@ -28,6 +28,16 @@ uint32_t* lss_fresh_array_uint32 (uint32_t size, uint32_t def, uint32_t *defs)
 uint64_t* lss_fresh_array_uint64 (uint32_t size, uint64_t def, uint64_t *defs)
     FRESH_ARRAY(uint64_t, size, def, defs);
 
+void lss_aiger_add_output_uint8(uint8_t sym)   {}
+void lss_aiger_add_output_uint16(uint16_t sym) {}
+void lss_aiger_add_output_uint32(uint32_t sym) {}
+void lss_aiger_add_output_uint64(uint64_t sym) {}
+void lss_aiger_add_output_array_uint8 (uint8_t *sym, uint32_t size)  {}
+void lss_aiger_add_output_array_uint16(uint16_t *sym, uint32_t size) {}
+void lss_aiger_add_output_array_uint32(uint32_t *sym, uint32_t size) {}
+void lss_aiger_add_output_array_uint64(uint64_t *sym, uint32_t size) {}
+void lss_write_aiger(char *filename) {}
+
 void lss_write_aiger_uint8  (uint8_t  sym, char *filename) {}
 void lss_write_aiger_uint16 (uint16_t sym, char *filename) {}
 void lss_write_aiger_uint32 (uint32_t sym, char *filename) {}
@@ -70,7 +80,7 @@ void lss_eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
 
 void lss_override_function_by_name (char *from, char *to) {}
 void lss_override_function_by_addr (void *from, void *to) {}
-void lss_override_llvm_intrinsic(char* name, void* impl) NO_INL;
+void lss_override_llvm_intrinsic(char* name, void* impl) {}
 void lss_override_reset_by_name(char *name) {}
 void lss_override_reset_by_addr(void* fp) {}
 void lss_override_reset_all() {}

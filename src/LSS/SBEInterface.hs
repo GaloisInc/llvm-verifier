@@ -212,9 +212,9 @@ data SBE m = SBE
     ----------------------------------------------------------------------------
     -- Output functions
 
-    -- | @writeAiger f t@ writes an AIG representation of @t@ into
+    -- | @writeAiger f ts@ writes an AIG reprsentation of (juxtaposed) @ts@ into
     -- file @f@ in the Aiger format.
-  , writeAiger :: String -> SBETerm m -> m ()
+  , writeAiger :: String -> [SBETerm m] -> m ()
 
     -- | @evalAiger inps t@ evaluates an AIG with the given concrete inputs;
     -- result is always a concrete term.

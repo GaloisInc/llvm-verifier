@@ -36,6 +36,9 @@ charArrTy len = L.Array len i8
 int32const :: Int32 -> Typed L.Value
 int32const x = i32 =: L.ValInteger (fromIntegral x)
 
+int64const :: Int64 -> Typed L.Value
+int64const x = i64 =: L.ValInteger (fromIntegral x)
+
 -- | Null-terminated LLVM string value
 cstring :: String -> Typed L.Value
 cstring str =

@@ -225,7 +225,7 @@ transform (SHA512_CONTEXT *hd, const unsigned char *data)
          Unrolled with macros:      350ms
          Unrolled with inline:      330ms
       */
-#if 0 /* Not unrolled.  */
+#if 1 /* Not unrolled.  */
       t1 = h + Sum1 (e) + Ch (e, f, g) + k[t] + w[t];
       t2 = Sum0 (a) + Maj (a, b, c);
       h = g;
