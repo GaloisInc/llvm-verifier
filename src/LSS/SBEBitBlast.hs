@@ -1615,7 +1615,8 @@ sbeBitBlast lc be mm = sbe
     ptrWidth = llvmAddrWidthBits lc
     sbe = SBE
           { termInt          = (return . BitTerm) `c2` beVectorFromInt be
-          , freshInt         = BitIO . fmap BitTerm . beInputVector be
+          , freshInt         = \w -> BitIO $ BitTerm <$>
+                                        LV.replicateM w (beMakeInputLit be)
           , termBool         = return . BitTerm . LV.singleton . beLitFromBool be
           , termArray        = return . BitTerm . termArrayImpl
           , termDecomp       = return `c2` termDecompImpl lc be
