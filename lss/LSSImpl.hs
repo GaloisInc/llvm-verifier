@@ -33,7 +33,6 @@ import           Text.LLVM                       ((=:), Typed(..))
 import           Verinf.Symbolic.Common          (ConstantProjection(..))
 import           Verinf.Utils.LogMonad
 import qualified Data.Vector.Storable as SV
-import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
 
 data LSS = LSS

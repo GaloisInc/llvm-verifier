@@ -1,9 +1,9 @@
 Name:          llvm-verifier
 Version:       0.1.0
 Author:        Galois Inc.
-Maintainer:    jhendrix@galois.com, jstanley@galois.com
+Maintainer:    jhendrix@galois.com, atomb@galois.com
 Build-type:    Simple
-Cabal-version: >= 1.8
+Cabal-version: >= 1.8.0.2
 
 Flag abc-backend
   Description: Use the ABC backend for generating AIGs
@@ -45,25 +45,32 @@ library
     , containers
     , data-binary-ieee754 >= 0.4.2
     , fingertree
-    , llvm-pretty == 0.1.1.0
+    , llvm-pretty >= 0.1.1.0
     , mtl
     , pretty
     , transformers
-    , template-haskell
     , vector
     , Verinf
 
   hs-source-dirs: src
 
   exposed-modules:
+    Data.LLVM.Memory
     Data.LLVM.Symbolic.AST
     Data.LLVM.Symbolic.Translation
+    LSS.Execution.Codebase
+    LSS.Execution.Common
+    LSS.Execution.Utils
+    LSS.LLVMUtils
+    LSS.SBEBitBlast
+    LSS.SBEInterface
     LSS.Simulator
 
   other-modules:
-    LSS.SBEInterface
-    LSS.SBEBitBlast
--- Keep these compiling even though they're not used at the moment
+    Data.LLVM.TargetData
+    LSS.Execution.MergeFrame
+    LSS.Printf
+    -- Keep these compiling even though they're not used at the moment
     LSS.SBEConcrete 
     LSS.SBESymbolic
 
@@ -77,7 +84,7 @@ executable lss
   if flag(abc-backend)
     cpp-options: -DUseABC
 
-  hs-source-dirs: src
+  hs-source-dirs: lss
 
   main-is: Main_lss.hs
 
@@ -86,16 +93,11 @@ executable lss
 
   build-depends:
       base >= 4
-    , bytestring
     , cmdargs >= 0.8
-    , containers
-    , data-binary-ieee754 >= 0.4.2
-    , fingertree
-    , llvm-pretty == 0.1.1.0
+    , llvm-pretty >= 0.1.1.0
+    , llvm-verifier
     , mtl
     , parsec >= 2.1.0.1
-    , pretty
-    , transformers
     , vector
     , Verinf
 
@@ -106,33 +108,7 @@ executable Tests
     cpp-options: -DUseABC
 
   main-is        : Tests.hs
-  hs-source-dirs : src test/src
-
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
-  if os(darwin)
-    GHC-options: -optl-Wl,-dead_strip
-
-  build-depends:
-      QuickCheck >= 2.1.2
-    , Verinf
-    , base >= 4
-    , bytestring
-    , cmdargs >= 0.8
-    , containers
-    , filepath
-    , fingertree
-    , llvm-pretty == 0.1.1.0
-    , mtl
-    , pretty
-    , transformers
-    , vector
-
-executable bcdump
-  if !flag(build-utils)
-    buildable: False
-
-  main-is        : Main_bcdump.hs
-  hs-source-dirs : src
+  hs-source-dirs : src lss test/src
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   if os(darwin)
@@ -141,15 +117,36 @@ executable bcdump
   build-depends:
       base >= 4
     , bytestring
+    , cmdargs >= 0.8
     , containers
+    , data-binary-ieee754 >= 0.4.2
     , filepath
     , fingertree
-    , llvm-pretty
-    , pretty
+    , llvm-pretty >= 0.1.1.0
     , mtl
+    , pretty
+    , transformers
+    , vector
+    , QuickCheck >= 2.1.2
     , Verinf
+
+executable bcdump
+  if !flag(build-utils)
+    buildable: False
+
+  main-is        : Main_bcdump.hs
+  hs-source-dirs : bcdump
+
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  if os(darwin)
+    GHC-options: -optl-Wl,-dead_strip
+
+  build-depends:
+      base >= 4
+    , bytestring
+    , filepath
+    , llvm-pretty
+    , llvm-verifier
+    , pretty
     , directory
     , process
-
-  
-
