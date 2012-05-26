@@ -29,7 +29,6 @@ import           LSS.SBEInterface
 import           LSS.SBEBitBlast           (BitIO(..))
 import           Text.LLVM                 (Typed(..))
 import           Text.PrettyPrint.HughesPJ
-import           Verinf.Utils.LogMonad
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 import qualified Text.PrettyPrint.HughesPJ as PP
