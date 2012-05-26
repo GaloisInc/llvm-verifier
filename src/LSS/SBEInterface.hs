@@ -38,7 +38,7 @@ type SBEPartialResult m r  = (SBETerm m, r)
 
 -- | Represents a partial result of trying to obtain a concrete value from
 -- a symbolic term.
-data LookupDefineResult
+data LookupSymbolResult
   = Result LLVM.Symbol -- ^ The definition associated with the address.
   | Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed, because it had an invalid value.
@@ -75,17 +75,24 @@ data SBE m = SBE
     ----------------------------------------------------------------------------
     -- Term creation, operators
 
+        
+    -- | @termBool b@ creates a term representing the constant boolean
+    -- (1-bit) value @b@
+    termBool :: Bool -> m (SBETerm m)
+
     -- | @termInt w n@ creates a term representing the constant @w@-bit
     -- value @n@
-    termInt  :: Int -> Integer -> m (SBETerm m)
+  , termInt  :: Int -> Integer -> m (SBETerm m)
 
     -- | @freshInt w@ creates a term representing a symbolic @w@-bit value
   , freshInt :: Int -> m (SBETerm m)
-
-    -- | @termBool b@ creates a term representing the constant boolean
-    -- (1-bit) value @b@
-  , termBool :: Bool -> m (SBETerm m)
-
+    
+    -- | Create an SBE term for the given concrete floating point value.
+  , termDouble :: Double -> m (SBETerm m)
+  
+    -- | Create an SBE term for the given concrete floating point value.
+  , termFloat :: Float -> m (SBETerm m)
+    
     -- | @termArray ts@ creates a term representing an array with element terms
     -- @ts@ (which must be nonempty).  A term list containing with
     -- heterogenously-sized terms is permitted.
@@ -118,7 +125,10 @@ data SBE m = SBE
   , termWidth   :: SBETerm m -> Integer
   , closeTerm   :: SBETerm m -> SBEClosedTerm m
   , prettyTermD :: SBETerm m -> Doc
-
+    -- | Interpret the term as a concrete boolean if it can be.
+  , asBool :: SBETerm m -> Maybe Bool
+    -- | Interpret the term as a concrete integer if it can be.
+  --, asSignedInteger :: SBETerm m -> Maybe Integer
     ----------------------------------------------------------------------------
     -- Memory model interface
 
@@ -161,11 +171,11 @@ data SBE m = SBE
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.BlockLabel -> m (SBETerm m)
-    -- | @codeLookupDefine ptr@ returns the symbol at the given address.
+    -- | @codeLookupSymbol ptr@ returns the symbol at the given address.
     -- Lookup may fail if the pointer does not point to a symbol, or if
     -- the pointer is a symbolic value without a clear meaning.
     -- TODO: Consider moving this function to the symbolic simulator.
-  , codeLookupDefine :: SBEMemory m -> SBETerm m -> m LookupDefineResult
+  , codeLookupSymbol :: SBEMemory m -> SBETerm m -> m LookupSymbolResult
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.

@@ -4,7 +4,6 @@ Description      : A symbolic backend that bitblasts
 Stability        : provisional
 Point-of-contact : atomb, jhendrix
 -}
-
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams             #-}
@@ -12,7 +11,6 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE ViewPatterns               #-}
-
 module LSS.SBEBitBlast
   ( module LSS.SBEInterface
   , module Data.LLVM.Memory
@@ -42,6 +40,7 @@ import           Control.Arrow             (first)
 import           Control.Exception         (assert)
 import           Control.Monad
 import           Control.Monad.IO.Class
+import           Data.Binary.IEEE754
 import           Data.Bits
 import           Data.Int
 import           Data.IORef
@@ -231,28 +230,11 @@ lIsZero = lNeg . lIsNonZero
 
 -- BitTerm {{{1
 
-newtype BitTerm l = BitTerm { btVector :: LV.Vector l }
+newtype BitTerm l = BitTerm (LV.Vector l)
   deriving (Eq)
-newtype BitTermClosed l = BitTermClosed (BitEngine l, BitTerm l)
-
+           
 termFromLit :: LV.Storable l => l -> BitTerm l
 termFromLit = BitTerm . LV.singleton
-
-termToSVal :: (?be :: BitEngine l, LV.Storable l) => LV.Vector l -> Maybe Integer
-termToSVal lv =
-  case lGetUnsigned lv of
-    Nothing     -> Nothing
-    Just v -> Just $ case LV.length lv of
-      8             -> fromIntegral (i8 v)
-      16            -> fromIntegral (fromIntegral v :: Int16)
-      32            -> fromIntegral (fromIntegral v :: Int32)
-      64            -> fromIntegral (fromIntegral v :: Int64)
-      n | n < 8     -> fromIntegral (i8 v .&. (2 ^ n - 1))
-        | otherwise -> v -- TODO: Truncation to length n
-            -- error $ "BitTermClosed/getSVal: unsupported integer width " ++ show w
-      where
-        i8 :: Integer -> Int8
-        i8 x = fromIntegral x :: Int8
 
 lPrettyLit :: (?be :: BitEngine l) => l -> Doc
 lPrettyLit x | x `lEqLit` lFalse = text "False"
@@ -263,7 +245,7 @@ lPrettyLV :: (?be :: BitEngine l, LV.Storable l) => LV.Vector l -> Doc
 lPrettyLV bv
   | 1 == LV.length bv = lPrettyLit (bv LV.! 0)
   | otherwise = text str <> colon <>  brackets (text $ show $ LV.length bv)
-                  <+> maybe empty cvt (termToSVal bv)
+                  <+> maybe empty cvt (lGetSigned bv)
   where
     cvt x = parens (integer x)
             <+> if x >= 0
@@ -275,36 +257,43 @@ lPrettyLV bv
     str      = LV.foldr (\lit acc -> acc ++ [toChar lit]) "" bv
     toChar x = if x `lEqLit` lFalse then '0' else if x `lEqLit` lTrue then '1' else '?'
 
+newtype BitTermClosed l = BitTermClosed (BitEngine l, BitTerm l)
+
 instance (Eq l, LV.Storable l) => S.PrettyTerm (BitTermClosed l) where
   prettyTermWithD _ppconf (BitTermClosed (be, BitTerm bv)) = let ?be = be in lPrettyLV bv
 
+beAsBool :: (Eq l, LV.Storable l) => BitEngine l -> BitTerm l -> Maybe Bool
+beAsBool be (BitTerm t) =
+  case beVectorToMaybeInt be t of
+    Nothing     -> Nothing
+    Just (1, v) -> Just (toEnum (fromIntegral v))
+    Just (n, _) -> error $ "BitTermClosed/getBool: term bit width is " ++ show n  
+
 instance (LV.Storable l, Eq l) => ConstantProjection (BitTermClosed l) where
-  getSValW (BitTermClosed (be, t)) = let v = btVector t
-                                      in (\i -> (S.Wx (LV.length v), i)) <$> termToSVal v
+  getSValW (BitTermClosed (be, BitTerm v)) =
+      (\i -> (S.Wx (LV.length v), i)) <$> lGetSigned v
     where ?be = be
-  getUValW (BitTermClosed (be, t)) = case beVectorToMaybeInt be (btVector t) of
-                                       Nothing -> Nothing
-                                       Just (i,v) -> Just (S.Wx i,v)
-
-  getBool (BitTermClosed (be, t)) =
-    case beVectorToMaybeInt be (btVector t) of
-      Nothing     -> Nothing
-      Just (1, v) -> Just (toEnum (fromIntegral v) :: Bool)
-      Just (_, _) -> error "BitTermClosed/getBool: term bit width not 1"
-
+  getUValW (BitTermClosed (be, BitTerm t)) =
+    case beVectorToMaybeInt be t of
+      Nothing -> Nothing
+      Just (i,v) -> Just (S.Wx i,v)
+  getBool (BitTermClosed (be, t)) = beAsBool be t
   -- TODO: this isn't a complete implementation
-  termConst (BitTermClosed (be, t)) =
-    case beVectorToMaybeInt be (btVector t) of
+  termConst (BitTermClosed (be, BitTerm t)) =
+    case beVectorToMaybeInt be t of
       Nothing     -> Nothing
       Just (w, v) -> Just (S.mkCInt (fromIntegral w) v)
 
-bytesToTerm :: LV.Storable l => LLVMContext -> LLVM.Type -> LV.Vector l -> BitTerm l
+bytesToTerm :: LV.Storable l
+            => LLVMContext -> LLVM.Type -> LV.Vector l -> BitTerm l
 bytesToTerm _ (LLVM.PrimType (LLVM.Integer w)) bits =
   BitTerm (LV.take (fromIntegral w) bits)
 bytesToTerm _ _ bits = BitTerm bits
 
+-- | Convert term into a list of bytes suitable for storing in memory.
 termToBytes :: LV.Storable l
-            => LLVMContext -> BitEngine l -> LLVM.Type -> BitTerm l -> LV.Vector l
+            => LLVMContext -> BitEngine l
+            -> LLVM.Type -> BitTerm l -> LV.Vector l
 termToBytes lc be tp (BitTerm val) =
   case resolveType lc tp of
     -- Extend integer types to full width.
@@ -313,7 +302,6 @@ termToBytes lc be tp (BitTerm val) =
        in val LV.++ LV.replicate (fromIntegral newBits) (beDontCare be)
     -- Treat other types as same.
     _ -> val
-
 
 -- MemModel {{{1
 
@@ -325,12 +313,12 @@ data MemModel mem ptr int bytes cond = MemModel {
   , mmInitGlobal :: mem -> bytes -> IO (Maybe (ptr, mem))
   , mmAddDefine :: mem -> LLVM.Symbol -> V.Vector LLVM.BlockLabel -> IO (Maybe (ptr, mem))
   , mmBlockAddress :: mem -> LLVM.Symbol -> LLVM.BlockLabel -> ptr
-  , mmLookupDefine :: mem -> ptr -> LookupDefineResult
+  , mmLookupSymbol :: mem -> ptr -> LookupSymbolResult
     -- | Alloc structure on stack
-  , mmStackAlloca :: mem -- ^ Memory
+  , mmStackAlloca :: mem     -- ^ Memory
                   -> Integer -- ^ Size of each element
-                  -> int -- ^ Number of elements
-                  -> Int -- ^ Log-base 2 of alignment
+                  -> int     -- ^ Number of elements
+                  -> Int     -- ^ Log-base 2 of alignment
                   -> IO (StackAllocaResult ptr mem)
   , mmStackPush :: mem -> IO (cond, mem)
   , mmStackPop :: mem -> IO mem
@@ -350,7 +338,9 @@ data MemModel mem ptr int bytes cond = MemModel {
   , mmMux :: cond -> mem -> mem -> IO mem
   }
 
-type BitBlastMemModel m l = MemModel m (BitTerm l) (BitTerm l) (LV.Vector l) (BitTerm l)
+-- | A memory model over terms that are bits.
+type BitBlastMemModel m l =
+  MemModel m (BitTerm l) (BitTerm l) (LV.Vector l) (BitTerm l)
 
 -- | Load memory using
 loadTerm :: (Eq l, LV.Storable l)
@@ -384,9 +374,9 @@ storeTerm lc be mm m v ptr
 type BasicBlockMap l = Map (LLVM.Symbol,LLVM.BlockLabel) (BitTerm l)
 
 blockAddress :: BasicBlockMap l -> LLVM.Symbol -> LLVM.BlockLabel -> BitTerm l
-blockAddress bbm d b =
-  let errMsg = "internal: Failed to find block " ++ show b ++ " in " ++ show d ++ "."
-   in maybe (bmError errMsg) id $ Map.lookup (d,b) bbm
+blockAddress bbm d b = maybe (bmError errMsg) id $ Map.lookup (d,b) bbm
+  where errMsg = "internal: Failed to find block " ++ show b ++ " in "
+                 ++ show d ++ "."
 
 addBlockLabels :: LV.Storable l
                => Int -- ^ Pointer width
@@ -450,14 +440,14 @@ ppStorage mranges be = impl 0 Nothing
       | il == beFalse be = whenInRange a $ item doc a (text "uninitialized")
       | otherwise = whenInRange a
                   $ item doc a
-                  $ (let ?be = be in lPrettyLV v) <+> parens (text "allocated:" <+> pl al <> comma
-                                            <+> text "initialized:" <+> pl il)
-    impl a (Just doc) (SDefine sym)  = whenInRange a $ item doc a $ LLVM.ppSymbol sym
-    impl a (Just doc) (SBlock s l)   = whenInRange a
-                                       $ item doc a
-                                         $ LLVM.ppSymbol s
-                                           <> char '/'
-                                           <> LLVM.ppLabel l
+                  $ (let ?be = be in lPrettyLV v) 
+                     <+> parens (text "allocated:" <+> pl al <> comma
+                                 <+> text "initialized:" <+> pl il)
+    impl a (Just doc) (SDefine sym)  =
+      whenInRange a $ item doc a $ LLVM.ppSymbol sym
+    impl a (Just doc) (SBlock s l)
+      = whenInRange a $ item doc a 
+      $ LLVM.ppSymbol s <> char '/' <> LLVM.ppLabel l
     impl _ (Just doc) SUnallocated   = doc
     item doc addr desc               = doc $+$ text (showHex addr "") <> colon <+> desc
     pl = let ?be = be in lPrettyLit
@@ -483,16 +473,21 @@ mergeStorage be c x y = impl x y
           | dx == dy && bx == by = return (SBlock dx bx)
           | otherwise = bmError "Attempt to merge memories with incompatible block values."
         impl SUnallocated SUnallocated = return SUnallocated
-        impl (SValue ax ix vx) SUnallocated = (\az -> SValue az ix vx) <$> beAnd be c ax
-        impl SUnallocated (SValue ay iy vy) = (\az -> SValue az iy vy) <$> beAnd be (beNeg be c) ay
-        impl b@SBranch{} SUnallocated = impl b (SBranch SUnallocated SUnallocated)
-        impl SUnallocated b@SBranch{} = impl (SBranch SUnallocated SUnallocated) b
+        impl (SValue ax ix vx) SUnallocated =
+          (\az -> SValue az ix vx) <$> beAnd be c ax
+        impl SUnallocated (SValue ay iy vy) =
+          (\az -> SValue az iy vy) <$> beAnd be (beNeg be c) ay
+        impl b@SBranch{} SUnallocated =
+          impl b (SBranch SUnallocated SUnallocated)
+        impl SUnallocated b@SBranch{} =
+          impl (SBranch SUnallocated SUnallocated) b
         impl a b = do
           dbugM $ "mergeStorage failure case: a = " ++ show (ppStorageShow be a)
           dbugM $ "mergeStorage failure case: b = " ++ show (ppStorageShow be b)
           bmError "Attempt to merge incompatible valid addresses."
 
--- | @loadBytes be mem ptr size@ returns term representing all the bits with given size.
+-- | @loadBytes be mem ptr size@ returns term representing all the bits with
+-- given size.
 loadBytes :: (Eq l, LV.Storable l)
           => BitEngine l
           -> (LV.Vector l -> IO (l, LV.Vector l))
@@ -758,12 +753,12 @@ bmAddDefine be ptrWidth m def blocks
         newBBMap = addBlockLabels ptrWidth be def blocks (codeAddr + 1) (bmBasicBlockMap m)
 
 -- | Return symbol as given address in memory.
-bmLookupDefine :: (Eq l, LV.Storable l)
+bmLookupSymbol :: (Eq l, LV.Storable l)
                => BitEngine l
                -> BitMemory l
                -> BitTerm l
-               -> LookupDefineResult
-bmLookupDefine be m (BitTerm a) = do
+               -> LookupSymbolResult
+bmLookupSymbol be m (BitTerm a) = do
   case beVectorToMaybeInt be a of
     Nothing -> Indeterminate
     Just (w, v) ->
@@ -904,7 +899,7 @@ buddyMemModel lc be = mm
               , mmInitGlobal = bmInitGlobalBytes be ptrWidth
               , mmAddDefine = return `c3` bmAddDefine be ptrWidth
               , mmBlockAddress = blockAddress . bmBasicBlockMap
-              , mmLookupDefine = bmLookupDefine be
+              , mmLookupSymbol = bmLookupSymbol be
               , mmStackAlloca = return `c4` bmStackAlloca be ptrWidth
               , mmStackPush = \mem -> return (termFromLit (beTrue be), bmStackPush mem)
               , mmStackPop = return . bmStackPop (llvmAddrWidthBits lc)
@@ -1203,12 +1198,12 @@ dmAddDefine ptrWidth codeEnd ref mem def blocks
         remaining = codeEnd - ptr
         bytesReq = 1 + toInteger (V.length blocks)
 
-dmLookupDefine :: (Eq l, LV.Storable l)
+dmLookupSymbol :: (Eq l, LV.Storable l)
                => BitEngine l
                -> DagMemory l
                -> BitTerm l
-               -> LookupDefineResult
-dmLookupDefine be mem (BitTerm a) = do
+               -> LookupSymbolResult
+dmLookupSymbol be mem (BitTerm a) = do
   case (let ?be = be in lGetUnsigned a) of
     Nothing -> Indeterminate
     Just v ->
@@ -1464,7 +1459,7 @@ createDagMemModel lc be mg = do
              , mmDump = dmDump
              , mmAddDefine = dmAddDefine ptrWidth (end (mgCode mg)) ref
              , mmBlockAddress = blockAddress . dmBasicBlockMap
-             , mmLookupDefine = dmLookupDefine be
+             , mmLookupSymbol = dmLookupSymbol be
              , mmStackAlloca = dmStackAlloca ptrWidth stackGrowsUp (ptrEnd (mgStack mg)) ref
              , mmStackPush = dmStackPushFrame ref
              , mmStackPop = dmStackPopFrame stackGrowsUp ref
@@ -1592,7 +1587,7 @@ bitConv be ptrWidth op (BitTerm x) resType = BitTerm v
 bitBNot :: (LV.Storable l, Eq l) =>
            BitEngine l -> BitTerm l
         -> IO (BitTerm l)
-bitBNot be (BitTerm bv) = BitTerm <$> return (LV.map (beNeg be) bv)
+bitBNot be (BitTerm bv) = return $ BitTerm (LV.map (beNeg be) bv)
 
 --  SBE Definition {{{1
 
@@ -1605,6 +1600,9 @@ type instance SBEMemory (BitIO m l)     = m
 
 type BitBlastSBE m l = SBE (BitIO m l)
 
+bitTermWidth :: LV.Storable l => BitTerm l -> Integer
+bitTermWidth (BitTerm v) = fromIntegral $ LV.length v
+
 sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
             => LLVMContext
             -> BitEngine l
@@ -1614,21 +1612,25 @@ sbeBitBlast lc be mm = sbe
   where
     ptrWidth = llvmAddrWidthBits lc
     sbe = SBE
-          { termInt          = (return . BitTerm) `c2` beVectorFromInt be
+          { termBool         = return . BitTerm . LV.singleton . beLitFromBool be
+          , termInt          = (return . BitTerm) `c2` beVectorFromInt be
           , freshInt         = \w -> BitIO $ BitTerm <$>
                                         LV.replicateM w (beMakeInputLit be)
-          , termBool         = return . BitTerm . LV.singleton . beLitFromBool be
+          , termDouble       = return . BitTerm . beVectorFromInt be 64 . toInteger . doubleToWord
+          , termFloat        = return . BitTerm . beVectorFromInt be 32 . toInteger . floatToWord
           , termArray        = return . BitTerm . termArrayImpl
           , termDecomp       = return `c2` termDecompImpl lc be
+          
           , applyIte         = BitIO `c3` bitIte be
           , applyICmp        = BitIO `c3` bitICmp be
           , applyBitwise     = BitIO `c3` bitBitwise be
           , applyArith       = BitIO `c3` bitArith be
           , applyConv        = return `c3` bitConv be ptrWidth
           , applyBNot        = BitIO . bitBNot be
-          , termWidth        = fromIntegral . LV.length . btVector
+          , termWidth        = bitTermWidth
           , closeTerm        = BitTermClosed . (,) be
           , prettyTermD      = S.prettyTermD . closeTerm sbe
+          , asBool           = beAsBool be
           , memDump          = BitIO `c2` mmDump mm True
           , memLoad          = BitIO `c2` loadTerm lc mm
           , memStore         = BitIO `c3` storeTerm lc be mm
@@ -1639,7 +1641,7 @@ sbeBitBlast lc be mm = sbe
           , memInitGlobal    = \m (LLVM.Typed ty gd) ->
                                  BitIO $ mmInitGlobal mm m (termToBytes lc be ty gd)
           , codeBlockAddress = return `c3` mmBlockAddress mm
-          , codeLookupDefine = return `c2` mmLookupDefine mm
+          , codeLookupSymbol = return `c2` mmLookupSymbol mm
           , stackAlloca = \m eltTp cnt ->
               BitIO . mmStackAlloca mm m (llvmAllocSizeOf lc eltTp) (LLVM.typedValue cnt)
           , stackPushFrame   = BitIO . mmStackPush mm
@@ -1647,11 +1649,15 @@ sbeBitBlast lc be mm = sbe
           , heapAlloc        = \m eltTp (LLVM.typedValue -> cnt) ->
               BitIO . mmHeapAlloc mm m (llvmAllocSizeOf lc eltTp) cnt
           , memCopy          = BitIO `c5` mmMemCopy mm
-          , writeAiger       = \f ts -> BitIO $ beWriteAigerV be f $ map btVector ts
+          , writeAiger       = \f ts -> 
+              let getV (BitTerm v) = v
+               in BitIO $ beWriteAigerV be f $ map getV ts
           , evalAiger        = BitIO `c2` evalAigerImpl be
           }
     termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"
-    termArrayImpl ts = foldr1 (LV.++) (map btVector ts)
+    termArrayImpl ts = 
+      let getV (BitTerm v) = v
+       in foldr1 (LV.++) (map getV ts)
 
 termDecompImpl :: (LV.Storable l, Eq l)
                => LLVMContext
@@ -1691,7 +1697,6 @@ testSBEBitBlast = do
     SAResult _ sp m1 <- stackAlloca sbe m0 i32 (LLVM.Typed i32 l1) 1
     liftIO $ putStrLn "m1:"
     memDump sbe m1 Nothing
-    liftIO $ putStrLn $ show $ let ?be = be in lGetUnsigned (btVector sp)
     lv <- termInt sbe 32 0x12345678
     (_,m2) <- memStore sbe m1 (LLVM.Typed i32 lv) sp
     liftIO $ putStrLn "m2:"

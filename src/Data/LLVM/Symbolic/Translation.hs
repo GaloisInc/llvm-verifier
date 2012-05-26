@@ -201,19 +201,18 @@ liftBB lti phiMap bb = do
       impl [Effect (LLVM.Jump tgt)] idx il = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
-      impl [Effect (LLVM.Switch (Typed _ v) def cases)] idx il = do
+      impl [Effect (LLVM.Switch tpv def cases)] idx il = do
         defineBlock (blockName idx) $ reverse il ++ go cases
         mapM_ (uncurry defineBlock) caseDefs
-          where go []            = [IfThenElse (NotConstValues v vs)
+          where go []            = [IfThenElse (NotConstValues tpv vs)
                                                (brSymInstrs def)
                                                symbolicCases]
-                go ((i, l) : cs) = [IfThenElse (HasConstValue v i)
+                go ((i, l) : cs) = [IfThenElse (HasConstValue tpv i)
                                                (brSymInstrs l)
                                                (go cs)]
-                symbolicCases    = concatMap mkCase caseConds ++
-                                   [ AddPathConstraint
-                                     (NotConstValues v vs) ] ++
-                                   brSymInstrs def
+                symbolicCases    = concatMap mkCase caseConds
+                                   ++ [ AddPathConstraint (NotConstValues tpv vs) ]
+                                   ++ brSymInstrs def
                 vs               = map fst cases
                 caseBlockIds     = [(idx + 1)..(idx + length cases)]
                 casePairs        = zip caseBlockIds cases
@@ -225,10 +224,10 @@ liftBB lti phiMap bb = do
                                    (\(bid, (cv, _)) -> (blockName bid, cv))
                                    casePairs
                 mkCase (bid, cv) = [ SetCurrentBlock bid
-                                   , PushPendingExecution (HasConstValue v cv)
+                                   , PushPendingExecution (HasConstValue tpv cv)
                                    ]
-      impl [Effect (LLVM.Br (Typed tc c) tgt1 tgt2)] idx il = do
-        CE.assert (tc == i1) $ return ()
+      impl [Effect (LLVM.Br tc@(Typed tp _) tgt1 tgt2)] idx il = do
+        CE.assert (tp == i1) $ return ()
         let suspendSymBlockID = blockName (idx + 1)
         -- Define end of current block:
         --   If c is true:
@@ -239,13 +238,13 @@ liftBB lti phiMap bb = do
         --     Add pending execution for false branch, and execute true branch.
         --   Else
         defineBlock (blockName idx) $ reverse il ++
-          [ IfThenElse (HasConstValue c 1)
+          [ IfThenElse (HasConstValue tc 1)
                (brSymInstrs tgt1)
-               [IfThenElse (HasConstValue c 0)
+               [IfThenElse (HasConstValue tc 0)
                            (brSymInstrs tgt2)
                            ([ SetCurrentBlock suspendSymBlockID
-                            , PushPendingExecution (HasConstValue c 0)
-                            , AddPathConstraint (HasConstValue c 1)]
+                            , PushPendingExecution (HasConstValue tc 0)
+                            , AddPathConstraint (HasConstValue tc 1)]
                               ++ brSymInstrs tgt1)]]
         -- Define block for suspended thread.
         defineBlock suspendSymBlockID  (brSymInstrs tgt2)

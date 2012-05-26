@@ -296,9 +296,9 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
               -- very first path.
               _ <- maybe undefined (const popMergeFrame) mp
               errorPathBeforeCall $ FailRsn
-                $ "Failed to find define for symbol "
+                $ "Failed to find definition for symbol "
                   ++ show (L.ppSymbol calleeSym)
-                  ++ " in codebase"
+                  ++ " in codebase."
 
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   lc <- gets (cbLLVMCtx . codebase)
@@ -328,9 +328,9 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
     bindArg lc (reg, Typed (L.Alias a) v) mp =
       bindArg lc (reg, Typed (llvmLookupAlias lc a) v) mp
 
-    bindArg _ (Typed ft reg, v@(Typed at _)) mp
-      | ft == at =
-          let ok = M.insert reg v mp
+    bindArg _ (Typed ft reg, (Typed at v)) mp =
+      -- WARNING: This code now does an implcit conversion from ft to at.
+          let ok = M.insert reg (Typed ft v) mp
           in
             -- It's doubtful that anything will remain excluded here, but this
             -- makes it explicit when we've not handled particular argument
@@ -339,10 +339,11 @@ runNormalSymbol normalRetID calleeSym mreg genOrArgs = do
             L.PrimType L.Integer{} -> ok
             L.PtrTo{}              -> ok
             _ -> err $ text "unsupported arg type:" <+> L.ppType at
-      | otherwise = err
-          $ text "formal/actual type mismatch:"
-            <+> L.ppType ft <+> text "vs." <+> L.ppType at
-            $+$ text (show ft) <+> text "vs." <+> text (show at)
+      
+--      | otherwise = err
+--          $ text "formal/actual type mismatch:"
+--            <+> L.ppType ft <+> text "vs." <+> L.ppType at
+--            $+$ text (show ft) <+> text "vs." <+> text (show at)
 
 intrinsic ::
   ( MonadIO m
@@ -363,13 +364,13 @@ intrinsic intr mreg args0 =
   where
     memcpy = do
       let [dst, src, len, align, _isvol] = map typedValue args0
-      fr <- do pts <- mapM prettyTermSBE [dst,src,len]
-               return $ FailRsn
-                 $ "memcopy operation was not valid: "
-                   ++ "(dst,src,len) = "
-                   ++ show (parens . hcat . punctuate comma $ pts)
-      processMemCond fr
-        =<< mutateMem (\sbe mem -> memCopy sbe mem dst src len align)
+      c <- mutateMem (\sbe mem -> memCopy sbe mem dst src len align)
+      sbe <- gets symBE
+      let pts = map (prettyTermD sbe) [dst,src,len]      
+      let fr = FailRsn $ 
+                 "memcopy operation was not valid: (dst,src,len) = "
+                   ++ show (parens $ hcat $ punctuate comma $ pts)
+      processMemCond fr c
     memset = do
       let [dst, val, len, align, _isvol] = args0
       memSet (typedValue dst) val (typedValue len) (typedValue align)
@@ -623,19 +624,19 @@ addPathConstraintSC ::
   )
   => Path sbe -> SymCond -> Simulator sbe m (Path sbe)
 addPathConstraintSC p TrueSymCond           = return p
-addPathConstraintSC p c@(HasConstValue v i) = do
+addPathConstraintSC p c@(HasConstValue tv@(Typed tp _) i) = do
   -- Construct the constraint term from the HasConstValue predicate
-  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (i1 =: v)
-  Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
+  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) tv
+  Typed _ it <- getTypedTerm' Nothing (tp =: L.ValInteger i)
   ct <- withSBE (\s -> applyICmp s L.Ieq vt it)
   addPathConstraint p (Just c) ct
 addPathConstraintSC p (NotConstValues _ []) = return p
-addPathConstraintSC p c@(NotConstValues v (i:is)) = do
+addPathConstraintSC p c@(NotConstValues tv@(Typed tp _) (i:is)) = do
   -- Construct the constraint term from the NotConstValues predicate
-  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) (i1 =: v)
-  Typed _ it <- getTypedTerm' Nothing (i1 =: L.ValInteger i)
+  Typed _ vt <- getTypedTerm' (Just $ pathCallFrame p) tv
+  Typed _ it <- getTypedTerm' Nothing (tp =: L.ValInteger i)
   ct <- withSBE (\s -> applyICmp s L.Ine vt it)
-  p' <- addPathConstraintSC p (NotConstValues v is)
+  p' <- addPathConstraintSC p (NotConstValues tv is)
   addPathConstraint p' (Just c) ct
 
 -- @addPathConstraint p msc ct@ adds the given condition term @ct@ to the path
@@ -808,7 +809,7 @@ mergePaths from (Just to) = do
   where
     infixl 5 <->
     t <-> f = do
-      meq <- withSBE $ \s -> getBool . closeTerm s <$> applyICmp s L.Ieq t f
+      meq <- withSBE $ \s -> asBool s <$> applyICmp s L.Ieq t f
       case meq of
         Just True -> return t
         _         ->
@@ -865,7 +866,9 @@ getTypedTerm ::
   , ConstantProjection (SBEClosedTerm sbe)
   )
   => Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
-getTypedTerm tv = (`getTypedTerm'` tv) =<< Just <$> getCallFrame
+getTypedTerm tv = do 
+  mp <- getPath
+  getTypedTerm' (pathCallFrame <$> mp) tv
 
 -- | Obtain the typed SBE term representation for the given LLVM value; performs
 -- identifier lookup in the regmap of the given call frame as needed.
@@ -886,6 +889,9 @@ getTypedTerm' _ (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInte
 getTypedTerm' _ (Typed t@(L.PtrTo _) L.ValNull) = do
   ptrWidth <- withLC llvmAddrWidthBits
   Typed t <$> withSBE (\sbe -> termInt sbe ptrWidth 0)
+
+getTypedTerm' mfrm (Typed _ ce@L.ValConstExpr{})
+  = evalCE mfrm ce
 
 getTypedTerm' _ (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
   = getGlobalPtrTerm (sym, Just argtys)
@@ -917,8 +923,8 @@ getTypedTerm' mfrm (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
 getTypedTerm' _ (Typed _ (L.ValSymbol sym))
   = getGlobalPtrTerm (sym, Nothing)
 
-getTypedTerm' mfrm (Typed _ ce@L.ValConstExpr{})
-  = evalCE mfrm ce
+getTypedTerm' _ (Typed ty (L.ValDouble v)) =
+  Typed ty <$> withSBE (\sbe -> termDouble sbe v)
 
 getTypedTerm' (Just frm) (Typed _ (L.ValIdent i))
   = lkupIdent i frm
@@ -1025,8 +1031,9 @@ step (PushCallFrame callee args mres) = do
   eab <- resolveCallee callee
   _ <- case eab of
          Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
-         Right calleeSym -> do callDefine' False cb calleeSym mres
-                                 =<< Right <$> mapM getTypedTerm args
+         Right calleeSym -> do
+           argTerms <- mapM getTypedTerm args
+           callDefine' False cb calleeSym mres (Right argTerms)
   return ()
 
 step (PushInvokeFrame _fn _args _mres _e) = unimpl "PushInvokeFrame"
@@ -1089,15 +1096,13 @@ step (IfThenElse cond thenStmts elseStmts) = do
   runStmts $ if b then thenStmts else elseStmts
   where
     evalCond TrueSymCond = return True
-    evalCond (HasConstValue v i) = do
-      Typed t v' <- getTypedTerm (Typed i1 v)
-      CE.assert (t == i1) $ return ()
-      maybe False (==i) . fmap (fromIntegral . fromEnum)
-        <$> withSBE' (\sbe -> getBool $ closeTerm sbe v')
-    evalCond (NotConstValues v is) = do
-      Typed t v' <- getTypedTerm (Typed i1 v)
-      CE.assert (t == i1) $ return ()
-      mv'' <- withSBE' (\sbe -> getSVal $ closeTerm sbe v')
+    evalCond (HasConstValue typedTerm i) = do
+      Typed _ v' <- getTypedTerm typedTerm
+      v'' <- withSBE' (\sbe -> getUVal $ closeTerm sbe v')
+      return $ maybe False (==i) v''
+    evalCond (NotConstValues typedTerm is) = do
+      Typed _ v' <- getTypedTerm typedTerm
+      mv'' <- withSBE' (\sbe -> getUVal $ closeTerm sbe v')
       case mv'' of
         Nothing -> return False
         Just v'' -> return $ all (/= v'') is
@@ -1359,13 +1364,13 @@ termConv op x ty = withSBE $ \sbe -> applyConv sbe op x ty
 infixr 3 &&&
 mx &&& my = do
    x <- mx
-   xb <- withSBE' $ \sbe -> getBool (closeTerm sbe x)
+   xb <- withSBE' $ \sbe -> asBool sbe x
    case xb of
      Just True  -> my
      Just False -> return x
      _          -> do
        y  <- my
-       yb <- withSBE' $ \sbe -> getBool (closeTerm sbe y)
+       yb <- withSBE' $ \sbe -> asBool sbe y
        case yb of
          Just True  -> return x
          Just False -> return y
@@ -1556,13 +1561,16 @@ store ::
   )
   => Typed (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
 store val dst = do
+  c <- mutateMem (\s m -> memStore s m val dst)
   fr <- memFailRsn "Invalid store address: " [dst]
-  processMemCond fr =<< mutateMem (\s m -> memStore s m val dst)
+  processMemCond fr c
 
 memFailRsn :: (Functor m, Monad m)
   => String -> [SBETerm sbe] -> Simulator sbe m FailRsn
 memFailRsn desc terms = do
-  pts <- mapM prettyTermSBE terms
+  --TODO: See if we can get a reasonable location for the failure.
+  sbe <- gets symBE
+  let pts = map (prettyTermD sbe) terms
   return $ FailRsn $ show $ text desc <+> ppTuple pts
 
 --------------------------------------------------------------------------------
@@ -1596,7 +1604,7 @@ tellUser msg = unlessQuiet $ dbugM msg
 -- (concrete bool) otherwise.
 condTerm :: (Functor m, Monad m, ConstantProjection (SBEClosedTerm sbe))
   => SBETerm sbe -> Simulator sbe m (Maybe Bool)
-condTerm c = withSBE' $ \s -> getBool $ closeTerm s c
+condTerm c = withSBE' $ \s -> asBool s c
 
 -- | Returns the a term representing the target-specific number of bytes
 -- required to store a value of the given type.
@@ -1618,30 +1626,34 @@ resolveCallee callee = case callee of
  L.ValAsm{}        -> err $ "Inline assembly is not supported: " ++ show (L.ppValue callee)
  _                 -> err $ "Unexpected callee value: " ++ show (L.ppValue callee) ++ ":" ++ show callee
  where
-   resolveIdent i = findDefineByPtr =<< lkupIdent i =<< getCallFrame
+   resolveIdent i = do
+     f <- pathCallFrame <$> getPath' "resolveCallee"
+     findDefineByPtr =<< lkupIdent i f
    findDefineByPtr (Typed ty fp) = case L.elimFunPtr ty of
      Nothing -> err "Callee is not a function pointer"
-     _       -> do r <- resolveFunPtrTerm fp
-                   case r of
-                     Just sym -> ok sym
-                     _        -> err $ "Failed to resolve "
-                                     ++ "callee function pointer: "
-                                     ++ show (L.ppValue callee)
+     _       -> do
+       r <- resolveFunPtrTerm fp
+       case r of
+         Result sym -> ok sym
+         _        -> do
+           sbe <- gets symBE
+           liftIO $ putStrLn $ "Calling memDump in resolveCallee"
+           withMem $ \s m -> memDump s m Nothing
+           err $ "Failed to resolve callee function pointer: "
+                 ++ show (L.ppValue callee) ++ "\n" 
+                 ++ show r ++ "\n"
+                 ++ show (prettyTermD sbe fp)
    ok sym  = return $ Right $ sym
    err msg = return $ Left $ "resolveCallee: " ++ msg
-
+  
 resolveFunPtrTerm ::
   ( MonadIO m
   , Functor m
   , Functor sbe
   , ConstantProjection (SBEClosedTerm sbe)
   )
-  => SBETerm sbe -> Simulator sbe m (Maybe L.Symbol)
-resolveFunPtrTerm fp = do
-  pr <- withMem $ \s m -> codeLookupDefine s m fp
-  case pr of
-    Result sym -> return (Just sym)
-    _          -> return Nothing
+  => SBETerm sbe -> Simulator sbe m LookupSymbolResult
+resolveFunPtrTerm fp = withMem $ \s m -> codeLookupSymbol s m fp
 
 lkupIdent ::
   ( MonadIO m
@@ -1708,11 +1720,6 @@ getPath' desc = do
   case mp of
     Nothing -> error $ desc ++ ": no current path (getPath')"
     Just p  -> return p
-
--- | Obtain the call frame of the current path; runtime error if the control
--- stack is empty or if there is no current path.
-getCallFrame :: (Functor m, Monad m) => Simulator sbe m (CF sbe)
-getCallFrame = pathCallFrame <$> getPath' "getCallFrame"
 
 -- | Manipulate the control stack
 modifyCS :: Monad m => (CS sbe -> CS sbe) -> Simulator sbe m ()
@@ -2313,7 +2320,7 @@ overrideByAddr = Override $ \_sym _rty args ->
     [_, _] -> do
       [mfromSym, mtoSym] <- mapM (resolveFunPtrTerm . typedValue) args
       case (mfromSym, mtoSym) of
-        (Just from, Just to) -> from `userRedirectTo` to
+        (Result from, Result to) -> from `userRedirectTo` to
         _                    -> resolveErr
     _ -> argsErr
   where
@@ -2328,7 +2335,7 @@ overrideIntrinsic = Override $ \_sym _rty args ->
       nm  <- fromString <$> loadString nmPtr
       msym <- resolveFunPtrTerm (typedValue fp)
       case msym of
-        Just sym -> nm `userRedirectTo` sym
+        Result sym -> nm `userRedirectTo` sym
         _ -> e "overrideIntrinsic: Failed to resolve function pointer"
     _ -> e "lss_override_llvm_intrinsic: wrong number of arguments"
   where
@@ -2356,7 +2363,7 @@ overrideResetByAddr = Override $ \_sym _rty args ->
     [fp] -> do
       msym <- resolveFunPtrTerm (typedValue fp)
       case msym of
-        Just sym -> sym `userRedirectTo` sym
+        Result sym -> sym `userRedirectTo` sym
         _        -> e "overrideResetByAddr: Failed to resolve function pointer"
     _ -> e "lss_override_reset_by_addr: wrong number of arguments"
   where
