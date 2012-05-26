@@ -1637,7 +1637,6 @@ resolveCallee callee = case callee of
          Result sym -> ok sym
          _        -> do
            sbe <- gets symBE
-           liftIO $ putStrLn $ "Calling memDump in resolveCallee"
            withMem $ \s m -> memDump s m Nothing
            err $ "Failed to resolve callee function pointer: "
                  ++ show (L.ppValue callee) ++ "\n" 
