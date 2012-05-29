@@ -40,14 +40,14 @@ padTy bytes = L.Array (fromIntegral bytes) i8
 supportDir :: FilePath
 supportDir = "test" </> "src" </> "support"
 
-ctestsDir :: FilePath
-ctestsDir = supportDir </> "ctests"
+testsDir :: FilePath
+testsDir = supportDir
 
 commonCB :: FilePath -> PropertyM IO Codebase
 commonCB bcFile = run $ loadCodebase $ supportDir </> bcFile
 
-ctestCB :: FilePath -> PropertyM IO Codebase
-ctestCB bcFile = run $ loadCodebase $ ctestsDir </> bcFile
+testCB :: FilePath -> PropertyM IO Codebase
+testCB bcFile = run $ loadCodebase $ testsDir </> bcFile
 
 assertMsg :: Bool -> String -> PropertyM IO ()
 assertMsg b s = when (not b) (run $ putStrLn s) >> assert b
@@ -139,7 +139,7 @@ runTestLSSDag v cb argv' hndlr = do
       hndlr sbe mem rslt
 
 lssTest :: Int -> String -> (Int -> Codebase -> PropertyM IO ()) -> (Args, Property)
-lssTest v bc act = test 1 False bc $ act v =<< ctestCB (bc <.> "bc")
+lssTest v bc act = test 1 False bc $ act v =<< testCB (bc <.> "bc")
 
 -- TODO: At some point we may want to inspect error paths and ensure
 -- that they are the /right/ error paths, rather just checking the

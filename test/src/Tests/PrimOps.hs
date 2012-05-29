@@ -41,38 +41,40 @@ primOpTests =
   , test  1  False "test-branch"           $ testBranch      1
   , test 10  False "test-factorial"        $ testFactorial   1
   , test  1  False "test-call-voidrty"     $ testCallVR      1
-  , test  1  False "test-call-simple"      $ testCallSimple  1
   , test  1  False "test-ptr-simple"       $ testPtrSimple   1
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
   , test  1  False  "test-call-exit"       $ testCallExit    1
-  , lssTest 0 "test-call-alloca" $ \v cb -> do
+  , lssTest 0  "test-call-simple" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
+      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
+  , lssTest 0 "ctests/test-call-alloca" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 34289)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 34289)
-  , lssTest 0 "test-call-malloc" $ \v cb -> do
+  , lssTest 0 "ctests/test-call-malloc" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 34289)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 34289)
-  , lssTest 0 "test-main-return" $ \v cb -> do
+  , lssTest 0 "ctests/test-main-return" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 42)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 42)
-  , lssTest 0 "test-select" $ \v cb -> do
+  , lssTest 0 "ctests/test-select" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "test-user-override-by-name" $ \v cb -> do
+  , lssTest 0 "ctests/test-user-override-by-name" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "test-user-override-by-addr" $ \v cb -> do
+  , lssTest 0 "ctests/test-user-override-by-addr" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "test-user-override-by-addr-cycle" $ \v cb -> do
+  , lssTest 0 "ctests/test-user-override-by-addr-cycle" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "test-user-override-reset" $ \v cb -> do
+  , lssTest 0 "ctests/test-user-override-reset" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "test-user-override-intrinsic" $ \v cb -> do
+  , lssTest 0 "ctests/test-user-override-intrinsic" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "test-merge-mem-problem" $ \v cb -> do
+  , lssTest 0 "ctests/test-merge-mem-problem" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
   ]
@@ -94,7 +96,6 @@ primOpTests =
     testArith v       = runMain v "test-arith.bc" (RV 0)
     testBranch v      = runMain v "test-branch.bc" (RV 0)
     testCallVR v      = runMain v "test-call-voidrty.bc" VoidRV
-    testCallSimple v  = runMain v "test-call-simple.bc" (RV 1)
     testPtrSimple v   = runMain v "test-ptr-simple.bc" (RV 99)
     testSetupPtrArg v = psk v $ runAllMemModelTest v (commonCB "test-primops.bc")
                                   testSetupPtrArgImpl

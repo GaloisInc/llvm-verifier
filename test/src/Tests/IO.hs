@@ -14,11 +14,11 @@ import           Tests.Common
 ioTests :: [(Args, Property)]
 ioTests =
   [
-    lssTest 0 "test-call-printf" $ \v cb -> do
+    lssTest 0 "ctests/test-call-printf" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 3)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 3)
 
-  , lssTest 0 "test-printf-str" $ \v cb -> do
+  , lssTest 0 "ctests/test-printf-str" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 8)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 8)
   ]
