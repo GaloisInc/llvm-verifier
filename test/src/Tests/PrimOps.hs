@@ -116,7 +116,7 @@ primOpTests =
     primU v nm mg f = psk v $ chkUnaryCInt32Fn mg v (commonCB "test-primops.bc") (L.Symbol nm) f
     primB v nm mg f = psk v $ chkBinCInt32Fn   mg v (commonCB "test-primops.bc") (L.Symbol nm) f
 
-chkArithBitEngineFn :: (Integral a, Arbitrary a) =>
+chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a) =>
                        Int -> Bool -> L.ArithOp -> (a -> a -> a)
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do

@@ -36,7 +36,7 @@ module LSS.SBEBitBlast
   ) where
 
 import           Control.Applicative       ((<$>))
-import           Control.Arrow             (first)
+import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
 import           Control.Monad
 import           Control.Monad.IO.Class
@@ -935,7 +935,7 @@ createBuddyAll :: (Ord l, LV.Storable l)
                -> MemGeom
                -> IO (BitBlastSBE (BitMemory l) l, BitMemory l)
 createBuddyAll be lc mg = do
-  first (sbeBitBlast lc be) <$> createBuddyMemModel lc be mg
+  Arrow.first (sbeBitBlast lc be) <$> createBuddyMemModel lc be mg
 
 createBuddyMemModel :: (Eq l, LV.Storable l)
                     => LLVMContext
@@ -1492,7 +1492,7 @@ createDagAll :: (Ord l, LV.Storable l)
              -> MemGeom
              -> IO (BitBlastSBE (DagMemory l) l, DagMemory l)
 createDagAll be lc mg = do
-  first (sbeBitBlast lc be) <$> createDagMemModel lc be mg
+  Arrow.first (sbeBitBlast lc be) <$> createDagMemModel lc be mg
 
 
 -- Aiger operations {{{1
