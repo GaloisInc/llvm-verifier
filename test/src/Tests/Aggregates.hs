@@ -50,7 +50,7 @@ aggTests =
 
 structInitAccessImpl :: AllMemModelTest
 structInitAccessImpl = do
-  callDefine_ (L.Symbol "struct_test") i64 (return [])
+  callDefine_ (L.Symbol "struct_test") i64 []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
@@ -65,7 +65,7 @@ structInitAccessImpl = do
 
 structArrayImpl :: AllMemModelTest
 structArrayImpl = do
-  callDefine_ (L.Symbol "struct_test_two") i32 (return [])
+  callDefine_ (L.Symbol "struct_test_two") i32 []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False

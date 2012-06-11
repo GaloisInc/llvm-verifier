@@ -222,7 +222,7 @@ callCInt32Fn ::
   => L.Symbol -> [Int32] -> Simulator sbe m (Maybe (SBEClosedTerm sbe))
 callCInt32Fn sym cargs = do
   args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-  callDefine_ sym i32 (return $ map ((=:) i32) args)
+  callDefine_ sym i32 (map ((=:) i32) args)
   mrv <- getProgramReturnValue
   case mrv of
     Just rv -> Just <$> closeTermM rv

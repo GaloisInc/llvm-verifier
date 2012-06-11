@@ -27,8 +27,7 @@ import qualified Text.LLVM               as L
 
 primOpTests :: [(Args, Property)]
 primOpTests =
-  [
-    test 10  False "concrete int32 add"    $ int32add        1
+  [ test 10  False "concrete int32 add"    $ int32add        1
   , test 10  False "concrete int32 sqr"    $ int32sqr        1
   , test 10  False "concrete int32 muladd" $ int32muladd     1
   , test 10  False "direct int32 add"      $ dirInt32add     1
@@ -139,19 +138,16 @@ testSetupPtrArgImpl ::
   )
   => Simulator sbe IO Bool
 testSetupPtrArgImpl = do
-  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) $ do
-    a <- withLC llvmPtrAlign
-    p <- alloca i32 Nothing (Just $ fromIntegral a)
-    return [p]
+  a <- withLC llvmPtrAlign
+  p <- alloca i32 Nothing (Just $ fromIntegral a) 
+  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) [p]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()
   mm  <- getProgramFinalMem
   case mm of
     Nothing  -> return False
     Just mem -> do
-      w <- withLC llvmAddrWidthBits
-      p <- L.Typed (L.PtrTo i32) <$> withSBE (\sbe -> termInt sbe w 0)
-      r <- load' mem p
+      (_,r) <- withSBE (\sbe -> memLoad sbe mem p)
       (`constTermEq` 42) <$> withSBE' (`closeTerm` r)
 
 --------------------------------------------------------------------------------
