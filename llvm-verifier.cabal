@@ -42,7 +42,7 @@ library
   build-depends:
       base >= 4
     , bytestring
-    , containers
+    , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
     , fingertree
     , llvm-pretty >= 0.1.1.0
@@ -118,7 +118,7 @@ executable Tests
       base >= 4
     , bytestring
     , cmdargs >= 0.8
-    , containers
+    , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
     , filepath
     , fingertree
