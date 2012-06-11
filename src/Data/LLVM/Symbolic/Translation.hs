@@ -50,6 +50,17 @@ newtype LLVMTranslationInfo = LTI CFG.CFG
 mkLTI :: CFG.CFG -> LLVMTranslationInfo
 mkLTI = LTI
 
+blockIsDummyExit :: LLVM.BlockLabel -> Bool
+blockIsDummyExit (LLVM.Named (LLVM.Ident nm)) = nm == CFG.dummyExitName
+blockIsDummyExit _ = False
+
+-- | Returns basic blocks excluding dummy exit block.
+ltiBlocks :: LLVMTranslationInfo -> [CFG.BB]
+ltiBlocks (LTI cfg) = [ bb
+                      | bb <- CFG.allBBs cfg
+                      , not (blockIsDummyExit (snd (LLVM.bbLabel bb))) 
+                      ]
+           
 -- | @ltiPostDominators lti bb@ returns the post dominators obtained by
 -- jumping to @bb@.  Entries are stored so that post-dominators visited
 -- later are earlier in the list (e.g., the last entry is the immediate
@@ -58,11 +69,16 @@ ltiPostDominators :: LLVMTranslationInfo -> LLVM.BlockLabel -> [LLVM.BlockLabel]
 ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) =
   case lookup aid (CFG.pdoms cfg) of
     Nothing   -> []
-    Just apds -> map (CFG.asName cfg) apds
+    Just apds -> [ CFG.asName cfg apd 
+                 | apd <- apds 
+                 , not (blockIsDummyExit (CFG.asName cfg apd)) ]
 
 -- | @ltiIsImmediatePostDominator lti bb n@ returns true if @n@ is the immediate
 -- post-dominator of @bb@.
-ltiIsImmediatePostDominator :: LLVMTranslationInfo -> LLVM.BlockLabel -> LLVM.BlockLabel -> Bool
+ltiIsImmediatePostDominator :: LLVMTranslationInfo
+                            -> LLVM.BlockLabel
+                            -> LLVM.BlockLabel
+                            -> Bool
 ltiIsImmediatePostDominator (LTI cfg) (CFG.asId cfg -> aid) (CFG.asId cfg -> bid) =
   case CFG.ipdom cfg aid of
     Nothing    -> False
@@ -154,8 +170,7 @@ liftBB lti phiMap bb = do
       brSymInstrs tgt =
         SetCurrentBlock (symBlockID tgt 0) : phiInstrs tgt ++
           (if ltiIsImmediatePostDominator lti llvmId tgt
-             then [ MergePostDominator (symBlockID tgt 0) TrueSymCond
-                  , ClearCurrentExecution ]
+             then [ MergePostDominator (symBlockID tgt 0) ]
              else map (\d -> PushPostDominatorFrame (symBlockID d 0))
                       (ltiNewPostDominators lti llvmId tgt))
       -- | Sequentially process statements.
@@ -169,9 +184,9 @@ liftBB lti phiMap bb = do
                        text "after generating the following statements:" $$
                        (nest 2 . vcat . map ppSymStmt $ il)
       impl [Effect (LLVM.Ret tpv)] idx il =
-        defineBlock (blockName idx) (reverse il ++ [MergeReturnAndClear tpv])
+        defineBlock (blockName idx) (reverse il ++ [MergeReturn (Just tpv)])
       impl [Effect LLVM.RetVoid] idx il =
-        defineBlock (blockName idx) (reverse il ++ [MergeReturnVoidAndClear])
+        defineBlock (blockName idx) (reverse il ++ [MergeReturn Nothing])      
       -- For function calls, we:
       -- * Allocate block for next block after call.
       -- * Define previous block to end with pushing call frame.
@@ -211,7 +226,6 @@ liftBB lti phiMap bb = do
                                                (brSymInstrs l)
                                                (go cs)]
                 symbolicCases    = concatMap mkCase caseConds
-                                   ++ [ AddPathConstraint (NotConstValues tpv vs) ]
                                    ++ brSymInstrs def
                 vs               = map fst cases
                 caseBlockIds     = [(idx + 1)..(idx + length cases)]
@@ -244,7 +258,7 @@ liftBB lti phiMap bb = do
                            (brSymInstrs tgt2)
                            ([ SetCurrentBlock suspendSymBlockID
                             , PushPendingExecution (HasConstValue tc 0)
-                            , AddPathConstraint (HasConstValue tc 1)]
+                            ]
                               ++ brSymInstrs tgt1)]]
         -- Define block for suspended thread.
         defineBlock suspendSymBlockID  (brSymInstrs tgt2)
@@ -281,7 +295,7 @@ liftDefine :: LLVM.Define -> SymDefine
 liftDefine d =
   let cfg            = CFG.buildCFG (LLVM.defBody d)
       lti            = mkLTI cfg
-      blocks         = CFG.allBBs cfg
+      blocks         = ltiBlocks lti
       initBlock      = CFG.bbById cfg (CFG.entryId cfg)
       initBlockLabel = CFG.blockName initBlock
       initSymBlock =

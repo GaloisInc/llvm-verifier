@@ -22,8 +22,7 @@ import qualified Text.LLVM              as L
 
 symTests :: [(Args, Property)]
 symTests =
-  [
-    test 1 False "test-trivial-divergent-branch" $ trivBranch 1
+  [ test 1 False "test-trivial-divergent-branch" $ trivBranch 1
   , test 1 False "test-trivial-symbolic-read"    $ trivSymRd 1
   , lssTest 0 "ctests/test-symbolic-alloc" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS (Just 1) Nothing
@@ -40,11 +39,11 @@ symTests =
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 0)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 0)
   , lssTest 0 "ctests/test-const-false-path" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 0) (Just 1)
+      runTestLSSDag v cb []   $ chkLSS (Just 0) (Just 1)
+  , lssTest 0 "ctests/test-divergent-unreachables" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 1)
       runTestLSSDag v cb []   $ chkLSS (Just 1) (Just 1)
-  , lssTest 0 "ctests/test-divergent-unreachables" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 2) (Just 1)
-      runTestLSSDag v cb []   $ chkLSS (Just 2) (Just 1)
   , lssTest 0 "ctests/test-missing-define" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 1)
       runTestLSSDag v cb []   $ chkLSS (Just 1) (Just 1)
@@ -72,7 +71,7 @@ evalClosed sbe v = fmap (getSVal . closeTerm sbe) . flip (evalAiger sbe) v
 trivBranchImpl :: String -> (Maybe Integer -> Maybe Integer -> Bool) -> AllMemModelTest
 trivBranchImpl symName chk = do
   b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine_ (L.Symbol symName) i32 $ return [i32 =: b]
+  callDefine_ (L.Symbol symName) i32 [i32 =: b]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False

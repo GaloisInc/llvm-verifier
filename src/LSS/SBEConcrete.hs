@@ -69,6 +69,7 @@ sbeConcrete = SBE
   , termDouble       = nyi "termDouble"
   , termFloat        = nyi "termFloat"
   , asBool           = nyi "asBool"
+  , asUnsignedInteger = nyi "asUnsignedInteger"
   , memPushMergeFrame = nyi "memPushMergeFrame"
   , memPopMergeFrame = nyi "memPopMergeFrame"
   , prettyTermD      = S.prettyTermD

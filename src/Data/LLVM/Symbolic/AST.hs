@@ -18,6 +18,7 @@ module Data.LLVM.Symbolic.AST
   , SymStmt(..)
   , SymBlock(..)
   , SymDefine(..)
+  , entrySymbol
   , entryRetNormalID
   , initSymBlockID
   , lookupSymBlock
@@ -37,6 +38,10 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Text.LLVM.AST as LLVM
 import Text.PrettyPrint.HughesPJ
+
+-- | A fake entry label to represent the function that calls a user function.
+entrySymbol :: LLVM.Symbol
+entrySymbol = LLVM.Symbol "__galois_entry"
 
 -- | A fake sentinel SymBlockID to represent a fictitious target block for after
 -- a normal return from a toplevel function invocation.
@@ -107,6 +112,8 @@ data SymExpr
   -- | Statement for conversion operation.
   -- TODO: See if type information is needed.
   | Conv LLVM.ConvOp (Typed SymValue) LLVM.Type
+  -- | @Alloca tp sz align@  allocates a new pointer to @sz@ elements of type
+  -- @tp@ with alignment @align@.
   | Alloca LLVM.Type (Maybe (Typed SymValue)) (Maybe Int)
   | Load (Typed SymValue) (Maybe LLVM.Align)
   | ICmp LLVM.ICmpOp (Typed SymValue) SymValue
@@ -159,12 +166,10 @@ ppSymCond TrueSymCond = text "true"
 
 -- | Instruction in symbolic level.
 data SymStmt
-  -- | Clear current execution path.
-  = ClearCurrentExecution
   -- | @PushInvokeFrame fn args res@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@, and store the result in @res@ if the function
   -- returns normally.
-  | PushCallFrame SymValue [Typed SymValue] (Maybe (Typed Reg))
+  = PushCallFrame SymValue [Typed SymValue] (Maybe (Typed Reg))
   -- | @PushInvokeFrame fn args res e@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@.
   -- If the function returns normally, then the result, if any, will be stored in @res@.
@@ -175,23 +180,19 @@ data SymStmt
   -- jump into a block that has a different immediate post-dominator than its
   -- parent.
   | PushPostDominatorFrame SymBlockID
-  -- | Merge current state to post-dominator return path under the given condition.
+  -- | Merge current path state to post-dominator return path under the given condition,
+  -- and clear the current path state.
   -- N.B. The current state must be unchanged.  However, the current block of the merged
   -- state must be the post-dominator block.
-  | MergePostDominator SymBlockID SymCond
-  -- | @MergeReturnVoidAndClear@ pops top call frame from path, merges current path
+  | MergePostDominator SymBlockID 
+  -- | @MergeReturn@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
-  | MergeReturnVoidAndClear
-  -- | @MergeReturnAndClear@ pops top call frame from path, merges (current path return value)
-  -- with call frame, and clears current path.
-  | MergeReturnAndClear (Typed SymValue)
+  | MergeReturn (Maybe (Typed SymValue))
   -- | @PushPendingExecution c@ make the current state a pending execution in the top-most
   -- merge frame with the additional path constraint c.
   | PushPendingExecution SymCond
   -- | Sets the block to the given location.
   | SetCurrentBlock SymBlockID
-  -- | Add an additional constraint to the current execution path.
-  | AddPathConstraint SymCond
   -- | Assign result of instruction to register.
   | Assign Reg SymExpr
   -- | @Store v addr@ stores value @v@ in @addr@.
@@ -205,7 +206,6 @@ data SymStmt
   -- TODO: Support all exception handling.
 
 ppSymStmt :: SymStmt -> Doc
-ppSymStmt ClearCurrentExecution = text "clearCurrentExecution"
 ppSymStmt (PushCallFrame fn args res)
   = text "pushCallFrame" <+> ppSymValue fn
   <> parens (commas (map ppTypedValue args))
@@ -216,12 +216,10 @@ ppSymStmt (PushInvokeFrame fn args res e)
   <+> maybe (text "void") (LLVM.ppTyped ppReg) res
   <+> ppSymBlockID e
 ppSymStmt (PushPostDominatorFrame b) = text "pushPostDominatorFrame" <+> ppSymBlockID b
-ppSymStmt (MergePostDominator b c) = text "mergePostDominator" <+> ppSymBlockID b <> comma <+> ppSymCond c
-ppSymStmt MergeReturnVoidAndClear = text "mergeReturnVoidAndClear"
-ppSymStmt (MergeReturnAndClear v) = text "mergeReturnAndClear" <+> ppTypedValue v
+ppSymStmt (MergePostDominator b) = text "mergePostDominator" <+> ppSymBlockID b 
+ppSymStmt (MergeReturn mv) = text "mergeReturn" <+> maybe empty ppTypedValue mv
 ppSymStmt (PushPendingExecution c) = text "pushPendingExecution" <+> ppSymCond c
 ppSymStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
-ppSymStmt (AddPathConstraint c) = text "addPathConstraint" <+> ppSymCond c
 ppSymStmt (Assign v e) = ppReg v <+> char '=' <+> ppSymExpr e
 ppSymStmt (Store v addr malign) = text "store" <+> ppTypedValue v <> comma <+> ppTypedValue addr
                                   <> LLVM.ppAlign malign

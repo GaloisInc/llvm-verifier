@@ -66,6 +66,7 @@ sbeSymbolic = SBE
   , closeTerm = id
   , prettyTermD = S.prettyTermD
   , asBool = nyi "asBool"
+  , asUnsignedInteger = nyi "asUnsignedInteger"
   , memDump = nyi "memDump"
   , memLoad = nyi "memLoad "
   , memStore = nyi "memStore "

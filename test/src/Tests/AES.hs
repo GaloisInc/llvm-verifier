@@ -34,15 +34,14 @@ aesTests =
 aes128ConcreteImpl :: AllMemModelTest
 aes128ConcreteImpl = do
   setSEH sanityChecks
+  ptptr  <- initArr ptVals
+  keyptr <- initArr keyVals
+  ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
+  let args = map (i32p =:) [ptptr, keyptr, ctptr]
   [_, _, typedValue -> ctRawPtr] <-
-    callDefine (L.Symbol "aes128BlockEncrypt") voidTy $ do
-      ptptr  <- initArr ptVals
-      keyptr <- initArr keyVals
-      ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
-      return $ map (i32p =:) [ptptr, keyptr, ctptr]
-
+    callDefine (L.Symbol "aes128BlockEncrypt") voidTy args
   Just mem <- getProgramFinalMem
-  ctarr  <- load' mem (L.PtrTo arrayTy =: ctRawPtr)
+  (_,ctarr) <- withSBE $ \s -> memLoad s mem (L.PtrTo arrayTy =: ctRawPtr)
   ctVals <- withSBE $ \s ->
               map (getVal s) <$> termDecomp s (replicate 4 i32) ctarr
   return (ctVals == ctChks)
