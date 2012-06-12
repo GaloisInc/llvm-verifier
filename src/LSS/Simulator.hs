@@ -244,7 +244,7 @@ callDefine calleeSym t args = do
       text "Warning: callDefine given incorrect return type of"
               <+> L.ppType t 
               <+>  text "for" <+> L.ppSymbol calleeSym <+> text "when actual type is"
-              <+> L.ppType (sdRetType def) <> text "."
+              <+> L.ppType (sdRetType def) <> text "." 
   r <- callDefine' False entryRetNormalID calleeSym retReg args
   run
   return r
@@ -928,7 +928,7 @@ step (PushCallFrame callee args mres) = do
     Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
     Right calleeSym -> do
       Just p <- getPath
-      ec <- getEvalContext "pushCallFrame" (pathCallFrame p)
+      ec <- getEvalContext "pushCallFrame" (Just (pathCallFrame p))
       argTerms <- mapM (getTypedTerm' ec) args
       _ <- callDefine' False cb calleeSym mres argTerms
       return ()
@@ -1039,11 +1039,11 @@ eval (Conv op tv@(Typed (L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{}))
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval (Conv L.PtrToInt tv t2@(L.PrimType L.Integer{})) = do
   mp <- getPath
-  ec <- getEvalContext nm (pathCallFrame <$> mp)
+  ec <- getEvalContext "eval@PtrToInt" (pathCallFrame <$> mp)
   evalPtrToInt ec tv t2
 eval (Conv L.IntToPtr tv@(Typed (L.PrimType L.Integer{}) _) t2) = do
   mp <- getPath
-  ec <- getEvalContext nm (pathCallFrame <$> mp)
+  ec <- getEvalContext "eval@IntToPtr" (pathCallFrame <$> mp)
   evalIntToPtr ec tv t2
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm "bitCast" tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
@@ -1114,7 +1114,7 @@ evalPtrToInt ec tv@(Typed t1 _) t2@(L.PrimType (L.Integer tgtWidth)) = do
 evalPtrToInt _ _ _ = errorPath $ FailRsn "Invalid parameters to evalPtrToInt"
 
 evalIntToPtr ec (Typed (L.Alias a) v) t2 =
-  let t1 <- llvmLookupAlias (evalLLVMContext ec) a
+  let t1 = llvmLookupAlias (evalLLVMContext ec) a
    in evalIntToPtr ec (Typed t1 v) t2
 evalIntToPtr ec tv (L.Alias a) = do
   evalIntToPtr ec tv (llvmLookupAlias (evalLLVMContext ec) a)
