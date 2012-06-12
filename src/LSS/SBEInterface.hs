@@ -11,8 +11,10 @@ Point-of-contact : jstanley
 
 module LSS.SBEInterface where
 
+import Data.Bits (testBit)
 import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM.AST   as LLVM
+
 
 data MemType = BitBlastBuddyAlloc | BitBlastDagBased deriving (Show)
 
@@ -117,7 +119,6 @@ data SBE m = SBE
   , applyConv   :: LLVM.ConvOp -> SBETerm m -> LLVM.Type -> m (SBETerm m)
     -- | @applyBNot @a@ performs negation of a boolean term
   , applyBNot :: SBETerm m -> m (SBETerm m)
-
     ----------------------------------------------------------------------------
     -- Term miscellany
 
@@ -127,8 +128,9 @@ data SBE m = SBE
   , prettyTermD :: SBETerm m -> Doc
     -- | Interpret the term as a concrete boolean if it can be.
   , asBool :: SBETerm m -> Maybe Bool
-    -- | Interpret the term as a concrete integer if it can be.
-  --, asSignedInteger :: SBETerm m -> Maybe Integer
+    -- | Interpret the term as a concrete unsigned integer if it can be.
+    -- The first int is the bitwidth.
+  , asUnsignedInteger :: SBETerm m -> Maybe (Int,Integer)
     ----------------------------------------------------------------------------
     -- Memory model interface
 
@@ -136,14 +138,14 @@ data SBE m = SBE
     -- parameter optionally constrains address ranges.
   , memDump :: SBEMemory m -> Maybe [(Integer, Integer)] -> m ()
 
-    -- | @memLoad m p@ returns a pair @(v,c)@ where @v@ denotes the value at
+    -- | @memLoad m p@ returns a pair @(c,v)@ where @v@ denotes the value at
     -- address @p@ in memory @m@, and @c@ denotes an additional path constraint
     -- that ensures the address @p@ is a valid memory location in @m@.
     -- In other words, @p@ is a valid memory location if @c@ is true.
   , memLoad :: SBEMemory m
             -> LLVM.Typed (SBETerm m)
             -> m (SBEPartialResult m (SBETerm m))
-    -- | @memStore m v p@ returns a pair @(m',c)@ where @m'@ denotes the memory
+    -- | @memStore m v p@ returns a pair @(c,m')@ where @m'@ denotes the memory
     -- obtained by storing value @v@ at address @p@, and @c@ denotes an
     -- additional path constraint that ensures the address @p@ is a valid memory
     -- location in @m@.
@@ -230,3 +232,19 @@ data SBE m = SBE
     -- result is always a concrete term.
   , evalAiger :: [Bool] -> SBETerm m -> m (SBETerm m)
   }
+
+-- | Return conjunction of two terms.
+applyAnd :: SBE m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+applyAnd sbe = applyBitwise sbe LLVM.And
+
+-- | Return predicate indicating if two terms are equal.
+applyIEq :: SBE m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+applyIEq sbe = applyICmp sbe LLVM.Ieq 
+
+-- | Interpret the term as a concrete signed integer if it can be.
+asSignedInteger :: SBE m -> SBETerm m -> Maybe (Int,Integer)
+asSignedInteger sbe t = s2u `fmap` (asUnsignedInteger sbe t :: Maybe (Int, Integer))
+  where s2u (0,v) = (0,v)  
+        s2u (w,v) | v `testBit` (w-1) = (w,v - 2^w) 
+                  | otherwise = (w,v)
+                                

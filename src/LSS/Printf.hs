@@ -50,7 +50,5 @@ symPrintf s args =
   case foldl f (Printer (printf s)) args of
     Printer res -> res
   where f :: Printer -> Arg -> Printer
-        f p a = case p of
-                  Printer p' -> case a of
-                                  Arg a' -> Printer (p' a')
-
+        f (Printer p') (Arg a') = Printer (p' a')
+        

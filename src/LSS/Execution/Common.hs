@@ -50,7 +50,6 @@ type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
 type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))
 type CS sbe        = CtrlStk (SBETerm sbe) (SBEMemory sbe)
 type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
-type Path sbe      = Path' (SBETerm sbe) (SBEMemory sbe)
 type CF sbe        = CallFrame (SBETerm sbe)
 type OvrMap sbe m  = M.Map L.Symbol (Override sbe m, Bool {- user override? -})
 
@@ -65,8 +64,6 @@ defaultLSSOpts = LSSOpts False
 data State sbe m = State
   { codebase     :: Codebase        -- ^ LLVM code, post-transformation to sym ast
   , symBE        :: SBE sbe         -- ^ Symbolic backend interface
-  , initMemModel :: SBEMemory sbe   -- ^ The SBE's initial LLVM memory model;
-                                    -- mutated models are carried in path states.
   , liftSymBE    :: LiftSBE sbe m   -- ^ Lift SBE operations into the Simulator monad
   , ctrlStk      :: CS sbe          -- ^ Control stack for tracking merge points
   , globalTerms  :: GlobalMap sbe   -- ^ Global ptr terms
@@ -79,8 +76,72 @@ data State sbe m = State
   , aigOutputs   :: [SBETerm sbe]   -- ^ Current list of AIG outputs, discharged
                                     -- via lss_write_aiger() sym api calls
   }
+  
+newtype CtrlStk term mem = CtrlStk { mergeFrames :: [MergeFrame term mem] }
 
-data CtrlStk term mem = CtrlStk { mergeFrames :: [MergeFrame term mem] }
+emptyCtrlStk :: CtrlStk term mem
+emptyCtrlStk = CtrlStk []
+
+data MergedState term mem 
+  = EmptyState term term -- ^ Assumptions and assertions on path before entering merge frame.
+  | PathState (Path' term mem) term -- ^ Path and current assertions on finished paths. 
+
+-- | Captures all symbolic execution state for a unique control-flow path (as
+-- specified by the recorded path constraints)
+data Path' term mem = Path
+  { pathCallFrame   :: CallFrame term     -- ^ The top call frame of the dynamic
+                                          -- call stack along this path
+  , pathException   :: Maybe term         -- ^ When handling an exception along
+                                          -- this path, a pointer to the
+                                          -- exception structure; Nothing
+                                          -- otherwise
+  , pathCB          :: Maybe SymBlockID   -- ^ The currently-executing basic
+                                          -- block along this path, if any.
+  , pathMem         :: mem                -- ^ The memory model along this path
+  , pathName        :: Integer            -- ^ A unique name for this path
+  , pathAssumptions :: term               -- ^ Terms assumed to be true since last merge frame.
+  , pathAssertions  :: term               -- ^ Condition on path since last merge frame. 
+  }
+
+initialMergedState :: Functor sbe => SBE sbe -> sbe (MergedState (SBETerm sbe) (SBEMemory sbe))
+initialMergedState sbe = fn <$> termBool sbe True
+  where fn t = EmptyState t t
+
+pathMergedState :: Path' term mem -> MergedState term mem
+pathMergedState p = EmptyState (pathAssumptions p) (pathAssertions p)  
+
+type Path sbe      = Path' (SBETerm sbe) (SBEMemory sbe)
+
+addPathAssumption :: Functor sbe
+                  => SBE sbe -> SBETerm sbe -> Path sbe -> sbe (Path sbe) 
+addPathAssumption sbe t p = set <$> applyAnd sbe (pathAssumptions p) t
+  where set a = p { pathAssumptions = a }
+
+addPathAssertion :: Functor sbe
+                 => SBE sbe -> SBETerm sbe -> Path sbe -> sbe (Path sbe)
+addPathAssertion sbe t p = set <$> applyAnd sbe (pathAssertions p) t
+  where set a = p { pathAssertions = a }
+
+data ExitFrame term mem = ExitFrame {
+       programMergedState  :: MergedState term mem
+     , efPending :: [Path' term mem]
+     }  
+
+data PostdomFrame term mem = PostdomFrame { 
+       pdfMergedState :: MergedState term mem
+     , pdfPending     :: [Path' term mem]
+     , pdfLabel       :: SymBlockID
+     }
+
+data ReturnFrame term mem = ReturnFrame {
+       rfCallFrame     :: CallFrame term       -- ^ Call frame for path when it arrives.
+     , rfRetReg        :: Maybe (L.Typed Reg)  -- ^ Register to store return value (if any)
+     , rfNormalLabel   :: SymBlockID           -- ^ Label for normal path
+     , rfExceptLabel   :: Maybe SymBlockID     -- ^ Label for exception path
+     , rfNormalState   :: MergedState term mem -- ^ Merged state after function call return.
+     , rfExceptState   :: MergedState term mem -- ^ Merged exception state after function call return.
+     , rfPending       :: [Path' term mem]
+     }
 
 -- | There are three types of merge frames: (1) postdominator frames, which are
 -- typical intraprocedural merge points and correspond to basic blocks which are
@@ -88,49 +149,9 @@ data CtrlStk term mem = CtrlStk { mergeFrames :: [MergeFrame term mem] }
 -- frames, which capture points immediately following function calls; and (3)
 -- exit frames, which represent program exit points.
 data MergeFrame term mem
-  = ExitFrame
-    { _mergedState  :: Maybe (Path' term mem)
-    , programRetVal :: Maybe term
-    , programMem    :: Maybe mem
-    }
-  | PostdomFrame
-    { _mergedState :: Maybe (Path' term mem)
-    , _pending     :: [Path' term mem]
-    , pdfLabel     :: SymBlockID
-    }
-  | ReturnFrame
-    { rfRetReg        :: Maybe (L.Typed Reg)     -- ^ Register to store return value (if any)
-    , rfNormalLabel   :: SymBlockID              -- ^ Label for normal path
-    , _normalState    :: Maybe (Path' term mem ) -- ^ Merged state after function call return
-    , _exceptLabel    :: Maybe SymBlockID        -- ^ Label for exception path
-    , _exceptionState :: Maybe (Path' term mem)  -- ^ Merged exception state
-                                                 -- after function call return
-    , _pending        :: [Path' term mem]
-    }
-
--- | Captures all symbolic execution state for a unique control-flow path (as
--- specified by the recorded path constraints)
-data Path' term mem = Path
-  { pathCallFrame   :: CallFrame term     -- ^ The top call frame of the dynamic
-                                          -- call stack along this path
-  , pathRetVal      :: Maybe term         -- ^ The return value along this path
-                                          -- after normal function call return,
-                                          -- if any.
-  , pathException   :: Maybe term         -- ^ When handling an exception along
-                                          -- this path, a pointer to the
-                                          -- exception structure; Nothing
-                                          -- otherwise
-  , pathCB          :: Maybe SymBlockID   -- ^ The currently-executing basic
-                                          -- block along this path, if any.
-  , prevPathCB      :: Maybe SymBlockID   -- ^ The basic block this path
-                                          -- executed before the current block,
-                                          -- if any.
-  , pathMem         :: mem                -- ^ The memory model along this path
-  , pathConstraint  :: Constraint term    -- ^ The aggregated constraints
-                                          -- necessary for execution of this
-                                          -- path
-  , pathName        :: Integer            -- A unique name for this path
-  }
+  = ExitMergeFrame (ExitFrame term mem)
+  | PostdomMergeFrame (PostdomFrame term mem)
+  | ReturnMergeFrame (ReturnFrame term mem)
 
 data FailRsn       = FailRsn String deriving (Show)
 data ErrorPath sbe = EP { epRsn :: FailRsn, epPath :: Path sbe }
@@ -164,11 +185,16 @@ data SEH sbe m = SEH
 -- Carry aggregated symconds for pretty-printing; useful when symbolic term
 -- contents are not visible.
 data Constraint term = Constraint { symConds :: SCExpr term, pcTerm :: term }
+
 data SCExpr term
   = SCAtom SymCond
   | SCTerm term
   | SCEAnd (SCExpr term) (SCExpr term)
   | SCEOr (SCExpr term) (SCExpr term)
+
+newtype Condition term = Condition term 
+
+newtype Assumption term = Assumption term
 
 type RegMap term = M.Map Reg (Typed term)
 
@@ -197,7 +223,7 @@ data Override sbe m
 --------------------------------------------------------------------------------
 -- Misc typeclass instances
 
-instance Monad m => LogMonad (Simulator sbe m) where
+instance MonadIO m => LogMonad (Simulator sbe m) where
   getVerbosity   = gets verbosity
   setVerbosity v = modify $ \s -> s{ verbosity = v }
 
@@ -217,35 +243,28 @@ ppCtrlStk sbe (CtrlStk mfs) =
 
 ppMergeFrame :: SBE sbe -> MF sbe -> Doc
 ppMergeFrame sbe mf = case mf of
-  ExitFrame mp mrv mm ->
+  ExitMergeFrame ef ->
     text "MF(Exit):"
-    $+$ mpath "no merged state set" mp
-    $+$ nest 2 ( maybe (parens $ text "no return value set")
-                       (\rv -> text "Return value:" <+> prettyTermD sbe rv)
-                       mrv
-               )
-    $+$ nest 2 ( maybe (parens $ text "no final memory set")
-                       (const $ parens $ text "final mem set")
-                       mm
-               )
-  PostdomFrame p pps bid ->
-    text "MF(Pdom|" <>  ppSymBlockID bid <> text "):"
-    $+$ nest 2 (text "Merged:" <+> maybe PP.empty (ppPath sbe) p)
-    $+$ nest 2 (ppPendingPaths pps)
-  ReturnFrame _mr nl mns mel mes pps ->
+    $+$ nest 2 (mpath "no merged state set" (programMergedState ef))
+  PostdomMergeFrame pdf ->
+    text "MF(Pdom|" <>  ppSymBlockID (pdfLabel pdf) <> text "):"
+    $+$ nest 2 (mpath "" (pdfMergedState pdf))
+    $+$ nest 2 (ppPendingPaths (pdfPending pdf))
+  ReturnMergeFrame rf ->
     text "MF(Retn):" $+$ nest 2 rest
       where
-        rest = text "Normal" <+> text "~>" <+> ppSymBlockID nl <> colon
-               $+$ mpath "no normal-return merged state set" mns
+        rest = text "Normal" <+> text "~>" <+> ppSymBlockID (rfNormalLabel rf) <> colon
+               $+$ nest 2 (mpath "no normal-return merged state set" (rfNormalState rf))
                $+$ maybe PP.empty
                      ( \el ->
                          text "Exc" <+> text "~>" <+> ppSymBlockID el <> colon
-                         $+$ mpath "no exception path set" mes
+                         $+$ mpath "no exception path set" (rfExceptState rf)
                      )
-                     mel
-               $+$ ppPendingPaths pps
+                     (rfExceptLabel rf)
+               $+$ ppPendingPaths (rfPending rf)
   where
-    mpath str = nest 2 . maybe (parens $ text $ "Merged: " ++ str) (ppPath sbe)
+    mpath str (EmptyState _ _) = parens $ text ("Merged: " ++ str)
+    mpath _ (PathState p _) = ppPath sbe p
     ppPendingPaths pps =
       text "Pending paths:"
       $+$ nest 2 (if null pps then text "(none)" else vcat (map (ppPath sbe) pps))
@@ -256,31 +275,30 @@ ppCallFrame sbe (CallFrame _sym regMap) =
   if M.null regMap then PP.empty else text "Locals:" $+$ nest 2 (ppRegMap sbe regMap)
 
 ppPath :: SBE sbe -> Path sbe -> Doc
-ppPath sbe (Path cf mrv _mexc mcb _mpcb _mem c name) =
+ppPath sbe p =
   text "Path #"
-  <>  integer name
-  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
+  <>  integer (pathName p)
+  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym (pathCallFrame p))
                  <> char '/'
-                 <> maybe (text "none") ppSymBlockID mcb
+                 <> maybe (text "none") ppSymBlockID (pathCB p)
                )
   <>  colon
-  <+> (parens $ text "PC:" <+> ppPC sbe c)
-  $+$ nest 2 ( text "Return value:"
-               <+> maybe (parens . text $ "not set") (prettyTermD sbe) mrv
-             )
-  $+$ nest 2 (ppCallFrame sbe cf)
+  $+$ nest 2 (ppCallFrame sbe (pathCallFrame p))
+-- <+> (parens $ text "PC:" <+> ppPC sbe c)
+
+--(Path cf mrv _mexc mcb _mpcb _mem c name) =
 
 -- Prints just the path's location and path constraints
 ppPathLoc :: SBE sbe -> Path sbe -> Doc
-ppPathLoc sbe (Path cf _ _ mcb _mpcb _ c name) =
+ppPathLoc _ p =
   text "Path #"
-  <>  integer name
-  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym cf)
+  <>  integer (pathName p)
+  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym (pathCallFrame p))
                  <> char '/'
-                 <> maybe (text "none") ppSymBlockID mcb
+                 <> maybe (text "none") ppSymBlockID (pathCB p)
                )
-  <>  colon
-  <+> (parens $ text "PC:" <+> ppPC sbe c)
+--  <>  colon
+--  <+> (parens $ text "PC:" <+> ppPC sbe )
 
 ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
 ppRegMap sbe mp =

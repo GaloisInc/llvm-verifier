@@ -10,6 +10,7 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE PatternGuards              #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE TupleSections              #-}
 {-# LANGUAGE ViewPatterns               #-}
 module LSS.SBEBitBlast
   ( module LSS.SBEInterface
@@ -351,7 +352,7 @@ loadTerm :: (Eq l, LV.Storable l)
 loadTerm lc mm bm ptr
   | LLVM.PtrTo tp <- resolveType lc (LLVM.typedType ptr) = do
       (c, bits) <- mmLoad mm bm (LLVM.typedValue ptr) (llvmStoreSizeOf lc tp)
-      return (c, bytesToTerm lc tp bits)
+      return (c,bytesToTerm lc tp bits)
   | otherwise = bmError "internal: Illegal type given to load"
 
 -- | Store term in memory model.
@@ -1630,6 +1631,7 @@ sbeBitBlast lc be mm = sbe
           , closeTerm        = BitTermClosed . (,) be
           , prettyTermD      = S.prettyTermD . closeTerm sbe
           , asBool           = beAsBool be
+          , asUnsignedInteger = \(BitTerm t) -> (LV.length t,) <$> let ?be = be in lGetUnsigned t
           , memDump          = BitIO `c2` mmDump mm True
           , memLoad          = BitIO `c2` loadTerm lc mm
           , memStore         = BitIO `c3` storeTerm lc be mm
@@ -1641,8 +1643,8 @@ sbeBitBlast lc be mm = sbe
                                  BitIO $ mmInitGlobal mm m (termToBytes lc be ty gd)
           , codeBlockAddress = return `c3` mmBlockAddress mm
           , codeLookupSymbol = return `c2` mmLookupSymbol mm
-          , stackAlloca = \m eltTp cnt ->
-              BitIO . mmStackAlloca mm m (llvmAllocSizeOf lc eltTp) (LLVM.typedValue cnt)
+          , stackAlloca = \m eltTp cnt a -> BitIO $
+              mmStackAlloca mm m (llvmAllocSizeOf lc eltTp) (LLVM.typedValue cnt) a
           , stackPushFrame   = BitIO . mmStackPush mm
           , stackPopFrame    = BitIO . mmStackPop mm
           , heapAlloc        = \m eltTp (LLVM.typedValue -> cnt) ->
@@ -1665,11 +1667,13 @@ termDecompImpl :: (LV.Storable l, Eq l)
                -> BitTerm l
                -> [LLVM.Typed (BitTerm l)]
 termDecompImpl lc _be tys0 (BitTerm t)
-  | sum (map (llvmMinBitSizeOf lc) tys0) /= fromIntegral (LV.length t)
-  = error "termDecompImpl: sum of type sizes must equal bitvector length"
+  | expectedLength /= fromIntegral (LV.length t)
+  = error $ "termDecompImpl: sum of type sizes must equal bitvector length"
+    ++ show (tys0, expectedLength, LV.length t)
   | otherwise
   = unfoldr slice (t, tys0)
   where
+    expectedLength = sum (map (llvmMinBitSizeOf lc) tys0) 
     slice (bv, [])       = assert (LV.null bv) Nothing
     slice (bv, (ty:tys)) = Just (bt $ LV.take sz bv, (LV.drop sz bv, tys))
       where
