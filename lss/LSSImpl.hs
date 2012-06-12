@@ -73,7 +73,7 @@ lssImpl :: (Eq l, SV.Storable l)
         -> LSS
         -> IO (ExecRslt (BitIO mem l) Integer)
 lssImpl sbe mem cb argv0 _memType args = do
-  mainDef <- case lookupDefine' (L.Symbol "main") cb of
+  mainDef <- case lookupDefine (L.Symbol "main") cb of
                Nothing -> error "Provided bitcode does not contain main()."
                Just mainDef -> do
                  when (null (sdArgs mainDef) && length argv' > 1) warnNoArgv
