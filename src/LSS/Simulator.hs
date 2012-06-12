@@ -85,7 +85,7 @@ import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
 import           LSS.LLVMUtils
-import           LSS.Printf
+--import           LSS.Printf
 import           LSS.SBEInterface
 import           Numeric                   (showHex)
 import           System.Exit
@@ -143,8 +143,8 @@ runSimulator cb sbe mem lifter seh mopts m = do
                  , efPending = [p]
                  }
       pushMergeFrame (ExitMergeFrame ef)
-      registerStandardOverrides
       initGlobals
+      registerStandardOverrides
       m
 
 newSimState :: Codebase
@@ -179,21 +179,36 @@ initGlobals ::
   => Simulator sbe m ()
 initGlobals = do
   nms <- cbGlobalNameMap <$> gets codebase
-  -- For ease of debugging/clarity, register all functions that are not standard
-  -- overrides before initializing global data.
-  forM_ (M.elems nms) $ \nm -> case nm of
-    Left{}  -> return ()
-    Right d -> do
-      -- Don't register overrides here, despite their presence in the codebase.
-      -- This is done elsewhere via registerStandardOverrides.
-      ovds <- standardOverrides
-      let isStdOvd = flip elem (map (\(s,_,_,_,_) -> s) ovds)
-      unless (isStdOvd $ sdName d) $
-        getGlobalPtrTerm (sdName d, Just $ map typedType $ sdArgs d) >> return ()
-  -- And then initialize global data
-  forM_ (M.elems nms) $ \nm -> case nm of
-    Right{} -> return ()
-    Left g  -> getGlobalPtrTerm (L.globalSym g, Nothing) >> return ()
+  -- Register all function definitions. 
+  do let defines = [ d | (_,Right d) <- M.toList nms] 
+     forM_ defines $ \d -> do
+       let argTys    = map typedType $ sdArgs d
+           sym       = sdName d
+           key       = (sym, Just argTys)
+           fty       = L.FunTy (sdRetType d) argTys (sdVarArgs d)
+           idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody d)
+           noCodeSpc = "Not enough space in code memory to allocate new definition."
+       insertGlobalTerm noCodeSpc key fty $ \s m -> memAddDefine s m sym idl
+  -- Add symbol for declarations.
+  do declares <- L.modDeclares <$> origModule <$> gets codebase
+     forM_ declares $ \d -> do
+       let sym = L.decName d
+       let errMsg = "Insufficient space for new declaration."
+       let key = (sym, Just (L.decArgs d))
+       let ty = L.FunTy (L.decRetType d) (L.decArgs d) (L.decVarArgs d)
+       insertGlobalTerm errMsg key ty $ \s m -> memAddDefine s m sym []
+  -- Initialize global data
+  do let globals = [ g | (_,Left g) <- M.toList nms]   
+     forM_ globals $ \g -> do 
+       let key = (L.globalSym g, Nothing)
+       cb1 onMkGlobTerm g
+       ec <- getEvalContext "adGlobal" Nothing
+       cdata <- getTypedTerm' ec (L.globalType g =: L.globalValue g)
+       cb2 onPreGlobInit g cdata
+       let noDataSpc = "Not enough space in data segment to allocate new global."
+       _ <- insertGlobalTerm noDataSpc key (L.globalType g) $ \s m ->
+              memInitGlobal s m cdata
+       cb2 onPostGlobInit g cdata
 
 callDefine_ ::
   ( LogMonad m
@@ -784,6 +799,16 @@ getEvalContext nm mcf = do
                      , evalSBE = sbe
                      }
 
+getGlobalPtrTerm :: EvalContext sbe
+                 -> (L.Symbol, Maybe [L.Type])
+                 -> Typed (SBETerm sbe)
+getGlobalPtrTerm ec key@(sym, tys) =
+  case M.lookup key (evalGlobalTerms ec) of
+    Just t  -> t
+    Nothing ->
+      error $ "getGlobalPtrTerm: symbol resolution failed: "
+              ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
+
 -- | getTypedTerm' in the context of the current call frame
 getTypedTerm ::
   ( Functor m
@@ -817,8 +842,8 @@ getTypedTerm' ec (Typed t@(L.PtrTo _) L.ValNull)
 
 getTypedTerm' ec (Typed _ ce@L.ValConstExpr{}) = evalCE ec ce
 
-getTypedTerm' _ (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
-  = getGlobalPtrTerm (sym, Just argtys)
+getTypedTerm' ec (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
+  = return $ getGlobalPtrTerm ec (sym, Just argtys)
 
 getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
   = unimpl $ "getTypedTerm': Non-symbol ptr-to-fun: " ++ show tv
@@ -844,8 +869,8 @@ getTypedTerm' ec (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
   fldTerms <- mapM (getTypedTerm' ec) fldTVs
   liftSBE $ Typed ty <$> termArray (evalSBE ec) (map typedValue fldTerms)
 
-getTypedTerm' _ (Typed _ (L.ValSymbol sym))
-  = getGlobalPtrTerm (sym, Nothing)
+getTypedTerm' ec (Typed _ (L.ValSymbol sym))
+  = return $ getGlobalPtrTerm ec (sym, Nothing)
 
 getTypedTerm' _ (Typed ty (L.ValDouble v)) =
   Typed ty <$> withSBE (\sbe -> termDouble sbe v)
@@ -878,61 +903,25 @@ zeroInit ty = do
   szBytes <- fromIntegral <$> withLC (`llvmAllocSizeOf` ty)
   Typed ty <$> withSBE (\sbe -> termInt sbe (szBytes * 8) 0)
 
-getGlobalPtrTerm ::
+insertGlobalTerm ::
   ( Functor m
   , MonadIO m
   , Functor sbe
   )
-  => (L.Symbol, Maybe [L.Type]) -> Simulator sbe m (Typed (SBETerm sbe))
-getGlobalPtrTerm key@(sym, tys) = do
-  mt <- M.lookup key <$> gets globalTerms
-  case mt of
-    Just t  -> return t
-    Nothing -> do
-      cb <- gets codebase
-      case lookupSym sym cb of
-        Nothing  -> symResolutionFailed
-        Just eab -> either addGlobal addDef eab
-  where
-    symResolutionFailed =
-      error $ "getGlobalPtrTerm: symbol resolution failed: "
-              ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
-
-    addDef def = do
-      let argTys    = map typedType $ sdArgs def
-          fty       = L.FunTy (sdRetType def) argTys (sdVarArgs def)
-          idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody def)
-          noCodeSpc = "Not enough space in code memory to allocate new definition."
-      ins noCodeSpc fty $ \s m -> memAddDefine s m sym idl
-
-    addGlobal g = do
-      cb1 onMkGlobTerm g
-      ec <- getEvalContext "adGlobal" Nothing
-      cdata <- getTypedTerm' ec (L.globalType g =: L.globalValue g)
-      cb2 onPreGlobInit g cdata
-      let noDataSpc = "Not enough space in data segment to allocate new global."
-      r <- ins noDataSpc (L.globalType g) $ \s m -> memInitGlobal s m cdata
-      cb2 onPostGlobInit g cdata
-      return r
-
-    ins ::
-      ( Functor m
-      , MonadIO m
-      , Functor sbe
-      )
-      => String
-      -> L.Type
-      -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
-      -> Simulator sbe m (Typed (SBETerm sbe))
-    ins errMsg ty act = do
-      mr <- withMem "getGlobalPtrTerm" act
-      case mr of
-        Nothing -> errorPath (FailRsn errMsg)
-        Just (r,m)  -> do
-          setMem m
-          let t = Typed (L.PtrTo ty) r
-          modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
-          return t
+  => String
+  -> (L.Symbol, Maybe [L.Type])
+  -> L.Type
+  -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
+  -> Simulator sbe m (Typed (SBETerm sbe))
+insertGlobalTerm errMsg key ty act = do
+  mr <- withMem "insertGlobalTerm" act
+  case mr of
+    Nothing -> errorPath (FailRsn errMsg)
+    Just (r,m)  -> do
+      setMem m
+      let t = Typed (L.PtrTo ty) r
+      modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
+      return t
 
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
@@ -1576,18 +1565,11 @@ registerOverride ::
   )
   => L.Symbol -> L.Type -> [L.Type] -> Bool -> Override sbe m
   -> Simulator sbe m ()
-registerOverride sym retTy argTys va handler = do
-  mr <- withMem "registerOverride@withMem2" $ \s m -> memAddDefine s m sym [] 
-  case mr of
-    Nothing ->
-      errorPath $ FailRsn "Not enough space in code memory to allocate new definition."
-    Just (t,m)  -> do
-      setMem m
-      let t' = Typed (L.PtrTo (L.FunTy retTy argTys va)) t
-      modify $ \s ->
-        s { fnOverrides = M.insert sym (handler, False) (fnOverrides s)
-          , globalTerms = M.insert (sym, Just argTys) t' (globalTerms s)
-          }
+registerOverride sym _retTy _argTys _va handler = do
+  --TODO: Should we verify function exists?
+  modify $ \s ->
+    s { fnOverrides = M.insert sym (handler, False) (fnOverrides s)
+      }
 
 --------------------------------------------------------------------------------
 -- Error handling
@@ -1799,6 +1781,7 @@ loadString nm ptr = do
           $ "loading string with invalid type: "
             ++ show (L.ppType ty)
 
+{-
 termToArg ::
   ( Functor m
   , MonadIO m
@@ -1816,6 +1799,7 @@ termToArg term = do
     (L.PtrTo _, Just (32, n)) -> return $ Arg (fromInteger n :: Int32)
     (L.PtrTo _, Just (64, n)) -> return $ Arg (fromInteger n :: Int64)
     _ -> Arg . show <$> prettyTermSBE (typedValue term)
+-}
 
 termIntS :: (Functor m, Monad m, Integral a) =>
             Int -> a -> Simulator sbe m (SBETerm sbe)
@@ -2243,9 +2227,8 @@ overrideResetAll = Override $ \_sym _rty args ->
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 
-standardOverrides :: (Functor m, MonadIO m, Functor sbe) 
-                  => Simulator sbe m [OverrideEntry sbe m]
-standardOverrides = return ovds
+standardOverrides :: (Functor m, MonadIO m, Functor sbe) => [OverrideEntry sbe m]
+standardOverrides = ovds
   where
     ovds = [ ("exit", voidTy, [i32], False, exitHandler)
            , ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
@@ -2317,4 +2300,4 @@ registerOverride' (sym, rty, atys, va, handler) =
 registerStandardOverrides :: (Functor m, MonadIO m, Functor sbe) =>
                              Simulator sbe m ()
 registerStandardOverrides = do
-  mapM_ registerOverride' =<< standardOverrides
+  mapM_ registerOverride' standardOverrides
