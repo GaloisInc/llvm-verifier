@@ -44,7 +44,7 @@ sanityChecks = SEH
 
   , onPostGlobInit = \_g (Typed _ty _gdata) -> do
       {-
-      mem       <- getMem
+      Just mem       <- getMem
       sz        <- withLC (`llvmStoreSizeOf` ty)
       addrWidth <- withLC llvmAddrWidthBits
       -- Read back and check
