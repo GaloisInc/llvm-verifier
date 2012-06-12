@@ -9,10 +9,11 @@ module Tests.Common where
 
 import           Control.Applicative
 import           Control.Arrow
-import           Control.Monad
+import           Control.Monad hiding (mapM)
 import           Control.Monad.Trans
 import           Data.Int
 import           Data.LLVM.TargetData
+import           Data.Traversable (mapM)
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
@@ -24,10 +25,11 @@ import           System.FilePath
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import           Text.LLVM                     ((=:))
-import           Verinf.Symbolic               (ConstantProjection(..), Lit, createBitEngine)
+import           Verinf.Symbolic               (Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
+import Prelude hiding (mapM)
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
 
@@ -69,8 +71,8 @@ runTests tests = do
     then putStrLn "All tests successful."
     else putStrLn "One or more tests failed."
 
-chkRslt :: ConstantProjection t => L.Symbol -> ExpectedRV Integer -> Maybe t -> PropertyM IO ()
-chkRslt _ (RV chk) (Just (getSVal -> Just v))
+chkRslt :: L.Symbol -> ExpectedRV Integer -> Maybe (Maybe Integer) -> PropertyM IO ()
+chkRslt _ (RV chk) (Just (Just v))
   | v == chk  = assert True
   | otherwise = assertMsg False $ "Expected " ++ show chk ++ ", got " ++ show v
 chkRslt _ VoidRV Nothing
@@ -80,12 +82,12 @@ chkRslt _ AllPathsErr Nothing
 chkRslt sym _ _
   = assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
 
-constTermEq :: ConstantProjection t => t -> Integer -> Bool
-constTermEq (getSVal -> Just v) = (==v)
+constTermEq :: Maybe (Int,Integer) -> Integer -> Bool
+constTermEq (Just (_,v)) = (==v)
 constTermEq _                   = const False
 
 type AllMemModelTest =
-  (Functor sbe, ConstantProjection (SBEClosedTerm sbe))
+  (Functor sbe)
   => Simulator sbe IO Bool
 
 runAllMemModelTest :: Int -> PropertyM IO Codebase -> AllMemModelTest -> PropertyM IO ()
@@ -205,29 +207,16 @@ chkNullaryCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> ExpectedRV Int
 chkNullaryCInt32Fn v getCB sym chkVal =
   mapM_ (chkRslt sym (fromIntegral <$> chkVal)) =<< runCInt32Fn v getCB sym []
 
-runCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM IO [Maybe (BitTermClosed Lit)]
+runCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM IO [Maybe (Maybe Integer)]
 runCInt32Fn v getCB sym cargs = do
   cb <- getCB
   forAllMemModels v cb $ \s m -> run $ do
-    runSimulator cb s m liftBitBlastSim defaultSEH Nothing $ withVerbosity v $
-      callCInt32Fn sym cargs
-
-callCInt32Fn ::
-  ( LogMonad m
-  , Functor m
-  , MonadIO m
-  , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
-  => L.Symbol -> [Int32] -> Simulator sbe m (Maybe (SBEClosedTerm sbe))
-callCInt32Fn sym cargs = do
-  args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-  callDefine_ sym i32 (map ((=:) i32) args)
-  mrv <- getProgramReturnValue
-  case mrv of
-    Just rv -> Just <$> closeTermM rv
-    Nothing -> return Nothing
-
+    runSimulator cb s m liftBitBlastSim defaultSEH Nothing $ withVerbosity v $ do
+      args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
+      callDefine_ sym i32 (map ((=:) i32) args)
+      let fn rv = withSBE' $ \sbe -> snd <$> asSignedInteger sbe rv
+      mapM fn =<< getProgramReturnValue
+      
 -- possibly skip a test
 psk :: Int -> PropertyM IO () -> PropertyM IO ()
 psk v act = if (v > 0) then act else disabled
