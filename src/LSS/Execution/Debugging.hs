@@ -14,7 +14,6 @@ import           LSS.Execution.Common
 import           LSS.SBEInterface
 import           LSS.Simulator
 import           Text.LLVM              (Typed(..))
-import           Verinf.Symbolic.Common (ConstantProjection(..))
 import qualified Control.Exception      as CE
 import qualified Text.LLVM              as L
 
@@ -23,7 +22,6 @@ sanityChecks ::
   ( Functor m
   , MonadIO m
   , Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
   )
   => SEH sbe m
 sanityChecks = SEH
@@ -62,5 +60,5 @@ sanityChecks = SEH
   {-
   where
     uval (typedValue -> v) =
-      fromJust <$> withSBE' (\sbe -> getUVal $ closeTerm sbe v)
+      fromJust <$> withSBE' (\sbe -> snd $ asUnsignedInteger sbe v)
 -}

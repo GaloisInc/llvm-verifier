@@ -1604,7 +1604,7 @@ type BitBlastSBE m l = SBE (BitIO m l)
 bitTermWidth :: LV.Storable l => BitTerm l -> Integer
 bitTermWidth (BitTerm v) = fromIntegral $ LV.length v
 
-sbeBitBlast :: (S.PrettyTerm (BitTermClosed l), Eq l, LV.Storable l)
+sbeBitBlast :: (Eq l, LV.Storable l)
             => LLVMContext
             -> BitEngine l
             -> BitBlastMemModel m l
@@ -1630,7 +1630,7 @@ sbeBitBlast lc be mm = sbe
           , applyBNot        = BitIO . bitBNot be
           , termWidth        = bitTermWidth
           , closeTerm        = BitTermClosed . (,) be
-          , prettyTermD      = S.prettyTermD . closeTerm sbe
+          , prettyTermD      = \(BitTerm bv) -> let ?be = be in lPrettyLV bv
           , asBool           = beAsBool be
           , asUnsignedInteger = \(BitTerm t) -> (LV.length t,) <$> let ?be = be in lGetUnsigned t
           , memDump          = BitIO `c2` mmDump mm True

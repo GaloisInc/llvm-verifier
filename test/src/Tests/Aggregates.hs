@@ -57,8 +57,8 @@ structInitAccessImpl = do
     Just rv -> do
       [L.Typed _ bx, L.Typed _ by, _] <- do
         withSBE $ \sbe -> termDecomp sbe [i32, i8, padTy 3] rv
-      bxc <- withSBE' (`closeTerm` bx)
-      byc <- withSBE' (`closeTerm` by)
+      bxc <- withSBE' $ \s -> asSignedInteger s bx
+      byc <- withSBE' $ \s -> asSignedInteger s by
       return $ bxc `constTermEq` 42
                &&
                byc `constTermEq` fromIntegral (fromEnum 'z')
@@ -69,7 +69,7 @@ structArrayImpl = do
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
-    Just rv -> (`constTermEq` 1) <$> withSBE' (`closeTerm` rv)
+    Just rv -> (`constTermEq` 1) <$> withSBE' (\s -> asSignedInteger s rv)
 
 --------------------------------------------------------------------------------
 -- Scratch

@@ -40,6 +40,7 @@ module LSS.Simulator
   , callDefine
   , callDefine_
   , defaultSEH
+  , lookupSymbolDef
   , getProgramReturnValue
   , getProgramFinalMem
   , EvalContext
@@ -56,7 +57,6 @@ module LSS.Simulator
   , sizeof
   , processMemCond
   -- for testing
-  , closeTermM
   , dbugM
   , dbugTerm
   , dbugTypedTerm
@@ -1396,9 +1396,6 @@ memFailRsn sbe desc terms = do
 
 setSEH :: Monad m => SEH sbe m -> Simulator sbe m ()
 setSEH seh = modify $ \s -> s{ evHandlers = seh }
-
-closeTermM :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m (SBEClosedTerm sbe)
-closeTermM t = withSBE' $ \sbe -> closeTerm sbe t
 
 newPathName :: Monad m => Simulator sbe m Integer
 newPathName = do

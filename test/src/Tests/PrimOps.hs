@@ -134,7 +134,6 @@ chkArithBitEngineFn w s op fn = do
 
 testSetupPtrArgImpl ::
   ( Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
   )
   => Simulator sbe IO Bool
 testSetupPtrArgImpl = do
@@ -148,7 +147,7 @@ testSetupPtrArgImpl = do
     Nothing  -> return False
     Just mem -> do
       (_,r) <- withSBE (\sbe -> memLoad sbe mem p)
-      (`constTermEq` 42) <$> withSBE' (`closeTerm` r)
+      (`constTermEq` 42) <$> withSBE' (\s -> asUnsignedInteger s r)
 
 --------------------------------------------------------------------------------
 -- Scratch
