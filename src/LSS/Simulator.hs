@@ -927,7 +927,9 @@ step (PushCallFrame callee args mres) = do
   case eab of
     Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
     Right calleeSym -> do
-      argTerms <- mapM (getTypedTerm "pushCallFrame") args
+      Just p <- getPath
+      ec <- getEvalContext "pushCallFrame" (pathCallFrame p)
+      argTerms <- mapM (getTypedTerm' ec) args
       _ <- callDefine' False cb calleeSym mres argTerms
       return ()
 
@@ -984,8 +986,8 @@ step (Assign reg expr) = assign reg =<< eval expr
 step (Store val addr _malign) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
   valTerm  <- getTypedTerm "store@1" val
-  addrTerm <- typedValue <$> getTypedTerm "store@2" addr
-  store valTerm addrTerm
+  addrTerm <- getTypedTerm "store@2" addr
+  store valTerm (typedValue addrTerm)
   whenVerbosity (<=6) $ dumpMem 6 "store post"
 
 step (IfThenElse cond thenStmts elseStmts) = do
@@ -1035,10 +1037,14 @@ eval (Conv op tv@(Typed (L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{}))
   Typed _t x <- getTypedTerm "prim" tv
   --CE.assert (t == t1) $ return ()
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
-eval (Conv L.PtrToInt tv t2@(L.PrimType L.Integer{})) =
-  evalPtrToInt tv t2
-eval (Conv L.IntToPtr tv@(Typed (L.PrimType L.Integer{}) _) t2) =
-  evalIntToPtr tv t2
+eval (Conv L.PtrToInt tv t2@(L.PrimType L.Integer{})) = do
+  mp <- getPath
+  ec <- getEvalContext nm (pathCallFrame <$> mp)
+  evalPtrToInt ec tv t2
+eval (Conv L.IntToPtr tv@(Typed (L.PrimType L.Integer{}) _) t2) = do
+  mp <- getPath
+  ec <- getEvalContext nm (pathCallFrame <$> mp)
+  evalIntToPtr ec tv t2
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm "bitCast" tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
 eval (Alloca (L.Alias a) msztv malign) = do
@@ -1060,8 +1066,8 @@ eval (ICmp op (Typed (L.Alias a) v1) v2) = do
   t <- withLC (`llvmLookupAlias` a)
   eval (ICmp op (Typed t v1) v2)
 eval (ICmp op (Typed t v1) v2) = do
-  Typed _t1 x <- getTypedTerm "icmp@1" (Typed t v1)
-  Typed _t2 y <- getTypedTerm "icmp@2" (Typed t v2)
+  x <- typedValue <$> getTypedTerm "icmp@1" (Typed t v1)
+  y <- typedValue <$> getTypedTerm "icmp@2" (Typed t v2)
   -- Removed checks because type may be alias.
   --CE.assert (t == t1 && t == t2 && (isIntegerType t || L.isPointer t)) $ return ()
   Typed i1 <$> withSBE (\sbe -> applyICmp sbe op x y)
@@ -1087,15 +1093,17 @@ evalPtrToInt, evalIntToPtr ::
   , Functor m
   , Functor sbe
   )
-  => Typed L.Value -> L.Type -> Simulator sbe m (Typed (SBETerm sbe))
-
-evalPtrToInt (Typed (L.Alias a) v) t2 = do
-  t1 <- withLC (`llvmLookupAlias` a)
-  evalPtrToInt (Typed t1 v) t2
-evalPtrToInt tv (L.Alias a) = do
-  evalPtrToInt tv =<< withLC (`llvmLookupAlias` a)
-evalPtrToInt tv@(Typed t1 _) t2@(L.PrimType (L.Integer tgtWidth)) = do
-  Typed t v <- getTypedTerm "evalPtrToInt" tv
+  => EvalContext sbe
+  -> Typed L.Value
+  -> L.Type
+  -> Simulator sbe m (Typed (SBETerm sbe))
+evalPtrToInt ec (Typed (L.Alias a) v) t2 = do
+  let t1 = llvmLookupAlias (evalLLVMContext ec) a
+   in evalPtrToInt ec (Typed t1 v) t2
+evalPtrToInt ec tv (L.Alias a) = do
+  evalPtrToInt ec tv (llvmLookupAlias (evalLLVMContext ec) a)
+evalPtrToInt ec tv@(Typed t1 _) t2@(L.PrimType (L.Integer tgtWidth)) = do
+  Typed t v <- getTypedTerm' ec tv
   CE.assert(t == t1) $ return ()
   addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
   Typed t2 <$>
@@ -1103,15 +1111,15 @@ evalPtrToInt tv@(Typed t1 _) t2@(L.PrimType (L.Integer tgtWidth)) = do
       then return v
       else let op = if addrWidth > tgtWidth then L.Trunc else L.ZExt
            in withSBE $ \s -> applyConv s op v t2
-evalPtrToInt _ _ = errorPath $ FailRsn "Invalid parameters to evalPtrToInt"
+evalPtrToInt _ _ _ = errorPath $ FailRsn "Invalid parameters to evalPtrToInt"
 
-evalIntToPtr (Typed (L.Alias a) v) t2 = do
-  t1 <- withLC (`llvmLookupAlias` a)
-  evalIntToPtr (Typed t1 v) t2
-evalIntToPtr tv (L.Alias a) = do
-  evalIntToPtr tv =<< withLC (`llvmLookupAlias` a)
-evalIntToPtr tv@(Typed t1@(L.PrimType (L.Integer srcWidth)) _) t2 = do
-  Typed t v <- getTypedTerm "evalIntToPtr" tv
+evalIntToPtr ec (Typed (L.Alias a) v) t2 =
+  let t1 <- llvmLookupAlias (evalLLVMContext ec) a
+   in evalIntToPtr ec (Typed t1 v) t2
+evalIntToPtr ec tv (L.Alias a) = do
+  evalIntToPtr ec tv (llvmLookupAlias (evalLLVMContext ec) a)
+evalIntToPtr ec tv@(Typed t1@(L.PrimType (L.Integer srcWidth)) _) t2 = do
+  Typed t v <- getTypedTerm' ec tv
   CE.assert (t == t1) $ return ()
   addrWidth <- fromIntegral <$> withLC llvmAddrWidthBits
   Typed t2 <$>
@@ -1119,7 +1127,7 @@ evalIntToPtr tv@(Typed t1@(L.PrimType (L.Integer srcWidth)) _) t2 = do
       then return v
       else let op = if srcWidth > addrWidth then L.Trunc else L.ZExt
            in withSBE $ \s -> applyConv s op v t2
-evalIntToPtr _ _ = errorPath $ FailRsn "Invalid parameters to evalIntToPtr"
+evalIntToPtr _ _ _ = errorPath $ FailRsn "Invalid parameters to evalIntToPtr"
 
 evalExtractValue ::
   ( MonadIO m
@@ -1223,9 +1231,9 @@ evalCE ec (L.ValConstExpr ce)
       L.ConstConv L.BitCast tv t ->
         Typed t . typedValue <$> getTypedTerm' ec tv
       L.ConstConv L.PtrToInt tv t ->
-        evalPtrToInt tv t
+        evalPtrToInt ec tv t
       L.ConstConv L.IntToPtr tv t ->
-        evalIntToPtr tv t
+        evalIntToPtr ec tv t
       _ -> unimpl $ "evalCE: " ++ show ce
 evalCE _ e = illegal $ "evalCE: value expression is not const" ++ show (L.ppValue e)
 
