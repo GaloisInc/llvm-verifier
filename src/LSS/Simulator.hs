@@ -97,7 +97,6 @@ import Data.Traversable (mapM)
 
 import qualified Control.Exception         as CE
 import qualified Data.Foldable             as DF
-import qualified Data.LLVM.CFG             as CFG
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 import qualified Data.Vector               as V
@@ -187,7 +186,8 @@ initGlobals = do
     Right d -> do
       -- Don't register overrides here, despite their presence in the codebase.
       -- This is done elsewhere via registerStandardOverrides.
-      isStdOvd <- snd <$> standardOverrides
+      ovds <- standardOverrides
+      let isStdOvd = flip elem (map (\(s,_,_,_,_) -> s) ovds)
       unless (isStdOvd $ sdName d) $
         getGlobalPtrTerm (sdName d, Just $ map typedType $ sdArgs d) >> return ()
   -- And then initialize global data
@@ -282,7 +282,7 @@ callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg args =
 lookupSymbolDef :: (Functor m, MonadIO m, Functor sbe) 
                 => L.Symbol -> Simulator sbe m SymDefine
 lookupSymbolDef sym = do
-  mdef <- lookupDefine' sym <$> gets codebase
+  mdef <- lookupDefine sym <$> gets codebase
   case mdef of
     Just def -> return def
     Nothing  -> do
@@ -566,7 +566,7 @@ run = do
             when (pathAssertedFalse sbe p) $
               errorPath $ FailRsn $ "This path is infeasible"
             let sym = frmFuncSym (pathCallFrame p)
-            def <- lookupDefine sym <$> gets codebase
+            Just def <- lookupDefine sym <$> gets codebase
             -- TODO: Figure out how to make sure we get a valid path.
             runStmts $ sbStmts $ lookupSymBlock def pcb
         [] -> do  -- Need to pop frame and get merge path.
@@ -1428,11 +1428,6 @@ memFailRsn sbe desc terms = do
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
-isDummyExit :: SymBlockID -> Bool
-isDummyExit sbi = case symBlockLabel sbi of
-  Just (L.Named (L.Ident nm)) -> nm == CFG.dummyExitName
-  _                           -> False
-
 setSEH :: Monad m => SEH sbe m -> Simulator sbe m ()
 setSEH seh = modify $ \s -> s{ evHandlers = seh }
 
@@ -1582,7 +1577,6 @@ registerOverride ::
   => L.Symbol -> L.Type -> [L.Type] -> Bool -> Override sbe m
   -> Simulator sbe m ()
 registerOverride sym retTy argTys va handler = do
-  checkPathExists "registerOverride@checkPathExists"
   mr <- withMem "registerOverride@withMem2" $ \s m -> memAddDefine s m sym [] 
   case mr of
     Nothing ->
@@ -2248,10 +2242,10 @@ overrideResetAll = Override $ \_sym _rty args ->
     e = errorPath . FailRsn
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
-standardOverrides :: (Functor m, Monad m, MonadIO m, Functor sbe
-                     ) =>
-                     Simulator sbe m ([OverrideEntry sbe m], L.Symbol -> Bool)
-standardOverrides = return (ovds, f)
+
+standardOverrides :: (Functor m, MonadIO m, Functor sbe) 
+                  => Simulator sbe m [OverrideEntry sbe m]
+standardOverrides = return ovds
   where
     ovds = [ ("exit", voidTy, [i32], False, exitHandler)
            , ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
@@ -2310,7 +2304,6 @@ standardOverrides = return (ovds, f)
            , ("lss_show_mem", voidTy, [], False, showMemOverride)
            , ("lss_set_verbosity", voidTy, [i32], False, userSetVebosityOverride)
            ]
-    f = flip elem (map (\(s,_,_,_,_) -> s) ovds)
 
 registerOverride' ::
   ( MonadIO m
@@ -2324,5 +2317,4 @@ registerOverride' (sym, rty, atys, va, handler) =
 registerStandardOverrides :: (Functor m, MonadIO m, Functor sbe) =>
                              Simulator sbe m ()
 registerStandardOverrides = do
-  checkPathExists "registerStandardOverrides"
-  mapM_ registerOverride' =<< (fst <$> standardOverrides)
+  mapM_ registerOverride' =<< standardOverrides

@@ -16,9 +16,6 @@ module LSS.Execution.Codebase
   , lookupAlias
   , lookupAlias'
   , lookupDefine
-  , lookupDefine'
-  , lookupGlobal
-  , lookupGlobal'
   , lookupSym
   )
 
@@ -85,28 +82,13 @@ loadCodebase bcFile = do
     err msg = error $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
               ++ show (nest 2 (vcat $ map text $ lines msg))
 
-lookupDefine :: LLVM.Symbol -> Codebase -> SymDefine
-lookupDefine sym cb = case lookupDefine' sym cb of
-  Nothing -> error $ "Failed to locate define "
-                     ++ show (LLVM.ppSymbol sym) ++ " in code base."
-  Just sd -> sd
-
-lookupDefine' :: LLVM.Symbol -> Codebase -> Maybe SymDefine
-lookupDefine' sym cb = case M.lookup sym (cbGlobalNameMap cb) of
+lookupDefine :: LLVM.Symbol -> Codebase -> Maybe SymDefine
+lookupDefine sym cb = case M.lookup sym (cbGlobalNameMap cb) of
   Just (Right sd) -> Just sd
   _               -> Nothing
 
-lookupGlobal :: LLVM.Symbol -> Codebase -> LLVM.Global
-lookupGlobal sym cb = case lookupGlobal' sym cb of
-  Nothing -> error $ "Failed to locate global "
-                     ++ show (LLVM.ppSymbol sym) ++ " in code base."
-  Just g  -> g
-
-lookupGlobal' :: LLVM.Symbol -> Codebase -> Maybe LLVM.Global
-lookupGlobal' sym cb = case M.lookup sym (cbGlobalNameMap cb) of
-  Just (Left g) -> Just g
-  _             -> Nothing
-
+-- | Returns the global variable or symbolic definition associated with the
+-- given symbol.
 lookupSym :: LLVM.Symbol -> Codebase -> Maybe (Either LLVM.Global SymDefine)
 lookupSym sym = M.lookup sym . cbGlobalNameMap
 
@@ -121,4 +103,4 @@ lookupAlias' ident cb = M.lookup ident (cbTypeAliasMap cb)
 
 dumpSymDefine :: MonadIO m => m Codebase -> String -> m ()
 dumpSymDefine getCB sym = getCB >>= \cb ->
-  liftIO $ putStrLn $ show $ ppSymDefine (lookupDefine (LLVM.Symbol sym) cb)
+  liftIO $ putStrLn $ show $ (ppSymDefine `fmap` lookupDefine (LLVM.Symbol sym) cb)
