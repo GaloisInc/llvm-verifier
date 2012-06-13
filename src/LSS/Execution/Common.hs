@@ -122,8 +122,7 @@ addPathAssertion sbe t p = set <$> applyAnd sbe (pathAssertions p) t
   where set a = p { pathAssertions = a }
 
 data ExitFrame term mem = ExitFrame {
-       programMergedState  :: MergedState term mem
-     , efPending :: [Path' term mem]
+       efPending :: [Path' term mem]     
      }  
 
 data PostdomFrame term mem = PostdomFrame { 
@@ -234,7 +233,7 @@ ppMergeFrame :: SBE sbe -> MF sbe -> Doc
 ppMergeFrame sbe mf = case mf of
   ExitMergeFrame ef ->
     text "MF(Exit):"
-    $+$ nest 2 (mpath "no merged state set" (programMergedState ef))
+    $+$ nest 2 (ppPendingPaths (efPending ef))    
   PostdomMergeFrame pdf ->
     text "MF(Pdom|" <>  ppSymBlockID (pdfLabel pdf) <> text "):"
     $+$ nest 2 (mpath "" (pdfMergedState pdf))

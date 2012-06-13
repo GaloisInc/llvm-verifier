@@ -125,7 +125,6 @@ runSimulator cb sbe mem lifter seh mopts m = do
     newSt = newSimState cb sbe mem lifter seh mopts
     go    = runSM $ do
       true <- liftSBE $ termBool sbe True
-      ms <- liftSBE $ initialMergedState sbe
       name <- newPathName
       let p = Path { pathFuncSym = entrySymbol
                    , pathRegs = M.empty
@@ -137,8 +136,7 @@ runSimulator cb sbe mem lifter seh mopts m = do
                    , pathAssertions = true
                    }
       let ef = ExitFrame {
-                   programMergedState = ms 
-                 , efPending = [p]
+                   efPending = [p]
                  }
       pushMergeFrame (ExitMergeFrame ef)
       initGlobals
@@ -465,11 +463,8 @@ memSet dst val len align = do
       memSet dst' val len' align
 
 exitFramePath :: ExitFrame term mem -> Maybe (Path' term mem)
-exitFramePath ef =
-  case programMergedState ef of
-    EmptyState{} -> Nothing 
-    PathState p _ -> Just p
-
+exitFramePath ef = safeHead (efPending ef) 
+  
 -- | Return value of this path.
 pathRetVal :: Path' term mem -> Maybe term         
 pathRetVal p = typedValue <$> M.lookup entryRsltReg (pathRegs p)
@@ -477,12 +472,11 @@ pathRetVal p = typedValue <$> M.lookup entryRsltReg (pathRegs p)
 getProgramReturnValue :: (Monad m, Functor m)
   => Simulator sbe m (Maybe (SBETerm sbe))
 getProgramReturnValue = do
-  Just (top, _) <- popMF <$> gets ctrlStk
   sbe <- gets symBE
+  Just (top, _) <- popMF <$> gets ctrlStk
   return $
     case top of
-      ExitMergeFrame (exitFramePath -> Just p) -> pathRetVal p
-      ExitMergeFrame _ -> Nothing
+      ExitMergeFrame ef -> pathRetVal =<< safeHead (efPending ef)
       _ -> error $ "getProgramReturnValue: program not yet terminated " 
                      ++ show (ppMergeFrame sbe top)
 
@@ -587,27 +581,30 @@ run = do
             Just def <- lookupDefine sym <$> gets codebase
             -- TODO: Figure out how to make sure we get a valid path.
             runStmts $ sbStmts $ lookupSymBlock def pcb
+          run 
         [] -> do  -- Need to pop frame and get merge path.
           next <- popMergeFrame "run@next"
-          case next of
-            ExitMergeFrame ef ->
-              let ef' = ef { programMergedState = getMergedState top }
-               in pushMergeFrame $ ExitMergeFrame ef'
-            _ ->
-              case getMergedState top of
-                EmptyState assumptions _ -> -- All paths lead to errors.  
-                  pushErrorPath next assumptions
-                PathState p a -> do 
-                  p' <- withSBE $ \sbe -> addPathAssertion sbe a p
-                  pushMergeFrame $ pushPending p' next
-      run -- start/continue normal execution
+          case getMergedState "run@next" top of
+            EmptyState assumptions _ -> -- All paths lead to errors.  
+              case next of
+                ExitMergeFrame _ -> do
+                  pushMergeFrame next
+                  showEPs <- optsErrorPathDetails <$> gets lssOpts
+                  if showEPs then
+                    tellUser "All paths yielded errors!" >> dumpErrorPaths
+                  else
+                    tellUser "All paths yielded errors! To see details, use --errpaths."
+                _ -> pushErrorPath "run@error" next assumptions >> run
+            PathState p a -> do 
+              p' <- withSBE $ \sbe -> addPathAssertion sbe a p
+              pushMergeFrame $ pushPending p' next
+              run
   where
     handleError (ErrorPathExc _rsn s) = do
       -- errorPath ensures that the simulator state provided in the
       -- exception data is correct for the next invocation of run,
       -- so overwrite the current state here.
       modify (const s)
-      run
     handleError e = throwError e
     showErrCnt x
       | x == 1    = "Encountered errors on exactly one path. Details below."
@@ -958,7 +955,7 @@ step (MergePostDominator pdid) = do
   newm <- withSBE (\s -> memPopMergeFrame s (pathMem p))
   let p' = p { pathMem = newm }
   -- Get merge state.
-  mmerged <- mergePaths p' (getMergedState mf)
+  mmerged <- mergePaths p' (getMergedState "mergePostDominator" mf)
   pushMergeFrame (setMergedState mmerged mf)
 
 step (MergeReturn mrslt) = mergeReturn mrslt
@@ -1541,9 +1538,9 @@ unimpl msg  = errorPath $ FailRsn $ "UN{SUPPORTED,IMPLEMENTED}: " ++ msg
 illegal msg = errorPath $ FailRsn $ "ILLEGAL: " ++ msg
 
 -- | Push an error path to the 
-pushErrorPath :: (Functor m, Monad m) => MF sbe -> SBETerm sbe -> Simulator sbe m () 
-pushErrorPath mf pa = 
-  case getMergedState mf of
+pushErrorPath :: (Functor m, Monad m) => String -> MF sbe -> SBETerm sbe -> Simulator sbe m () 
+pushErrorPath nm mf pa = 
+  case getMergedState nm mf of
     EmptyState _ _ -> pushMergeFrame mf 
     PathState mergedPath assertions -> do
       -- Update assertions with negation.
@@ -1563,7 +1560,7 @@ errorPath rsn = do
   mmf <- popMergeFrame "errorPath"
   let (p,mf) = maybe err id (popPending mmf)
         where err = error $ "errorPath has empty path with " ++ show rsn
-  pushErrorPath mf (pathAssumptions p)  
+  pushErrorPath "errorPath" mf (pathAssumptions p)  
   sbe <- gets symBE
   whenVerbosity (>=3) $ do
     dbugM $ "Error path encountered: " ++ show (ppFailRsn rsn)
@@ -1823,6 +1820,8 @@ userSetVebosityOverride = Override $ \_sym _rty args -> do
   where
     e = errorPath . FailRsn
 
+{-
+--TODO: Fix exit handler
 exitHandler :: StdOvd sbe m
 exitHandler = Override $ \_sym _rty args -> do
   case args of
@@ -1834,6 +1833,7 @@ exitHandler = Override $ \_sym _rty args -> do
     _ -> e "Incorrect number of parameters passed to exit()"
   where
     e = errorPath . FailRsn
+-}
 
 assertHandler__assert_rtn :: StdOvd sbe m
 assertHandler__assert_rtn = Override $ \_sym _rty args -> do
@@ -2133,8 +2133,8 @@ type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 
 libcOverrides :: (Functor m, MonadIO m, Functor sbe) => [OverrideEntry sbe m]
 libcOverrides =
-  [ ("exit", voidTy, [i32], False, exitHandler)
-  , ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
+  [ ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
+  --, ("exit", voidTy, [i32], False, exitHandler)
   , ("alloca", voidPtr, [i32], False, allocHandler alloca)
   , ("malloc", voidPtr, [i32], False, allocHandler malloc)
   , ("free", voidTy, [voidPtr], False,
