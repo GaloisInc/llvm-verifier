@@ -22,7 +22,7 @@ module LSS.Execution.MergeFrame
   , isExitFrame
 
   -- * Path manipulation/query
-  , modifyCallFrame
+  , modifyPathRegs
   , pcTerm
   )
 
@@ -95,5 +95,6 @@ popPending mf = case mf of
       [] -> Nothing
       p:ps -> Just (p, ReturnMergeFrame rf { rfPending = ps })
 
-modifyCallFrame :: (CallFrame term -> CallFrame term) -> Path' term mem -> Path' term mem
-modifyCallFrame f p = p { pathCallFrame = f (pathCallFrame p) }
+modifyPathRegs :: (RegMap term -> RegMap term) -> Path' term mem -> Path' term mem
+modifyPathRegs f p = p { pathCallFrame = cf { frmRegs = f (frmRegs cf) } }
+  where cf = pathCallFrame p

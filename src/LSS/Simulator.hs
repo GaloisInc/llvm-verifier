@@ -250,10 +250,9 @@ callDefine calleeSym t args = do
   return r
 
 setReturnValue :: String -> Maybe (Typed Reg) -> Maybe t
-               ->  CallFrame t -> CallFrame t
-setReturnValue _n (Just tr) (Just rv) cf = 
-    setReg (typedValue tr) (typedAs tr rv) cf
-setReturnValue _n Nothing   Nothing   cf = cf
+               ->  RegMap t -> RegMap t
+setReturnValue _n (Just tr) (Just rv) rm = M.insert (typedValue tr) (typedAs tr rv) rm
+setReturnValue _n Nothing   Nothing   rm = rm
 setReturnValue nm Nothing   (Just _) _  = 
   error $ nm ++ ": Return value where non expected"
 setReturnValue nm (Just tr) Nothing   _  =
@@ -282,7 +281,7 @@ callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg args =
       | otherwise    -> callDefine' True normalRetID calleeSym' mreg args
     Just (Override f, _) -> do
       r <- f calleeSym mreg args
-      modifyCallFrameM $ setReturnValue "callDefine'" mreg r
+      modifyPathRegsM $ setReturnValue "callDefine'" mreg r
       return []
   where
     normal
@@ -342,7 +341,7 @@ runNormalSymbol normalRetID calleeSym mreg args = do
   pushMergeFrame (ReturnMergeFrame rf)
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   lc <- gets (cbLLVMCtx . codebase)
-  modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs lc (sdArgs def) args }
+  modifyPathRegsM $ \_ -> bindArgs lc (sdArgs def) args
   -- Push stack frame in current process memory.
   do Just m <- getMem
      (c,m') <- withSBE $ \s -> stackPushFrame s m
@@ -649,14 +648,8 @@ pushMergeFrame = modifyCS . pushMF
 
 assign :: (Functor m, MonadIO m)
   => Reg -> Typed (SBETerm sbe) -> Simulator sbe m ()
-assign reg v = modifyCallFrameM $ \frm ->
-  frm{ frmRegs = M.insert reg v (frmRegs frm) }
+assign reg v = modifyPathRegsM $ M.insert reg v 
   
-getCurrentBlockM :: (Functor m, Monad m) => Simulator sbe m SymBlockID
-getCurrentBlockM = do
-  Just p <- getPath
-  return $ maybe (error "getCurrentBlock: no current block") id (pathCB p)
-
 -- | Evaluate condition in current path.
 evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBETerm sbe)
 evalCond TrueSymCond = withSBE $ \sbe -> termBool sbe True
@@ -694,9 +687,9 @@ mergeReturn mtv = do
   -- Pop stack frame from memory.
   m' <- liftSBE $ stackPopFrame sbe (pathMem p)
   -- Get the path after updating return value and memory.
-  let cf' = setReturnValue "mergeReturn" (rfRetReg rf) (typedValue <$> mrv)
-              (rfCallFrame rf)
-  let p' = p { pathCallFrame = cf'
+  let rm' = setReturnValue "mergeReturn" (rfRetReg rf) (typedValue <$> mrv)
+              (frmRegs (rfCallFrame rf))
+  let p' = p { pathCallFrame = (rfCallFrame rf) { frmRegs = rm' }
              , pathCB = Just (rfNormalLabel rf)
              , pathMem = m' }
   -- Merge updated path with top merge state.
@@ -922,12 +915,12 @@ step ::
   => SymStmt -> Simulator sbe m ()
 
 step (PushCallFrame callee args mres) = do
-  cb  <- getCurrentBlockM
+  Just p <- getPath
+  let Just cb = pathCB p
   eab <- resolveCallee callee
   case eab of
     Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
     Right calleeSym -> do
-      Just p <- getPath
       ec <- getEvalContext "pushCallFrame" (Just (pathCallFrame p))
       argTerms <- mapM (getTypedTerm' ec) args
       _ <- callDefine' False cb calleeSym mres argTerms
@@ -1482,9 +1475,6 @@ runStmts ::
   => [SymStmt] -> Simulator sbe m ()
 runStmts = mapM_ dbugStep
 
-setReg :: Reg -> Typed term -> CallFrame term -> CallFrame term
-setReg r v frm@(CallFrame _ regMap) = frm{ frmRegs = M.insert r v regMap }
-
 entryRsltReg :: Reg
 entryRsltReg = L.Ident "__galois_final_rslt"
 
@@ -1514,8 +1504,8 @@ modifyPath f = modifyCS $ \cs ->
       Just (p,mf') = popPending mf
    in pushMF (pushPending (f p) mf') cs'
 
-modifyCallFrameM :: (Functor m, Monad m) => (CF sbe -> CF sbe) -> Simulator sbe m ()
-modifyCallFrameM = modifyPath . modifyCallFrame
+modifyPathRegsM :: (Functor m, Monad m) => (RegMap (SBETerm sbe) -> RegMap (SBETerm sbe)) -> Simulator sbe m ()
+modifyPathRegsM = modifyPath . modifyPathRegs
 
 type StdOvd m sbe =
   ( Functor m
