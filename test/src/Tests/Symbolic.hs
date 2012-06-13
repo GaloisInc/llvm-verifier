@@ -17,7 +17,6 @@ import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
 import           Text.LLVM              ((=:))
-import           Verinf.Symbolic.Common (ConstantProjection(..))
 import qualified Text.LLVM              as L
 
 symTests :: [(Args, Property)]
@@ -61,12 +60,10 @@ symTests =
                      \r0 r1 -> r0 == Just 99 && r1 == Just 42
     runSimple v  = runAllMemModelTest v (commonCB "test-sym-simple.bc")
 
-evalClosed ::
-  ( Functor sbe
-  , ConstantProjection (SBEClosedTerm sbe)
-  )
+evalClosed :: (Functor sbe)
   => SBE sbe -> SBETerm sbe -> [Bool] -> sbe (Maybe Integer)
-evalClosed sbe v = fmap (getSVal . closeTerm sbe) . flip (evalAiger sbe) v
+evalClosed sbe v = fmap (\t -> fmap snd $ asSignedInteger sbe t) 
+                 . flip (evalAiger sbe) v
 
 trivBranchImpl :: String -> (Maybe Integer -> Maybe Integer -> Bool) -> AllMemModelTest
 trivBranchImpl symName chk = do

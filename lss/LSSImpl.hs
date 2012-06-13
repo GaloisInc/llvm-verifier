@@ -30,7 +30,6 @@ import           LSS.Simulator
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           Text.LLVM                       ((=:), Typed(..))
-import           Verinf.Symbolic.Common          (ConstantProjection(..))
 import           Verinf.Utils.LogMonad
 import qualified Data.Vector.Storable as SV
 import qualified Text.LLVM                       as L
@@ -104,15 +103,18 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
     argsv <- if mainHasArgv then buildArgv numArgs argv' else return []
-    callDefine_ (L.Symbol "main") i32 argsv
+    let mainSymbol = L.Symbol "main"
+    mainSymDef <- lookupSymbolDef mainSymbol
+    --TODO: Verify main has expected signature.
+    callDefine_ mainSymbol (sdRetType mainSymDef) argsv
     mrv <- getProgramReturnValue
     mm  <- getProgramFinalMem
     eps <- gets errorPaths
     case mrv of
       Nothing -> return (NoMainRV eps mm)
       Just rv -> do
-        let mval = getUVal . closeTerm sbe $ rv
-        return $ maybe (SymRV eps mm rv) (\x -> (ConcRV eps mm x)) mval
+        let mval = asUnsignedInteger sbe rv
+        return $ maybe (SymRV eps mm rv) (\(_,x) -> (ConcRV eps mm x)) mval
   where
     opts        = Just $ LSSOpts (errpaths args)
     seh'        = defaultSEH
@@ -123,7 +125,6 @@ buildArgv ::
   ( MonadIO m
   , Functor sbe
   , Functor m
-  , ConstantProjection (SBEClosedTerm sbe)
   )
   => Int32 -> [String] -> Simulator sbe m [Typed (SBETerm sbe)]
 buildArgv numArgs argv' = do
