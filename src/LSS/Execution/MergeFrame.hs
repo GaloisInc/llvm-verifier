@@ -96,5 +96,4 @@ popPending mf = case mf of
       p:ps -> Just (p, ReturnMergeFrame rf { rfPending = ps })
 
 modifyPathRegs :: (RegMap term -> RegMap term) -> Path' term mem -> Path' term mem
-modifyPathRegs f p = p { pathCallFrame = cf { frmRegs = f (frmRegs cf) } }
-  where cf = pathCallFrame p
+modifyPathRegs f p = p { pathRegs = f (pathRegs p) }

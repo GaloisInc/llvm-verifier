@@ -127,7 +127,8 @@ runSimulator cb sbe mem lifter seh mopts m = do
       true <- liftSBE $ termBool sbe True
       ms <- liftSBE $ initialMergedState sbe
       name <- newPathName
-      let p = Path { pathCallFrame = CallFrame entrySymbol M.empty
+      let p = Path { pathFuncSym = entrySymbol
+                   , pathRegs = M.empty
                    , pathException = Nothing
                    , pathCB = Nothing
                    , pathMem = mem
@@ -320,7 +321,8 @@ runNormalSymbol normalRetID calleeSym mreg args = do
   let name = pathName p
   let mem = pathMem p
   true <- withSBE $ \s -> termBool s True
-  let path =  Path { pathCallFrame = CallFrame calleeSym M.empty
+  let path =  Path { pathFuncSym = calleeSym
+                   , pathRegs = M.empty
                    , pathException = Nothing 
                    , pathCB = Just initSymBlockID 
                    , pathMem = mem
@@ -330,8 +332,9 @@ runNormalSymbol normalRetID calleeSym mreg args = do
                    }
   let ms = pathMergedState path
   let rf = ReturnFrame {
-              rfCallFrame = pathCallFrame p
-            , rfRetReg = mreg 
+              rfFuncSym     = pathFuncSym p
+            , rfRegs        = pathRegs p
+            , rfRetReg      = mreg 
             , rfNormalLabel = normalRetID 
             , rfExceptLabel = Nothing 
             , rfNormalState = ms
@@ -687,8 +690,9 @@ mergeReturn mtv = do
   m' <- liftSBE $ stackPopFrame sbe (pathMem p)
   -- Get the path after updating return value and memory.
   let rm' = setReturnValue "mergeReturn" (rfRetReg rf) (typedValue <$> mrv)
-              (frmRegs (rfCallFrame rf))
-  let p' = p { pathCallFrame = (rfCallFrame rf) { frmRegs = rm' }
+              (rfRegs rf)
+  let p' = p { pathFuncSym = rfFuncSym rf 
+             , pathRegs = rm'
              , pathCB = Just (rfNormalLabel rf)
              , pathMem = m' }
   -- Merge updated path with top merge state.
@@ -730,12 +734,11 @@ mergePaths p (PathState t a) = do
             Typed t1 <$> mergeTerm v1 v2
     -- Merge call frame
     merged <- mergeMapsBy mergeTyped (pathRegs p) (pathRegs t)
-    let cf' = (pathCallFrame t){ frmRegs = merged }
     -- Get merge memory
     mem' <- liftSBE $ memMerge sbe c (pathMem p) (pathMem t)
     a' <- mergeTerm (pathAssertions p) a
     let p' = t { pathName = nm
-               , pathCallFrame = cf'
+               , pathRegs = merged
                , pathMem = mem'
                }
     whenVerbosity (>=6) $ ppPathM "mergedPath" p'

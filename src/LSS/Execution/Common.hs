@@ -50,7 +50,6 @@ type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
 type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))
 type CS sbe        = CtrlStk (SBETerm sbe) (SBEMemory sbe)
 type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
-type CF sbe        = CallFrame (SBETerm sbe)
 type OvrMap sbe m  = M.Map L.Symbol (Override sbe m, Bool {- user override? -})
 
 -- | Symbolic simulator options
@@ -89,8 +88,8 @@ data MergedState term mem
 -- | Captures all symbolic execution state for a unique control-flow path (as
 -- specified by the recorded path constraints)
 data Path' term mem = Path
-  { pathCallFrame   :: CallFrame term     -- ^ The top call frame of the dynamic
-                                          -- call stack along this path
+  { pathFuncSym     :: L.Symbol
+  , pathRegs        :: RegMap term
   , pathException   :: Maybe term         -- ^ When handling an exception along
                                           -- this path, a pointer to the
                                           -- exception structure; Nothing
@@ -134,7 +133,8 @@ data PostdomFrame term mem = PostdomFrame {
      }
 
 data ReturnFrame term mem = ReturnFrame {
-       rfCallFrame     :: CallFrame term       -- ^ Call frame for path when it arrives.
+       rfFuncSym       :: L.Symbol
+     , rfRegs          :: RegMap term          -- ^ Call frame for path when it arrives.
      , rfRetReg        :: Maybe (L.Typed Reg)  -- ^ Register to store return value (if any)
      , rfNormalLabel   :: SymBlockID           -- ^ Label for normal path
      , rfExceptLabel   :: Maybe SymBlockID     -- ^ Label for exception path
@@ -193,13 +193,6 @@ data SCExpr term
   | SCEOr (SCExpr term) (SCExpr term)
 
 type RegMap term = M.Map Reg (Typed term)
-
--- | A frame (activation record) in the program being simulated
-data CallFrame term = CallFrame
-  { frmFuncSym :: L.Symbol
-  , frmRegs    :: RegMap term
-  }
-  deriving Show
 
 -- | A handler for a function override. This gets the function symbol as an
 -- argument so that one function can potentially be used to override multiple
@@ -265,12 +258,6 @@ ppMergeFrame sbe mf = case mf of
       text "Pending paths:"
       $+$ nest 2 (if null pps then text "(none)" else vcat (map (ppPath sbe) pps))
 
-pathFuncSym :: Path' term mem -> L.Symbol
-pathFuncSym = frmFuncSym . pathCallFrame
-
-pathRegs :: Path' term mem -> RegMap term
-pathRegs = frmRegs . pathCallFrame
-               
 ppPath :: SBE sbe -> Path sbe -> Doc
 ppPath sbe p =
   text "Path #"
@@ -290,7 +277,7 @@ ppPathLoc :: SBE sbe -> Path sbe -> Doc
 ppPathLoc _ p =
   text "Path #"
   <>  integer (pathName p)
-  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym (pathCallFrame p))
+  <>  brackets ( text (show $ L.ppSymbol $ pathFuncSym p)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
