@@ -70,8 +70,8 @@ module LSS.Simulator
 where
 
 import           Control.Applicative
-import           Control.Monad.Error hiding (mapM)
-import           Control.Monad.State       hiding (State, mapM)
+import           Control.Monad.Error hiding (mapM, sequence)
+import           Control.Monad.State       hiding (State, mapM, sequence)
 import           Data.Int
 import           Data.LLVM.TargetData
 import           Data.LLVM.Symbolic.AST
@@ -89,11 +89,10 @@ import           System.Exit
 import           System.IO
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
-import Prelude   hiding (mapM)
-import Data.Traversable (mapM)
+import Prelude   hiding (mapM, sequence)
+import Data.Traversable
 
 import qualified Control.Exception         as CE
-import qualified Data.Foldable             as DF
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 import qualified Data.Vector               as V
@@ -328,7 +327,7 @@ runNormalSymbol normalRetID calleeSym mreg args = do
                    , pathAssumptions = true
                    , pathAssertions = true
                    }
-  let ms = pathMergedState path
+  let ms = pathMergedState p
   let rf = ReturnFrame {
               rfFuncSym     = pathFuncSym p
             , rfRegs        = pathRegs p
@@ -708,52 +707,37 @@ mergePaths ::
   => Path sbe
   -> MergedState (SBETerm sbe) (SBEMemory sbe)
   -> Simulator sbe m (MergedState (SBETerm sbe) (SBEMemory sbe))
-mergePaths p (EmptyState assumptions assertions) = do
+mergePaths cp (EmptyState assumptions assertions) = do
   a <- withSBE $ \sbe ->
-    applyAnd sbe (pathAssumptions p) (pathAssertions p)
-  let p' = p { pathAssumptions = assumptions
-             , pathAssertions = assertions                  
-             }
+   applyAnd sbe (pathAssumptions cp) (pathAssertions cp)
+  let p' = cp { pathAssumptions = assumptions
+              , pathAssertions = assertions                  
+              }
   return (PathState p' a)
-mergePaths p (PathState t a) = do
-  CE.assert (pathCB p == pathCB t) $ do
-    let c = pathAssumptions p
+mergePaths cp (PathState p a) = do
+  CE.assert (pathCB cp == pathCB p) $ do
+    let c = pathAssumptions cp
     sbe <- gets symBE
     whenVerbosity (>= 4) $ do
       dbugM $ "Merging paths. "
       whenVerbosity (>= 6) $ do
-        ppPathM "from" p
-        ppPathM "to" t
-    nm <- newPathName
+        ppPathM "from" cp
+        ppPathM "to" p
     let mergeTerm x y = liftSBE $ applyIte sbe c x y
     let mergeTyped (Typed t1 v1) (Typed t2 v2) =
           CE.assert (t1 == t2) $
             Typed t1 <$> mergeTerm v1 v2
     -- Merge call frame
-    merged <- mergeMapsBy mergeTyped (pathRegs p) (pathRegs t)
+    merged <- sequence $
+      M.intersectionWith mergeTyped (pathRegs cp) (pathRegs p)
     -- Get merge memory
-    mem' <- liftSBE $ memMerge sbe c (pathMem p) (pathMem t)
-    a' <- mergeTerm (pathAssertions p) a
-    let p' = t { pathName = nm
-               , pathRegs = merged
+    mem' <- liftSBE $ memMerge sbe c (pathMem cp) (pathMem p)
+    let p' = p { pathRegs = merged
                , pathMem = mem'
                }
+    a' <- mergeTerm (pathAssertions cp) a
     whenVerbosity (>=6) $ ppPathM "mergedPath" p'
     return (PathState p' a') 
-
--- @mergeMapsBy from to act@ unions the @from@ and @to@ maps, combing common
--- elements according to the monadic element-merging operation @act@.
-mergeMapsBy :: (Ord k, Functor m, Monad m)
-  => (a -> a -> m a)
-  -> M.Map k a
-  -> M.Map k a
-  -> m (M.Map k a)
-mergeMapsBy act from to = union <$> merged
-  where
-    union prefer      = prefer `M.union` from `M.union` to -- left-biased
-    merged            = DF.foldrM f M.empty isect
-    f (k, v1, v2) acc = flip (M.insert k) acc <$> act v1 v2
-    isect             = M.intersectionWithKey (\k v1 v2 -> (k, v1, v2)) from to
     
 data EvalContext sbe = EvalContext {
        evalContextName :: String
