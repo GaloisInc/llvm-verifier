@@ -469,8 +469,7 @@ exitFramePath ef =
 
 -- | Return value of this path.
 pathRetVal :: Path' term mem -> Maybe term         
-pathRetVal p = typedValue <$> M.lookup entryRsltReg regs
-  where regs = frmRegs (pathCallFrame p)
+pathRetVal p = typedValue <$> M.lookup entryRsltReg (pathRegs p)
 
 getProgramReturnValue :: (Monad m, Functor m)
   => Simulator sbe m (Maybe (SBETerm sbe))
@@ -581,7 +580,7 @@ run = do
             sbe <- gets symBE
             when (pathAssertedFalse sbe p) $
               errorPath $ FailRsn $ "This path is infeasible"
-            let sym = frmFuncSym (pathCallFrame p)
+            let sym = pathFuncSym p
             Just def <- lookupDefine sym <$> gets codebase
             -- TODO: Figure out how to make sure we get a valid path.
             runStmts $ sbStmts $ lookupSymBlock def pcb
@@ -730,8 +729,7 @@ mergePaths p (PathState t a) = do
           CE.assert (t1 == t2) $
             Typed t1 <$> mergeTerm v1 v2
     -- Merge call frame
-    let regs = frmRegs . pathCallFrame
-    merged <- mergeMapsBy mergeTyped (regs p) (regs t)
+    merged <- mergeMapsBy mergeTyped (pathRegs p) (pathRegs t)
     let cf' = (pathCallFrame t){ frmRegs = merged }
     -- Get merge memory
     mem' <- liftSBE $ memMerge sbe c (pathMem p) (pathMem t)
@@ -761,19 +759,19 @@ data EvalContext sbe = EvalContext {
        evalContextName :: String
      , evalLLVMContext :: LLVMContext
      , evalGlobalTerms :: GlobalMap sbe
-     , evalCallFrame :: Maybe (CF sbe)
+     , evalRegs :: Maybe (RegMap (SBETerm sbe))
      , evalSBE :: SBE sbe
      }
                        
-getEvalContext :: Monad m => String -> Maybe (CF sbe) -> Simulator sbe m (EvalContext sbe)
-getEvalContext nm mcf = do
+getEvalContext :: Monad m => String -> Maybe (RegMap (SBETerm sbe)) -> Simulator sbe m (EvalContext sbe)
+getEvalContext nm mrm = do
   lc <- gets (cbLLVMCtx . codebase)
   gt <- gets globalTerms  
   sbe <- gets symBE
   return EvalContext { evalContextName = nm
                      , evalLLVMContext = lc
                      , evalGlobalTerms = gt
-                     , evalCallFrame = mcf 
+                     , evalRegs = mrm 
                      , evalSBE = sbe
                      }
 
@@ -796,7 +794,7 @@ getTypedTerm ::
   => String -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 getTypedTerm nm tv = do 
   mp <- getPath
-  ec <- getEvalContext nm (pathCallFrame <$> mp)
+  ec <- getEvalContext nm (pathRegs <$> mp)
   getTypedTerm' ec tv
 
 -- | Obtain the typed SBE term representation for the given LLVM value; performs
@@ -854,8 +852,8 @@ getTypedTerm' _ (Typed ty (L.ValDouble v)) =
   Typed ty <$> withSBE (\sbe -> termDouble sbe v)
 
 getTypedTerm' ec (Typed _ (L.ValIdent i)) =
-  case evalCallFrame ec of
-    Just frm -> lkupIdent i frm
+  case evalRegs ec of
+    Just rm -> lkupIdent i rm
     Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec ++ " with missing frame."
       
 getTypedTerm' _ (Typed ty L.ValUndef)
@@ -869,7 +867,7 @@ getTypedTerm' ec tv@(Typed t v)
   unimpl $ "getTypedTerm': unsupported value / call frame presence: "
             ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
             ++ "\n" ++ show (parens $ text $ show tv)
-            ++ "\nmfrm = " ++ show (ppCallFrame (evalSBE ec) <$> evalCallFrame ec) 
+            ++ "\nmrm = " ++ show (ppRegMap (evalSBE ec) <$> evalRegs ec) 
 
 zeroInit ::
   ( Functor m
@@ -921,7 +919,7 @@ step (PushCallFrame callee args mres) = do
   case eab of
     Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
     Right calleeSym -> do
-      ec <- getEvalContext "pushCallFrame" (Just (pathCallFrame p))
+      ec <- getEvalContext "pushCallFrame" (Just (pathRegs p))
       argTerms <- mapM (getTypedTerm' ec) args
       _ <- callDefine' False cb calleeSym mres argTerms
       return ()
@@ -1032,11 +1030,11 @@ eval (Conv op tv@(Typed (L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{}))
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval (Conv L.PtrToInt tv t2@(L.PrimType L.Integer{})) = do
   mp <- getPath
-  ec <- getEvalContext "eval@PtrToInt" (pathCallFrame <$> mp)
+  ec <- getEvalContext "eval@PtrToInt" (pathRegs <$> mp)
   evalPtrToInt ec tv t2
 eval (Conv L.IntToPtr tv@(Typed (L.PrimType L.Integer{}) _) t2) = do
   mp <- getPath
-  ec <- getEvalContext "eval@IntToPtr" (pathCallFrame <$> mp)
+  ec <- getEvalContext "eval@IntToPtr" (pathRegs <$> mp)
   evalIntToPtr ec tv t2
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm "bitCast" tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
@@ -1426,7 +1424,7 @@ resolveCallee callee = case callee of
  where
    resolveIdent i = do
      Just p <- getPath
-     findDefineByPtr =<< lkupIdent i (pathCallFrame p)
+     findDefineByPtr =<< lkupIdent i (pathRegs p)
    findDefineByPtr (Typed ty fp) = case L.elimFunPtr ty of
      Nothing -> err "Callee is not a function pointer"
      _       -> do
@@ -1457,8 +1455,8 @@ lkupIdent ::
   , Functor m
   , Functor sbe
   )
-  => L.Ident -> CF sbe -> Simulator sbe m (Typed (SBETerm sbe))
-lkupIdent i (frmRegs -> regs) = do
+  => L.Ident -> RegMap (SBETerm sbe) -> Simulator sbe m (Typed (SBETerm sbe))
+lkupIdent i regs = do
   case M.lookup i regs of
     Just x  -> return x
     Nothing -> illegal
@@ -1609,7 +1607,7 @@ dbugStep stmt = do
     Just p  -> do
       dbugM' 2 $ "Executing ("
                  ++ "#" ++ show (pathName p) ++ "): "
-                 ++ show (L.ppSymbol (frmFuncSym (pathCallFrame p)))
+                 ++ show (L.ppSymbol (pathFuncSym p))
                  ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
                  ++ ": " ++
                  case stmt of
@@ -1672,7 +1670,7 @@ warning msg = do
                       Nothing -> " at " ++ fn
                       Just cb -> " at " ++ fn ++ ":" ++ cbid
                         where cbid = show (ppSymBlockID cb)
-            where fn = show $ L.ppSymbol $ frmFuncSym $ pathCallFrame p
+            where fn = show $ L.ppSymbol $ pathFuncSym p
   liftIO $ putStrLn $ "Warning" ++ prefix ++ ". " ++ msg
 
 -- | Load a null-termianted string at given address.

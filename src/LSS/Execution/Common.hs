@@ -192,10 +192,6 @@ data SCExpr term
   | SCEAnd (SCExpr term) (SCExpr term)
   | SCEOr (SCExpr term) (SCExpr term)
 
-newtype Condition term = Condition term 
-
-newtype Assumption term = Assumption term
-
 type RegMap term = M.Map Reg (Typed term)
 
 -- | A frame (activation record) in the program being simulated
@@ -269,21 +265,22 @@ ppMergeFrame sbe mf = case mf of
       text "Pending paths:"
       $+$ nest 2 (if null pps then text "(none)" else vcat (map (ppPath sbe) pps))
 
-ppCallFrame :: SBE sbe -> CallFrame (SBETerm sbe) -> Doc
-ppCallFrame sbe (CallFrame _sym regMap) =
-  --text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (ppRegMap sbe regMap)
-  if M.null regMap then PP.empty else text "Locals:" $+$ nest 2 (ppRegMap sbe regMap)
+pathFuncSym :: Path' term mem -> L.Symbol
+pathFuncSym = frmFuncSym . pathCallFrame
 
+pathRegs :: Path' term mem -> RegMap term
+pathRegs = frmRegs . pathCallFrame
+               
 ppPath :: SBE sbe -> Path sbe -> Doc
 ppPath sbe p =
   text "Path #"
   <>  integer (pathName p)
-  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym (pathCallFrame p))
+  <>  brackets ( text (show $ L.ppSymbol $ pathFuncSym p)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
   <>  colon
-  $+$ nest 2 (ppCallFrame sbe (pathCallFrame p))
+  $+$ nest 2 (text "Locals:" $+$ nest 2 (ppRegMap sbe (pathRegs p)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
 
 --(Path cf mrv _mexc mcb _mpcb _mem c name) =
