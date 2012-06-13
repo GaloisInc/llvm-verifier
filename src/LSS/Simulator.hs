@@ -280,12 +280,14 @@ callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg args =
     Just (Override f, _) -> do
       r <- f calleeSym mreg args
       modifyPathRegsM $ setReturnValue "callDefine'" mreg r
+      modifyPath $ \p -> p { pathCB = Just normalRetID }       
       return []
   where
     normal
       | isPrefixOf "llvm." calleeName = do
           CE.assert (isNothing mreg) $ return ()
           intrinsic calleeName mreg args
+          modifyPath $ \p -> p { pathCB = Just normalRetID }
           return []
       | otherwise = do
           runNormalSymbol normalRetID calleeSym mreg args
@@ -896,16 +898,15 @@ step ::
   )
   => SymStmt -> Simulator sbe m ()
 
-step (PushCallFrame callee args mres) = do
-  Just p <- getPath
-  let Just cb = pathCB p
+step (PushCallFrame callee args mres retTgt) = do
   eab <- resolveCallee callee
   case eab of
     Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
     Right calleeSym -> do
+      Just p <- getPath
       ec <- getEvalContext "pushCallFrame" (Just (pathRegs p))
       argTerms <- mapM (getTypedTerm' ec) args
-      _ <- callDefine' False cb calleeSym mres argTerms
+      _ <- callDefine' False retTgt calleeSym mres argTerms
       return ()
 
 step (PushInvokeFrame _fn _args _mres _e) = unimpl "PushInvokeFrame"

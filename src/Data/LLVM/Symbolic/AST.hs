@@ -166,10 +166,10 @@ ppSymCond TrueSymCond = text "true"
 
 -- | Instruction in symbolic level.
 data SymStmt
-  -- | @PushInvokeFrame fn args res@ pushes a invoke frame to the merge frame stack
+  -- | @PushInvokeFrame fn args res retTarget@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@, and store the result in @res@ if the function
-  -- returns normally.
-  = PushCallFrame SymValue [Typed SymValue] (Maybe (Typed Reg))
+  -- returns normally.  The calling function will resume execution at retTarget.
+  = PushCallFrame SymValue [Typed SymValue] (Maybe (Typed Reg)) SymBlockID
   -- | @PushInvokeFrame fn args res e@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@.
   -- If the function returns normally, then the result, if any, will be stored in @res@.
@@ -206,10 +206,11 @@ data SymStmt
   -- TODO: Support all exception handling.
 
 ppSymStmt :: SymStmt -> Doc
-ppSymStmt (PushCallFrame fn args res)
+ppSymStmt (PushCallFrame fn args res retTgt)
   = text "pushCallFrame" <+> ppSymValue fn
   <> parens (commas (map ppTypedValue args))
   <+> maybe (text "void") (LLVM.ppTyped ppReg) res
+  <+> text "returns to" <+> ppSymBlockID retTgt
 ppSymStmt (PushInvokeFrame fn args res e)
   = text "pushInvokeFrame " <+> ppSymValue fn
   <> parens (commas (map ppTypedValue args))

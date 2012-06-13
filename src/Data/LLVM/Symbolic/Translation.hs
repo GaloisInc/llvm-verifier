@@ -203,15 +203,12 @@ liftBB lti phiMap bb = do
                     Nothing -> error "internal: malformed call instruction type"
                     Just (rty, _, _) -> Typed { typedType = rty, typedValue = reg}
         defineBlock (blockName idx) $ reverse il ++
-          [ SetCurrentBlock (blockName (idx+1))
-          , PushCallFrame v tpvl (Just res)
-          ]
+          [ PushCallFrame v tpvl (Just res) (blockName (idx + 1)) ]
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
       impl (Effect (LLVM.Call _b _tp v tpvl):r) idx il = do
         defineBlock (blockName idx) $ reverse il ++
-          [ SetCurrentBlock (blockName (idx+1))
-          , PushCallFrame v tpvl Nothing ]
+          [ PushCallFrame v tpvl Nothing (blockName (idx+1)) ]
         impl r (idx+1) []
       impl [Effect (LLVM.Jump tgt)] idx il = do
         defineBlock (blockName idx) $
