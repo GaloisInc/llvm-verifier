@@ -40,6 +40,7 @@ module LSS.Simulator
   , callDefine
   , callDefine_
   , defaultSEH
+  , lookupSymbolDef
   , getProgramReturnValue
   , getProgramFinalMem
   , EvalContext
@@ -56,7 +57,6 @@ module LSS.Simulator
   , sizeof
   , processMemCond
   -- for testing
-  , closeTermM
   , dbugM
   , dbugTerm
   , dbugTypedTerm
@@ -70,8 +70,8 @@ module LSS.Simulator
 where
 
 import           Control.Applicative
-import           Control.Monad.Error hiding (mapM)
-import           Control.Monad.State       hiding (State, mapM)
+import           Control.Monad.Error hiding (mapM, sequence)
+import           Control.Monad.State       hiding (State, mapM, sequence)
 import           Data.Int
 import           Data.LLVM.TargetData
 import           Data.LLVM.Symbolic.AST
@@ -89,11 +89,10 @@ import           System.Exit
 import           System.IO
 import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
-import Prelude   hiding (mapM)
-import Data.Traversable (mapM)
+import Prelude   hiding (mapM, sequence)
+import Data.Traversable
 
 import qualified Control.Exception         as CE
-import qualified Data.Foldable             as DF
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 import qualified Data.Vector               as V
@@ -125,9 +124,9 @@ runSimulator cb sbe mem lifter seh mopts m = do
     newSt = newSimState cb sbe mem lifter seh mopts
     go    = runSM $ do
       true <- liftSBE $ termBool sbe True
-      ms <- liftSBE $ initialMergedState sbe
       name <- newPathName
-      let p = Path { pathCallFrame = CallFrame entrySymbol M.empty
+      let p = Path { pathFuncSym = entrySymbol
+                   , pathRegs = M.empty
                    , pathException = Nothing
                    , pathCB = Nothing
                    , pathMem = mem
@@ -136,8 +135,7 @@ runSimulator cb sbe mem lifter seh mopts m = do
                    , pathAssertions = true
                    }
       let ef = ExitFrame {
-                   programMergedState = ms 
-                 , efPending = [p]
+                   efPending = [p]
                  }
       pushMergeFrame (ExitMergeFrame ef)
       initGlobals
@@ -250,10 +248,9 @@ callDefine calleeSym t args = do
   return r
 
 setReturnValue :: String -> Maybe (Typed Reg) -> Maybe t
-               ->  CallFrame t -> CallFrame t
-setReturnValue _n (Just tr) (Just rv) cf = 
-    setReg (typedValue tr) (typedAs tr rv) cf
-setReturnValue _n Nothing   Nothing   cf = cf
+               ->  RegMap t -> RegMap t
+setReturnValue _n (Just tr) (Just rv) rm = M.insert (typedValue tr) (typedAs tr rv) rm
+setReturnValue _n Nothing   Nothing   rm = rm
 setReturnValue nm Nothing   (Just _) _  = 
   error $ nm ++ ": Return value where non expected"
 setReturnValue nm (Just tr) Nothing   _  =
@@ -282,7 +279,7 @@ callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg args =
       | otherwise    -> callDefine' True normalRetID calleeSym' mreg args
     Just (Override f, _) -> do
       r <- f calleeSym mreg args
-      modifyCallFrameM $ setReturnValue "callDefine'" mreg r
+      modifyPathRegsM $ setReturnValue "callDefine'" mreg r
       return []
   where
     normal
@@ -321,7 +318,8 @@ runNormalSymbol normalRetID calleeSym mreg args = do
   let name = pathName p
   let mem = pathMem p
   true <- withSBE $ \s -> termBool s True
-  let path =  Path { pathCallFrame = CallFrame calleeSym M.empty
+  let path =  Path { pathFuncSym = calleeSym
+                   , pathRegs = M.empty
                    , pathException = Nothing 
                    , pathCB = Just initSymBlockID 
                    , pathMem = mem
@@ -329,10 +327,11 @@ runNormalSymbol normalRetID calleeSym mreg args = do
                    , pathAssumptions = true
                    , pathAssertions = true
                    }
-  let ms = pathMergedState path
+  let ms = pathMergedState p
   let rf = ReturnFrame {
-              rfCallFrame = pathCallFrame p
-            , rfRetReg = mreg 
+              rfFuncSym     = pathFuncSym p
+            , rfRegs        = pathRegs p
+            , rfRetReg      = mreg 
             , rfNormalLabel = normalRetID 
             , rfExceptLabel = Nothing 
             , rfNormalState = ms
@@ -342,7 +341,7 @@ runNormalSymbol normalRetID calleeSym mreg args = do
   pushMergeFrame (ReturnMergeFrame rf)
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   lc <- gets (cbLLVMCtx . codebase)
-  modifyCallFrameM $ \cf -> cf{ frmRegs = bindArgs lc (sdArgs def) args }
+  modifyPathRegsM $ \_ -> bindArgs lc (sdArgs def) args
   -- Push stack frame in current process memory.
   do Just m <- getMem
      (c,m') <- withSBE $ \s -> stackPushFrame s m
@@ -463,25 +462,20 @@ memSet dst val len align = do
       memSet dst' val len' align
 
 exitFramePath :: ExitFrame term mem -> Maybe (Path' term mem)
-exitFramePath ef =
-  case programMergedState ef of
-    EmptyState{} -> Nothing 
-    PathState p _ -> Just p
-
+exitFramePath ef = safeHead (efPending ef) 
+  
 -- | Return value of this path.
 pathRetVal :: Path' term mem -> Maybe term         
-pathRetVal p = typedValue <$> M.lookup entryRsltReg regs
-  where regs = frmRegs (pathCallFrame p)
+pathRetVal p = typedValue <$> M.lookup entryRsltReg (pathRegs p)
 
 getProgramReturnValue :: (Monad m, Functor m)
   => Simulator sbe m (Maybe (SBETerm sbe))
 getProgramReturnValue = do
-  Just (top, _) <- popMF <$> gets ctrlStk
   sbe <- gets symBE
+  Just (top, _) <- popMF <$> gets ctrlStk
   return $
     case top of
-      ExitMergeFrame (exitFramePath -> Just p) -> pathRetVal p
-      ExitMergeFrame _ -> Nothing
+      ExitMergeFrame ef -> pathRetVal =<< safeHead (efPending ef)
       _ -> error $ "getProgramReturnValue: program not yet terminated " 
                      ++ show (ppMergeFrame sbe top)
 
@@ -582,31 +576,34 @@ run = do
             sbe <- gets symBE
             when (pathAssertedFalse sbe p) $
               errorPath $ FailRsn $ "This path is infeasible"
-            let sym = frmFuncSym (pathCallFrame p)
+            let sym = pathFuncSym p
             Just def <- lookupDefine sym <$> gets codebase
             -- TODO: Figure out how to make sure we get a valid path.
             runStmts $ sbStmts $ lookupSymBlock def pcb
+          run 
         [] -> do  -- Need to pop frame and get merge path.
           next <- popMergeFrame "run@next"
-          case next of
-            ExitMergeFrame ef ->
-              let ef' = ef { programMergedState = getMergedState top }
-               in pushMergeFrame $ ExitMergeFrame ef'
-            _ ->
-              case getMergedState top of
-                EmptyState assumptions _ -> -- All paths lead to errors.  
-                  pushErrorPath next assumptions
-                PathState p a -> do 
-                  p' <- withSBE $ \sbe -> addPathAssertion sbe a p
-                  pushMergeFrame $ pushPending p' next
-      run -- start/continue normal execution
+          case getMergedState "run@next" top of
+            EmptyState assumptions _ -> -- All paths lead to errors.  
+              case next of
+                ExitMergeFrame _ -> do
+                  pushMergeFrame next
+                  showEPs <- optsErrorPathDetails <$> gets lssOpts
+                  if showEPs then
+                    tellUser "All paths yielded errors!" >> dumpErrorPaths
+                  else
+                    tellUser "All paths yielded errors! To see details, use --errpaths."
+                _ -> pushErrorPath "run@error" next assumptions >> run
+            PathState p a -> do 
+              p' <- withSBE $ \sbe -> addPathAssertion sbe a p
+              pushMergeFrame $ pushPending p' next
+              run
   where
     handleError (ErrorPathExc _rsn s) = do
       -- errorPath ensures that the simulator state provided in the
       -- exception data is correct for the next invocation of run,
       -- so overwrite the current state here.
       modify (const s)
-      run
     handleError e = throwError e
     showErrCnt x
       | x == 1    = "Encountered errors on exactly one path. Details below."
@@ -649,14 +646,8 @@ pushMergeFrame = modifyCS . pushMF
 
 assign :: (Functor m, MonadIO m)
   => Reg -> Typed (SBETerm sbe) -> Simulator sbe m ()
-assign reg v = modifyCallFrameM $ \frm ->
-  frm{ frmRegs = M.insert reg v (frmRegs frm) }
+assign reg v = modifyPathRegsM $ M.insert reg v 
   
-getCurrentBlockM :: (Functor m, Monad m) => Simulator sbe m SymBlockID
-getCurrentBlockM = do
-  Just p <- getPath
-  return $ maybe (error "getCurrentBlock: no current block") id (pathCB p)
-
 -- | Evaluate condition in current path.
 evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBETerm sbe)
 evalCond TrueSymCond = withSBE $ \sbe -> termBool sbe True
@@ -694,9 +685,10 @@ mergeReturn mtv = do
   -- Pop stack frame from memory.
   m' <- liftSBE $ stackPopFrame sbe (pathMem p)
   -- Get the path after updating return value and memory.
-  let cf' = setReturnValue "mergeReturn" (rfRetReg rf) (typedValue <$> mrv)
-              (rfCallFrame rf)
-  let p' = p { pathCallFrame = cf'
+  let rm' = setReturnValue "mergeReturn" (rfRetReg rf) (typedValue <$> mrv)
+              (rfRegs rf)
+  let p' = p { pathFuncSym = rfFuncSym rf 
+             , pathRegs = rm'
              , pathCB = Just (rfNormalLabel rf)
              , pathMem = m' }
   -- Merge updated path with top merge state.
@@ -715,72 +707,55 @@ mergePaths ::
   => Path sbe
   -> MergedState (SBETerm sbe) (SBEMemory sbe)
   -> Simulator sbe m (MergedState (SBETerm sbe) (SBEMemory sbe))
-mergePaths p (EmptyState assumptions assertions) = do
+mergePaths cp (EmptyState assumptions assertions) = do
   a <- withSBE $ \sbe ->
-    applyAnd sbe (pathAssumptions p) (pathAssertions p)
-  let p' = p { pathAssumptions = assumptions
-             , pathAssertions = assertions                  
-             }
+   applyAnd sbe (pathAssumptions cp) (pathAssertions cp)
+  let p' = cp { pathAssumptions = assumptions
+              , pathAssertions = assertions                  
+              }
   return (PathState p' a)
-mergePaths p (PathState t a) = do
-  CE.assert (pathCB p == pathCB t) $ do
-    let c = pathAssumptions p
+mergePaths cp (PathState p a) = do
+  CE.assert (pathCB cp == pathCB p) $ do
+    let c = pathAssumptions cp
     sbe <- gets symBE
     whenVerbosity (>= 4) $ do
       dbugM $ "Merging paths. "
       whenVerbosity (>= 6) $ do
-        ppPathM "from" p
-        ppPathM "to" t
-    nm <- newPathName
+        ppPathM "from" cp
+        ppPathM "to" p
     let mergeTerm x y = liftSBE $ applyIte sbe c x y
     let mergeTyped (Typed t1 v1) (Typed t2 v2) =
           CE.assert (t1 == t2) $
             Typed t1 <$> mergeTerm v1 v2
     -- Merge call frame
-    let regs = frmRegs . pathCallFrame
-    merged <- mergeMapsBy mergeTyped (regs p) (regs t)
-    let cf' = (pathCallFrame t){ frmRegs = merged }
+    merged <- sequence $
+      M.intersectionWith mergeTyped (pathRegs cp) (pathRegs p)
     -- Get merge memory
-    mem' <- liftSBE $ memMerge sbe c (pathMem p) (pathMem t)
-    a' <- mergeTerm (pathAssertions p) a
-    let p' = t { pathName = nm
-               , pathCallFrame = cf'
+    mem' <- liftSBE $ memMerge sbe c (pathMem cp) (pathMem p)
+    let p' = p { pathRegs = merged
                , pathMem = mem'
                }
+    a' <- mergeTerm (pathAssertions cp) a
     whenVerbosity (>=6) $ ppPathM "mergedPath" p'
     return (PathState p' a') 
-
--- @mergeMapsBy from to act@ unions the @from@ and @to@ maps, combing common
--- elements according to the monadic element-merging operation @act@.
-mergeMapsBy :: (Ord k, Functor m, Monad m)
-  => (a -> a -> m a)
-  -> M.Map k a
-  -> M.Map k a
-  -> m (M.Map k a)
-mergeMapsBy act from to = union <$> merged
-  where
-    union prefer      = prefer `M.union` from `M.union` to -- left-biased
-    merged            = DF.foldrM f M.empty isect
-    f (k, v1, v2) acc = flip (M.insert k) acc <$> act v1 v2
-    isect             = M.intersectionWithKey (\k v1 v2 -> (k, v1, v2)) from to
     
 data EvalContext sbe = EvalContext {
        evalContextName :: String
      , evalLLVMContext :: LLVMContext
      , evalGlobalTerms :: GlobalMap sbe
-     , evalCallFrame :: Maybe (CF sbe)
+     , evalRegs :: Maybe (RegMap (SBETerm sbe))
      , evalSBE :: SBE sbe
      }
                        
-getEvalContext :: Monad m => String -> Maybe (CF sbe) -> Simulator sbe m (EvalContext sbe)
-getEvalContext nm mcf = do
+getEvalContext :: Monad m => String -> Maybe (RegMap (SBETerm sbe)) -> Simulator sbe m (EvalContext sbe)
+getEvalContext nm mrm = do
   lc <- gets (cbLLVMCtx . codebase)
   gt <- gets globalTerms  
   sbe <- gets symBE
   return EvalContext { evalContextName = nm
                      , evalLLVMContext = lc
                      , evalGlobalTerms = gt
-                     , evalCallFrame = mcf 
+                     , evalRegs = mrm 
                      , evalSBE = sbe
                      }
 
@@ -803,7 +778,7 @@ getTypedTerm ::
   => String -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 getTypedTerm nm tv = do 
   mp <- getPath
-  ec <- getEvalContext nm (pathCallFrame <$> mp)
+  ec <- getEvalContext nm (pathRegs <$> mp)
   getTypedTerm' ec tv
 
 -- | Obtain the typed SBE term representation for the given LLVM value; performs
@@ -861,8 +836,8 @@ getTypedTerm' _ (Typed ty (L.ValDouble v)) =
   Typed ty <$> withSBE (\sbe -> termDouble sbe v)
 
 getTypedTerm' ec (Typed _ (L.ValIdent i)) =
-  case evalCallFrame ec of
-    Just frm -> lkupIdent i frm
+  case evalRegs ec of
+    Just rm -> lkupIdent i rm
     Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec ++ " with missing frame."
       
 getTypedTerm' _ (Typed ty L.ValUndef)
@@ -876,7 +851,7 @@ getTypedTerm' ec tv@(Typed t v)
   unimpl $ "getTypedTerm': unsupported value / call frame presence: "
             ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
             ++ "\n" ++ show (parens $ text $ show tv)
-            ++ "\nmfrm = " ++ show (ppCallFrame (evalSBE ec) <$> evalCallFrame ec) 
+            ++ "\nmrm = " ++ show (ppRegMap (evalSBE ec) <$> evalRegs ec) 
 
 zeroInit ::
   ( Functor m
@@ -922,13 +897,13 @@ step ::
   => SymStmt -> Simulator sbe m ()
 
 step (PushCallFrame callee args mres) = do
-  cb  <- getCurrentBlockM
+  Just p <- getPath
+  let Just cb = pathCB p
   eab <- resolveCallee callee
   case eab of
     Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
     Right calleeSym -> do
-      Just p <- getPath
-      ec <- getEvalContext "pushCallFrame" (Just (pathCallFrame p))
+      ec <- getEvalContext "pushCallFrame" (Just (pathRegs p))
       argTerms <- mapM (getTypedTerm' ec) args
       _ <- callDefine' False cb calleeSym mres argTerms
       return ()
@@ -964,7 +939,7 @@ step (MergePostDominator pdid) = do
   newm <- withSBE (\s -> memPopMergeFrame s (pathMem p))
   let p' = p { pathMem = newm }
   -- Get merge state.
-  mmerged <- mergePaths p' (getMergedState mf)
+  mmerged <- mergePaths p' (getMergedState "mergePostDominator" mf)
   pushMergeFrame (setMergedState mmerged mf)
 
 step (MergeReturn mrslt) = mergeReturn mrslt
@@ -1039,11 +1014,11 @@ eval (Conv op tv@(Typed (L.PrimType L.Integer{}) _) t2@(L.PrimType L.Integer{}))
   Typed t2 <$> withSBE (\sbe -> applyConv sbe op x t2)
 eval (Conv L.PtrToInt tv t2@(L.PrimType L.Integer{})) = do
   mp <- getPath
-  ec <- getEvalContext "eval@PtrToInt" (pathCallFrame <$> mp)
+  ec <- getEvalContext "eval@PtrToInt" (pathRegs <$> mp)
   evalPtrToInt ec tv t2
 eval (Conv L.IntToPtr tv@(Typed (L.PrimType L.Integer{}) _) t2) = do
   mp <- getPath
-  ec <- getEvalContext "eval@IntToPtr" (pathCallFrame <$> mp)
+  ec <- getEvalContext "eval@IntToPtr" (pathRegs <$> mp)
   evalIntToPtr ec tv t2
 eval (Conv L.BitCast tv ty) = Typed ty . typedValue <$> getTypedTerm "bitCast" tv
 eval e@Conv{} = unimpl $ "Conv expr type: " ++ show (ppSymExpr e)
@@ -1397,9 +1372,6 @@ memFailRsn sbe desc terms = do
 setSEH :: Monad m => SEH sbe m -> Simulator sbe m ()
 setSEH seh = modify $ \s -> s{ evHandlers = seh }
 
-closeTermM :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m (SBEClosedTerm sbe)
-closeTermM t = withSBE' $ \sbe -> closeTerm sbe t
-
 newPathName :: Monad m => Simulator sbe m Integer
 newPathName = do
   cnt <- gets pathCounter
@@ -1436,7 +1408,7 @@ resolveCallee callee = case callee of
  where
    resolveIdent i = do
      Just p <- getPath
-     findDefineByPtr =<< lkupIdent i (pathCallFrame p)
+     findDefineByPtr =<< lkupIdent i (pathRegs p)
    findDefineByPtr (Typed ty fp) = case L.elimFunPtr ty of
      Nothing -> err "Callee is not a function pointer"
      _       -> do
@@ -1467,8 +1439,8 @@ lkupIdent ::
   , Functor m
   , Functor sbe
   )
-  => L.Ident -> CF sbe -> Simulator sbe m (Typed (SBETerm sbe))
-lkupIdent i (frmRegs -> regs) = do
+  => L.Ident -> RegMap (SBETerm sbe) -> Simulator sbe m (Typed (SBETerm sbe))
+lkupIdent i regs = do
   case M.lookup i regs of
     Just x  -> return x
     Nothing -> illegal
@@ -1484,9 +1456,6 @@ runStmts ::
   )
   => [SymStmt] -> Simulator sbe m ()
 runStmts = mapM_ dbugStep
-
-setReg :: Reg -> Typed term -> CallFrame term -> CallFrame term
-setReg r v frm@(CallFrame _ regMap) = frm{ frmRegs = M.insert r v regMap }
 
 entryRsltReg :: Reg
 entryRsltReg = L.Ident "__galois_final_rslt"
@@ -1517,8 +1486,8 @@ modifyPath f = modifyCS $ \cs ->
       Just (p,mf') = popPending mf
    in pushMF (pushPending (f p) mf') cs'
 
-modifyCallFrameM :: (Functor m, Monad m) => (CF sbe -> CF sbe) -> Simulator sbe m ()
-modifyCallFrameM = modifyPath . modifyCallFrame
+modifyPathRegsM :: (Functor m, Monad m) => (RegMap (SBETerm sbe) -> RegMap (SBETerm sbe)) -> Simulator sbe m ()
+modifyPathRegsM = modifyPath . modifyPathRegs
 
 type StdOvd m sbe =
   ( Functor m
@@ -1553,9 +1522,9 @@ unimpl msg  = errorPath $ FailRsn $ "UN{SUPPORTED,IMPLEMENTED}: " ++ msg
 illegal msg = errorPath $ FailRsn $ "ILLEGAL: " ++ msg
 
 -- | Push an error path to the 
-pushErrorPath :: (Functor m, Monad m) => MF sbe -> SBETerm sbe -> Simulator sbe m () 
-pushErrorPath mf pa = 
-  case getMergedState mf of
+pushErrorPath :: (Functor m, Monad m) => String -> MF sbe -> SBETerm sbe -> Simulator sbe m () 
+pushErrorPath nm mf pa = 
+  case getMergedState nm mf of
     EmptyState _ _ -> pushMergeFrame mf 
     PathState mergedPath assertions -> do
       -- Update assertions with negation.
@@ -1575,7 +1544,7 @@ errorPath rsn = do
   mmf <- popMergeFrame "errorPath"
   let (p,mf) = maybe err id (popPending mmf)
         where err = error $ "errorPath has empty path with " ++ show rsn
-  pushErrorPath mf (pathAssumptions p)  
+  pushErrorPath "errorPath" mf (pathAssumptions p)  
   sbe <- gets symBE
   whenVerbosity (>=3) $ do
     dbugM $ "Error path encountered: " ++ show (ppFailRsn rsn)
@@ -1622,7 +1591,7 @@ dbugStep stmt = do
     Just p  -> do
       dbugM' 2 $ "Executing ("
                  ++ "#" ++ show (pathName p) ++ "): "
-                 ++ show (L.ppSymbol (frmFuncSym (pathCallFrame p)))
+                 ++ show (L.ppSymbol (pathFuncSym p))
                  ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
                  ++ ": " ++
                  case stmt of
@@ -1685,7 +1654,7 @@ warning msg = do
                       Nothing -> " at " ++ fn
                       Just cb -> " at " ++ fn ++ ":" ++ cbid
                         where cbid = show (ppSymBlockID cb)
-            where fn = show $ L.ppSymbol $ frmFuncSym $ pathCallFrame p
+            where fn = show $ L.ppSymbol $ pathFuncSym p
   liftIO $ putStrLn $ "Warning" ++ prefix ++ ". " ++ msg
 
 -- | Load a null-termianted string at given address.
@@ -1835,6 +1804,8 @@ userSetVebosityOverride = Override $ \_sym _rty args -> do
   where
     e = errorPath . FailRsn
 
+{-
+--TODO: Fix exit handler
 exitHandler :: StdOvd sbe m
 exitHandler = Override $ \_sym _rty args -> do
   case args of
@@ -1846,6 +1817,7 @@ exitHandler = Override $ \_sym _rty args -> do
     _ -> e "Incorrect number of parameters passed to exit()"
   where
     e = errorPath . FailRsn
+-}
 
 assertHandler__assert_rtn :: StdOvd sbe m
 assertHandler__assert_rtn = Override $ \_sym _rty args -> do
@@ -2145,8 +2117,8 @@ type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 
 libcOverrides :: (Functor m, MonadIO m, Functor sbe) => [OverrideEntry sbe m]
 libcOverrides =
-  [ ("exit", voidTy, [i32], False, exitHandler)
-  , ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
+  [ ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
+  --, ("exit", voidTy, [i32], False, exitHandler)
   , ("alloca", voidPtr, [i32], False, allocHandler alloca)
   , ("malloc", voidPtr, [i32], False, allocHandler malloc)
   , ("free", voidTy, [voidPtr], False,

@@ -22,7 +22,7 @@ module LSS.Execution.MergeFrame
   , isExitFrame
 
   -- * Path manipulation/query
-  , modifyCallFrame
+  , modifyPathRegs
   , pcTerm
   )
 
@@ -53,15 +53,15 @@ isExitFrame _                = False
 -- | Obtains the merged state from a merge frame; in the case of return merge
 -- frames, this function yields the merged state for normal function call
 -- return.
-getMergedState :: MergeFrame term mem -> MergedState term mem
-getMergedState (ExitMergeFrame ef)     = programMergedState ef
-getMergedState (PostdomMergeFrame pdf) = pdfMergedState pdf
-getMergedState (ReturnMergeFrame rf)   = rfNormalState rf
+getMergedState :: String -> MergeFrame term mem -> MergedState term mem
+getMergedState nm (ExitMergeFrame _)     = error $ nm ++ ": ExitFrame has no merged state"
+getMergedState _ (PostdomMergeFrame pdf) = pdfMergedState pdf
+getMergedState _ (ReturnMergeFrame rf)   = rfNormalState rf
 
 -- | Sets the merged state in the given merge frame; in the case of return merge
 -- frames, this function sets the merged state for normal function call return.
 setMergedState :: MergedState term mem -> MergeFrame term mem -> MergeFrame term mem
-setMergedState ms (ExitMergeFrame ef)     = ExitMergeFrame ef { programMergedState = ms }
+setMergedState _ (ExitMergeFrame _)       = error "setMergedState: ExitFrame has no merged state"
 setMergedState ms (PostdomMergeFrame pdf) = PostdomMergeFrame pdf { pdfMergedState = ms }
 setMergedState ms (ReturnMergeFrame rf)   = ReturnMergeFrame rf { rfNormalState = ms }
 
@@ -95,5 +95,5 @@ popPending mf = case mf of
       [] -> Nothing
       p:ps -> Just (p, ReturnMergeFrame rf { rfPending = ps })
 
-modifyCallFrame :: (CallFrame term -> CallFrame term) -> Path' term mem -> Path' term mem
-modifyCallFrame f p = p { pathCallFrame = f (pathCallFrame p) }
+modifyPathRegs :: (RegMap term -> RegMap term) -> Path' term mem -> Path' term mem
+modifyPathRegs f p = p { pathRegs = f (pathRegs p) }

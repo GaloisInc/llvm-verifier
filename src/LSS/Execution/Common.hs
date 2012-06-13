@@ -50,7 +50,6 @@ type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
 type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))
 type CS sbe        = CtrlStk (SBETerm sbe) (SBEMemory sbe)
 type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
-type CF sbe        = CallFrame (SBETerm sbe)
 type OvrMap sbe m  = M.Map L.Symbol (Override sbe m, Bool {- user override? -})
 
 -- | Symbolic simulator options
@@ -89,8 +88,8 @@ data MergedState term mem
 -- | Captures all symbolic execution state for a unique control-flow path (as
 -- specified by the recorded path constraints)
 data Path' term mem = Path
-  { pathCallFrame   :: CallFrame term     -- ^ The top call frame of the dynamic
-                                          -- call stack along this path
+  { pathFuncSym     :: L.Symbol
+  , pathRegs        :: RegMap term
   , pathException   :: Maybe term         -- ^ When handling an exception along
                                           -- this path, a pointer to the
                                           -- exception structure; Nothing
@@ -123,8 +122,7 @@ addPathAssertion sbe t p = set <$> applyAnd sbe (pathAssertions p) t
   where set a = p { pathAssertions = a }
 
 data ExitFrame term mem = ExitFrame {
-       programMergedState  :: MergedState term mem
-     , efPending :: [Path' term mem]
+       efPending :: [Path' term mem]     
      }  
 
 data PostdomFrame term mem = PostdomFrame { 
@@ -134,7 +132,8 @@ data PostdomFrame term mem = PostdomFrame {
      }
 
 data ReturnFrame term mem = ReturnFrame {
-       rfCallFrame     :: CallFrame term       -- ^ Call frame for path when it arrives.
+       rfFuncSym       :: L.Symbol
+     , rfRegs          :: RegMap term          -- ^ Call frame for path when it arrives.
      , rfRetReg        :: Maybe (L.Typed Reg)  -- ^ Register to store return value (if any)
      , rfNormalLabel   :: SymBlockID           -- ^ Label for normal path
      , rfExceptLabel   :: Maybe SymBlockID     -- ^ Label for exception path
@@ -192,18 +191,7 @@ data SCExpr term
   | SCEAnd (SCExpr term) (SCExpr term)
   | SCEOr (SCExpr term) (SCExpr term)
 
-newtype Condition term = Condition term 
-
-newtype Assumption term = Assumption term
-
 type RegMap term = M.Map Reg (Typed term)
-
--- | A frame (activation record) in the program being simulated
-data CallFrame term = CallFrame
-  { frmFuncSym :: L.Symbol
-  , frmRegs    :: RegMap term
-  }
-  deriving Show
 
 -- | A handler for a function override. This gets the function symbol as an
 -- argument so that one function can potentially be used to override multiple
@@ -245,7 +233,7 @@ ppMergeFrame :: SBE sbe -> MF sbe -> Doc
 ppMergeFrame sbe mf = case mf of
   ExitMergeFrame ef ->
     text "MF(Exit):"
-    $+$ nest 2 (mpath "no merged state set" (programMergedState ef))
+    $+$ nest 2 (ppPendingPaths (efPending ef))    
   PostdomMergeFrame pdf ->
     text "MF(Pdom|" <>  ppSymBlockID (pdfLabel pdf) <> text "):"
     $+$ nest 2 (mpath "" (pdfMergedState pdf))
@@ -269,21 +257,16 @@ ppMergeFrame sbe mf = case mf of
       text "Pending paths:"
       $+$ nest 2 (if null pps then text "(none)" else vcat (map (ppPath sbe) pps))
 
-ppCallFrame :: SBE sbe -> CallFrame (SBETerm sbe) -> Doc
-ppCallFrame sbe (CallFrame _sym regMap) =
-  --text "CF" <> parens (L.ppSymbol sym) <> colon $+$ nest 2 (ppRegMap sbe regMap)
-  if M.null regMap then PP.empty else text "Locals:" $+$ nest 2 (ppRegMap sbe regMap)
-
 ppPath :: SBE sbe -> Path sbe -> Doc
 ppPath sbe p =
   text "Path #"
   <>  integer (pathName p)
-  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym (pathCallFrame p))
+  <>  brackets ( text (show $ L.ppSymbol $ pathFuncSym p)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
   <>  colon
-  $+$ nest 2 (ppCallFrame sbe (pathCallFrame p))
+  $+$ nest 2 (text "Locals:" $+$ nest 2 (ppRegMap sbe (pathRegs p)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
 
 --(Path cf mrv _mexc mcb _mpcb _mem c name) =
@@ -293,7 +276,7 @@ ppPathLoc :: SBE sbe -> Path sbe -> Doc
 ppPathLoc _ p =
   text "Path #"
   <>  integer (pathName p)
-  <>  brackets ( text (show $ L.ppSymbol $ frmFuncSym (pathCallFrame p))
+  <>  brackets ( text (show $ L.ppSymbol $ pathFuncSym p)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )

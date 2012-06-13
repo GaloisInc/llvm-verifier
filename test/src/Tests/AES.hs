@@ -19,7 +19,6 @@ import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
 import           Text.LLVM               ((=:), Typed(..), typedValue)
-import           Verinf.Symbolic.Common  (ConstantProjection(..))
 import qualified Text.LLVM               as L
 
 aesTests :: [(Args, Property)]
@@ -46,7 +45,7 @@ aes128ConcreteImpl = do
               map (getVal s) <$> termDecomp s (replicate 4 i32) ctarr
   return (ctVals == ctChks)
   where
-    getVal s   = typedValue . fmap (fromJust . getUVal . closeTerm s)
+    getVal s v = snd $ fromJust $ asUnsignedInteger s (typedValue v)
     initArr xs = do
        arr <- withSBE . flip termArray
                 =<< mapM (withSBE . \x s -> termInt s 32 x) xs
