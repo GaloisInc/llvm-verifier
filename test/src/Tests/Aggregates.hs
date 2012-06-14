@@ -30,9 +30,11 @@ aggTests =
   , test 1 False "test-array-mat4x4-mult"           $ arrayMat4x4      1
   , test 1 False "test-struct-init-and-access"      $ structInitAccess 1
   , test 1 False "test-array-of-structs"            $ structArray      1
+  {-
   , lssTest 0 "ctests/test-struct-member-indirect-call" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 0)
       runTestLSSDag v cb []   $ chkLSS Nothing (Just 0)
+  -}
   ]
   where
     arrayBaseIdx v        = t1 v "arr1" (RV 42)
