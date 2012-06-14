@@ -285,7 +285,6 @@ callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg args =
   where
     normal
       | isPrefixOf "llvm." calleeName = do
-          CE.assert (isNothing mreg) $ return ()
           intrinsic calleeName mreg args
           modifyPath $ \p -> p { pathCB = Just normalRetID }
           return []

@@ -41,7 +41,7 @@ main = do
 
   eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
   case eab of
-    Left msg  -> err msg
+    Left msg  -> err (BC.formatError msg)
     Right mdl -> do
       banners $ "llvm-pretty module"
       putStrLn $ show (LLVM.ppModule mdl)

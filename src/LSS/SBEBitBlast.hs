@@ -43,7 +43,6 @@ import           Control.Monad
 import           Control.Monad.IO.Class
 import           Data.Binary.IEEE754
 import           Data.Bits
-import           Data.Int
 import           Data.IORef
 import           Data.LLVM.Memory
 import           Data.LLVM.TargetData

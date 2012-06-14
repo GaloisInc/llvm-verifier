@@ -53,7 +53,7 @@ loadCodebase :: FilePath -> IO Codebase
 loadCodebase bcFile = do
   eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
   case eab of
-    Left msg  -> err msg
+    Left msg  -> err (BC.formatError msg)
     Right mdl -> do
 
       let ins0 d = M.insert (LLVM.defName d) (Right $ liftDefine d)
