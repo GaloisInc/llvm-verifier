@@ -6,14 +6,15 @@
 CC=gcc
 CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I../../../sym-api
 LSS?=../../../cabal-dev/bin/lss
+CLANG?=clang
 
 all: aes128BlockEncrypt_driver aes128BlockEncrypt_driver_llvm aes.bc
 
 %.bc: %.c
-	clang -emit-llvm -I../../../sym-api -c $< -o $@
+	${CLANG} -emit-llvm -I../../../sym-api -c $< -o $@
 
 sym-api.bc: ../../../sym-api/sym-api.c
-	clang -emit-llvm -I../../../sym-api -c $< -o $@
+	${CLANG} -emit-llvm -I../../../sym-api -c $< -o $@
 
 aes128BlockEncrypt.o: aes128BlockEncrypt.c aes128BlockEncrypt.h
 	${CC} ${CCFLAGS} -c $< -o $@
