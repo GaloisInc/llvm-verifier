@@ -80,7 +80,7 @@ memModelTests =
          assertEval [True] tTrue  c1
       -- Test symbolic load succeeds under appropiate conditions.
       do cntExt <- runSBE $ applyConv LLVM.SExt cnt sizeT
-         rptr <- runSBE $ applyArith LLVM.Sub ptr cntExt 
+         rptr <- runSBE $ applyArith (LLVM.Sub False False) ptr cntExt
          (c2, _) <- run $ mmLoad m2 rptr 1 
          assertEval [False] tTrue c2
          assertEval [True] tFalse c2

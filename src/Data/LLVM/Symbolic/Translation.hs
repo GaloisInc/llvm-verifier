@@ -279,7 +279,7 @@ liftBB lti phiMap bb = do
                    Effect   (LLVM.Store v addr malign) -> Store v addr malign
                    Result r (LLVM.ICmp op tpv1 v2)     -> Assign r (ICmp op tpv1 v2)
                    Result r (LLVM.FCmp op tpv1 v2)     -> Assign r (FCmp op tpv1 v2)
-                   Result r (LLVM.GEP tp tpvl)         -> Assign r (GEP tp tpvl)
+                   Result r (LLVM.GEP ib tp tpvl)      -> Assign r (GEP ib tp tpvl)
                    Result r (LLVM.Select tpc tpv1 v2)  -> Assign r (Select tpc tpv1 v2)
                    Result r (LLVM.ExtractValue tpv i)  -> Assign r (ExtractValue tpv i)
                    Result r (LLVM.InsertValue tpv tpa i) -> Assign r (InsertValue tpv tpa i)

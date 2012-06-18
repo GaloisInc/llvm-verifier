@@ -121,7 +121,7 @@ data SymExpr
   -- | A copy of a value.
   | Val (Typed SymValue)
   -- | GetElementPointer instruction.
-  | GEP (Typed SymValue) [Typed SymValue]
+  | GEP Bool (Typed SymValue) [Typed SymValue]
   | Select (Typed SymValue) (Typed SymValue) SymValue
   | ExtractValue (Typed SymValue) [Int32]
   | InsertValue (Typed SymValue) (Typed SymValue) [Int32]
@@ -137,7 +137,7 @@ ppSymExpr (Load ptr malign) = text "load" <+> ppTypedValue ptr <> LLVM.ppAlign m
 ppSymExpr (ICmp op l r) = text "icmp" <+> LLVM.ppICmpOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (FCmp op l r) = text "fcmp" <+> LLVM.ppFCmpOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (Val v) = ppTypedValue v
-ppSymExpr (GEP ptr ixs) = text "getelementptr" <+> commas (map (ppTypedValue) (ptr:ixs))
+ppSymExpr (GEP ib ptr ixs) = text "getelementptr" <+> commas (map (ppTypedValue) (ptr:ixs)) <+> (if ib then text "inbounds" else empty)
 ppSymExpr (Select c t f) = text "select" <+> ppTypedValue c
                          <> comma <+> ppTypedValue t
                          <> comma <+> LLVM.ppType (LLVM.typedType t) <+> ppSymValue f

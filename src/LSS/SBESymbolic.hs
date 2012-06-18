@@ -50,13 +50,13 @@ sbeSymbolic = SBE
                                "unsupported bitwise op: " ++
                                show op
   , applyArith = \op -> case op of
-                          LLVM.Add  -> S.applyAdd
-                          LLVM.Mul  -> S.applyMul
-                          LLVM.Sub  -> S.applySub
-                          LLVM.SDiv -> S.applySignedDiv
-                          LLVM.SRem -> S.applySignedRem
-                          LLVM.UDiv -> S.applyUnsignedDiv
-                          LLVM.URem -> S.applyUnsignedRem
+                          (LLVM.Add _ _)  -> S.applyAdd
+                          (LLVM.Mul _ _)  -> S.applyMul
+                          (LLVM.Sub _ _)  -> S.applySub
+                          (LLVM.SDiv _)   -> S.applySignedDiv
+                          LLVM.SRem       -> S.applySignedRem
+                          (LLVM.UDiv _)   -> S.applyUnsignedDiv
+                          LLVM.URem       -> S.applyUnsignedRem
                           _ -> error $
                                "unsupported arithmetic op: " ++
                                show op

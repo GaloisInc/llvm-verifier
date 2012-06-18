@@ -1132,10 +1132,11 @@ evalGEP ::
   , Functor sbe
   )
   => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
-evalGEP (GEP (Typed (L.Alias a) v) idxs) = do
+evalGEP (GEP ib (Typed (L.Alias a) v) idxs) = do
   t <- withLC (`llvmLookupAlias` a)
-  evalGEP (GEP (Typed t v) idxs)
-evalGEP (GEP tv0 idxs0) = impl idxs0 =<< getTypedTerm "evalGEP" tv0
+  evalGEP (GEP ib (Typed t v) idxs)
+-- TODO: check bounds when 'ib' is True
+evalGEP (GEP _ib tv0 idxs0) = impl idxs0 =<< getTypedTerm "evalGEP" tv0
   where
     impl [] (Typed referentTy ptrVal) = do
       return $ Typed (L.PtrTo referentTy) ptrVal
@@ -1200,8 +1201,9 @@ evalCE ::
   => EvalContext sbe -> L.Value -> Simulator sbe m (Typed (SBETerm sbe))
 evalCE ec (L.ValConstExpr ce)
   = case ce of
-      L.ConstGEP _inbounds (splitAt 1 -> ((head -> ptr), idxs)) ->
-        evalGEP (GEP ptr idxs)
+      -- TODO: check bounds when 'ib' is True
+      L.ConstGEP inbounds (splitAt 1 -> ((head -> ptr), idxs)) ->
+        evalGEP (GEP inbounds ptr idxs)
       L.ConstConv L.BitCast tv t ->
         Typed t . typedValue <$> getTypedTerm' ec tv
       L.ConstConv L.PtrToInt tv t ->
@@ -1216,8 +1218,8 @@ evalCE _ e = illegal $ "evalCE: value expression is not const" ++ show (L.ppValu
 
 termAdd, termMul :: (Functor m, Monad m)
   => SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
-termAdd x y = withSBE $ \sbe -> applyArith sbe L.Add x y
-termMul x y = withSBE $ \sbe -> applyArith sbe L.Mul x y
+termAdd x y = withSBE $ \sbe -> applyArith sbe (L.Add False False) x y
+termMul x y = withSBE $ \sbe -> applyArith sbe (L.Mul False False) x y
 
 termConv :: (Functor m, Monad m)
   => L.ConvOp -> SBETerm sbe -> L.Type -> Simulator sbe m (SBETerm sbe)

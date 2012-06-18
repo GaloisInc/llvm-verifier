@@ -1541,9 +1541,9 @@ bitBitwise be op (BitTerm a) (BitTerm b) = BitTerm <$> f be a b
               LLVM.And -> beAndInt
               LLVM.Or -> beOrInt
               LLVM.Xor -> beXorInt
-              LLVM.Shl -> beShl
-              LLVM.Lshr -> beUnsignedShr
-              LLVM.Ashr -> beSignedShr
+              (LLVM.Shl _ _) -> beShl
+              (LLVM.Lshr _) -> beUnsignedShr
+              (LLVM.Ashr _) -> beSignedShr
 
 bitArith :: (LV.Storable l, Eq l) =>
             BitEngine l -> LLVM.ArithOp
@@ -1551,12 +1551,12 @@ bitArith :: (LV.Storable l, Eq l) =>
          -> IO (BitTerm l)
 bitArith be op (BitTerm a) (BitTerm b) = BitTerm <$> f be a b
   where f = case op of
-              LLVM.Add  -> beAddInt
-              LLVM.Mul  -> beMulInt
-              LLVM.Sub  -> beSubInt
-              LLVM.SDiv -> beQuot
+              (LLVM.Add _ _)  -> beAddInt
+              (LLVM.Mul _ _)  -> beMulInt
+              (LLVM.Sub _ _)  -> beSubInt
+              (LLVM.SDiv _) -> beQuot
               LLVM.SRem -> beRem
-              LLVM.UDiv -> beQuotUnsigned
+              (LLVM.UDiv _) -> beQuotUnsigned
               LLVM.URem -> beRemUnsigned
               LLVM.FAdd -> noFloats
               LLVM.FSub -> noFloats
