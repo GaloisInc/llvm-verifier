@@ -15,7 +15,6 @@ module LSS.SBESymbolic
 
 where
 
-import qualified Text.LLVM.AST as LLVM
 import qualified Verinf.Symbolic as S
 import LSS.SBEInterface
 
@@ -36,30 +35,10 @@ sbeSymbolic = SBE
   , termFloat = nyi "termFloat"
   , termArray = nyi "termArray"
   , termDecomp = nyi "termDecomp"
-  , applyIte = S.applyIte
-  , applyICmp = \op -> case op of
-                         LLVM.Ieq -> S.applyEq
-                         _ -> error $
-                              "unsupported comparison op: " ++
-                              show op
-  , applyBitwise = \op -> case op of
-                            LLVM.And -> S.applyIAnd
-                            LLVM.Or -> S.applyIOr
-                            LLVM.Xor -> S.applyIXor
-                            _ -> error $
-                               "unsupported bitwise op: " ++
-                               show op
-  , applyArith = \op -> case op of
-                          (LLVM.Add _ _)  -> S.applyAdd
-                          (LLVM.Mul _ _)  -> S.applyMul
-                          (LLVM.Sub _ _)  -> S.applySub
-                          (LLVM.SDiv _)   -> S.applySignedDiv
-                          LLVM.SRem       -> S.applySignedRem
-                          (LLVM.UDiv _)   -> S.applyUnsignedDiv
-                          LLVM.URem       -> S.applyUnsignedRem
-                          _ -> error $
-                               "unsupported arithmetic op: " ++
-                               show op
+  , applyIte = nyi "applyIte"
+  , applyICmp = nyi "applyICmp"
+  , applyBitwise = nyi "applyBitwise"
+  , applyArith = nyi "applyArith"
   , applyConv = nyi "applyConv"
   , applyBNot = nyi "applyBNot"
   , termWidth = nyi "termWidth"
