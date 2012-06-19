@@ -21,12 +21,15 @@ import LSS.SBEInterface
 --------------------------------------------------------------------------------
 -- Word-level symbolic backend
 
-type instance SBETerm S.SymbolicMonad       = S.Node
-type instance SBEClosedTerm S.SymbolicMonad = S.Node
-type instance SBEMemory S.SymbolicMonad     = S.Node
+newtype SymbolicIO m v = SymbolicIO { liftSymbolicIO :: IO v }
+  deriving (Monad, MonadIO, Functor)
+  
+type instance SBETerm SymbolicIO       = S.DagTerm
+type instance SBEClosedTerm SymbolicIO = S.DagTerm
+type instance SBEMemory SymbolicIO     = S.DagTerm
 
 -- | Symbolic interface with all operations at the word level.
-sbeSymbolic :: SBE S.SymbolicMonad
+sbeSymbolic :: SBE SymbolicIO
 sbeSymbolic = SBE
   { termInt  = \w v -> return . S.mkCInt (S.Wx w) . fromIntegral $ v
   , freshInt = nyi "freshInt"
