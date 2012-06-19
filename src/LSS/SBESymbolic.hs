@@ -5,23 +5,25 @@ Stability        : provisional
 Point-of-contact : atomb
 -}
 
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module LSS.SBESymbolic
   ( module LSS.SBEInterface
   , sbeSymbolic
-  )
+  ) where
 
-where
-
+import Control.Monad.Trans
+  
 import qualified Verinf.Symbolic as S
+
 import LSS.SBEInterface
 
 --------------------------------------------------------------------------------
 -- Word-level symbolic backend
 
-newtype SymbolicIO m v = SymbolicIO { liftSymbolicIO :: IO v }
+newtype SymbolicIO v = SymbolicIO { liftSymbolicIO :: IO v }
   deriving (Monad, MonadIO, Functor)
   
 type instance SBETerm SymbolicIO       = S.DagTerm
