@@ -797,6 +797,9 @@ getTypedTerm' ec (Typed (L.Alias i) v) = getTypedTerm' ec (Typed tp v)
 getTypedTerm' ec (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
   = liftSBE $ Typed t <$> termInt (evalSBE ec) w x
 
+getTypedTerm' ec (Typed t@(L.PrimType (L.Integer 1)) (L.ValBool b))
+  = liftSBE $ Typed t <$> termInt (evalSBE ec) 1 (fromIntegral (fromEnum b))
+
 getTypedTerm' ec (Typed t@(L.PtrTo _) L.ValNull)
     = liftSBE $ Typed t <$> termInt (evalSBE ec) ptrWidth 0
   where ptrWidth = llvmAddrWidthBits (evalLLVMContext ec)
