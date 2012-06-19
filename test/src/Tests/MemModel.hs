@@ -80,7 +80,7 @@ memModelTests =
          assertEval [True] tTrue  c1
       -- Test symbolic load succeeds under appropiate conditions.
       do cntExt <- runSBE $ applyConv LLVM.SExt cnt sizeT
-         rptr <- runSBE $ applyArith LLVM.Sub ptr cntExt 
+         rptr <- runSBE $ applyArith (LLVM.Sub False False) ptr cntExt
          (c2, _) <- run $ mmLoad m2 rptr 1 
          assertEval [False] tTrue c2
          assertEval [True] tFalse c2
@@ -106,7 +106,9 @@ memModelTests =
       -- Check result of merge
       (c2, v) <- run $ mmLoad m2 ptr 1 
       assert (c2 == tTrue)
-      assert (lEvalAig (LV.fromList [False]) v == bfi 8 0)
-      assert (lEvalAig (LV.fromList [True ]) v == bfi 8 1)
+      v1 <- run $ lEvalAig (LV.fromList [False]) v
+      v2 <- run $ lEvalAig (LV.fromList [True ]) v
+      assert (v1 == bfi 8 0)
+      assert (v2 == bfi 8 1)
   ] 
  where runSBE = run . liftSBEBitBlast

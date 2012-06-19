@@ -1,9 +1,10 @@
 LSS?=../../cabal-dev/bin/lss
+CLANG?=clang
 
 all: aes.aig
 
 %.bc : %.c
-	clang -emit-llvm -c -o $@ $<
+	${CLANG} -emit-llvm -c -o $@ $<
 
 aes.bc: aes_core.bc aes_test.bc
 	llvm-link -o $@ $^

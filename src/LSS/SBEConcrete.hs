@@ -51,14 +51,14 @@ sbeConcrete = SBE
                        LLVM.And -> SBEConcrete $ a .&. b
                        LLVM.Or -> SBEConcrete $ a .|. b
                        LLVM.Xor -> SBEConcrete $ a `xor` b
-                       LLVM.Shl -> SBEConcrete $ a `shiftL` fromIntegral b
+                       (LLVM.Shl _ _) -> SBEConcrete $ a `shiftL` fromIntegral b
                        _ -> error $
                             "unsupported bitwise op: " ++
                             show op
   , applyArith = \op a b -> case op of
-                              LLVM.Add -> SBEConcrete $ a + b
-                              LLVM.Mul -> SBEConcrete $ a * b
-                              LLVM.Sub -> SBEConcrete $ a - b
+                              (LLVM.Add _ _) -> SBEConcrete $ a + b
+                              (LLVM.Mul _ _) -> SBEConcrete $ a * b
+                              (LLVM.Sub _ _) -> SBEConcrete $ a - b
                               _ -> error $
                                    "SBEConcrete: unsupported arithmetic op: " ++
                                    show op
