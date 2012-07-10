@@ -404,7 +404,11 @@ intrinsic intr mreg args0 =
     ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow reg
     ("llvm.objectsize.i32", Just reg)         -> objSz True reg
     ("llvm.objectsize.i64", Just reg)         -> objSz False reg
-    _                                         -> unimpl $ "LLVM intrinsic: " ++ intr
+    -- Do nothing.
+    ("llvm.lifetime.start", Nothing) -> return ()
+    ("llvm.lifetime.end", Nothing) -> return ()
+    _ -> whenVerbosity (>= 1) $ do --TODO: Give option of stopping on warnings like this.
+      tellUser $ "Warning: skipping unsupported LLVM intrinsic " ++ show intr     
   where
     memcpy = do
       let [dst, src, len, align, _isvol] = map typedValue args0
@@ -997,7 +1001,9 @@ eval (Arith op (Typed t@(L.PrimType L.Integer{}) v1) v2) = do
   Typed _t1 x <- getTypedTerm "arith@1" (Typed t v1)
   Typed _t2 y <- getTypedTerm "arith@2" (Typed t v2)
   --CE.assert (t == t1 && t == t2) $ return ()
-  Typed t <$> withSBE (\sbe -> applyArith sbe op x y)
+  r <- withSBE (\sbe -> applyArith sbe op x y)  
+  return $ Typed t r 
+  
 eval e@Arith{} = unimpl $ "Arithmetic expr type: " ++ show (ppSymExpr e)
 eval (Bit op (Typed (L.Alias a) v1) v2) = do
   t1 <- withLC (`llvmLookupAlias` a)
@@ -1184,7 +1190,8 @@ evalGEP (GEP _ib tv0 idxs0) = impl idxs0 =<< getTypedTerm "evalGEP" tv0
     baseOffset idx referentTy ptrVal = do
       Typed _ idxTerm <- promote =<< getTypedTerm "baseOffset" idx
       Typed _ szTerm  <- promote =<< getTypedTerm "baseOffset" =<< sizeof referentTy
-      Typed referentTy <$> (termAdd ptrVal =<< termMul idxTerm szTerm)
+      r <- termAdd ptrVal =<< termMul idxTerm szTerm
+      return (Typed referentTy r)
 
     -- @promote x@ promotes integer value x to the target's pointer width
     promote :: (MonadIO m, Functor m, Functor sbe)
@@ -1192,7 +1199,7 @@ evalGEP (GEP _ib tv0 idxs0) = impl idxs0 =<< getTypedTerm "evalGEP" tv0
     promote x@(Typed (L.PrimType (L.Integer iw)) v1) = do
       aw <- fromIntegral <$> withLC llvmAddrWidthBits
       if aw > iw
-        then Typed (intn aw) <$> termConv L.ZExt v1 (intn aw)
+        then Typed (intn aw) <$> termConv L.SExt v1 (intn aw)
         else return x
     promote _ = illegal "promotion of non-integer value"
 evalGEP e = illegal $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
@@ -1546,7 +1553,7 @@ errorPath ::
   => FailRsn -> Simulator sbe m a
 errorPath rsn = do
   -- Pop the control stack and move the current path to the error paths list
-  mmf <- popMergeFrame "errorPath"
+  mmf <- popMergeFrame $ "errorPath: " ++ show rsn
   let (p,mf) = maybe err id (popPending mmf)
         where err = error $ "errorPath has empty path with " ++ show rsn
   pushErrorPath "errorPath" mf (pathAssumptions p)

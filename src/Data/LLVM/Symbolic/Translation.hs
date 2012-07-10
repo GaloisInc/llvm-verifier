@@ -110,7 +110,7 @@ type PhiInstr = (LLVM.Ident, LLVM.Type, Map LLVM.BlockLabel LLVM.Value)
 parsePhiStmts :: [Stmt] -> [PhiInstr]
 parsePhiStmts sl =
   [ (r, tp, valMap)
-  | LLVM.Result r (LLVM.Phi tp vals) <- sl
+  | LLVM.Result r (LLVM.Phi tp vals) _ <- sl
   , let valMap = Map.fromList [(b, v) | (v,b) <- vals]]
 
 -- | Maps LLVM Blocks to associated phi instructions.
@@ -183,16 +183,16 @@ liftBB lti phiMap bb = do
                        int idx <+>
                        text "after generating the following statements:" $$
                        (nest 2 . vcat . map ppSymStmt $ il)
-      impl [Effect (LLVM.Ret tpv)] idx il =
+      impl [Effect (LLVM.Ret tpv) _] idx il =
         defineBlock (blockName idx) (reverse il ++ [MergeReturn (Just tpv)])
-      impl [Effect LLVM.RetVoid] idx il =
+      impl [Effect LLVM.RetVoid _] idx il =
         defineBlock (blockName idx) (reverse il ++ [MergeReturn Nothing])      
       -- For function calls, we:
       -- * Allocate block for next block after call.
       -- * Define previous block to end with pushing call frame.
       -- * Process rest of instructions.
       -- * TODO: Handle invoke instructions
-      impl (Result reg (LLVM.Call _b tp v tpvl):r) idx il = do
+      impl (Result reg (LLVM.Call _b tp v tpvl) _:r) idx il = do
         let res = case LLVM.elimFunPtr tp of
                     -- NB: The LLVM bitcode parser always types call
                     -- instructions with the full ptr-to-fun type in order to
@@ -206,14 +206,14 @@ liftBB lti phiMap bb = do
           [ PushCallFrame v tpvl (Just res) (blockName (idx + 1)) ]
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
-      impl (Effect (LLVM.Call _b _tp v tpvl):r) idx il = do
+      impl (Effect (LLVM.Call _b _tp v tpvl) _:r) idx il = do
         defineBlock (blockName idx) $ reverse il ++
           [ PushCallFrame v tpvl Nothing (blockName (idx+1)) ]
         impl r (idx+1) []
-      impl [Effect (LLVM.Jump tgt)] idx il = do
+      impl [Effect (LLVM.Jump tgt) _] idx il = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
-      impl [Effect (LLVM.Switch tpv def cases)] idx il = do
+      impl [Effect (LLVM.Switch tpv def cases) _] idx il = do
         defineBlock (blockName idx) $ reverse il ++ go cases
         mapM_ (uncurry defineBlock) caseDefs
           where go []            = [IfThenElse (NotConstValues tpv vs)
@@ -237,7 +237,7 @@ liftBB lti phiMap bb = do
                 mkCase (bid, cv) = [ SetCurrentBlock bid
                                    , PushPendingExecution (HasConstValue tpv cv)
                                    ]
-      impl [Effect (LLVM.Br tc@(Typed tp _) tgt1 tgt2)] idx il = do
+      impl [Effect (LLVM.Br tc@(Typed tp _) tgt1 tgt2) _] idx il = do
         CE.assert (tp == i1) $ return ()
         let suspendSymBlockID = blockName (idx + 1)
         -- Define end of current block:
@@ -259,32 +259,34 @@ liftBB lti phiMap bb = do
                               ++ brSymInstrs tgt1)]]
         -- Define block for suspended thread.
         defineBlock suspendSymBlockID  (brSymInstrs tgt2)
-      impl [Effect LLVM.Unreachable] idx il = do
+      impl [Effect LLVM.Unreachable _] idx il = do
         defineBlock (blockName idx) (reverse (Unreachable : il))
-      impl [Effect LLVM.Unwind] idx il = do
+      impl [Effect LLVM.Unwind _] idx il = do
         defineBlock (blockName idx) (reverse (Unwind : il))
       -- | Phi statements are handled by initial blocks.
-      impl (Result _id (LLVM.Phi _ _):r) idx il = impl r idx il
-      impl (Effect (LLVM.Comment _):r) idx il = impl r idx il
-      impl (stmt:rest) idx il =
-        let s' = case stmt of
-                   Result r (LLVM.Arith op tpv1 v2)    -> Assign r (Arith op tpv1 v2)
-                   Result r (LLVM.Bit   op tpv1 v2)    -> Assign r (Bit   op tpv1 v2)
-                   Result r (LLVM.Conv  op tpv tp)     -> Assign r (Conv  op tpv tp)
-                   Result r (LLVM.Alloca tp mtpv mi)   -> Assign r (Alloca tp mtpv mi)
-                   Result r (LLVM.Load tpv malign)     -> Assign r (Load tpv malign)
-                   Effect   (LLVM.Store v addr malign) -> Store v addr malign
-                   Result r (LLVM.ICmp op tpv1 v2)     -> Assign r (ICmp op tpv1 v2)
-                   Result r (LLVM.FCmp op tpv1 v2)     -> Assign r (FCmp op tpv1 v2)
-                   Result r (LLVM.GEP ib tp tpvl)      -> Assign r (GEP ib tp tpvl)
-                   Result r (LLVM.Select tpc tpv1 v2)  -> Assign r (Select tpc tpv1 v2)
-                   Result r (LLVM.ExtractValue tpv i)  -> Assign r (ExtractValue tpv i)
-                   Result r (LLVM.InsertValue tpv tpa i) -> Assign r (InsertValue tpv tpa i)
-                   _ | null rest -> liftError $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt
-                   _ -> liftError $
-                          text "Terminal instruction found before end of block: "
-                            <+> LLVM.ppStmt stmt
-         in impl rest idx (s' : il)
+      impl (Result _id (LLVM.Phi _ _) _:r) idx il = impl r idx il
+      impl (Effect (LLVM.Comment _) _:r) idx il = impl r idx il
+      impl (stmt:rest) idx il = impl rest idx (s' : il)
+        where s' = case stmt of
+                     Effect s _ -> effect s
+                     Result r app _ -> Assign r (assign app)
+              unsupported =
+                liftError $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt            
+              effect (LLVM.Store v addr malign) = Store v addr malign                 
+              effect _ = unsupported
+              assign (LLVM.Arith op tpv1 v2)      = Arith op tpv1 v2
+              assign (LLVM.Bit   op tpv1 v2)      = Bit   op tpv1 v2
+              assign (LLVM.Conv  op tpv tp)       = Conv  op tpv tp
+              assign (LLVM.Alloca tp mtpv mi)     = Alloca tp mtpv mi
+              assign (LLVM.Load tpv malign)       = Load tpv malign
+              assign (LLVM.ICmp op tpv1 v2)       = ICmp op tpv1 v2
+              assign (LLVM.FCmp op tpv1 v2)       = FCmp op tpv1 v2
+              assign (LLVM.GEP ib tp tpvl)        = GEP ib tp tpvl
+              assign (LLVM.Select tpc tpv1 v2)    = Select tpc tpv1 v2
+              assign (LLVM.ExtractValue tpv i)    = ExtractValue tpv i
+              assign (LLVM.InsertValue tpv tpa i) = InsertValue tpv tpa i
+              assign _ = unsupported
+      
    in impl (LLVM.bbStmts bb) 0 []
 
 -- Lift LLVM definition to symbolic definition {{{1
