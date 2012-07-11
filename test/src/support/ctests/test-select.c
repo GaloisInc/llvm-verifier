@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <sym-api.h>
 
-int select(uint8_t b) 
+int selectb(uint8_t b) 
 {
     return b ? 42 : 99;
 }
@@ -11,7 +11,7 @@ int select(uint8_t b)
 int main(int argc, char** argv)
 {
     uint8_t b  = lss_fresh_uint8(1);
-    uint8_t x  = select(b);
+    uint8_t x  = selectb(b);
     
     uint8_t c0[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
     uint8_t c1[8] = { 1, 0, 0, 0, 0, 0, 0, 0 };

@@ -50,6 +50,7 @@ module LSS.Simulator
   , runSimulator
   , withSBE
   , withSBE'
+  , getSizeT
   -- * Memory operations
   , alloca
   , load
@@ -139,8 +140,8 @@ runSimulator cb sbe mem lifter seh mopts m = do
                  }
       pushMergeFrame (ExitMergeFrame ef)
       initGlobals
-      registerOverrides libcOverrides
-      registerOverrides lssOverrides
+      registerLibcOverrides
+      registerLSSOverrides
       m
 
 newSimState :: Codebase
@@ -810,12 +811,6 @@ getTypedTerm' ec (Typed t@(L.PtrTo _) L.ValNull)
 
 getTypedTerm' ec (Typed _ ce@L.ValConstExpr{}) = evalCE ec ce
 
-getTypedTerm' ec (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
-  = return $ getGlobalPtrTerm ec (sym, Just argtys)
-
-getTypedTerm' _ tv@(Typed (L.PtrTo L.FunTy{}) _)
-  = unimpl $ "getTypedTerm': Non-symbol ptr-to-fun: " ++ show tv
-
 getTypedTerm' ec (Typed ty@(L.Array len ety) (L.ValArray ety' es))
   = do
   CE.assert (ety == ety') $ return ()
@@ -836,6 +831,9 @@ getTypedTerm' ec (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
   = do
   fldTerms <- mapM (getTypedTerm' ec) fldTVs
   liftSBE $ Typed ty <$> termArray (evalSBE ec) (map typedValue fldTerms)
+
+getTypedTerm' ec (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
+  = return $ getGlobalPtrTerm ec (sym, Just argtys)
 
 getTypedTerm' ec (Typed _ (L.ValSymbol sym))
   = return $ getGlobalPtrTerm ec (sym, Nothing)
@@ -984,6 +982,12 @@ step Unreachable
 
 step Unwind = unimpl "unwind"
 
+-- | Return value one as an integer with the address width bits.
+getSizeT :: (Functor m, MonadIO m) => Integer -> Simulator sbe m (Typed (SBETerm sbe))
+getSizeT v = do
+  aw <- withLC llvmAddrWidthBits
+  Typed (L.iT (fromIntegral aw)) <$> withSBE (\sbe -> termInt sbe aw v)
+
 --------------------------------------------------------------------------------
 -- Symbolic expression evaluation
 
@@ -1035,7 +1039,10 @@ eval (Alloca (L.Alias a) msztv malign) = do
   ty <- withLC (`llvmLookupAlias` a)
   eval (Alloca ty msztv malign)
 eval (Alloca ty msztv malign ) = do
-  sizeTm <- mapM (\tv -> getTypedTerm "alloca" tv) msztv
+  sizeTm <-
+    case msztv of
+      Just tv -> getTypedTerm "alloca" tv
+      Nothing -> getSizeT 1
   alloca ty sizeTm malign
 eval (Load (Typed (L.Alias a) v) malign) = do
   ty <- withLC (`llvmLookupAlias` a)
@@ -1294,14 +1301,13 @@ alloca, malloc ::
   , Functor sbe
   )
   => L.Type
-  -> Maybe (Typed (SBETerm sbe))
+  -> Typed (SBETerm sbe)
   -> Maybe Int
   -> Simulator sbe m (Typed (SBETerm sbe))
-alloca ty msztm malign = do
-  one <- getTypedTerm "alloca" (int32const 1)
+alloca ty sztm malign = do
   Just m <- getMem
   sbe <- gets symBE
-  rslt <- liftSBE $ stackAlloca sbe m ty (fromMaybe one msztm) (maybe 0 lg malign)
+  rslt <- liftSBE $ stackAlloca sbe m ty sztm (maybe 0 lg malign)
   case rslt of
     SASymbolicCountUnsupported  -> errorPath $ FailRsn $
       "Stack allocation only supports a concrete element count "
@@ -1312,7 +1318,7 @@ alloca ty msztm malign = do
       processMemCond fr c
       return (Typed (L.PtrTo ty) t)
 
-malloc ty msztm malign = doAlloc ty msztm $ \s m nt ->
+malloc ty sztm malign = doAlloc ty sztm $ \s m nt ->
   Right <$> heapAlloc s m ty nt (maybe 0 lg malign)
 
 doAlloc ::
@@ -1320,12 +1326,11 @@ doAlloc ::
   , Functor m
   , Functor sbe
   )
-  => L.Type -> Maybe (Typed (SBETerm sbe)) -> AllocAct sbe
+  => L.Type -> Typed (SBETerm sbe) -> AllocAct sbe
   -> Simulator sbe m (Typed (SBETerm sbe))
-doAlloc ty msztm allocActFn = do
-  one           <- getTypedTerm "doAlloca" (int32const 1)
+doAlloc ty sztm allocActFn = do
   Just m        <- getMem
-  rslt          <- withSBE $ \s -> allocActFn s m (fromMaybe one msztm)
+  rslt          <- withSBE $ \s -> allocActFn s m sztm
   sbe <- gets symBE
   (c, t, m', s) <- case rslt of
     Left SASymbolicCountUnsupported  -> errorPath $ err "alloca"
@@ -1508,6 +1513,24 @@ type StdOvd m sbe =
   )
   => Override sbe m
 
+checkTypeCompat :: Monad m => L.Declare -> String -> L.Declare -> Simulator sbe m ()      
+checkTypeCompat fd tnm td = do
+  let nm = show . L.ppSymbol . L.decName
+  let e rsn = error $ "Attempt to replace " ++ nm fd
+                     ++ " with function " ++ tnm ++ " that " ++ rsn
+  let ppTypes :: [L.Type] -> String
+      ppTypes tys = '(' : intercalate ", " (map (show . L.ppType) tys) ++ ")" 
+  unless (L.decArgs fd == L.decArgs td) $ e $ "has different argument types.\n" 
+    ++ "  Argument types of " ++ nm fd ++ ": " ++ ppTypes (L.decArgs fd) ++ "\n"
+    ++ "  Argument types of " ++ tnm ++ ": " ++ ppTypes (L.decArgs td) ++ "\n"
+  when (L.decVarArgs fd && not (L.decVarArgs td)) $
+    e "is a non-variable argument function."
+  when (not (L.decVarArgs fd) && L.decVarArgs td) $
+    e "is a variable argument function."
+  unless (L.decRetType fd == L.decRetType td) $ e $ "has a different return type.\n"
+    ++ "  Return type of " ++ nm fd ++ ": " ++ show (L.ppType (L.decRetType fd)) ++ "\n"
+    ++ "  Return type of " ++ tnm ++ ": " ++ show (L.ppType (L.decRetType td)) ++ "\n"
+
 registerOverride ::
   ( Functor m
   , Functor sbe
@@ -1515,11 +1538,21 @@ registerOverride ::
   )
   => L.Symbol -> L.Type -> [L.Type] -> Bool -> Override sbe m
   -> Simulator sbe m ()
-registerOverride sym _retTy _argTys _va handler = do
-  --TODO: Should we verify function exists?
-  modify $ \s ->
-    s { fnOverrides = M.insert sym (handler, False) (fnOverrides s)
-      }
+registerOverride sym retTy argTys va handler = do
+  -- TODO: Verify function exists and argument types match types of override.
+  dm <- gets (cbDeclareMap . codebase)
+  case M.lookup sym dm of
+    Nothing -> return ()
+    Just fd -> do
+      let td = L.Declare { L.decName = L.Symbol "override"   
+                         , L.decArgs = argTys
+                         , L.decVarArgs = va
+                         , L.decRetType = retTy
+                         }
+      checkTypeCompat fd "override" td
+      modify $ \s ->
+        s { fnOverrides = M.insert sym (handler, False) (fnOverrides s)
+          }
 
 --------------------------------------------------------------------------------
 -- Error handling
@@ -1766,13 +1799,13 @@ printSymbolic = Override $ \_sym _rty args ->
 
 allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe)
              => (L.Type
-                   -> Maybe (Typed (SBETerm sbe))
+                   -> Typed (SBETerm sbe)
                    -> Maybe Int
                    -> Simulator sbe m (Typed (SBETerm sbe)))
              -> Override sbe m
 allocHandler fn = Override $ \_sym _rty args ->
   case args of
-    [sizeTm] -> (Just . typedValue) <$> fn i8 (Just sizeTm) Nothing
+    [sizeTm] -> (Just . typedValue) <$> fn i8 sizeTm Nothing
     _ -> e "alloca: wrong number of arguments"
   where
     e = errorPath . FailRsn
@@ -1864,7 +1897,7 @@ freshIntArray n = Override $ \_sym _rty args ->
               sz32 = fromIntegral size
               ety = intn . toEnum . fromEnum $ n
               ty = L.Array sz32 ety
-          arrPtr <- typedValue <$> alloca ety (Just sizeTm) Nothing
+          arrPtr <- typedValue <$> alloca ety sizeTm Nothing
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ flip termArray elts
           let typedArrTm = Typed ty arrTm
@@ -2086,9 +2119,17 @@ overrideIntrinsic = Override $ \_sym _rty args ->
 userRedirectTo :: MonadIO m
   => L.Symbol -> L.Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
 userRedirectTo from to = do
-  modify $ \s ->
-    s{ fnOverrides = M.insert from (Redirect to, True) (fnOverrides s) }
-  return Nothing
+  dm <- gets (cbDeclareMap . codebase)
+  let nameOf = show . L.ppSymbol 
+  --TODO: Add better error messages.
+  case (M.lookup from dm, M.lookup to dm) of
+    (Nothing,_) -> error $ "Could not find symbol " ++ nameOf from ++ "."
+    (_,Nothing) -> error $ "Could not find symbol " ++ nameOf to ++ "."  
+    (Just fd,Just td) -> do
+      checkTypeCompat fd (show (L.ppSymbol (L.decName td))) td
+      modify $ \s ->
+        s{ fnOverrides = M.insert from (Redirect to, True) (fnOverrides s) }
+      return Nothing
 
 overrideResetByName :: StdOvd sbe m
 overrideResetByName = Override $ \_sym _rty args ->
@@ -2127,30 +2168,44 @@ overrideResetAll = Override $ \_sym _rty args ->
 
 type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
 
-libcOverrides :: (Functor m, MonadIO m, Functor sbe) => [OverrideEntry sbe m]
-libcOverrides =
-  [ ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
-  --, ("exit", voidTy, [i32], False, exitHandler)
-  , ("alloca", voidPtr, [i32], False, allocHandler alloca)
-  , ("malloc", voidPtr, [i32], False, allocHandler malloc)
-  , ("free", voidTy, [voidPtr], False,
-     -- TODO: stub! Does this need to be implemented?
-     Override $ \_sym _rty _args -> return Nothing)
-  , ("printf", i32, [strTy], True, printfHandler)
-  ]
+registerLibcOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
+registerLibcOverrides = do
+  aw <- withLC llvmAddrWidthBits
+  let sizeT = intn (fromIntegral aw)
+  dm <- gets (cbDeclareMap . codebase)
+  -- Register malloc
+  case M.lookup "malloc" dm of
+    Nothing -> return ()
+    Just d -> do
+      unless (L.decArgs d == [sizeT] && not (L.decVarArgs d)) $ do
+        error "malloc has unexpected arguments."
+      case L.decRetType d of
+        L.PtrTo _ -> return ()
+        _ -> error "malloc has unexpected return type."
+      registerOverride "malloc" (L.decRetType d) [sizeT] False $
+        allocHandler malloc
+  registerOverrides
+    [ ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
+    --, ("exit", voidTy, [i32], False, exitHandler)
+    , ("alloca", voidPtr, [sizeT], False, allocHandler alloca)
+    , ("free", voidTy, [voidPtr], False,
+       -- TODO: stub! Does this need to be implemented?
+       Override $ \_sym _rty _args -> return Nothing)
+    , ("printf", i32, [strTy], True, printfHandler)
+    ]
 
-lssOverrides :: (Functor m, MonadIO m, Functor sbe) => [OverrideEntry sbe m]
-lssOverrides =
+registerLSSOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
+registerLSSOverrides = registerOverrides
   [ ("lss_abort", voidTy, [strTy], False, abortHandler)
-  , ("lss_print_symbolic", voidTy, [voidPtr], False, printSymbolic)
+  , ("lss_print_symbolic", voidTy, [i8p], False, printSymbolic)
   , ("lss_fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("lss_fresh_uint16", i16, [i16], False, freshInt' 16)
   , ("lss_fresh_uint32", i32, [i32], False, freshInt' 32)
   , ("lss_fresh_uint64", i64, [i64], False, freshInt' 64)
-  , ("lss_fresh_array_uint8",   i8p, [i32,  i8], False, freshIntArray 8)
-  , ("lss_fresh_array_uint16", i16p, [i32, i16], False, freshIntArray 16)
-  , ("lss_fresh_array_uint32", i32p, [i32, i32], False, freshIntArray 32)
-  , ("lss_fresh_array_uint64", i64p, [i32, i64], False, freshIntArray 64)
+  , ("lss_fresh_array_uint8",   i8p, [i32,  i8, i8p], False, freshIntArray 8)
+  , ("lss_fresh_array_uint16", i16p, [i32, i16, i16p], False, freshIntArray 16)
+  , ("lss_fresh_array_uint32", i32p, [i32, i32, i32p], False, freshIntArray 32)
+  , ("lss_fresh_array_uint64", i64p, [i32, i64, i64p], False, freshIntArray 64)
   , ("lss_aiger_add_output_uint8",  voidTy,  [i8], False, addAigOutput)
   , ("lss_aiger_add_output_uint16", voidTy, [i16], False, addAigOutput)
   , ("lss_aiger_add_output_uint32", voidTy, [i32], False, addAigOutput)
@@ -2172,19 +2227,19 @@ lssOverrides =
      writeIntArrayAiger i32)
   , ("lss_write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
      writeIntArrayAiger i64)
-  , ("lss_eval_aiger_uint8",   i8, [i8,  i8p], False, evalAigerOverride)
-  , ("lss_eval_aiger_uint16", i16, [i16, i8p], False, evalAigerOverride)
-  , ("lss_eval_aiger_uint32", i32, [i32, i8p], False, evalAigerOverride)
-  , ("lss_eval_aiger_uint64", i64, [i64, i8p], False, evalAigerOverride)
+  , ("lss_eval_aiger_uint8",   i8, [i8,  i8p, i32], False, evalAigerOverride)
+  , ("lss_eval_aiger_uint16", i16, [i16, i8p, i32], False, evalAigerOverride)
+  , ("lss_eval_aiger_uint32", i32, [i32, i8p, i32], False, evalAigerOverride)
+  , ("lss_eval_aiger_uint64", i64, [i64, i8p, i32], False, evalAigerOverride)
   , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False, evalAigerArray i8)
   , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False, evalAigerArray i16)
   , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False, evalAigerArray i32)
   , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False, evalAigerArray i64)
   , ("lss_override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
-  , ("lss_override_function_by_addr", voidTy, [voidPtr, voidPtr], False, overrideByAddr)
-  , ("lss_override_llvm_intrinsic", voidTy, [strTy, voidPtr], False, overrideIntrinsic)
+  , ("lss_override_function_by_addr", voidTy, [strTy, strTy], False, overrideByAddr)
+  , ("lss_override_llvm_intrinsic", voidTy, [strTy, strTy], False, overrideIntrinsic)
   , ("lss_override_reset_by_name", voidTy, [strTy], False, overrideResetByName)
-  , ("lss_override_reset_by_addr", voidTy, [voidPtr], False, overrideResetByAddr)
+  , ("lss_override_reset_by_addr", voidTy, [strTy], False, overrideResetByAddr)
   , ("lss_override_reset_all", voidTy, [], False, overrideResetAll)
   , ("lss_show_path", voidTy, [], False, showPathOverride)
   , ("lss_show_mem", voidTy, [], False, showMemOverride)

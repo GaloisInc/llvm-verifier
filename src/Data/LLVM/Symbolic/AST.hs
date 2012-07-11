@@ -7,7 +7,6 @@
 -- * The Symbolic IR includes explicit instructions for pushing and popping frames from
 --   the merge frame stack.
 -- * It allows IfThenElse instructions to appear directly within blocks.
--- *
 module Data.LLVM.Symbolic.AST
   ( FuncID
   , SymBlockID

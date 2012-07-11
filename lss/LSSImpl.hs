@@ -131,9 +131,10 @@ buildArgv numArgs argv' = do
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   ec <- getEvalContext "buildArgv" Nothing
   strVals  <- mapM (getTypedTerm' ec . cstring) argv'
-  strPtrs  <- mapM (\ty -> tv <$> alloca ty Nothing Nothing) (tt <$> strVals)
-  num      <- getTypedTerm "buildArg" (int32const numArgs)
-  argvBase <- alloca i8p (Just num) Nothing
+  one <- getSizeT 1
+  strPtrs  <- mapM (\ty -> tv <$> alloca ty one Nothing) (tt <$> strVals)
+  num <- getSizeT (toInteger numArgs)
+  argvBase <- alloca i8p num Nothing
   argvArr  <- (L.Array numArgs i8p =:) <$> withSBE (\s -> termArray s strPtrs)
   -- Write argument string data and argument string pointers
   forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p

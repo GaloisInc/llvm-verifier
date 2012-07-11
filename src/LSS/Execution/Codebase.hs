@@ -44,6 +44,7 @@ data Codebase = Codebase {
     cbGlobalNameMap :: GlobalNameMap
   , cbTypeAliasMap  :: TypeAliasMap
   , cbLLVMCtx       :: LLVMContext
+  , cbDeclareMap    :: M.Map LLVM.Symbol LLVM.Declare   
   , origModule      :: LLVM.Module
   }
 
@@ -62,8 +63,17 @@ loadCodebase bcFile = do
           m1     = foldr ins0 M.empty (LLVM.modDefines mdl)
           m2     = foldr ins1 m1 (LLVM.modGlobals mdl)
           m3     = foldr ins2 M.empty (LLVM.modTypes mdl)
+          declareFromDefine d = LLVM.Declare { LLVM.decName = LLVM.defName d
+                                             , LLVM.decArgs = map LLVM.typedType (LLVM.defArgs d)
+                                             , LLVM.decVarArgs = LLVM.defVarArgs d
+                                             , LLVM.decRetType = LLVM.defRetType d
+                                             }
           cb     = Codebase { cbGlobalNameMap = m2
                             , cbTypeAliasMap  = m3
+                            , cbDeclareMap = M.fromList $
+                               [ (LLVM.defName d, declareFromDefine d)
+                                 | d <- LLVM.modDefines mdl ]        
+                               ++ [ (LLVM.decName d, d) | d <- LLVM.modDeclares mdl ]            
                             , cbLLVMCtx       = buildLLVMContext
                                                   (`lookupAlias` cb)
                                                   (LLVM.modDataLayout mdl)
