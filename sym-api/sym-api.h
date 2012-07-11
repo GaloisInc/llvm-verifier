@@ -91,15 +91,15 @@ void lss_override_reset_by_name(char *name) NO_INL; /* Equivalent to lss_overrid
 void lss_override_reset_by_addr(void* fp) NO_INL; /* Equivalent to lss_override_function_by_addr(x,x) */
 
 /* NB: This resets all user-overridden functions AND intrinsics */
-void lss_override_reset_all() NO_INL;
+void lss_override_reset_all(void) NO_INL;
 
 void lss_print_symbolic(void *sym) NO_INL;
 
 void lss_abort(const char* msg) NO_INL;
 
-void lss_show_path() NO_INL;
+void lss_show_path(void) NO_INL;
 
-void lss_show_mem() NO_INL;
+void lss_show_mem(void) NO_INL;
 
 void lss_set_verbosity(int v) NO_INL;
 

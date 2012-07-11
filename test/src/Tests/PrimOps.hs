@@ -138,7 +138,8 @@ testSetupPtrArgImpl ::
   => Simulator sbe IO Bool
 testSetupPtrArgImpl = do
   a <- withLC llvmPtrAlign
-  p <- alloca i32 Nothing (Just $ fromIntegral a) 
+  one <- getSizeT 1
+  p <- alloca i32 one (Just $ fromIntegral a) 
   callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) [p]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()

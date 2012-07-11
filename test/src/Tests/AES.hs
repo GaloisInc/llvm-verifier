@@ -35,7 +35,8 @@ aes128ConcreteImpl = do
   setSEH sanityChecks
   ptptr  <- initArr ptVals
   keyptr <- initArr keyVals
-  ctptr  <- typedValue <$> alloca arrayTy Nothing (Just 4)
+  one <- getSizeT 1
+  ctptr  <- typedValue <$> alloca arrayTy one (Just 4)
   let args = map (i32p =:) [ptptr, keyptr, ctptr]
   [_, _, typedValue -> ctRawPtr] <-
     callDefine (L.Symbol "aes128BlockEncrypt") voidTy args
@@ -49,7 +50,8 @@ aes128ConcreteImpl = do
     initArr xs = do
        arr <- withSBE . flip termArray
                 =<< mapM (withSBE . \x s -> termInt s 32 x) xs
-       p   <- typedValue <$> alloca arrayTy Nothing (Just 4)
+       one <- getSizeT 1
+       p   <- typedValue <$> alloca arrayTy one (Just 4)
        store (arrayTy =: arr) p
        return p
 
