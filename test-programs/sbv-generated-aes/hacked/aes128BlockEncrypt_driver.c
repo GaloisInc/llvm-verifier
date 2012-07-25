@@ -40,10 +40,10 @@ int main(void)
   
   aes128BlockEncrypt(pt, key, ct);
   lss_write_aiger_array_uint32(ct, 4, "aes.aig");
-  printf("%08x\n", ct[0]);
-  printf("%08x\n", ct[1]);
-  printf("%08x\n", ct[2]);
-  printf("%08x\n", ct[3]);
+  //printf("%08x\n", ct[0]);
+  //printf("%08x\n", ct[1]);
+  //printf("%08x\n", ct[2]);
+  //printf("%08x\n", ct[3]);
   
   return 0;
   /* For all zero key and pt */
