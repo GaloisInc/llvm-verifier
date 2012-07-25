@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
 
   AES_set_encrypt_key(userKey, 128, &key);
   AES_encrypt(in, out, &key);
-  printBlock(out);
+  //printBlock(out);
   lss_write_aiger_array_uint8(out, 16, "aes.aig");
   printf("\n");
   return 0;
