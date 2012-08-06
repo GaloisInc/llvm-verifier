@@ -127,7 +127,7 @@ executable Tests
     , pretty
     , transformers
     , vector
-    , QuickCheck >= 2.1.2
+    , QuickCheck >= 2.5
     , Verinf
 
 executable bcdump
