@@ -216,7 +216,16 @@ runCInt32Fn v getCB sym cargs = do
       callDefine_ sym i32 (map ((=:) i32) args)
       let fn rv = withSBE' $ \sbe -> snd <$> asSignedInteger sbe rv
       mapM fn =<< getProgramReturnValue
-      
+
+runVoidFn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM IO ()
+runVoidFn v getCB sym cargs = do
+  cb <- getCB
+  _ <- forAllMemModels v cb $ \s m -> run $ do
+    runSimulator cb s m liftBitBlastSim defaultSEH Nothing $ withVerbosity v $ do
+      args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
+      callDefine_ sym voidTy (map ((=:) i32) args)
+  return ()
+
 -- possibly skip a test
 psk :: Int -> PropertyM IO () -> PropertyM IO ()
 psk v act = if (v > 0) then act else disabled
@@ -237,3 +246,6 @@ runMain = runMain' False
 runMain' :: Bool -> Int -> FilePath -> ExpectedRV Int32 -> PropertyM IO ()
 runMain' quiet v bc erv = do
   psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) (commonCB bc) (L.Symbol "main") erv
+
+runMainVoid :: Int -> FilePath -> PropertyM IO ()
+runMainVoid v bc = psk v $ runVoidFn 0 (commonCB bc) (L.Symbol "main") []
