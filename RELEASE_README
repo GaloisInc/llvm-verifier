@@ -1,7 +1,7 @@
 This directory contains executables and support files for the LLVM
 Symbolic Simulator (lss).
 
-CONTENTS (Version 0.1b Oct 2011)
+CONTENTS (Version 0.3b Aug 2012)
 
 doc/           : lss man page
 tutorial/      : Tutorials on using lss
