@@ -94,7 +94,7 @@ primOpTests =
     dirInt32urem v    = psk v $ chkArithBitEngineFn 32 False L.URem wrem
     testArith v       = runMain v "test-arith.bc" (RV 0)
     testBranch v      = runMain v "test-branch.bc" (RV 0)
-    testCallVR v      = runMain v "test-call-voidrty.bc" VoidRV
+    testCallVR v      = runMainVoid v "test-call-voidrty.bc"
     testPtrSimple v   = runMain v "test-ptr-simple.bc" (RV 99)
     testSetupPtrArg v = psk v $ runAllMemModelTest v (commonCB "test-primops.bc")
                                   testSetupPtrArgImpl
