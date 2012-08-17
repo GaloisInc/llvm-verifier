@@ -8,8 +8,9 @@
         for(i = 0; i < size; i++) out[i] = sym[i];      \
     }
 #define FRESH_ARRAY(ty, size, def, defs) {                  \
+        int i;                                              \
         ty *buf = malloc(size * sizeof(ty));                \
-        for(int i; i < size; ++i)                           \
+        for(i = 0; i < size; ++i)                           \
             buf[i] = defs ? defs[i] : def;                  \
         return buf;                                         \
     }
@@ -77,6 +78,7 @@ void lss_eval_aiger_array_uint32 (uint32_t *sym, uint32_t *out, uint32_t size,
 void lss_eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
                                   uint8_t *input_bits, uint32_t input_size)
     EVAL_ARRAY(uint64_t, sym, out, size);
+void lss_write_cnf(uint32_t sym, char *filename) {}
 
 void lss_override_function_by_name (char *from, char *to) {}
 void lss_override_function_by_addr (void *from, void *to) {}

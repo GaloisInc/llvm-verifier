@@ -84,6 +84,8 @@ void lss_eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
                                   uint8_t *input_bits, uint32_t input_size)
     NO_INL;
 
+void lss_write_cnf(uint32_t sym, char *filename) NO_INL;
+
 void lss_override_function_by_name(char *from, char *to) NO_INL;
 void lss_override_function_by_addr(void *from, void *to) NO_INL;
 void lss_override_llvm_intrinsic(char* name, void* impl) NO_INL;
