@@ -1994,6 +1994,17 @@ writeIntArrayAiger _ety = Override $ \_sym _rty args ->
   where
     e = errorPath . FailRsn
 
+writeCNF :: StdOvd sbe m
+writeCNF = Override $ \_sym _rty args ->
+  case args of
+    [t, fptr] -> do
+      file <- loadString "lss_write_cnf" fptr
+      withSBE $ \s -> writeCnf s file (typedValue t)
+      return Nothing
+    _ -> e "lss_write_cnf: wrong number of arguments"
+  where
+    e = errorPath . FailRsn
+
 loadArray ::
   ( MonadIO m
   , Functor m
@@ -2235,6 +2246,7 @@ registerLSSOverrides = registerOverrides
   , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False, evalAigerArray i16)
   , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False, evalAigerArray i32)
   , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False, evalAigerArray i64)
+  , ("lss_write_cnf", voidTy, [i32, strTy], False, writeCNF)
   , ("lss_override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
   , ("lss_override_function_by_addr", voidTy, [strTy, strTy], False, overrideByAddr)
   , ("lss_override_llvm_intrinsic", voidTy, [strTy, strTy], False, overrideIntrinsic)

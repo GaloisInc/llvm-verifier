@@ -228,6 +228,10 @@ data SBE m = SBE
     -- file @f@ in the Aiger format.
   , writeAiger :: String -> [SBETerm m] -> m ()
 
+    -- | @writeCnf f t@ writes a CNF representation of @t /= 0@ into
+    -- file @f@.
+  , writeCnf :: String -> SBETerm m -> m [Int]
+
     -- | @evalAiger inps t@ evaluates an AIG with the given concrete inputs;
     -- result is always a concrete term.
   , evalAiger :: [Bool] -> SBETerm m -> m (SBETerm m)

@@ -88,6 +88,7 @@ sbeConcrete = SBE
   , memCopy          = nyi "memCopy"
   , writeAiger       = nyi "writeAiger"
   , evalAiger        = nyi "evalAiger"
+  , writeCnf         = nyi "writeCnf"
   }
   where
     nyi :: forall a. String -> a

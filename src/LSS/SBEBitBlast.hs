@@ -1651,14 +1651,15 @@ sbeBitBlast lc be mm = sbe
               BitIO . mmHeapAlloc mm m (llvmAllocSizeOf lc eltTp) cnt
           , memCopy          = BitIO `c5` mmMemCopy mm
           , writeAiger       = \f ts -> 
-              let getV (BitTerm v) = v
-               in BitIO $ beWriteAigerV be f $ map getV ts
+              BitIO $ beWriteAigerV be f $ map getV ts
           , evalAiger        = BitIO `c2` evalAigerImpl be
+          , writeCnf         = \f t -> BitIO $ do
+              let ?be = be in
+                LV.toList `liftM` beWriteCNF be f (lIsZero (getV t))
           }
+    getV (BitTerm v) = v
     termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"
-    termArrayImpl ts = 
-      let getV (BitTerm v) = v
-       in foldr1 (LV.++) (map getV ts)
+    termArrayImpl ts = foldr1 (LV.++) (map getV ts)
 
 termDecompImpl :: (LV.Storable l, Eq l)
                => LLVMContext
