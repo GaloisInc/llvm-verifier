@@ -52,6 +52,9 @@ symTests =
   , lssTest 0 "ctests/test-fresh-array-incremental" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS (Just 0) (Just 0)
       runTestLSSDag v cb []   $ chkLSS (Just 0) (Just 0)
+  , lssTest 0 "ctests/test-write-cnf" $ \v cb -> do
+      runTestLSSBuddy v cb [] $ chkLSS (Just 0) (Just 0)
+      runTestLSSDag v cb []   $ chkLSS (Just 0) (Just 0)
   ]
   where
     trivBranch v = psk v $ runSimple v $ trivBranchImpl "trivial_branch" $
