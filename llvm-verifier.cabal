@@ -92,7 +92,7 @@ executable lss
     GHC-options: -optl-Wl,-dead_strip
 
   if os(linux)
-    ld-options: -static
+    ld-options: -static -pthread
 
   build-depends:
       base >= 4
