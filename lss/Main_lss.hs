@@ -48,8 +48,8 @@ main = do
             , mname    = def &= typ "Fully-linked .bc containing main()"
                              &= Args.args
             }
-            &= summary ("LLVM Symbolic Simulator (lss) 0.1b Oct 2011. "
-                        ++ "Copyright 2011 Galois, Inc. All rights reserved.")
+            &= summary ("LLVM Symbolic Simulator (lss) 0.2a Aug 2012. "
+                        ++ "Copyright 2011-2012 Galois, Inc. All rights reserved.")
 
   let eatWS (' ':cs) = eatWS cs
       eatWS cs       = cs
