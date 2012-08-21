@@ -4,7 +4,7 @@ CC=gcc
 CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I${SYMAPI}
 LSS?=../../bin/lss
 
-all: aes128BlockEncrypt_driver_llvm aes.bc
+all: aes.bc
 
 %.bc: %.c
 	clang -emit-llvm -I${SYMAPI} -c $< -o $@

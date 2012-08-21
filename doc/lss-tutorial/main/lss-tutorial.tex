@@ -81,7 +81,7 @@
 \lhead{\sffamily\hspace{24pt}\includegraphics[height=1in]{images/Galois_logo_blue_box.pdf}}
 \rhead{\sffamily\titleline\\\vspace{12pt}}
 \rfoot{\sffamily\thepage}
-\lfoot{\sffamily\copyright 2011 Galois, Inc.}
+\lfoot{\sffamily\copyright 2012 Galois, Inc.}
 \renewcommand{\headrulewidth}{0pt}
 \renewcommand{\footrulewidth}{1pt}
 
@@ -105,12 +105,12 @@ functionality.
 We assume some knowledge of C, a basic understanding of LLVM, and a
 passing familiarity with cryptography. However, we do not assume
 familiarity with symbolic simulation, formal modeling, or theorem
-proving.  We assume that the user has installed the LLVM 2.9 toolchain
-(available from \texttt{http://llvm.org/releases}).  Additionally, we
-assume that the user has installed the Cryptol tool set and the ABC
-logic synthesis system from UC Berkeley if she wishes to complete the
-equivalence checking portion of the tutorial.  Installation and
-configuration of those tools is outside the scope of this tutorial.
+proving.  We assume that the user has installed the LLVM 3.0 or 3.1
+toolchain (available from \texttt{http://llvm.org/releases}).
+Additionally, we assume that the user has installed the Cryptol tool set
+and the ABC logic synthesis system from UC Berkeley if she wishes to
+complete the equivalence checking portion of the tutorial.  Installation
+and configuration of those tools is outside the scope of this tutorial.
 
 In the examples of interaction with the simulator and other tools, lines
 beginning with a hash mark (\texttt{\#}) or short text followed by an
@@ -394,15 +394,14 @@ equivAES> :fm blockEncryptref_c "aes-ref.aig"
 This tells the Cryptol interpreter to switch to symbolic simulation mode
 (which is one way it can generate formal models from Cryptol functions)
 and then attempt to prove the theorem named \texttt{MatchesRef}. On a
-reasonably modern machine (as of September 2011), the proof should
+reasonably modern machine (as of August 2012), the proof should
 complete in less than 30 minutes. The output \texttt{Q.E.D.} means that
 the proof was successful.
 
 Finally, the \texttt{:fm} command tells the interpreter to generate a
-formal model of the \texttt{blockEncryptref\_c} function and store it in
-the file \texttt{aes-ref.aig}. We can then use this formal model to
-perform the same proof using an external tool such as ABC, as described
-next.
+formal model of the function \texttt{blockEncryptref\_c} and store it in
+\texttt{aes-ref.aig}. We can then use this formal model to perform the
+same proof using an external tool such as ABC, as described next.
 
 Note that the above actions can be performed by running the
 \texttt{check} target of the Makefile in the code subdirectory.
@@ -425,6 +424,34 @@ UC Berkeley, ABC 1.01 (compiled Oct 26 2010 13:07:15)
 abc 01> cec ./aes.aig ./aes-ref.aig
 Networks are equivalent.
 abc 01> 
+\end{code}
+
+\section{Generating DIMACS CNF Models}
+
+In addition to AIG models, LSS can generate models in DIMACS CNF format
+for boolean-valued expressions. These models can then be checked for
+validity using a SAT solver of your choice.
+
+The AES driver in \texttt{aes128BlockEncrypt\_driver.c} contains the
+following line:
+\begin{code}
+lss_write_cnf(pt[0] != ct[0] &&
+              pt[1] != ct[1] &&
+              pt[2] != ct[2] &&
+              pt[3] != ct[3], "noleaks.cnf");
+\end{code}
+
+This call instructs LSS to write CNF clauses built from the expression
+given as the first argument (in this case, an assertion that the plain
+text and cipher text are different) into the file given as the second
+argument (\texttt{noleaks.cnf}). LSS uses the convention that
+unsatisfiability of the CNF model corresponds to validity of the given
+expression.
+
+We can now use a SAT solver to prove that AES will never encrypt
+plain text into identical cipher text (given sufficient time!):
+\begin{code}
+# picosat noleaks.cnf
 \end{code}
 
 % TODO: Add this section for final deliverable 
