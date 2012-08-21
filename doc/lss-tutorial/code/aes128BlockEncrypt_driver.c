@@ -15,10 +15,10 @@ int main()
   aes128BlockEncrypt(pt, key, ct);
 
   lss_write_aiger_array_uint32(ct, 4, "aes.aig");
+  lss_write_cnf(pt[0] != ct[0] &&
+                pt[1] != ct[1] &&
+                pt[2] != ct[2] &&
+                pt[3] != ct[3], "noleaks.cnf");
 
-  printf("%08x\n", ct[0]);
-  printf("%08x\n", ct[1]);
-  printf("%08x\n", ct[2]);
-  printf("%08x\n", ct[3]);
   return 0;
 }
