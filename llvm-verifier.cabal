@@ -1,5 +1,5 @@
 Name:          llvm-verifier
-Version:       0.1.1
+Version:       0.2
 Author:        Galois Inc.
 Maintainer:    jhendrix@galois.com, atomb@galois.com
 Build-type:    Simple

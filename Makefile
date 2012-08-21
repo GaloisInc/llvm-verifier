@@ -15,3 +15,4 @@ test: all
 
 clean:
 	cabal clean
+	rm -f *.aig *.cnf

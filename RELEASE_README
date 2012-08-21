@@ -1,12 +1,27 @@
 This directory contains executables and support files for the LLVM
 Symbolic Simulator (lss).
 
-CONTENTS (Version 0.3b Aug 2012)
+CONTENTS (Version 0.2a Aug 2012)
 
 doc/           : lss man page
 tutorial/      : Tutorials on using lss
 bin/           : Command-line executables
 test-programs/ : libgcrypt example code and proof scripts
+
+NEW IN THIS RELEASE
+
+Features:
+
+- Support for LLVM 3.0 and 3.1 bitcode files. LLVM 2.9 is no longer
+  supported.
+- Support for CNF model generation.
+
+Bug fixes:
+
+- A bug where some switch statements led to an internal simulator error
+  has been fixed.
+- A bug merging paths in certain complex control flow graphs has been
+  fixed.
 
 KNOWN ISSUES, LIMITATIONS, AND QUIRKS
 
