@@ -27,4 +27,5 @@ check: aes.aig
 	cryptol -b ref/equivAES.scr
 
 clean:
-	rm -f *.o *.bc *.ll *.s aes128BlockEncrypt_driver_llvm aes.aig
+	rm -f *.o *.bc *.ll *.s aes128BlockEncrypt_driver_llvm aes.aig \
+	noleaks.cnf
