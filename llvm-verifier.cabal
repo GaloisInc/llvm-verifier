@@ -91,6 +91,9 @@ executable lss
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
+  if os(linux)
+    ld-options: -static
+
   build-depends:
       base >= 4
     , cmdargs >= 0.8
