@@ -29,6 +29,10 @@ flag build-utils
   description: Build auxiliary command-line executables
   default: True
 
+flag static
+  description: Statically link (only works on Linux)
+  default: False
+
 library
   if !flag(build-library)
     buildable: False
@@ -36,7 +40,7 @@ library
   if flag(abc-backend)
     cpp-options: -DUseABC
     build-depends: abcBridge
-  else 
+  else
     build-depends: Aiger
 
   build-depends:
@@ -91,7 +95,7 @@ executable lss
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
-  if os(linux)
+  if flag(static)
     ld-options: -static -pthread
 
   build-depends:
