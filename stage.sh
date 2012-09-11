@@ -11,7 +11,6 @@ mkdir -p ${TARGET}/test-programs
 
 if [ "${OS}" == "Windows_NT" ]; then
   EXEDIR=windows
-  cp cabal-dev/bin/abc.dll ${TARGET}/bin
 elif [ "${NM}" == "Darwin" ]; then
   EXEDIR=macosx  
 else
