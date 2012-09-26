@@ -1655,7 +1655,7 @@ sbeBitBlast lc be mm = sbe
           , evalAiger        = BitIO `c2` evalAigerImpl be
           , writeCnf         = \f t -> BitIO $ do
               let ?be = be in
-                LV.toList `liftM` beWriteCNF be f (lIsZero (getV t))
+                LV.toList `liftM` beWriteCNF be f [] (lIsZero (getV t))
           }
     getV (BitTerm v) = v
     termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"
