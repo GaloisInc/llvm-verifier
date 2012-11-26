@@ -14,7 +14,10 @@ module LSS.SBEInterface where
 import Data.Bits (testBit)
 import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM.AST   as LLVM
+import           Data.Vector.Storable
 
+data SatResult = Sat (Vector Bool) | UnSat | Unknown
+  deriving (Eq,Show)
 
 data MemType = BitBlastBuddyAlloc | BitBlastDagBased deriving (Show)
 
@@ -220,6 +223,10 @@ data SBE m = SBE
     -- true and @f@ otherwise.  The memory should have the same number of stack
     -- and merge frames.
   , memMerge :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
+
+  -- | @term SAT t@ returns @True@ if @t@ is satisfiable, @False@
+  -- otherwise. TODO: eventually return a satisfying assignment.
+  , termSAT :: SBETerm m -> m SatResult
 
     ----------------------------------------------------------------------------
     -- Output functions

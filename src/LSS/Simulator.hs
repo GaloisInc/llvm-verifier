@@ -975,7 +975,10 @@ step (IfThenElse cond thenStmts elseStmts) = do
   sbe <- gets symBE
   case asBool sbe c of
     Just True -> runStmts thenStmts
-    _ -> runStmts elseStmts
+    _ -> do
+      c' <- liftSBE $ applyBNot sbe c
+      sr <- liftSBE $ termSAT sbe c'
+      runStmts $ if sr == UnSat then thenStmts else elseStmts
 
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"

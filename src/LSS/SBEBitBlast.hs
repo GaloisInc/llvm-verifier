@@ -55,7 +55,8 @@ import           LSS.SBEInterface
 import           Numeric                   (showHex)
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic (ConstantProjection(..), createBitEngine)
-import           Verinf.Symbolic.Lit
+import           Verinf.Symbolic.Lit hiding (SatResult(..))
+import qualified Verinf.Symbolic.Lit as Lit
 import           Verinf.Symbolic.Lit.Functional
 import qualified Data.Map                  as Map
 import qualified Data.Set                  as Set
@@ -1650,6 +1651,7 @@ sbeBitBlast lc be mm = sbe
           , heapAlloc        = \m eltTp (LLVM.typedValue -> cnt) ->
               BitIO . mmHeapAlloc mm m (llvmAllocSizeOf lc eltTp) cnt
           , memCopy          = BitIO `c5` mmMemCopy mm
+          , termSAT          = BitIO . checkSAT be
           , writeAiger       = \f ts -> 
               BitIO $ beWriteAigerV be f $ map getV ts
           , evalAiger        = BitIO `c2` evalAigerImpl be
@@ -1660,6 +1662,18 @@ sbeBitBlast lc be mm = sbe
     getV (BitTerm v) = v
     termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"
     termArrayImpl ts = foldr1 (LV.++) (map getV ts)
+
+checkSAT :: LV.Storable l => BitEngine l -> BitTerm l -> IO SatResult
+checkSAT be (BitTerm t) =
+  case (beCheckSat be, LV.toList t) of
+    (Nothing, _) -> bmError "termSAT not supported"
+    (Just chk, [l]) -> do
+      sr <- chk l
+      return $ case sr of
+                 Lit.Sat ls -> Sat ls
+                 Lit.UnSat -> UnSat
+                 Lit.Unknown -> Unknown
+    (Just _, _) -> bmError "checkSAT on wide term"
 
 termDecompImpl :: (LV.Storable l, Eq l)
                => LLVMContext

@@ -66,6 +66,7 @@ sbeSymbolic = SBE
   , stackPopFrame = nyi "stackPopFrame "
   , heapAlloc = nyi "heapAlloc"
   , memCopy = nyi "memCopy"
+  , termSAT = nyi "termSAT"
   , writeAiger = nyi "writeAiger"
   , evalAiger = nyi "evalAiger"
   , writeCnf = nyi "writeCnf"
