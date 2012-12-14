@@ -66,9 +66,10 @@ library
     LSS.Execution.Common
     LSS.Execution.Utils
     LSS.LLVMUtils
-    LSS.SBEBitBlast
-    LSS.SBEInterface
     LSS.Simulator
+    Verifier.LLVM.Backend
+    Verifier.LLVM.BitBlastBackend
+    Verifier.LLVM.SAWBackend
 
   other-modules:
     Data.LLVM.TargetData

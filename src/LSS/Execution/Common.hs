@@ -25,8 +25,8 @@ import           Control.Monad.State       hiding (State)
 import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
-import           LSS.SBEInterface
-import           LSS.SBEBitBlast           (BitIO(..))
+import           Verifier.LLVM.Backend
+import           Verifier.LLVM.BitBlastBackend (BitIO(..))
 import           Text.LLVM                 (Typed(..))
 import           Text.PrettyPrint.HughesPJ
 import qualified Data.Map                  as M

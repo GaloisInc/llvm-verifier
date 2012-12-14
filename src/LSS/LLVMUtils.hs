@@ -53,13 +53,13 @@ typedAs tv x = const x <$> tv
 nextMultiple :: Integral a => a -> a -> a
 nextMultiple x y = ((y + x - 1) `div` x) * x
 
-isPow2 :: Bits a => a -> Bool
+isPow2 :: (Bits a, Num a) => a -> Bool
 isPow2 x = x .&. (x-1) == 0
 
 nextPow2 :: (Ord a, Bits a, Integral a) => a -> a
 nextPow2 x = 2 ^ (lg x + 1)
 
-lg :: (Ord a, Bits a) => a -> a
+lg :: (Ord a, Bits a, Num a) => a -> a
 lg = genericLength . takeWhile (>0) . drop 1 . iterate (`shiftR` 1)
 
 isIntegerType :: Type -> Bool

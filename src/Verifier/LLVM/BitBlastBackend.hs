@@ -12,8 +12,8 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
 {-# LANGUAGE ViewPatterns               #-}
-module LSS.SBEBitBlast
-  ( module LSS.SBEInterface
+module Verifier.LLVM.BitBlastBackend
+  ( module Verifier.LLVM.Backend
   , module Data.LLVM.Memory
   , BitBlastSBE
   , BitTerm
@@ -51,7 +51,7 @@ import           Data.Map                  (Map)
 import           Data.Set                  (Set)
 import           Debug.Trace
 import           LSS.Execution.Utils
-import           LSS.SBEInterface
+import           Verifier.LLVM.Backend
 import           Numeric                   (showHex)
 import           Text.PrettyPrint.HughesPJ
 import           Verinf.Symbolic (ConstantProjection(..), createBitEngine)
@@ -1650,12 +1650,13 @@ sbeBitBlast lc be mm = sbe
           , heapAlloc        = \m eltTp (LLVM.typedValue -> cnt) ->
               BitIO . mmHeapAlloc mm m (llvmAllocSizeOf lc eltTp) cnt
           , memCopy          = BitIO `c5` mmMemCopy mm
-          , writeAiger       = \f ts -> 
+          , writeAiger       = \f ts ->
               BitIO $ beWriteAigerV be f $ map getV ts
           , evalAiger        = BitIO `c2` evalAigerImpl be
           , writeCnf         = \f t -> BitIO $ do
               let ?be = be in
                 LV.toList `liftM` beWriteCNF be f [] (lIsZero (getV t))
+          , sbeRunIO = liftSBEBitBlast 
           }
     getV (BitTerm v) = v
     termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"

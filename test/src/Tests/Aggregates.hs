@@ -14,7 +14,7 @@ module Tests.Aggregates (aggTests) where
 
 import           Control.Applicative
 import           LSS.LLVMUtils
-import           LSS.SBEInterface
+import           Verifier.LLVM.Backend
 import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common

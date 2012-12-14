@@ -84,7 +84,6 @@ import           LSS.Execution.Common
 import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
 import           LSS.LLVMUtils
-import           LSS.SBEInterface
 import           Numeric                   (showHex)
 import           System.Exit
 import           System.IO
@@ -92,28 +91,27 @@ import           Text.LLVM                 (Typed(..), (=:))
 import           Text.PrettyPrint.HughesPJ
 import Prelude   hiding (mapM, sequence)
 import Data.Traversable
+import           Verifier.LLVM.Backend
+
 
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
 import qualified Text.LLVM                 as L
 import qualified Data.Vector               as V
 
-runSimulator ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
+runSimulator :: forall sbe a .
+  ( Functor sbe
   )
   => Codebase              -- ^ Post-transform LLVM code, memory alignment, and
                            -- type aliasing info
   -> SBE sbe               -- ^ A symbolic backend
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
-  -> LiftSBE sbe m         -- ^ Lift from symbolic backend to base monad
-  -> SEH sbe m             -- ^ Simulation event handlers (use defaultSEH if no
+  -> SEH sbe IO            -- ^ Simulation event handlers (use defaultSEH if no
                            -- event handling is needed)
   -> Maybe LSSOpts         -- Simulation options
-  -> Simulator sbe m a     -- ^ Simulator action to perform
-  -> m a
-runSimulator cb sbe mem lifter seh mopts m = do
+  -> Simulator sbe IO a     -- ^ Simulator action to perform
+  -> IO a
+runSimulator cb sbe mem seh mopts m = do
   ea <- runErrorT go `evalStateT` newSt
   -- TODO: call exception handlers given by to-be-written SEH fields
   case ea of
@@ -122,6 +120,8 @@ runSimulator cb sbe mem lifter seh mopts m = do
                                      ++ maybe "(no details)" (show . ppFailRsn) mfr
     Right x               -> return x
   where
+    lifter :: forall v . sbe v -> Simulator sbe IO v
+    lifter = SM . lift . lift . sbeRunIO sbe
     newSt = newSimState cb sbe mem lifter seh mopts
     go    = runSM $ do
       true <- liftSBE $ termBool sbe True
@@ -1999,7 +1999,7 @@ writeCNF = Override $ \_sym _rty args ->
   case args of
     [t, fptr] -> do
       file <- loadString "lss_write_cnf" fptr
-      withSBE $ \s -> writeCnf s file (typedValue t)
+      _ <- withSBE $ \s -> writeCnf s file (typedValue t)
       return Nothing
     _ -> e "lss_write_cnf: wrong number of arguments"
   where

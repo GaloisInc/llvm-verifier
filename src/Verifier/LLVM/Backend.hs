@@ -9,14 +9,11 @@ Point-of-contact : jstanley
 {-# LANGUAGE RankNTypes       #-}
 {-# LANGUAGE TypeFamilies     #-}
 
-module LSS.SBEInterface where
+module Verifier.LLVM.Backend where
 
 import Data.Bits (testBit)
 import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM.AST   as LLVM
-
-
-data MemType = BitBlastBuddyAlloc | BitBlastDagBased deriving (Show)
 
 -- | SBETerm yields the type used to represent terms in particular SBE interface
 -- implementation.
@@ -235,6 +232,8 @@ data SBE m = SBE
     -- | @evalAiger inps t@ evaluates an AIG with the given concrete inputs;
     -- result is always a concrete term.
   , evalAiger :: [Bool] -> SBETerm m -> m (SBETerm m)
+    -- | Run sbe computation in IO.
+  , sbeRunIO :: forall v . m v -> IO v 
   }
 
 -- | Return conjunction of two terms.

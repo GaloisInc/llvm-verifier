@@ -14,12 +14,12 @@ import           Control.Applicative
 import           Data.Maybe
 import           LSS.Execution.Debugging
 import           LSS.LLVMUtils
-import           LSS.SBEInterface
 import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
 import           Text.LLVM               ((=:), Typed(..), typedValue)
 import qualified Text.LLVM               as L
+import           Verifier.LLVM.Backend
 
 aesTests :: [(Args, Property)]
 aesTests =

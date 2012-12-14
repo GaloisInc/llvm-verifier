@@ -25,7 +25,8 @@ import           Data.LLVM.Symbolic.AST
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.LLVMUtils
-import           LSS.SBEBitBlast
+import           Verifier.LLVM.Backend
+import           Verifier.LLVM.BitBlastBackend
 import           LSS.Simulator
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
@@ -36,12 +37,11 @@ import qualified Text.LLVM                       as L
 
 data LSS = LSS
   { dbug    :: DbugLvl
---   , stack   :: StackSz
   , argv     :: String
-  , mname    :: Maybe String
-  , memtype  :: Maybe String
+  , backend  :: Maybe String
   , errpaths :: Bool
   , xlate    :: Bool
+  , mname    :: Maybe String
   } deriving (Show, Data, Typeable)
 
 newtype DbugLvl = DbugLvl { unD :: Int32 }
@@ -51,6 +51,11 @@ instance Default DbugLvl where def = DbugLvl 1
 -- newtype StackSz = StackSz { unS :: Int32 }
 --   deriving (Data, Enum, Eq, Integral, Num, Ord, Real, Show, Typeable)
 -- instance Default StackSz where def = StackSz 8
+
+data BackendType = BitBlastBuddyAlloc
+                 | BitBlastDagBased
+                 | SAWBackendType
+  deriving (Show)
 
 data ExecRslt sbe crt
   = NoMainRV [ErrorPath sbe] (Maybe (SBEMemory sbe))
@@ -63,15 +68,14 @@ type ExecRsltHndlr sbe crt a =
   -> ExecRslt sbe crt -- ^ Execution results; final memory is embedded here
   -> IO a
 
-lssImpl :: (Eq l, SV.Storable l)
-        => SBE (BitIO mem l)
-        -> SBEMemory (BitIO mem l)
+lssImpl :: Functor sbe
+        => SBE sbe
+        -> SBEMemory sbe
         -> Codebase
         -> [String]
-        -> MemType
         -> LSS
-        -> IO (ExecRslt (BitIO mem l) Integer)
-lssImpl sbe mem cb argv0 _memType args = do
+        -> IO (ExecRslt sbe Integer)
+lssImpl sbe mem cb argv0 args = do
   mainDef <- case lookupDefine (L.Symbol "main") cb of
                Nothing -> error "Provided bitcode does not contain main()."
                Just mainDef -> do
@@ -83,17 +87,17 @@ lssImpl sbe mem cb argv0 _memType args = do
     lc    = cbLLVMCtx cb
     mg    = defaultMemGeom lc
 
-runBitBlast :: (Eq l, SV.Storable l)
-            => BitBlastSBE mem l -- ^ SBE to use
-            -> mem               -- ^ SBEMemory to use
+runBitBlast :: Functor sbe
+            => SBE sbe -- ^ SBE to use
+            -> SBEMemory sbe     -- ^ SBEMemory to use
             -> Codebase
             -> MemGeom
             -> [String]          -- ^ argv
             -> LSS               -- ^ LSS command-line arguments
             -> SymDefine         -- ^ Define of main()
-            -> IO (ExecRslt (BitIO mem l) Integer)
+            -> IO (ExecRslt sbe Integer)
 runBitBlast sbe mem cb mg argv' args mainDef = do
-  runSimulator cb sbe mem liftBitBlastSim seh' opts $ do
+  runSimulator cb sbe mem seh' opts $ do
     setVerbosity $ fromIntegral $ dbug args
     whenVerbosity (>=5) $ do
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"
