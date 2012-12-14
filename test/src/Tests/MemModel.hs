@@ -11,7 +11,7 @@ import Test.QuickCheck.Monadic
 
 import Data.LLVM.Memory
 import Data.LLVM.TargetData
-import LSS.SBEBitBlast
+import Verifier.LLVM.BitBlastBackend
 import qualified Text.LLVM.AST as LLVM
 import Verinf.Symbolic (createBitEngine)
 import Verinf.Symbolic.Lit

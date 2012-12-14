@@ -18,8 +18,6 @@ import           Data.LLVM.Symbolic.AST
 import           Data.LLVM.Symbolic.Translation  (liftDefine)
 import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
-import           LSS.SBEInterface
-import           LSS.SBEBitBlast
 import           LSSImpl
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           System.Environment              (getArgs)
@@ -28,6 +26,10 @@ import           Text.ParserCombinators.Parsec
 import           Verinf.Symbolic                 (createBitEngine)
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
+
+import           Verifier.LLVM.Backend
+import           Verifier.LLVM.BitBlastBackend
+import           Verifier.LLVM.SAWBackend
 
 main :: IO ()
 main = do
@@ -41,8 +43,8 @@ main = do
 --             , stack   = def &= opt "8" &= help "Stack size in megabytes (default: 8)"
             , argv     = def &= typ "\"arg1 arg2 ...\""
                              &= help "Space-delimited arguments to main()"
-            , memtype  = def &= typ "[bitblast|dagbased]"
-                             &= help "Memory model to use (default: bitblast)"
+            , backend  = def &= typ "[bitblast|dag|saw]"
+                             &= help "Symbolic backend to use (default: bitblast)"
             , errpaths = def &= help "Dump error path details upon program completion (potentially very verbose)."
             , xlate    = def &= help "Prints the symbolic AST translation to stdout, and then terminates."
             , mname    = def &= typ "Fully-linked .bc containing main()"
@@ -54,12 +56,13 @@ main = do
   let eatWS (' ':cs) = eatWS cs
       eatWS cs       = cs
 
-  memType <- case eatWS <$> memtype args of
-    Just "dagbased" -> return BitBlastDagBased
+  backEnd <- case eatWS <$> backend args of
     Just "bitblast" -> return BitBlastBuddyAlloc
+    Just "dag"      -> return BitBlastDagBased
+    Just "saw"      -> return SAWBackendType
     Nothing         -> return BitBlastBuddyAlloc
     _               -> do
-      putStrLn "Invalid memory model specified.  Please choose 'bitblast' or 'dagbased'."
+      putStrLn "Invalid backend specified.  Please choose 'bitblast', 'dag', or 'saw'."
       exitFailure
 
   bcFile <- case mname args of
@@ -106,11 +109,13 @@ main = do
                 dbugM $ "Obtained concrete return value from main(): " ++ show rv
               _ <- exitWith (if rv == 0 then ExitSuccess else ExitFailure rv)
               return ()
-  case memType of
+  case backEnd of
     BitBlastDagBased -> do
       (sbe, mem) <- createDagAll be lc mg --first (sbeBitBlast lc be) <$> createDagMemModel lc be mg
-      processRslt sbe =<< lssImpl sbe mem cb argv' memType args
+      processRslt sbe =<< lssImpl sbe mem cb argv' args
     BitBlastBuddyAlloc -> do
        (sbe, mem) <- createBuddyAll be lc mg
-       processRslt sbe =<< lssImpl sbe mem cb argv' memType args
-
+       processRslt sbe =<< lssImpl sbe mem cb argv' args
+    SAWBackendType -> do
+      (sbe,mem) <- createSAWBackend lc mg    
+      processRslt sbe =<< lssImpl sbe mem cb argv' args

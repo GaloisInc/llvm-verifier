@@ -16,7 +16,7 @@ import           Data.LLVM.TargetData
 import           Data.Maybe
 import           Data.Word
 import           LSS.LLVMUtils
-import           LSS.SBEBitBlast
+import           Verifier.LLVM.BitBlastBackend
 import           LSS.Simulator
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
@@ -43,39 +43,28 @@ primOpTests =
   , test  1  False "test-ptr-simple"       $ testPtrSimple   1
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
   , test  1  False  "test-call-exit"       $ testCallExit    1
-  , lssTest 0  "test-call-simple" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "ctests/test-call-alloca" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 34289)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 34289)
-  , lssTest 0 "ctests/test-call-malloc" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 34289)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 34289)
-  , lssTest 0 "ctests/test-main-return" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 42)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 42)
-  , lssTest 0 "ctests/test-select" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "ctests/test-user-override-by-name" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "ctests/test-user-override-by-addr" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "ctests/test-user-override-by-addr-cycle" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "ctests/test-user-override-reset" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "ctests/test-user-override-intrinsic" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
-  , lssTest 0 "ctests/test-merge-mem-problem" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 1)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 1)
+  , lssTestAll 0  "test-call-simple" [] $
+      chkLSS Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-call-alloca" [] $
+      chkLSS Nothing (Just 34289)
+  , lssTestAll 0 "ctests/test-call-malloc" [] $
+      chkLSS Nothing (Just 34289)
+  , lssTestAll 0 "ctests/test-main-return" [] $
+      chkLSS Nothing (Just 42)
+  , lssTestAll 0 "ctests/test-select" [] $
+      chkLSS Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-user-override-by-name" [] $
+      chkLSS Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-user-override-by-addr" [] $
+      chkLSS Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-user-override-by-addr-cycle" [] $
+      chkLSS Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-user-override-reset" [] $
+      chkLSS Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-user-override-intrinsic" [] $
+      chkLSS Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-merge-mem-problem" [] $
+      chkLSS Nothing (Just 1)
   ]
   where
     -- The 'v' parameter to all of these tests controls the verbosity; a
