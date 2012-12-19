@@ -69,11 +69,12 @@ data HeapAllocResult t m
   -- implementation does not support this.
   | HASymbolicCountUnsupported
 
+type BitWidth = Int 
+
 data SBE m = SBE
   {
     ----------------------------------------------------------------------------
     -- Term creation, operators
-
         
     -- | @termBool b@ creates a term representing the constant boolean
     -- (1-bit) value @b@
@@ -81,7 +82,7 @@ data SBE m = SBE
 
     -- | @termInt w n@ creates a term representing the constant @w@-bit
     -- value @n@
-  , termInt  :: Int -> Integer -> m (SBETerm m)
+  , termInt  :: BitWidth -> Integer -> m (SBETerm m)
 
     -- | @freshInt w@ creates a term representing a symbolic @w@-bit value
   , freshInt :: Int -> m (SBETerm m)
@@ -92,10 +93,13 @@ data SBE m = SBE
     -- | Create an SBE term for the given concrete floating point value.
   , termFloat :: Float -> m (SBETerm m)
     
-    -- | @termArray ts@ creates a term representing an array with element terms
-    -- @ts@ (which must be nonempty).  A term list containing with
-    -- heterogenously-sized terms is permitted.
-  , termArray :: [SBETerm m] -> m (SBETerm m)
+    -- | @termArray tp ts@ creates a term representing an array with element terms
+    -- @ts@ (which must be nonempty).  Each element must have type tp.  
+  , termArray :: LLVM.Type -> [SBETerm m] -> m (SBETerm m)
+
+
+    -- | Create an struct of terms, which may have different types.
+  , termStruct :: [(LLVM.Type, SBETerm m)] -> m (SBETerm m)
 
     -- | @termDecomp tys t@ decomposes the given term into @(length tys)@ terms,
     --  with each taking their type from the corresponding element of @tys@.
@@ -105,22 +109,68 @@ data SBE m = SBE
     -- Term operator application
 
     -- | @applyIte a b c@ creates an if-then-else term
-  , applyIte    :: SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIte    :: LLVM.Type -> SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyICmp op a b@ performs LLVM integer comparison @op@
-  , applyICmp   :: LLVM.ICmpOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyICmp   :: LLVM.ICmpOp -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyBitwise op a b@ performs LLVM bitwise operation @op@
-  , applyBitwise :: LLVM.BitOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyBitwise :: LLVM.BitOp -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
-  , applyArith  :: LLVM.ArithOp -> SBETerm m -> SBETerm m -> m (SBETerm m)
-    -- | @applyConv op v t@ performs LLVM conversion operation @op@
-  , applyConv   :: LLVM.ConvOp -> SBETerm m -> LLVM.Type -> m (SBETerm m)
+  , applyArith  :: LLVM.ArithOp -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyBNot @a@ performs negation of a boolean term
   , applyBNot :: SBETerm m -> m (SBETerm m)
+    -- | Perform addition with overflow, returning carry bit as a 1-bit integer, and result.
+  , applyUAddWithOverflow :: BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m, SBETerm m)
+
+    -- | @applyTrunc iw rw t@ assumes that @rw < iw@, and truncates an integer @t@
+    -- with @iw@ bits to an integer with @rw@ bits.
+  , applyTrunc :: Int -> Int -> SBETerm m -> m (SBETerm m)
+
+    -- | @applyTruncV n iw rw t@ assumes that @rw < iw@, and truncates a vector of
+    -- integers @t@ with @iw@ bits to a vector of integers with @rw@ bits.
+  , applyTruncV :: Int -> Int -> Int -> SBETerm m -> m (SBETerm m)
+
+    -- | @applyZExt iw rw t@ assumes that @iw < rw@, and zero extends an
+    -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
+  , applyZExt :: Int -> Int -> SBETerm m -> m (SBETerm m)
+    -- | @applyZExtV n iw rw v@ assumes that @iw < rw@, and zero extends a
+    -- vector of integers @v@ each with @iw@ bits to a vector of integers with
+    -- @rw@ bits.
+  , applyZExtV :: Int -> Int -> Int -> SBETerm m -> m (SBETerm m)
+
+    -- | @applySExt iw rw t@ assumes that @iw < rw@, and sign extends an
+    -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
+  , applySExt :: Int -> Int -> SBETerm m -> m (SBETerm m)
+    -- | @applySExtV n iw rw v@ assumes that @iw < rw@, and sign extends a
+    -- vector of integers @v@ each with @iw@ bits to a vector of integers with
+    -- @rw@ bits.
+  , applySExtV :: Int -> Int -> Int -> SBETerm m -> m (SBETerm m)
+
+    -- | @applyPtrToInt tp rw t@ converts a pointer @t@ with type @tp@ to an
+    -- integer with width @rw@.  The value of the pointer is truncated or zero
+    -- extended as necessary to have the correct length.
+  , applyPtrToInt :: LLVM.Type -> Int -> SBETerm m -> m (SBETerm m)
+    -- | @applyPtrToIntV n tp rw v@ converts a vector of pointers @v@ with type
+    --  @tp@ to an integer with width @rw@.  The value of each pointer is
+    -- truncated or zero extended as necessary to have the correct length.
+  , applyPtrToIntV :: Int -> LLVM.Type -> Int -> SBETerm m -> m (SBETerm m)
+
+    -- | @applyIntToPtr iw tp t@ converts an integer @t@ with width @iw@ to
+    -- a pointer.  The value of the integer is truncated or zero
+    -- extended as necessary to have the correct length.
+  , applyIntToPtr :: Int -> LLVM.Type -> SBETerm m -> m (SBETerm m)
+
+    -- | @applyIntToPtr iw tp t@ converts a vector of integers @t@ with width
+    -- @iw@ to a vector of pointers.  The value of each integer is truncated
+    -- or zero extended as necessary to have the correct length.
+  , applyIntToPtrV :: Int -> Int -> LLVM.Type -> SBETerm m -> m (SBETerm m)
+
+    -- | @applyBitbast itp rtp t@ converts @t@ from type @itp@ to type @rtp@.
+    -- The size of types @itp@ and @rtp@ is assumed to be equal.
+  , applyBitcast :: LLVM.Type -> LLVM.Type -> SBETerm m -> m (SBETerm m)
+
     ----------------------------------------------------------------------------
     -- Term miscellany
 
-    -- | Yields the width of the given term in bits
-  , termWidth   :: SBETerm m -> Integer
   , closeTerm   :: SBETerm m -> SBEClosedTerm m
   , prettyTermD :: SBETerm m -> Doc
     -- | Interpret the term as a concrete boolean if it can be.
@@ -238,10 +288,10 @@ data SBE m = SBE
 
 -- | Return conjunction of two terms.
 applyAnd :: SBE m -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applyAnd sbe = applyBitwise sbe LLVM.And
+applyAnd sbe = applyBitwise sbe LLVM.And 1
 
 -- | Return predicate indicating if two terms are equal.
-applyIEq :: SBE m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+applyIEq :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
 applyIEq sbe = applyICmp sbe LLVM.Ieq 
 
 -- | Interpret the term as a concrete signed integer if it can be.

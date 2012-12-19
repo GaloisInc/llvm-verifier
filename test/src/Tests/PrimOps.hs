@@ -118,7 +118,7 @@ chkArithBitEngineFn w s op fn = do
         proj = if s then getSVal else getUVal
     x' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral x)
     y' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral y)
-    r' <- run . liftSBEBitBlast $ applyArith sbe op x' y'
+    r' <- run . liftSBEBitBlast $ applyArith sbe op w x' y'
     assert (proj (BitTermClosed (be, r')) == Just (fromIntegral r))
 
 testSetupPtrArgImpl ::

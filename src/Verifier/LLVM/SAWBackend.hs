@@ -1,4 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 module Verifier.LLVM.SAWBackend where
 
@@ -7,32 +9,69 @@ import Data.LLVM.TargetData
 import Verifier.LLVM.Backend
 
 
-data SAWBackend a = SAWBackend { runSAWBackend :: IO a }
+import Verifier.SAW
+import Verifier.SAW.ParserUtils
+import Verifier.SAW.Prelude
+
+data SAWBackend s a = SAWBackend { runSAWBackend :: IO a }
   deriving (Functor)
 
 data SAWMemory = SAWMemory ()
 
-type instance SBEMemory SAWBackend = SAWMemory
+type instance SBETerm (SAWBackend s) = SharedTerm s
+type instance SBEMemory (SAWBackend s) = SAWMemory
+
+$(runDecWriter $ do
+    prelude <- decModule [|preludeModule|] preludeModule
+    llvm <- mkDecModule [prelude] "llvmModule" "saw/LLVM.saw"
+    decSharedModuleFns "LLVM" (dmModule llvm)    
+ )
+
+lift2 :: (x -> y -> IO r) -> x -> y -> SAWBackend s r
+lift2 fn x y = SAWBackend (fn x y)
 
 createSAWBackend :: LLVMContext
                  -> MemGeom
-                 -> IO (SBE SAWBackend, SAWMemory)
+                 -> IO (SBE (SAWBackend s), SAWMemory)
 createSAWBackend _lc _mg = do
+  sc <- mkSharedContext llvmModule
+  let ?sc = sc
+  t <- scApplyPreludeTrue sc
+  f <- scApplyPreludeFalse sc
+  integerToSigned <- scApplyPreludeIntegerToSigned sc
   let nyi nm = error $ "Not yet implemented: " ++ show nm
-  let sbe = SBE { termBool = nyi "termBool"
-                , termInt = nyi "termInt"
+  let sbeBool b = if b then t else f
+      sbeInt w v = do
+        wt <- scNat (toInteger w)
+        integerToSigned wt =<< scInteger v
+  let sbe = SBE { termBool = SAWBackend . return . sbeBool
+                , termInt = lift2 sbeInt
                 , freshInt = nyi "freshInt"
                 , termDouble = nyi "termDouble"
-                , termFloat = nyi "termFloat"
-                , termArray = nyi "termArray"
+                , termFloat  = nyi "termFloat"
+                , termArray  = nyi "termArray"
+                , termStruct = nyi "termStruct"
                 , termDecomp = nyi "termDecomp"
-                , applyIte = nyi "applyIte"
-                , applyICmp = nyi "applyICmp"
+                , applyIte   = nyi "applyIte"
+                , applyICmp  = nyi "applyICmp"
                 , applyBitwise = nyi "applyBitwise"
                 , applyArith = nyi "applyArith"
-                , applyConv = nyi "applyConv"
+
                 , applyBNot = nyi "applyBNot"
-                , termWidth = nyi "termWidth"
+                , applyUAddWithOverflow = nyi "applyUAddWithOverflow"
+
+                , applyTrunc  = nyi "applyTrunc"
+                , applyTruncV = nyi "applyTruncV"
+                , applyZExt   = nyi "applyZExt"
+                , applyZExtV  = nyi "applyZExtV"
+                , applySExt   = nyi "applySExt"
+                , applySExtV  = nyi "applySExtV"
+                , applyPtrToInt  = nyi "applyPtrToInt"
+                , applyPtrToIntV = nyi "applyPtrToIntV"
+                , applyIntToPtr  = nyi "applyIntToPtr"
+                , applyIntToPtrV = nyi "applyIntToPtrV"
+                , applyBitcast = nyi "applyBitcast"
+
                 , closeTerm = nyi "closeTerm"
                 , prettyTermD = nyi "prettyTermD"
                 , asBool = nyi "asBool"

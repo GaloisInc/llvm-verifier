@@ -26,13 +26,11 @@ import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.LLVMUtils
 import           Verifier.LLVM.Backend
-import           Verifier.LLVM.BitBlastBackend
 import           LSS.Simulator
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           Text.LLVM                       ((=:), Typed(..))
 import           Verinf.Utils.LogMonad
-import qualified Data.Vector.Storable as SV
 import qualified Text.LLVM                       as L
 
 data LSS = LSS
@@ -139,10 +137,10 @@ buildArgv numArgs argv' = do
   strPtrs  <- mapM (\ty -> tv <$> alloca ty one Nothing) (tt <$> strVals)
   num <- getSizeT (toInteger numArgs)
   argvBase <- alloca i8p num Nothing
-  argvArr  <- (L.Array numArgs i8p =:) <$> withSBE (\s -> termArray s strPtrs)
+  argvArr  <- withSBE (\s -> termArray s i8p strPtrs)
   -- Write argument string data and argument string pointers
   forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p
-  store argvArr (tv argvBase)
+  store (L.Array numArgs i8p =: argvArr) (tv argvBase)
   return [i32 =: argc, argvBase]
   where
     tv = typedValue

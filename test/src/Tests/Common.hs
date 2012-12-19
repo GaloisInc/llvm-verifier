@@ -141,7 +141,7 @@ runTestLSSBuddy = runTestLSSCommon "runTestLSSBuddy" createBuddyAll
 runTestLSSDag :: RunLSSTest (BitIO (DagMemory Lit) Lit)
 runTestLSSDag = runTestLSSCommon "runTestLSSDag" createDagAll
 
-runTestSAWBackend :: RunLSSTest SAWBackend
+runTestSAWBackend :: RunLSSTest (SAWBackend s)
 runTestSAWBackend = runTestLSSCommon "runTestLSSDag" (\_ -> createSAWBackend)
 
 lssTest :: Int -> String -> (Int -> Codebase -> PropertyM IO ()) -> (Args, Property)

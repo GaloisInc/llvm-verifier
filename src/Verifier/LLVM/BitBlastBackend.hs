@@ -61,6 +61,7 @@ import qualified Data.Map                  as Map
 import qualified Data.Set                  as Set
 import qualified Data.Vector               as V
 import qualified Data.Vector.Storable      as LV
+import qualified Text.LLVM.AST             as L
 import qualified Text.LLVM.AST             as LLVM
 import qualified Verinf.Symbolic           as S
 import System.IO.Unsafe (unsafePerformIO)
@@ -105,6 +106,16 @@ byteSize v = LV.length v `shiftR` 3
 -- | Slice a vector into a list of vectors, one for each byte.
 sliceIntoBytes :: LV.Storable l => LV.Vector l -> V.Vector (LV.Vector l)
 sliceIntoBytes v = V.generate (byteSize v) $ \i -> LV.slice (i `shiftL` 3) 8 v
+
+-- | Slice a single vector into a vector of lit vectors each with the given number of elements.
+sliceN :: LV.Storable l => Int -> LV.Vector l -> V.Vector (LV.Vector l)
+sliceN n v = assert (n > 0 && r == 0) $
+    V.generate l $ \i -> LV.slice (n*i) n v  
+  where (l,r) = LV.length v `divMod` n
+
+-- | Slice a single vector into a vector of lit vectors each with the given number of elements.
+joinN :: LV.Storable l => V.Vector (LV.Vector l) -> LV.Vector l
+joinN = LV.concat . V.toList
 
 -- | @alignUp addr i@ returns the smallest multiple of @2^i@ that it
 -- at least @addr@.
@@ -1506,19 +1517,20 @@ evalAigerImpl be inps (BitTerm t) = BitTerm <$> do
 -- Arithmetic and logical operations {{{1
 
 bitIte :: (LV.Storable l, Eq l) =>
-          BitEngine l -> BitTerm l -> BitTerm l -> BitTerm l
-       -> IO (BitTerm l)
-bitIte be (BitTerm c) (BitTerm a) (BitTerm b) = do
+          BitEngine l -> L.Type -> BitTerm l -> BitTerm l -> BitTerm l
+       -> BitIO m l (BitTerm l)
+bitIte be _ (BitTerm c) (BitTerm a) (BitTerm b) = BitIO $ do
   let zero = LV.replicate (LV.length c) lFalse
   return $ BitTerm $ lIteVector (c `lEqVector` zero) b a
  where ?be = be
 
-bitICmp :: (LV.Storable l, Eq l) =>
-           BitEngine l -> LLVM.ICmpOp
-        -> BitTerm l -> BitTerm l
-        -> IO (BitTerm l)
-bitICmp be op (BitTerm a) (BitTerm b) =
-   (BitTerm . LV.singleton) <$> f be a b
+bitICmp :: (LV.Storable l, Eq l)
+        => BitEngine l -> LLVM.ICmpOp
+        -> BitWidth -> BitTerm l -> BitTerm l
+        -> BitIO m l (BitTerm l)
+bitICmp be op w (BitTerm a) (BitTerm b)
+   | LV.length a == LV.length b = BitIO $ (BitTerm . LV.singleton) <$> f be a b
+   | otherwise = error $ "bitICmp given different types " ++ show (w, LV.length a, LV.length b) 
   where f = case op of
               LLVM.Ieq -> beEqVector
               LLVM.Ine -> neg beEqVector
@@ -1532,11 +1544,12 @@ bitICmp be op (BitTerm a) (BitTerm b) =
               LLVM.Isle -> beSignedLeq
         neg fn bend x y = beNeg bend <$> fn bend x y
 
-bitBitwise :: (LV.Storable l, Eq l) =>
-              BitEngine l -> LLVM.BitOp
-           -> BitTerm l -> BitTerm l
-           -> IO (BitTerm l)
-bitBitwise be op (BitTerm a) (BitTerm b) = BitTerm <$> f be a b
+bitBitwise :: (LV.Storable l, Eq l)
+           => BitEngine l
+           -> LLVM.BitOp
+           -> BitWidth -> BitTerm l -> BitTerm l
+           -> BitIO m l (BitTerm l)
+bitBitwise be op _ (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
   where f = case op of
               LLVM.And -> beAndInt
               LLVM.Or -> beOrInt
@@ -1545,11 +1558,12 @@ bitBitwise be op (BitTerm a) (BitTerm b) = BitTerm <$> f be a b
               (LLVM.Lshr _) -> beUnsignedShr
               (LLVM.Ashr _) -> beSignedShr
 
-bitArith :: (LV.Storable l, Eq l) =>
-            BitEngine l -> LLVM.ArithOp
-         -> BitTerm l -> BitTerm l
-         -> IO (BitTerm l)
-bitArith be op (BitTerm a) (BitTerm b) = BitTerm <$> f be a b
+bitArith :: (LV.Storable l, Eq l)
+         => BitEngine l
+         -> LLVM.ArithOp
+         -> BitWidth -> BitTerm l -> BitTerm l
+         -> BitIO m l (BitTerm l)
+bitArith be op _ (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
   where f = case op of
               (LLVM.Add _ _)  -> beAddInt
               (LLVM.Mul _ _)  -> beMulInt
@@ -1564,25 +1578,6 @@ bitArith be op (BitTerm a) (BitTerm b) = BitTerm <$> f be a b
               LLVM.FDiv -> noFloats
               LLVM.FRem -> noFloats
         noFloats = bmError "floating point arithmetic not currently supported"
-
-bitConv :: (LV.Storable l, Eq l)
-        => BitEngine l -> Int
-        -> LLVM.ConvOp -> BitTerm l -> LLVM.Type -> BitTerm l
-bitConv be ptrWidth op (BitTerm x) resType = BitTerm v
-  where LLVM.PrimType (LLVM.Integer (fromIntegral -> w)) = resType
-        l = LV.length x
-        v = case op of
-              LLVM.Trunc -> assert (w < l) $ beTrunc be w x
-              LLVM.ZExt  -> assert (w > l) $ beZext be w x
-              LLVM.SExt  -> assert (w > l) $ beSext be w x
-              LLVM.PtrToInt | w > l -> beZext be w x
-                            | w < l -> beTrunc be w x
-                            | otherwise -> x
-              LLVM.IntToPtr | ptrWidth > l -> beZext be ptrWidth x
-                            | ptrWidth < l -> beTrunc be ptrWidth x
-                            | otherwise -> x
-              LLVM.BitCast -> x
-              _ -> bmError $ "Unsupported conv op: " ++ show op
 
 bitBNot :: (LV.Storable l, Eq l) =>
            BitEngine l -> BitTerm l
@@ -1600,9 +1595,6 @@ type instance SBEMemory (BitIO m l)     = m
 
 type BitBlastSBE m l = SBE (BitIO m l)
 
-bitTermWidth :: LV.Storable l => BitTerm l -> Integer
-bitTermWidth (BitTerm v) = fromIntegral $ LV.length v
-
 sbeBitBlast :: (Eq l, LV.Storable l)
             => LLVMContext
             -> BitEngine l
@@ -1611,6 +1603,23 @@ sbeBitBlast :: (Eq l, LV.Storable l)
 sbeBitBlast lc be mm = sbe
   where
     ptrWidth = llvmAddrWidthBits lc
+
+    convOpI :: (a -> LV.Vector l -> LV.Vector l)
+            -> b -> a -> BitTerm l -> BitIO m l (BitTerm l)
+    convOpI f _ w (BitTerm t) = return (BitTerm (f w t))
+
+    convOpV :: (LV.Storable l)
+            => (a -> LV.Vector l -> LV.Vector l)
+            -> Int -> b -> a -> BitTerm l -> BitIO m l (BitTerm l)
+    convOpV f n _ w (BitTerm t) = return (BitTerm (joinN (f w <$> sliceN n t)))
+
+    ptrToInt w t | w > ptrWidth = beZext be w t
+                 | w < ptrWidth = beTrunc be w t
+                 | otherwise = t
+    intToPtr _ t | ptrWidth > l = beZext be ptrWidth t
+                 | ptrWidth < l = beTrunc be ptrWidth t
+                 | otherwise = t
+      where l = LV.length t
     sbe = SBE
           { termBool         = return . BitTerm . LV.singleton . beLitFromBool be
           , termInt          = (return . BitTerm) `c2` beVectorFromInt be
@@ -1618,16 +1627,30 @@ sbeBitBlast lc be mm = sbe
                                         LV.replicateM w (beMakeInputLit be)
           , termDouble       = return . BitTerm . beVectorFromInt be 64 . toInteger . doubleToWord
           , termFloat        = return . BitTerm . beVectorFromInt be 32 . toInteger . floatToWord
-          , termArray        = return . BitTerm . termArrayImpl
+          , termArray        = \_ l -> return (termArrayImpl l)
+          , termStruct       = \l -> return (termArrayImpl (snd <$> l))
           , termDecomp       = return `c2` termDecompImpl lc be
           
-          , applyIte         = BitIO `c3` bitIte be
-          , applyICmp        = BitIO `c3` bitICmp be
-          , applyBitwise     = BitIO `c3` bitBitwise be
-          , applyArith       = BitIO `c3` bitArith be
-          , applyConv        = return `c3` bitConv be ptrWidth
+          , applyIte         = bitIte be
+          , applyICmp        = bitICmp be
+          , applyBitwise     = bitBitwise be
+          , applyArith       = bitArith be
+
+          , applyTrunc     = convOpI (beTrunc be)
+          , applyTruncV    = convOpV (beTrunc be)
+          , applyZExt      = convOpI (beZext be)
+          , applyZExtV     = convOpV (beZext be)
+          , applySExt      = convOpI (beSext be)
+          , applySExtV     = convOpV (beSext be)
+          , applyPtrToInt  = convOpI ptrToInt
+          , applyPtrToIntV = convOpV ptrToInt
+          , applyIntToPtr  = convOpI intToPtr
+          , applyIntToPtrV = convOpV intToPtr
+          , applyBitcast   = \_ _ -> return
           , applyBNot        = BitIO . bitBNot be
-          , termWidth        = bitTermWidth
+          , applyUAddWithOverflow = \_ (BitTerm x) (BitTerm y) -> do
+              (c,z) <- BitIO $ beFullAddInt be x y
+              return (BitTerm (LV.singleton c), BitTerm z)
           , closeTerm        = BitTermClosed . (,) be
           , prettyTermD      = \(BitTerm bv) -> let ?be = be in lPrettyLV bv
           , asBool           = beAsBool be
@@ -1659,8 +1682,8 @@ sbeBitBlast lc be mm = sbe
           , sbeRunIO = liftSBEBitBlast 
           }
     getV (BitTerm v) = v
-    termArrayImpl [] = bmError "sbeBitBlast: termArray: empty term list"
-    termArrayImpl ts = foldr1 (LV.++) (map getV ts)
+    termArrayImpl [] = BitTerm $ bmError "sbeBitBlast: termArray: empty term list"
+    termArrayImpl ts = BitTerm $ foldr1 (LV.++) (map getV ts)
 
 termDecompImpl :: (LV.Storable l, Eq l)
                => LLVMContext
@@ -1714,4 +1737,3 @@ testSBEBitBlast = do
 
 __nowarn_unused :: a
 __nowarn_unused = undefined testSBEBitBlast trace c4
-

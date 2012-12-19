@@ -31,6 +31,9 @@ sanityChecks = SEH
   , onMkGlobTerm      = \_ -> return ()
   , onPostOverrideReg = return ()
 
+  , onPreGlobInit = \_ _ -> return ()
+
+{-
   , onPreGlobInit = \g (Typed ty gdata) -> do
       CE.assert (L.globalType g == ty) $ return ()
       sz  <- withLC (`llvmStoreSizeOf` ty)
@@ -39,6 +42,7 @@ sanityChecks = SEH
         dbugM $ "onPreGlobInit assert failure on " ++ show (L.ppSymbol $ L.globalSym g)
                 ++ " (size check)"
         CE.assert False $ return ()
+-}
 
   , onPostGlobInit = \_g (Typed _ty _gdata) -> do
       {-
