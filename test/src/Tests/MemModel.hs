@@ -61,7 +61,6 @@ memModelTests =
       let assertEval inputs expected t = do
             r <- runSBE $ evalAiger inputs t
             assert (r == expected)
-      let sizeT = intType (fromIntegral ptrWidth)
       tTrue <- runSBE $ termBool True
       tFalse <- runSBE $ termBool False
       cnt <- runSBE $ freshInt 1
@@ -79,8 +78,8 @@ memModelTests =
       do assertEval [False] tFalse c1
          assertEval [True] tTrue  c1
       -- Test symbolic load succeeds under appropiate conditions.
-      do cntExt <- runSBE $ applyConv LLVM.SExt cnt sizeT
-         rptr <- runSBE $ applyArith (LLVM.Sub False False) ptr cntExt
+      do cntExt <- runSBE $ applySExt 1 ptrWidth cnt
+         rptr <- runSBE $ applyArith (LLVM.Sub False False) ptrWidth ptr cntExt
          (c2, _) <- run $ mmLoad m2 rptr 1 
          assertEval [False] tTrue c2
          assertEval [True] tFalse c2

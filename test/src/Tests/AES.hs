@@ -48,8 +48,8 @@ aes128ConcreteImpl = do
   where
     getVal s v = snd $ fromJust $ asUnsignedInteger s (typedValue v)
     initArr xs = do
-       arr <- withSBE . flip termArray
-                =<< mapM (withSBE . \x s -> termInt s 32 x) xs
+       arrElts <- mapM (withSBE . \x s -> termInt s 32 x) xs
+       arr <- withSBE $ \sbe -> termArray sbe (L.PrimType (L.Integer 32)) arrElts
        one <- getSizeT 1
        p   <- typedValue <$> alloca arrayTy one (Just 4)
        store (arrayTy =: arr) p
