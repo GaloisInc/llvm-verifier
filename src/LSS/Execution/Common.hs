@@ -176,7 +176,7 @@ data SEH sbe m = SEH
     -- | Invoked before construction of a global term value
   , onMkGlobTerm      :: L.Global -> Simulator sbe m ()
     -- | Invoked before memory model initialization of global data
-  , onPreGlobInit     :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
+  , onPreGlobInit     :: L.Global -> SBETerm sbe -> Simulator sbe m ()
     -- | Invoked after memory model initialization of global data
   , onPostGlobInit    :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
   }

@@ -9,11 +9,18 @@ Point-of-contact : jstanley
 {-# LANGUAGE RankNTypes       #-}
 {-# LANGUAGE TypeFamilies     #-}
 
-module Verifier.LLVM.Backend where
+module Verifier.LLVM.Backend
+  ( module Verifier.LLVM.Backend
+  , BitWidth
+  , TypedExpr(..)
+  , structFieldOffset
+  , GEPOffset(..)
+  ) where
 
 import Data.Bits (testBit)
 import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM.AST   as LLVM
+import Data.LLVM.Symbolic.AST
 
 -- | SBETerm yields the type used to represent terms in particular SBE interface
 -- implementation.
@@ -69,8 +76,6 @@ data HeapAllocResult t m
   -- implementation does not support this.
   | HASymbolicCountUnsupported
 
-type BitWidth = Int 
-
 data SBE m = SBE
   {
     ----------------------------------------------------------------------------
@@ -99,7 +104,7 @@ data SBE m = SBE
 
 
     -- | Create an struct of terms, which may have different types.
-  , termStruct :: [(LLVM.Type, SBETerm m)] -> m (SBETerm m)
+  , termStruct :: [LLVM.Typed (SBETerm m)] -> m (SBETerm m)
 
     -- | @termDecomp tys t@ decomposes the given term into @(length tys)@ terms,
     --  with each taking their type from the corresponding element of @tys@.
@@ -121,52 +126,8 @@ data SBE m = SBE
     -- | Perform addition with overflow, returning carry bit as a 1-bit integer, and result.
   , applyUAddWithOverflow :: BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m, SBETerm m)
 
-    -- | @applyTrunc iw rw t@ assumes that @rw < iw@, and truncates an integer @t@
-    -- with @iw@ bits to an integer with @rw@ bits.
-  , applyTrunc :: Int -> Int -> SBETerm m -> m (SBETerm m)
-
-    -- | @applyTruncV n iw rw t@ assumes that @rw < iw@, and truncates a vector of
-    -- integers @t@ with @iw@ bits to a vector of integers with @rw@ bits.
-  , applyTruncV :: Int -> Int -> Int -> SBETerm m -> m (SBETerm m)
-
-    -- | @applyZExt iw rw t@ assumes that @iw < rw@, and zero extends an
-    -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
-  , applyZExt :: Int -> Int -> SBETerm m -> m (SBETerm m)
-    -- | @applyZExtV n iw rw v@ assumes that @iw < rw@, and zero extends a
-    -- vector of integers @v@ each with @iw@ bits to a vector of integers with
-    -- @rw@ bits.
-  , applyZExtV :: Int -> Int -> Int -> SBETerm m -> m (SBETerm m)
-
-    -- | @applySExt iw rw t@ assumes that @iw < rw@, and sign extends an
-    -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
-  , applySExt :: Int -> Int -> SBETerm m -> m (SBETerm m)
-    -- | @applySExtV n iw rw v@ assumes that @iw < rw@, and sign extends a
-    -- vector of integers @v@ each with @iw@ bits to a vector of integers with
-    -- @rw@ bits.
-  , applySExtV :: Int -> Int -> Int -> SBETerm m -> m (SBETerm m)
-
-    -- | @applyPtrToInt tp rw t@ converts a pointer @t@ with type @tp@ to an
-    -- integer with width @rw@.  The value of the pointer is truncated or zero
-    -- extended as necessary to have the correct length.
-  , applyPtrToInt :: LLVM.Type -> Int -> SBETerm m -> m (SBETerm m)
-    -- | @applyPtrToIntV n tp rw v@ converts a vector of pointers @v@ with type
-    --  @tp@ to an integer with width @rw@.  The value of each pointer is
-    -- truncated or zero extended as necessary to have the correct length.
-  , applyPtrToIntV :: Int -> LLVM.Type -> Int -> SBETerm m -> m (SBETerm m)
-
-    -- | @applyIntToPtr iw tp t@ converts an integer @t@ with width @iw@ to
-    -- a pointer.  The value of the integer is truncated or zero
-    -- extended as necessary to have the correct length.
-  , applyIntToPtr :: Int -> LLVM.Type -> SBETerm m -> m (SBETerm m)
-
-    -- | @applyIntToPtr iw tp t@ converts a vector of integers @t@ with width
-    -- @iw@ to a vector of pointers.  The value of each integer is truncated
-    -- or zero extended as necessary to have the correct length.
-  , applyIntToPtrV :: Int -> Int -> LLVM.Type -> SBETerm m -> m (SBETerm m)
-
-    -- | @applyBitbast itp rtp t@ converts @t@ from type @itp@ to type @rtp@.
-    -- The size of types @itp@ and @rtp@ is assumed to be equal.
-  , applyBitcast :: LLVM.Type -> LLVM.Type -> SBETerm m -> m (SBETerm m)
+    -- | Evaluate a typed expression.
+  , applyTypedExpr :: TypedExpr (SBETerm m) -> m (SBETerm m)
 
     ----------------------------------------------------------------------------
     -- Term miscellany
@@ -301,3 +262,31 @@ asSignedInteger sbe t = s2u `fmap` (asUnsignedInteger sbe t :: Maybe (Int, Integ
         s2u (w,v) | v `testBit` (w-1) = (w,v - 2^w) 
                   | otherwise = (w,v)
                                 
+-- | @applyPtrToInt tp rw t@ converts a pointer @t@ with type @tp@ to an
+-- integer with width @rw@.  The value of the pointer is truncated or zero
+-- extended as necessary to have the correct length.
+applyPtrToInt :: SBE m -> LLVM.Type -> Int -> SBETerm m -> m (SBETerm m)
+applyPtrToInt sbe itp rw t = applyTypedExpr sbe (PtrToInt itp t rw)
+
+-- | @applyPtrToIntV n tp rw v@ converts a vector of pointers @v@ with type
+--  @tp@ to an integer with width @rw@.  The value of each pointer is
+-- truncated or zero extended as necessary to have the correct length.
+applyPtrToIntV :: SBE m -> Int -> LLVM.Type -> Int -> SBETerm m -> m (SBETerm m)
+applyPtrToIntV sbe n itp rw t = applyTypedExpr sbe (PtrToIntV n itp t rw)
+
+-- | @applyIntToPtr iw tp t@ converts an integer @t@ with width @iw@ to
+-- a pointer.  The value of the integer is truncated or zero
+-- extended as necessary to have the correct length.
+applyIntToPtr :: SBE m -> Int -> LLVM.Type -> SBETerm m -> m (SBETerm m)
+applyIntToPtr sbe w tp t = applyTypedExpr sbe (IntToPtr w t tp)
+
+-- | @applyIntToPtr iw tp t@ converts a vector of integers @t@ with width
+-- @iw@ to a vector of pointers.  The value of each integer is truncated
+-- or zero extended as necessary to have the correct length.
+applyIntToPtrV :: SBE m -> Int -> BitWidth -> LLVM.Type -> SBETerm m -> m (SBETerm m)
+applyIntToPtrV sbe n w tp t = applyTypedExpr sbe (IntToPtrV n w t tp)
+
+-- | @applySExt iw rw t@ assumes that @iw < rw@, and sign extends an
+-- integer @t@ with @iw@ bits to an integer with @rw@ bits.
+applySExt :: SBE m -> BitWidth -> BitWidth -> SBETerm m -> m (SBETerm m)
+applySExt sbe iw rw t = applyTypedExpr sbe (SExt iw t rw)

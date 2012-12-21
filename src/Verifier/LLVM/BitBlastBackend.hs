@@ -39,14 +39,15 @@ module Verifier.LLVM.BitBlastBackend
 import           Control.Applicative       ((<$>))
 import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
-import           Control.Monad
+import           Control.Monad (ap, liftM, unless)
 import           Control.Monad.IO.Class
 import           Data.Binary.IEEE754
 import           Data.Bits
+import           Data.Foldable
 import           Data.IORef
 import           Data.LLVM.Memory
 import           Data.LLVM.TargetData
-import           Data.List                 (foldl', unfoldr)
+import           Data.List                 (unfoldr)
 import           Data.Map                  (Map)
 import           Data.Set                  (Set)
 import           Debug.Trace
@@ -65,6 +66,8 @@ import qualified Text.LLVM.AST             as L
 import qualified Text.LLVM.AST             as LLVM
 import qualified Verinf.Symbolic           as S
 import System.IO.Unsafe (unsafePerformIO)
+
+import Prelude hiding (foldr1, sum)
 
 -- Utility functions and declarations {{{1
 
@@ -1595,6 +1598,13 @@ type instance SBEMemory (BitIO m l)     = m
 
 type BitBlastSBE m l = SBE (BitIO m l)
 
+beZeroIntCoerce :: (Eq l, LV.Storable l) => BitEngine l -> Int -> LV.Vector l -> LV.Vector l
+beZeroIntCoerce be r t
+    | r > l = beZext be r t
+    | r < l = beTrunc be r t
+    | otherwise = t
+  where l = LV.length t
+
 sbeBitBlast :: (Eq l, LV.Storable l)
             => LLVMContext
             -> BitEngine l
@@ -1604,22 +1614,11 @@ sbeBitBlast lc be mm = sbe
   where
     ptrWidth = llvmAddrWidthBits lc
 
-    convOpI :: (a -> LV.Vector l -> LV.Vector l)
-            -> b -> a -> BitTerm l -> BitIO m l (BitTerm l)
-    convOpI f _ w (BitTerm t) = return (BitTerm (f w t))
-
-    convOpV :: (LV.Storable l)
-            => (a -> LV.Vector l -> LV.Vector l)
-            -> Int -> b -> a -> BitTerm l -> BitIO m l (BitTerm l)
-    convOpV f n _ w (BitTerm t) = return (BitTerm (joinN (f w <$> sliceN n t)))
-
-    ptrToInt w t | w > ptrWidth = beZext be w t
-                 | w < ptrWidth = beTrunc be w t
-                 | otherwise = t
-    intToPtr _ t | ptrWidth > l = beZext be ptrWidth t
-                 | ptrWidth < l = beTrunc be ptrWidth t
-                 | otherwise = t
-      where l = LV.length t
+    retI :: (LV.Vector l -> LV.Vector l) -> BitTerm l -> BitIO m l (BitTerm l)
+    retI f (BitTerm t) = return (BitTerm (f t))
+    retV :: LV.Storable l
+         => (LV.Vector l -> LV.Vector l) -> Int -> BitTerm l -> BitIO m l (BitTerm l)
+    retV f n (BitTerm t) = return (BitTerm (joinN (f <$> sliceN n t)))
     sbe = SBE
           { termBool         = return . BitTerm . LV.singleton . beLitFromBool be
           , termInt          = (return . BitTerm) `c2` beVectorFromInt be
@@ -1628,7 +1627,7 @@ sbeBitBlast lc be mm = sbe
           , termDouble       = return . BitTerm . beVectorFromInt be 64 . toInteger . doubleToWord
           , termFloat        = return . BitTerm . beVectorFromInt be 32 . toInteger . floatToWord
           , termArray        = \_ l -> return (termArrayImpl l)
-          , termStruct       = \l -> return (termArrayImpl (snd <$> l))
+          , termStruct       = \l -> return (termArrayImpl (L.typedValue <$> l))
           , termDecomp       = return `c2` termDecompImpl lc be
           
           , applyIte         = bitIte be
@@ -1636,17 +1635,27 @@ sbeBitBlast lc be mm = sbe
           , applyBitwise     = bitBitwise be
           , applyArith       = bitArith be
 
-          , applyTrunc     = convOpI (beTrunc be)
-          , applyTruncV    = convOpV (beTrunc be)
-          , applyZExt      = convOpI (beZext be)
-          , applyZExtV     = convOpV (beZext be)
-          , applySExt      = convOpI (beSext be)
-          , applySExtV     = convOpV (beSext be)
-          , applyPtrToInt  = convOpI ptrToInt
-          , applyPtrToIntV = convOpV ptrToInt
-          , applyIntToPtr  = convOpI intToPtr
-          , applyIntToPtrV = convOpV intToPtr
-          , applyBitcast   = \_ _ -> return
+          , applyTypedExpr = \texpr ->
+              case texpr of
+                Trunc    _ t rw -> retI (beTrunc be rw) t
+                TruncV n _ t rw -> retV (beTrunc be rw) n t
+                ZExt     _ t rw -> retI (beZext  be rw) t
+                ZExtV  n _ t rw -> retV (beZext  be rw) n t
+                SExt     _ t rw -> retI (beSext  be rw) t
+                SExtV  n _ t rw -> retV (beSext  be rw) n t
+                PtrToInt _ t w     -> retI (beZeroIntCoerce be w)  t
+                PtrToIntV n _ t w  -> retV (beZeroIntCoerce be w)  n t
+                IntToPtr _ t _     -> retI (beZeroIntCoerce be ptrWidth) t
+                IntToPtrV n _ t _  -> retV (beZeroIntCoerce be ptrWidth) n t
+                Bitcast _ t _  -> return t
+                GEP _ (BitTerm t) offsets _ ->
+                    BitIO $ BitTerm <$> foldlM deref t offsets
+                  where deref p (StructField si idx) =
+                          beAddIntConstant be p (toInteger (structFieldOffset si idx))
+                        deref p (ArrayElement sz _ (BitTerm idx)) = do
+                          let szv = beVectorFromInt be ptrWidth sz
+                          let idx' = beZeroIntCoerce be ptrWidth idx
+                          beAddInt be p =<< beMulInt be szv idx'
           , applyBNot        = BitIO . bitBNot be
           , applyUAddWithOverflow = \_ (BitTerm x) (BitTerm y) -> do
               (c,z) <- BitIO $ beFullAddInt be x y

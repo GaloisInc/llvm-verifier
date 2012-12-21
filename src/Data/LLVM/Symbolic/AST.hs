@@ -1,3 +1,7 @@
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE ImplicitParams #-}
 -- | This module defines the main data types for the AST used directly by the symbolic
 -- simulator.  This AST data type is the interface between the symbolic execution and
 -- the LLVM lifting operating.
@@ -12,6 +16,15 @@ module Data.LLVM.Symbolic.AST
   , SymBlockID
   , Reg
   , SymValue
+  , sValString
+  , TypedSymValue(..)
+  , BitWidth
+  , TypedExpr(..)
+  , typedExprType
+  , StructInfo(..)
+  , mkStructInfo
+  , structFieldOffset
+  , GEPOffset(..)
   , SymExpr(..)
   , SymCond(..)
   , SymStmt(..)
@@ -31,12 +44,22 @@ module Data.LLVM.Symbolic.AST
   , symBlockLabel
   ) where
 
+import Control.Applicative ((<$>))
+import Control.Exception (assert)
+import Data.Foldable
+import Data.Traversable
 import Data.Int
 import Data.List (intersperse)
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Vector (Vector)
+import qualified Data.Vector as V
+import Data.Word
 import qualified Text.LLVM.AST as LLVM
+import qualified Text.LLVM.AST as L
 import Text.PrettyPrint.HughesPJ
+
+import Data.LLVM.TargetData
 
 -- | A fake entry label to represent the function that calls a user function.
 entrySymbol :: LLVM.Symbol
@@ -91,26 +114,148 @@ ppReg = LLVM.ppIdent
 
 type Typed v = LLVM.Typed v
 
--- | Represents a value in the symbolic simulator.
---TODO: Figure out if LLVM.Value if sufficient or we need something else.
-type SymValue = LLVM.Value
+type SymValue = L.Value
 
+-- | Represents a value in the symbolic simulator.
+data TypedSymValue
+    -- | Integer width and value.
+  = SValInteger Int Integer
+  -- | SValBool Bool
+  -- Gap
+  | SValDouble Double
+  -- Gap
+  | SValIdent L.Ident 
+  -- | Symbol and arguments types if it is a function.
+  | SValSymbol L.Symbol (Maybe [L.Type])
+  -- | Null pointer value with the type of the element it points to.
+  | SValNull L.Type
+    -- | Array of values (strings are mapped to 8-bit integer arrays).
+  | SValArray L.Type [TypedSymValue]
+  | SValStruct [L.Typed TypedSymValue]
+  | SValExpr (TypedExpr TypedSymValue)
+  | SValUndef L.Type
+  | SValZeroInit L.Type
+
+sValString :: String -> TypedSymValue
+sValString s = SValArray tp (toChar <$> s)
+ where tp = L.PrimType (L.Integer 8)
+       toChar c = SValInteger 8 (toInteger (fromEnum c))
+ 
 ppSymValue :: SymValue -> Doc
 ppSymValue = LLVM.ppValue
 
 ppTypedValue :: Typed SymValue -> Doc
-ppTypedValue = LLVM.ppTyped ppSymValue
+ppTypedValue = LLVM.ppTyped ppSymValue  -- TODO: See if type information is needed.
+
+type BitWidth = Int 
+
+type Size = Word64
+type Offset = Word64
+
+data StructInfo = StructInfo { structSize :: Size
+                             , structFields :: Vector (L.Type,Offset)
+                             }
+
+mkStructInfo :: (?lc :: LLVMContext) => Bool -> [L.Type] -> StructInfo
+mkStructInfo packed tpl = StructInfo { structSize = fromInteger (ssiBytes ssi)
+                                     , structFields = V.fromList flds
+                                     }
+  where ssi = llvmStructInfo' ?lc packed tpl
+        flds = zip tpl (fromInteger <$> ssiOffsets ssi)
+
+structFieldOffset :: StructInfo -> Int -> Offset
+structFieldOffset si i = assert (i < V.length f) o
+  where f = structFields si
+        (_,o) = f V.! i
+
+data GEPOffset v
+     -- | Returns the address of a field in a struct.
+   = StructField StructInfo Int
+     -- | @ArrayElement sz w i@ denotes the ith value in an array with
+     -- elements @sz@ wide.  The value @i@ has @w@ bits.
+   | ArrayElement Integer BitWidth v
+  deriving (Functor, Foldable, Traversable)
+
+ppGEPOffset :: (v -> Doc) -> GEPOffset v -> Doc
+ppGEPOffset _ (StructField _ i) = text "i32" <+> int i 
+ppGEPOffset pp (ArrayElement _ w v) =
+  ppIntType w <> integer (toInteger w) <+> pp v
+
+data TypedExpr v
+    -- | @Trunc iw t rw@ assumes that @rw < iw@, and truncates an integer @t@
+    -- with @iw@ bits to an integer with @rw@ bits.
+  = Trunc BitWidth v BitWidth
+    -- | @TruncV n iw t rw@ assumes that @rw < iw@, and truncates a vector of
+    -- integers @t@ with @iw@ bits to a vector of integers with @rw@ bits.
+  | TruncV Int BitWidth v BitWidth
+    -- | @ZExt iw t rw@ assumes that @iw < rw@, and zero extends an
+    -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
+  | ZExt BitWidth v BitWidth
+    -- | @ZExtV n iw v rw@ assumes that @iw < rw@, and zero extends a
+    -- vector of integers @v@ each with @iw@ bits to a vector of integers with
+    -- @rw@ bits.
+  | ZExtV Int BitWidth v BitWidth
+    -- | @SExt iw t rw@ assumes that @iw < rw@, and sign extends an
+    -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
+  | SExt BitWidth v BitWidth
+    -- | @SExtV n iw v rw@ assumes that @iw < rw@, and sign extends a
+    -- vector of integers @v@ each with @iw@ bits to a vector of integers with
+    -- @rw@ bits.
+  | SExtV Int BitWidth v BitWidth
+    -- | @PtrToInt tp t rw@ converts a pointer @t@ with type @tp@ to an
+    -- integer with width @rw@.  The value of the pointer is truncated or zero
+    -- extended as necessary to have the correct length.
+  | PtrToInt L.Type v BitWidth
+    -- | @PtrToIntV n tp v rw@ converts a vector of pointers @v@ with type
+    --  @tp@ to an integer with width @rw@.  The value of each pointer is
+    -- truncated or zero extended as necessary to have the correct length.
+  | PtrToIntV Int L.Type v BitWidth
+    -- | @IntToPtr iw t tp@ converts an integer @t@ with width @iw@ to
+    -- a pointer.  The value of the integer is truncated or zero
+    -- extended as necessary to have the correct length.
+  | IntToPtr BitWidth v L.Type
+    -- | @IntToPtrV n iw t tp@ converts a vector of integers @t@ with width
+    -- @iw@ to a vector of pointers.  The value of each integer is truncated
+    -- or zero extended as necessary to have the correct length.
+  | IntToPtrV Int BitWidth v L.Type
+    -- | @Bitcast itp t rtp@ converts @t@ from type @itp@ to type @rtp@.
+    -- The size of types @itp@ and @rtp@ is assumed to be equal.
+  | Bitcast L.Type v L.Type
+    -- | GEP instruction
+  | GEP Bool v [GEPOffset v] L.Type
+  deriving (Functor, Foldable, Traversable)
+
+intLType :: BitWidth -> L.Type
+intLType w = L.PrimType (L.Integer (fromIntegral w))
+
+arrayLType :: Int -> L.Type -> L.Type
+arrayLType n tp = L.Array (fromIntegral n) tp
+
+typedExprType :: TypedExpr v -> L.Type
+typedExprType tpe =
+  case tpe of
+    Trunc       _ _ w -> intLType w
+    TruncV    n _ _ w -> arrayLType n (intLType w)
+    ZExt        _ _ w -> intLType w
+    ZExtV     n _ _ w -> arrayLType n (intLType w)
+    SExt        _ _ w -> intLType w
+    SExtV     n _ _ w -> arrayLType n (intLType w)
+    PtrToInt    _ _ w -> intLType w
+    PtrToIntV n _ _ w -> arrayLType n (intLType w)
+    IntToPtr    _ _ p -> L.PtrTo p
+    IntToPtrV n _ _ p -> arrayLType n (L.PtrTo p)
+    Bitcast _ _ tp    -> tp
+    GEP _ _ _ tp      -> tp
 
 -- | Expression in Symbolic instruction set.
 -- | TODO: Make this data-type strict.
 data SymExpr
   -- | Statement for arithmetic operation.
   = Arith LLVM.ArithOp (Typed SymValue) SymValue
-  -- | Statement for bit operation.
+  -- | Statement for bit ope(ration.
   | Bit LLVM.BitOp (Typed SymValue) SymValue
-  -- | Statement for conversion operation.
-  -- TODO: See if type information is needed.
-  | Conv LLVM.ConvOp (Typed SymValue) LLVM.Type
+  -- | Statement for type-checked operations.
+  | TypedExpr L.Type (TypedExpr TypedSymValue)
   -- | @Alloca tp sz align@  allocates a new pointer to @sz@ elements of type
   -- @tp@ with alignment @align@.
   | Alloca LLVM.Type (Maybe (Typed SymValue)) (Maybe Int)
@@ -119,24 +264,70 @@ data SymExpr
   | FCmp LLVM.FCmpOp (Typed SymValue) SymValue
   -- | A copy of a value.
   | Val (Typed SymValue)
-  -- | GetElementPointer instruction.
-  | GEP Bool (Typed SymValue) [Typed SymValue]
   | Select (Typed SymValue) (Typed SymValue) SymValue
   | ExtractValue (Typed SymValue) [Int32]
   | InsertValue (Typed SymValue) (Typed SymValue) [Int32]
 
+ppIntType :: BitWidth -> Doc
+ppIntType i = char 'i' <> integer (toInteger i)
+
+ppVector :: Int -> Doc -> Doc
+ppVector n e = L.angles (int n <+> char 'x' <+> e)
+
+ppIntVector :: Int -> BitWidth -> Doc
+ppIntVector n w = ppVector n (ppIntType w)
+
+ppTypeVector :: Int -> L.Type -> Doc
+ppTypeVector n w = ppVector n (L.ppType w)
+
+ppTypedSymValue :: TypedSymValue -> Doc
+ppTypedSymValue = go
+  where ppConv nm itp v rtp = text nm <+> parens (itp <+> go v <+> text "to" <+> rtp) 
+        go (SValInteger _ i) = integer i
+        --go (SValBool b) = L.ppBool b
+        go (SValDouble i) = double i 
+        go (SValIdent i) = L.ppIdent i
+        go (SValSymbol s _) = L.ppSymbol s
+        go SValNull{} = text "null"
+        go (SValArray ty es) = brackets $ commas ((L.ppTyped go . L.Typed ty) <$> es)
+        go (SValStruct fs) = L.structBraces (commas (L.ppTyped go <$> fs))
+        go (SValExpr te) = ppTypedExpr ppConv go te
+        go (SValUndef _) = text "undef"
+        go (SValZeroInit _) = text "zeroinitializer"
+
+-- | Pretty print a typed expression.
+ppTypedExpr :: -- | Pretty printer for conversions
+               (String -> Doc -> e -> Doc -> Doc)
+               -- | Pretty printer for values
+            -> (e -> Doc)
+            -> TypedExpr e -> Doc
+ppTypedExpr ppConv ppValue tpExpr =
+    case tpExpr of
+      Trunc    iw v rw    -> ppConv "trunc"    (ppIntType iw)      v (ppIntType rw)
+      TruncV n iw v rw    -> ppConv "trunc"    (ppIntVector n iw)  v (ppIntVector n rw)
+      ZExt     iw v rw    -> ppConv "zext"     (ppIntType iw)      v (ppIntType rw)
+      ZExtV  n iw v rw    -> ppConv "zext"     (ppIntVector n iw)  v (ppIntVector n rw)
+      SExt     iw v rw    -> ppConv "sext"     (ppIntType iw)      v (ppIntType rw)
+      SExtV  n iw v rw    -> ppConv "sext"     (ppIntVector n iw)  v (ppIntVector n rw)
+      PtrToInt    tp v rw -> ppConv "ptrtoint" (L.ppType tp)       v (ppIntType rw)
+      PtrToIntV n tp v rw -> ppConv "ptrtoint" (ppTypeVector n tp) v (ppIntVector n rw)
+      IntToPtr    iw v tp -> ppConv "inttoptr" (ppIntType iw)      v (L.ppType tp)
+      IntToPtrV n iw v tp -> ppConv "inttoptr" (ppIntVector n iw)  v (ppTypeVector n tp)
+      Bitcast itp v rtp   -> ppConv "bitcast"  (L.ppType itp)      v (L.ppType rtp)
+      GEP ib ptr idxl _ -> text "getelementptr" <+> L.opt ib (text "inbounds")
+          <+> commas (ppValue ptr : (ppGEPOffset ppValue <$> idxl))
 
 -- | Pretty print symbolic expression.
 ppSymExpr :: SymExpr -> Doc
 ppSymExpr (Arith op l r) = LLVM.ppArithOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (Bit op l r) = LLVM.ppBitOp op <+> ppTypedValue l <> comma <+> ppSymValue r
-ppSymExpr (Conv op l r) = LLVM.ppConvOp op <+> ppTypedValue l <> comma <+> LLVM.ppType r
+ppSymExpr (TypedExpr _ te) = ppTypedExpr ppConv ppTypedSymValue te
+  where ppConv nm itp v rtp = text nm <+> itp <+> ppTypedSymValue v <> comma <+> rtp
 ppSymExpr (Alloca ty len align) = LLVM.ppAlloca ty len align
 ppSymExpr (Load ptr malign) = text "load" <+> ppTypedValue ptr <> LLVM.ppAlign malign
 ppSymExpr (ICmp op l r) = text "icmp" <+> LLVM.ppICmpOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (FCmp op l r) = text "fcmp" <+> LLVM.ppFCmpOp op <+> ppTypedValue l <> comma <+> ppSymValue r
 ppSymExpr (Val v) = ppTypedValue v
-ppSymExpr (GEP ib ptr ixs) = text "getelementptr" <+> commas (map (ppTypedValue) (ptr:ixs)) <+> (if ib then text "inbounds" else empty)
 ppSymExpr (Select c t f) = text "select" <+> ppTypedValue c
                          <> comma <+> ppTypedValue t
                          <> comma <+> LLVM.ppType (LLVM.typedType t) <+> ppSymValue f
@@ -202,6 +393,8 @@ data SymStmt
   | Unreachable
   -- | Unwind exception path.
   | Unwind
+  -- | An LLVM statement that could not be translated.
+  | BadSymStmt L.Stmt
   -- TODO: Support all exception handling.
 
 ppSymStmt :: SymStmt -> Doc
@@ -231,6 +424,7 @@ ppSymStmt (IfThenElse c t f) =
     $+$ char '}'
 ppSymStmt Unreachable = text "unreachable"
 ppSymStmt Unwind = text "unwind"
+ppSymStmt (BadSymStmt s) = L.ppStmt s
 
 data SymBlock = SymBlock {
          sbId :: SymBlockID -- ^ Identifier for block (unique within definition).

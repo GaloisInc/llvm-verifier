@@ -17,6 +17,7 @@ module LSS.Execution.Codebase
   , lookupAlias'
   , lookupDefine
   , lookupSym
+  , TypeAliasMap
   )
 
 where
@@ -38,11 +39,9 @@ import qualified Text.LLVM                      as LLVM
 -- that we can resolve later).
 
 type GlobalNameMap = M.Map LLVM.Symbol (Either LLVM.Global SymDefine)
-type TypeAliasMap  = M.Map LLVM.Ident LLVM.Type
 
 data Codebase = Codebase {
     cbGlobalNameMap :: GlobalNameMap
-  , cbTypeAliasMap  :: TypeAliasMap
   , cbLLVMCtx       :: LLVMContext
   , cbDeclareMap    :: M.Map LLVM.Symbol LLVM.Declare   
   , origModule      :: LLVM.Module
@@ -56,27 +55,29 @@ loadCodebase bcFile = do
   case eab of
     Left msg  -> err (BC.formatError msg)
     Right mdl -> do
-
-      let ins0 d = M.insert (LLVM.defName d) (Right $ liftDefine d)
-          ins1 g = M.insert (LLVM.globalSym g) (Left g)
-          ins2 d = M.insert (LLVM.typeName d) (LLVM.typeValue d)
-          m1     = foldr ins0 M.empty (LLVM.modDefines mdl)
+      let ins2 d = M.insert (LLVM.typeName d) (LLVM.typeValue d)
+          tam     = foldr ins2 M.empty (LLVM.modTypes mdl)
+          lc = buildLLVMContext tam (LLVM.modDataLayout mdl)
+      let ins0 m d = do
+            let (wl,sd) = liftDefine lc d
+            forM_ wl $ \w -> do
+              putStrLn $ "Warning while reading bitcode in " ++ bcFile ++ ":\n"      
+                ++ show (nest 2 w)
+            return $ M.insert (LLVM.defName d) (Right sd) m
+      m1 <- foldM ins0 M.empty (LLVM.modDefines mdl)
+      let ins1 g = M.insert (LLVM.globalSym g) (Left g)
           m2     = foldr ins1 m1 (LLVM.modGlobals mdl)
-          m3     = foldr ins2 M.empty (LLVM.modTypes mdl)
           declareFromDefine d = LLVM.Declare { LLVM.decName = LLVM.defName d
                                              , LLVM.decArgs = map LLVM.typedType (LLVM.defArgs d)
                                              , LLVM.decVarArgs = LLVM.defVarArgs d
                                              , LLVM.decRetType = LLVM.defRetType d
                                              }
           cb     = Codebase { cbGlobalNameMap = m2
-                            , cbTypeAliasMap  = m3
                             , cbDeclareMap = M.fromList $
                                [ (LLVM.defName d, declareFromDefine d)
                                  | d <- LLVM.modDefines mdl ]        
                                ++ [ (LLVM.decName d, d) | d <- LLVM.modDeclares mdl ]            
-                            , cbLLVMCtx       = buildLLVMContext
-                                                  (`lookupAlias` cb)
-                                                  (LLVM.modDataLayout mdl)
+                            , cbLLVMCtx       = lc
                             , origModule      = mdl
                             }
 
@@ -103,13 +104,10 @@ lookupSym :: LLVM.Symbol -> Codebase -> Maybe (Either LLVM.Global SymDefine)
 lookupSym sym = M.lookup sym . cbGlobalNameMap
 
 lookupAlias :: LLVM.Ident -> Codebase -> LLVM.Type
-lookupAlias ident cb = case lookupAlias' ident cb of
-  Nothing -> error $ "Failed to locate type alias named "
-                     ++ show (LLVM.ppIdent ident) ++ " in code base"
-  Just t  -> t
+lookupAlias ident cb = llvmLookupAlias (cbLLVMCtx cb) ident
 
 lookupAlias' :: LLVM.Ident -> Codebase -> Maybe (LLVM.Type)
-lookupAlias' ident cb = M.lookup ident (cbTypeAliasMap cb)
+lookupAlias' ident cb = llvmLookupAlias' (cbLLVMCtx cb) ident
 
 dumpSymDefine :: MonadIO m => m Codebase -> String -> m ()
 dumpSymDefine getCB sym = getCB >>= \cb ->

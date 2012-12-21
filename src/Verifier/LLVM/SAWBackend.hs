@@ -60,17 +60,7 @@ createSAWBackend _lc _mg = do
                 , applyBNot = nyi "applyBNot"
                 , applyUAddWithOverflow = nyi "applyUAddWithOverflow"
 
-                , applyTrunc  = nyi "applyTrunc"
-                , applyTruncV = nyi "applyTruncV"
-                , applyZExt   = nyi "applyZExt"
-                , applyZExtV  = nyi "applyZExtV"
-                , applySExt   = nyi "applySExt"
-                , applySExtV  = nyi "applySExtV"
-                , applyPtrToInt  = nyi "applyPtrToInt"
-                , applyPtrToIntV = nyi "applyPtrToIntV"
-                , applyIntToPtr  = nyi "applyIntToPtr"
-                , applyIntToPtrV = nyi "applyIntToPtrV"
-                , applyBitcast = nyi "applyBitcast"
+                , applyTypedExpr  = nyi "applyTypedExpr"
 
                 , closeTerm = nyi "closeTerm"
                 , prettyTermD = nyi "prettyTermD"

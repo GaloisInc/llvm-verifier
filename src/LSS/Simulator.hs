@@ -24,6 +24,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE DoAndIfThenElse       #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE ImplicitParams        #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
@@ -93,6 +94,7 @@ import Prelude   hiding (mapM, sequence)
 import Data.Traversable
 import           Verifier.LLVM.Backend
 
+import Data.LLVM.Symbolic.Translation
 
 import qualified Control.Exception         as CE
 import qualified Data.Map                  as M
@@ -196,16 +198,19 @@ initGlobals = do
        insertGlobalTerm errMsg key ty $ \s m -> memAddDefine s m sym []
   -- Initialize global data
   do let globals = [ g | (_,Left g) <- M.toList nms]
+     ec <- getEvalContext "adGlobal" Nothing
      forM_ globals $ \g -> do
        let key = (L.globalSym g, Nothing)
        cb1 onMkGlobTerm g
-       ec <- getEvalContext "adGlobal" Nothing
-       cdata <- getTypedTerm' ec (L.globalType g =: L.globalValue g)
+       Just symValue <- withLLVMContext $
+         return $ liftValue (L.globalType g) (L.globalValue g)
+       cdata <- getTypedTerm' ec symValue
+       let tpcdata = L.Typed (L.globalType g) cdata
        cb2 onPreGlobInit g cdata
        let noDataSpc = "Not enough space in data segment to allocate new global."
        _ <- insertGlobalTerm noDataSpc key (L.globalType g) $ \s m ->
-              memInitGlobal s m cdata
-       cb2 onPostGlobInit g cdata
+              memInitGlobal s m tpcdata
+       cb2 onPostGlobInit g tpcdata
 
 llvmTypeAsInt :: LLVMContext -> L.Type -> Maybe Int
 llvmTypeAsInt lc = go
@@ -436,7 +441,9 @@ intrinsic intr mreg args0 =
       let [Typed xtp x, Typed _ y] = args0
       let Just w = llvmTypeAsInt lc xtp
       (ov,z') <- withSBE $ \sbe -> applyUAddWithOverflow sbe w x y
-      res <- withSBE $ \sbe -> termStruct sbe [(intn (fromIntegral w), z'), (i1, ov)]
+      res <- withSBE $ \sbe -> termStruct sbe [ L.Typed (intn (fromIntegral w)) z'
+                                              , L.Typed i1 ov
+                                              ]
       assign (typedValue reg) (Typed (L.Struct [intn (fromIntegral w), i1]) res)
     objSz is32 reg = do
       let [_ptr, maxOrMin] = map typedValue args0
@@ -761,6 +768,13 @@ data EvalContext sbe = EvalContext {
      , evalSBE :: SBE sbe
      }
 
+withLLVMContext :: Monad m
+                 => ((?lc :: LLVMContext) => Simulator sbe m a)
+                 -> Simulator sbe m a
+withLLVMContext m = do
+  lc <- gets (cbLLVMCtx . codebase)
+  let ?lc = lc in m
+
 getEvalContext :: Monad m => String -> Maybe (RegMap (SBETerm sbe)) -> Simulator sbe m (EvalContext sbe)
 getEvalContext nm mrm = do
   lc <- gets (cbLLVMCtx . codebase)
@@ -789,94 +803,69 @@ getTypedTerm ::
   , MonadIO m
   , Functor sbe
   )
-  => String -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
+  => String -> Typed SymValue -> Simulator sbe m (Typed (SBETerm sbe))
 getTypedTerm nm tv = do
   mp <- getPath
   ec <- getEvalContext nm (pathRegs <$> mp)
-  getTypedTerm' ec tv
+  Typed (typedType tv) <$> getCheckedTypedTerm ec tv
 
--- | Obtain the typed SBE term representation for the given LLVM value; performs
--- identifier lookup in the regmap of the given call frame as needed.
+getBackendValue :: (Functor m, MonadIO m, Functor sbe) 
+                => String -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
+getBackendValue nm symValue = do
+  mp <- getPath
+  ec <- getEvalContext nm (pathRegs <$> mp)
+  getTypedTerm' ec symValue
+
+getCheckedTypedTerm ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => EvalContext sbe -> L.Typed L.Value -> Simulator sbe m (SBETerm sbe)
+getCheckedTypedTerm ec tv@(L.Typed t v) = withLLVMContext $
+  case liftTypedValue tv of
+    Nothing -> do
+     unimpl $ "getCheckedTypedTerm: unsupported value / call frame presence: "
+               ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
+               ++ "\n" ++ show (parens $ text $ show tv)
+               ++ "\nmrm = " ++ show (ppRegMap (evalSBE ec) <$> evalRegs ec)
+    Just tsv -> getTypedTerm' ec tsv
+
 getTypedTerm' ::
   ( Functor m
   , MonadIO m
   , Functor sbe
   )
-  => EvalContext sbe -> Typed L.Value -> Simulator sbe m (Typed (SBETerm sbe))
-
-getTypedTerm' ec (Typed (L.Alias i) v) = getTypedTerm' ec (Typed tp v)
-  where tp = llvmLookupAlias (evalLLVMContext ec) i
-
-getTypedTerm' ec (Typed t@(L.PrimType (L.Integer (fromIntegral -> w))) (L.ValInteger x))
-  = liftSBE $ Typed t <$> termInt (evalSBE ec) w x
-
-getTypedTerm' ec (Typed t@(L.PrimType (L.Integer 1)) (L.ValBool b))
-  = liftSBE $ Typed t <$> termInt (evalSBE ec) 1 (fromIntegral (fromEnum b))
-
-getTypedTerm' ec (Typed t@(L.PtrTo _) L.ValNull)
-    = liftSBE $ Typed t <$> termInt (evalSBE ec) ptrWidth 0
-  where ptrWidth = llvmAddrWidthBits (evalLLVMContext ec)
-
-getTypedTerm' ec (Typed _ ce@L.ValConstExpr{}) = evalCE ec ce
-
-getTypedTerm' ec (Typed ty@(L.Array len ety) (L.ValArray ety' es))
-  = do
-  CE.assert (ety == ety') $ return ()
-  CE.assert (fromIntegral len == length es) $ return ()
-  valTerms <- mapM (getTypedTerm' ec) (Typed ety <$> es)
-  liftSBE $ Typed ty <$> termArray (evalSBE ec) ety (typedValue <$> valTerms)
-
-getTypedTerm' ec (Typed ty@(L.Array _len ety@(L.PrimType (L.Integer 8))) (L.ValString str))
-  = do
-  lc <- gets (cbLLVMCtx . codebase)
-  CE.assert (llvmStoreSizeOf lc ty == fromIntegral (length str)) $ return ()
-  charTerms <- mapM (getTypedTerm' ec) $ map toChar str
-  liftSBE $ Typed ty <$> termArray (evalSBE ec) ety (map typedValue charTerms)
-  where
-    toChar = Typed ety . L.ValInteger . fromIntegral . fromEnum
-
-getTypedTerm' ec (Typed ty@(L.Struct _fldTys) (L.ValStruct fldTVs))
-  = do
-  fldTerms <- mapM (getTypedTerm' ec) fldTVs
-  let convertFld (Typed fldTy fldVal) = (fldTy, fldVal)
-  liftSBE $ Typed ty <$> termStruct (evalSBE ec) (convertFld <$> fldTerms)
-
-getTypedTerm' ec (Typed (L.PtrTo (L.FunTy _rty argtys _isVarArgs)) (L.ValSymbol sym))
-  = return $ getGlobalPtrTerm ec (sym, Just argtys)
-
-getTypedTerm' ec (Typed _ (L.ValSymbol sym))
-  = return $ getGlobalPtrTerm ec (sym, Nothing)
-
-getTypedTerm' _ (Typed ty (L.ValDouble v)) =
-  Typed ty <$> withSBE (\sbe -> termDouble sbe v)
-
-getTypedTerm' ec (Typed _ (L.ValIdent i)) =
-  case evalRegs ec of
-    Just rm -> lkupIdent i rm
-    Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec ++ " with missing frame."
-
-getTypedTerm' _ (Typed ty L.ValUndef)
-  = zeroInit ty
-
-getTypedTerm' _ (Typed ty L.ValZeroInit)
-  = zeroInit ty
-
-getTypedTerm' ec tv@(Typed t v)
-  = do
-  unimpl $ "getTypedTerm': unsupported value / call frame presence: "
-            ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
-            ++ "\n" ++ show (parens $ text $ show tv)
-            ++ "\nmrm = " ++ show (ppRegMap (evalSBE ec) <$> evalRegs ec)
-
-zeroInit ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  )
-  => L.Type -> Simulator sbe m (Typed (SBETerm sbe))
-zeroInit ty = do
-  szBytes <- fromIntegral <$> withLC (`llvmAllocSizeOf` ty)
-  Typed ty <$> withSBE (\sbe -> termInt sbe (szBytes * 8) 0)
+  => EvalContext sbe -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
+getTypedTerm' ec tsv = do
+  let sbe = evalSBE ec
+  let zeroInit ty = do
+        szBytes <- fromIntegral <$> withLC (`llvmAllocSizeOf` ty)
+        liftSBE $ termInt sbe (szBytes * 8) 0
+  case tsv of
+    SValInteger w x -> liftSBE $ termInt sbe w x
+    SValDouble d -> liftSBE $ termDouble sbe d
+    SValIdent i -> 
+      case evalRegs ec of
+        Just rm -> typedValue <$> lkupIdent i rm
+        Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec
+                      ++ " with missing frame."
+    SValSymbol sym maybeTypes ->
+      return $ typedValue $ getGlobalPtrTerm ec (sym, maybeTypes)
+    SValNull{} -> liftSBE $ termInt sbe ptrWidth 0
+      where ptrWidth = llvmAddrWidthBits (evalLLVMContext ec)
+    SValArray etp el -> do
+      valTerms <- mapM (getTypedTerm' ec) el
+      liftSBE $ termArray sbe etp valTerms
+    SValStruct flds -> do
+      let convertFld (Typed tp v) = Typed tp <$> getTypedTerm' ec v
+      fldv <- mapM convertFld flds
+      liftSBE $ termStruct sbe fldv
+    SValExpr te -> do
+      tv <- mapM (getBackendValue "typedExpr") te
+      liftSBE $ applyTypedExpr sbe tv
+    SValUndef tp -> zeroInit tp
+    SValZeroInit tp -> zeroInit tp
 
 insertGlobalTerm ::
   ( Functor m
@@ -915,10 +904,8 @@ step (PushCallFrame callee args mres retTgt) = do
   eab <- resolveCallee callee
   case eab of
     Left msg        -> errorPath $ FailRsn $ "PushCallFrame: " ++ msg
-    Right calleeSym -> do
-      Just p <- getPath
-      ec <- getEvalContext "pushCallFrame" (Just (pathRegs p))
-      argTerms <- mapM (getTypedTerm' ec) args
+    Right calleeSym -> withLLVMContext $ do
+      argTerms <- mapM (getTypedTerm "PushCallFrame") args
       _ <- callDefine' False retTgt calleeSym mres argTerms
       return ()
 
@@ -990,6 +977,7 @@ step Unreachable
   = error "step: Encountered 'unreachable' instruction"
 
 step Unwind = unimpl "unwind"
+step (BadSymStmt s) = unimpl (show (L.ppStmt s))
 
 -- | Return value one as an integer with the address width bits.
 getSizeT :: (Functor m, MonadIO m) => Integer -> Simulator sbe m (Typed (SBETerm sbe))
@@ -1024,35 +1012,9 @@ eval e@(Bit op (Typed t v1) v2) = do
     Just w -> Typed t <$> withSBE (\sbe -> applyBitwise sbe op w x y)
     _ -> unimpl $ "Bitwise expr type: " ++ show (ppSymExpr e)
 
-eval e@(Conv op tv rtp) = do
-  mp <- getPath
-  ec <- getEvalContext "conv" (pathRegs <$> mp)
-  let intConv sfn vfn = do
-        Typed itp x <- getTypedTerm' ec tv
-        lc <- getLC
-        case (asMaybeIntVectorType lc itp, asMaybeIntVectorType lc rtp) of
-          (ScalarType iw, ScalarType rw) ->
-            fmap (Typed rtp) $ withSBE (\sbe -> sfn sbe iw rw x)
-          (VectorType n iw, VectorType nr rw) | n == nr ->
-            fmap (Typed rtp) $ withSBE (\sbe -> vfn sbe n iw rw x)
-          _ -> unimpl $ "Conv expression type " ++ show (ppSymExpr e)
-  case op of
-    L.Trunc -> intConv sfn vfn
-      where sfn sbe   iw rw = CE.assert (rw < iw) $ applyTrunc sbe iw rw
-            vfn sbe n iw rw = CE.assert (rw < iw) $ applyTruncV sbe n iw rw
-    L.ZExt -> intConv sfn vfn
-      where sfn sbe   iw rw = CE.assert (rw > iw) $ applyZExt sbe iw rw
-            vfn sbe n iw rw = CE.assert (rw > iw) $ applyZExtV sbe n iw rw
-    L.SExt -> intConv sfn vfn
-      where sfn sbe   iw rw = CE.assert (rw > iw) $ applySExt sbe iw rw
-            vfn sbe n iw rw = CE.assert (rw > iw) $ applySExtV sbe n iw rw
-    L.PtrToInt -> evalPtrToInt ec tv rtp
-    L.IntToPtr -> evalIntToPtr ec tv rtp
-    L.BitCast -> do
-      Typed itp x <- getTypedTerm' ec tv
-      fmap (Typed rtp) $ withSBE (\sbe -> applyBitcast sbe itp rtp x)
-    _ -> unimpl $ "Conv expression type " ++ show (ppSymExpr e)
-
+eval (TypedExpr tp te) = do
+  tv <- mapM (getBackendValue "typedExpr") te
+  Typed tp <$> withSBE (\sbe -> applyTypedExpr sbe tv)
 eval (Alloca (L.Alias a) msztv malign) = do
   ty <- withLC (`llvmLookupAlias` a)
   eval (Alloca ty msztv malign)
@@ -1081,7 +1043,6 @@ eval e@(ICmp op tv1 v2) = do
     _ -> unimpl $ "Bitwise expr type: " ++ show (ppSymExpr e)
 eval (FCmp _op _tv1 _v2      ) = unimpl "eval FCmp"
 eval (Val tv)                  = getTypedTerm "eval@Val" tv
-eval e@GEP{}                   = evalGEP e
 eval (Select tc (Typed (L.Alias a) v1) v2) = do
   t <- withLC (`llvmLookupAlias` a)
   eval (Select tc (Typed t v1) v2)
@@ -1103,26 +1064,6 @@ eval (ExtractValue tv i      ) = evalExtractValue tv i
 eval (InsertValue _tv _ta _i ) = unimpl "eval InsertValue"
 
 
-data MaybeVectorType v = ScalarType v
-                       | VectorType Int v
-                       | NotMaybeVector
-
-asMaybePtrVectorType :: LLVMContext -> L.Type -> MaybeVectorType L.Type
-asMaybePtrVectorType lc = go
-  where go (L.Alias a) = go (llvmLookupAlias lc a)
-        go (L.PtrTo tp) = ScalarType tp
-        go (L.Vector n (L.Alias a)) = go (L.Vector n (llvmLookupAlias lc a))
-        go (L.Vector n (L.PtrTo tp)) = VectorType (fromIntegral n) tp
-        go _ = NotMaybeVector
-
-asMaybeIntVectorType :: LLVMContext -> L.Type -> MaybeVectorType BitWidth
-asMaybeIntVectorType lc = go
-  where go (L.Alias a) = go (llvmLookupAlias lc a)
-        go (L.PrimType (L.Integer w)) = ScalarType (fromIntegral w)
-        go (L.Vector n (L.Alias a)) = go (L.Vector n (llvmLookupAlias lc a))
-        go (L.Vector n (L.PrimType (L.Integer w))) =
-          VectorType (fromIntegral n) (fromIntegral w)
-        go _ = NotMaybeVector
 
 evalPtrToInt, evalIntToPtr ::
   ( MonadIO m
@@ -1133,19 +1074,17 @@ evalPtrToInt, evalIntToPtr ::
   -> Typed L.Value
   -> L.Type
   -> Simulator sbe m (Typed (SBETerm sbe))
-evalPtrToInt ec tv rtp = do
-  Typed vtp v <- getTypedTerm' ec tv
-  let lc = evalLLVMContext ec
-  case (asMaybePtrVectorType lc vtp, asMaybeIntVectorType lc rtp) of
+evalPtrToInt ec tv@(Typed vtp _) rtp = withLLVMContext $ do
+  v <- getCheckedTypedTerm ec tv
+  case (asMaybePtrVectorType vtp, asMaybeIntVectorType rtp) of
     (ScalarType ptr, ScalarType w) -> do
       fmap (Typed rtp) $ withSBE $ \sbe -> applyPtrToInt sbe ptr w v
     (VectorType n ptr, VectorType nr w) | n == nr ->
       fmap (Typed rtp) $ withSBE $ \sbe -> applyPtrToIntV sbe n ptr w v
     _ -> errorPath $ FailRsn "Invalid parameters to evalPtrToInt"
-evalIntToPtr ec tv rtp = do
-  Typed vtp v <- getTypedTerm' ec tv
-  let lc = evalLLVMContext ec
-  case (asMaybeIntVectorType lc vtp, asMaybePtrVectorType lc rtp) of
+evalIntToPtr ec tv@(Typed vtp _) rtp = withLLVMContext $ do
+  v <- getCheckedTypedTerm ec tv
+  case (asMaybeIntVectorType vtp, asMaybePtrVectorType rtp) of
     (ScalarType w, ScalarType ptr) ->
       fmap (Typed rtp) $ withSBE $ \sbe -> applyIntToPtr sbe w ptr v
     (VectorType n w, VectorType nr ptr) | n == nr ->
@@ -1180,12 +1119,12 @@ evalGEP ::
   , Functor m
   , Functor sbe
   )
-  => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
-evalGEP (GEP ib (Typed (L.Alias a) v) idxs) = do
+  => Bool -> L.Typed L.Value -> [L.Typed L.Value] -> Simulator sbe m (Typed (SBETerm sbe))
+evalGEP ib (Typed (L.Alias a) v) idxs = do
   t <- withLC (`llvmLookupAlias` a)
-  evalGEP (GEP ib (Typed t v) idxs)
+  evalGEP ib (Typed t v) idxs
 -- TODO: check bounds when 'ib' is True
-evalGEP (GEP _ib tv0 idxs0) = impl idxs0 =<< getTypedTerm "evalGEP" tv0
+evalGEP _ib tv0 idxs0 = impl idxs0 =<< getTypedTerm "evalGEP" tv0
   where
     impl [] (Typed referentTy ptrVal) = do
       return $ Typed (L.PtrTo referentTy) ptrVal
@@ -1216,8 +1155,8 @@ evalGEP (GEP _ib tv0 idxs0) = impl idxs0 =<< getTypedTerm "evalGEP" tv0
                ++ " : " ++ show (typedType tv)
 
     -- @addSz p ty@ computes @p + sizeof(ty)
-    addSz ptrSize p ty = termAdd ptrSize p . typedValue
-                   =<< promote =<< getTypedTerm "addSz" =<< sizeof ty
+    addSz ptrSize p ty = termAdd ptrSize p 
+                    =<< getBackendValue "addSz" =<< sizeof ty
 
     -- @baseOffset i ty p@ computes @p + i * sizeof(ty)@
     baseOffset ::
@@ -1230,7 +1169,7 @@ evalGEP (GEP _ib tv0 idxs0) = impl idxs0 =<< getTypedTerm "evalGEP" tv0
     baseOffset idx referentTy ptrVal = do
       aw <- fromIntegral <$> withLC llvmAddrWidthBits
       Typed _ idxTerm <- promote =<< getTypedTerm "baseOffset" idx
-      Typed _ szTerm  <- promote =<< getTypedTerm "baseOffset" =<< sizeof referentTy
+      szTerm  <- getBackendValue "baseOffset" =<< sizeof referentTy
       r <- termAdd aw ptrVal =<< termMul aw idxTerm szTerm
       return (Typed referentTy r)
 
@@ -1244,7 +1183,6 @@ evalGEP (GEP _ib tv0 idxs0) = impl idxs0 =<< getTypedTerm "evalGEP" tv0
           applySExt sbe (fromIntegral iw) (fromIntegral aw) v1)
         else return x
     promote _ = illegal "promotion of non-integer value"
-evalGEP e = illegal $ "evalGEP: expression is not a GEP: " ++ show (ppSymExpr e)
 
 evalCE ::
   ( MonadIO m
@@ -1256,9 +1194,9 @@ evalCE ec (L.ValConstExpr ce)
   = case ce of
       -- TODO: check bounds when 'ib' is True
       L.ConstGEP inbounds (splitAt 1 -> ((head -> ptr), idxs)) ->
-        evalGEP (GEP inbounds ptr idxs)
-      L.ConstConv L.BitCast tv t ->
-        Typed t . typedValue <$> getTypedTerm' ec tv
+        evalGEP inbounds ptr idxs
+      L.ConstConv L.BitCast tv t -> do
+        Typed t <$> getCheckedTypedTerm ec tv
       L.ConstConv L.PtrToInt tv t ->
         evalPtrToInt ec tv t
       L.ConstConv L.IntToPtr tv t ->
@@ -1438,16 +1376,17 @@ tellUser msg = unlessQuiet $ dbugM msg
 
 -- | Returns the a term representing the target-specific number of bytes
 -- required to store a value of the given type.
-sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m (Typed L.Value)
-sizeof ty = Typed (L.PrimType (L.Integer 32))
-              <$> L.ValInteger <$> withLC (`llvmAllocSizeOf` ty)
+-- The result has width llvmAddrWidthBits
+sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m TypedSymValue
+sizeof ty = withLC $ \lc ->
+  SValInteger (llvmAddrWidthBits lc) (llvmAllocSizeOf lc ty)
 
 resolveCallee ::
   ( MonadIO m
   , Functor m
   , Functor sbe
   )
-  => SymValue -> Simulator sbe m (Either String L.Symbol)
+  => L.Value -> Simulator sbe m (Either String L.Symbol)
 resolveCallee callee = case callee of
  L.ValSymbol sym   -> ok sym
  L.ValIdent i      -> resolveIdent i

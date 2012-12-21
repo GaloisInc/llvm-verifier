@@ -19,6 +19,7 @@ module LSSImpl where
 
 import           Control.Applicative             hiding (many)
 import           Control.Monad.State
+import           Data.Char
 import           Data.Int
 import           Data.LLVM.Memory
 import           Data.LLVM.Symbolic.AST
@@ -132,7 +133,12 @@ buildArgv ::
 buildArgv numArgs argv' = do
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   ec <- getEvalContext "buildArgv" Nothing
-  strVals  <- mapM (getTypedTerm' ec . cstring) argv'
+
+  strVals <- forM argv' $ \str -> do
+     let len = length str + 1
+     let tp = L.Array (fromIntegral len) (L.PrimType (L.Integer 8))
+     v <- getTypedTerm' ec (sValString (str ++ [chr 0]))
+     return (Typed tp v)
   one <- getSizeT 1
   strPtrs  <- mapM (\ty -> tv <$> alloca ty one Nothing) (tt <$> strVals)
   num <- getSizeT (toInteger numArgs)
