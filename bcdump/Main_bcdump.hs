@@ -10,6 +10,7 @@ import           System.Environment
 import           System.Process
 import           System.Directory
 import           System.FilePath
+import           LSS.Execution.Codebase
 import           LSS.Execution.Utils
 import           Data.LLVM.Symbolic.AST
 import           Data.LLVM.Symbolic.Translation
@@ -24,7 +25,6 @@ main = do
   when (length files /= 1) $ error "Usage: bcdump <LLVM bytecode file>"
   let bcFile  = head files
       tmpll   = bcFile <.> "tmp" <.> "ll"
-      parse   = BS.readFile >=> BC.parseBitCode
       err msg = error $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
                         ++ show (nest 2 (vcat $ map text $ lines msg))
 
@@ -39,16 +39,16 @@ main = do
       putStrLn dis
       removeFile tmpll
 
-  eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
-  case eab of
-    Left msg  -> err (BC.formatError msg)
-    Right mdl -> do
-      banners $ "llvm-pretty module"
-      putStrLn $ show (LLVM.ppModule mdl)
-      putStrLn ""
-      banners $ "translated module"
-      putStr
-        $ unlines
-        $ map (show . ppSymDefine)
-        $ map liftDefine
-        $ LLVM.modDefines mdl
+  cb <- loadCodebase bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
+  let mdl = origModule cb
+  banners $ "llvm-pretty module"
+  putStrLn $ show (LLVM.ppModule mdl)
+  putStrLn ""
+  sdl <- forM (LLVM.modDefines mdl) $ \d -> do
+    let (warnings,sd) = liftDefine (cbLLVMCtx cb) d
+    mapM_ (putStrLn . show) warnings
+    return sd
+  banners $ "translated module"
+  putStr $ unlines
+         $ map (show . ppSymDefine)
+         $ sdl

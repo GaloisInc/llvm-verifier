@@ -77,15 +77,16 @@ main = do
                 Right x -> x
 
   cb <- loadCodebase bcFile
-
   when (xlate args) $ do
+    let xlateDefine d = ppSymDefine sd
+          where (_,sd) = liftDefine (cbLLVMCtx cb) d
     -- Dump the translated module and exit
     let via s f = mapM_ (putStrLn . show  . f) (s $ origModule cb)
     ((:[]) . L.modDataLayout) `via` L.ppDataLayout
     L.modTypes                `via` L.ppTypeDecl
     L.modGlobals              `via` L.ppGlobal
     L.modDeclares             `via` L.ppDeclare
-    L.modDefines              `via` (ppSymDefine . liftDefine)
+    L.modDefines              `via` xlateDefine
     exitWith ExitSuccess
 
   be <- createBitEngine
