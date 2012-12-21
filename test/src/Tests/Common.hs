@@ -157,7 +157,7 @@ lssTestAll vi nm args hndlr =
   lssTest vi nm $ \v cb -> do
     runTestLSSBuddy v cb args hndlr
     runTestLSSDag v cb args hndlr
-    runTestSAWBackend v cb args hndlr
+    --runTestSAWBackend v cb args hndlr
 
 -- TODO: At some point we may want to inspect error paths and ensure
 -- that they are the /right/ error paths, rather just checking the
