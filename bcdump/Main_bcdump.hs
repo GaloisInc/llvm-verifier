@@ -15,8 +15,6 @@ import           LSS.Execution.Utils
 import           Data.LLVM.Symbolic.AST
 import           Data.LLVM.Symbolic.Translation
 import           Text.PrettyPrint.HughesPJ
-import qualified Data.LLVM.BitCode              as BC
-import qualified Data.ByteString    as BS
 import qualified Text.LLVM                      as LLVM
 
 main :: IO ()

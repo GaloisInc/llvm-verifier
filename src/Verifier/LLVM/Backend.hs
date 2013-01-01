@@ -12,6 +12,7 @@ Point-of-contact : jstanley
 module Verifier.LLVM.Backend
   ( module Verifier.LLVM.Backend
   , BitWidth
+  , IntArithOp(..)
   , TypedExpr(..)
   , structFieldOffset
   , GEPOffset(..)
@@ -19,7 +20,7 @@ module Verifier.LLVM.Backend
 
 import Data.Bits (testBit)
 import           Text.PrettyPrint.HughesPJ
-import qualified Text.LLVM.AST   as LLVM
+import qualified Text.LLVM.AST   as L
 import Data.LLVM.Symbolic.AST
 
 -- | SBETerm yields the type used to represent terms in particular SBE interface
@@ -45,7 +46,7 @@ type SBEPartialResult m r  = (SBETerm m, r)
 -- | Represents a partial result of trying to obtain a concrete value from
 -- a symbolic term.
 data LookupSymbolResult
-  = Result LLVM.Symbol -- ^ The definition associated with the address.
+  = Result L.Symbol -- ^ The definition associated with the address.
   | Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed, because it had an invalid value.
   deriving Show
@@ -100,27 +101,20 @@ data SBE m = SBE
     
     -- | @termArray tp ts@ creates a term representing an array with element terms
     -- @ts@ (which must be nonempty).  Each element must have type tp.  
-  , termArray :: LLVM.Type -> [SBETerm m] -> m (SBETerm m)
-
+  , termArray :: L.Type -> [SBETerm m] -> m (SBETerm m)
 
     -- | Create an struct of terms, which may have different types.
-  , termStruct :: [LLVM.Typed (SBETerm m)] -> m (SBETerm m)
+  , termStruct :: [L.Typed (SBETerm m)] -> m (SBETerm m)
 
     -- | @termDecomp tys t@ decomposes the given term into @(length tys)@ terms,
     --  with each taking their type from the corresponding element of @tys@.
-  , termDecomp :: [LLVM.Type] -> SBETerm m -> m [LLVM.Typed (SBETerm m)]
+  , termDecomp :: [L.Type] -> SBETerm m -> m [L.Typed (SBETerm m)]
 
     ----------------------------------------------------------------------------
     -- Term operator application
 
     -- | @applyIte a b c@ creates an if-then-else term
-  , applyIte    :: LLVM.Type -> SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
-    -- | @applyICmp op a b@ performs LLVM integer comparison @op@
-  , applyICmp   :: LLVM.ICmpOp -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
-    -- | @applyBitwise op a b@ performs LLVM bitwise operation @op@
-  , applyBitwise :: LLVM.BitOp -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
-    -- | @applyArith op a b@ performs LLVM arithmetic operation @op@
-  , applyArith  :: LLVM.ArithOp -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIte    :: L.Type -> SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | @applyBNot @a@ performs negation of a boolean term
   , applyBNot :: SBETerm m -> m (SBETerm m)
     -- | Perform addition with overflow, returning carry bit as a 1-bit integer, and result.
@@ -151,14 +145,14 @@ data SBE m = SBE
     -- that ensures the address @p@ is a valid memory location in @m@.
     -- In other words, @p@ is a valid memory location if @c@ is true.
   , memLoad :: SBEMemory m
-            -> LLVM.Typed (SBETerm m)
+            -> L.Typed (SBETerm m)
             -> m (SBEPartialResult m (SBETerm m))
     -- | @memStore m v p@ returns a pair @(c,m')@ where @m'@ denotes the memory
     -- obtained by storing value @v@ at address @p@, and @c@ denotes an
     -- additional path constraint that ensures the address @p@ is a valid memory
     -- location in @m@.
   , memStore :: SBEMemory m
-             -> LLVM.Typed (SBETerm m)
+             -> L.Typed (SBETerm m)
              -> SBETerm m
              -> m (SBEPartialResult m (SBEMemory m))
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
@@ -168,19 +162,19 @@ data SBE m = SBE
     -- It is undefined to call this function with a symbol that has already
     -- been defined in the memory.
   , memAddDefine :: SBEMemory m
-                 -> LLVM.Symbol
-                 -> [LLVM.BlockLabel]
+                 -> L.Symbol
+                 -> [L.BlockLabel]
                  -> m (Maybe (SBETerm m, SBEMemory m))
     -- | @memInitGlobal mem data@ attempts to write @data@ to a newly
     -- allocated region of memory in address space for globals.  If
     -- space is available, returns a pointer to the region
     -- and updated memory.  Otherwise returns @Nothing@.
   , memInitGlobal :: SBEMemory m
-                  -> LLVM.Typed (SBETerm m)
+                  -> L.Typed (SBETerm m)
                   -> m (Maybe (SBETerm m, SBEMemory m))
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
-  , codeBlockAddress :: SBEMemory m -> LLVM.Symbol -> LLVM.BlockLabel -> m (SBETerm m)
+  , codeBlockAddress :: SBEMemory m -> L.Symbol -> L.BlockLabel -> m (SBETerm m)
     -- | @codeLookupSymbol ptr@ returns the symbol at the given address.
     -- Lookup may fail if the pointer does not point to a symbol, or if
     -- the pointer is a symbolic value without a clear meaning.
@@ -190,8 +184,8 @@ data SBE m = SBE
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
   , stackAlloca :: SBEMemory m
-                -> LLVM.Type
-                -> LLVM.Typed (SBETerm m)
+                -> L.Type
+                -> L.Typed (SBETerm m)
                 -> Int
                 -> m (StackAllocaResult (SBETerm m) (SBEMemory m))
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
@@ -204,8 +198,8 @@ data SBE m = SBE
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
   , heapAlloc :: SBEMemory m
-              -> LLVM.Type
-              -> LLVM.Typed (SBETerm m)
+              -> L.Type
+              -> L.Typed (SBETerm m)
               -> Int
               -> m (HeapAllocResult (SBETerm m) (SBEMemory m))
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
@@ -249,11 +243,17 @@ data SBE m = SBE
 
 -- | Return conjunction of two terms.
 applyAnd :: SBE m -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applyAnd sbe = applyBitwise sbe LLVM.And 1
+applyAnd sbe x y = applyTypedExpr sbe (IntArith And Nothing 1 x y)
 
+applySub :: SBE m -> OptVectorLength -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
+applySub sbe mn w x y = applyTypedExpr sbe (IntArith (Sub False False) mn w x y)
+ 
 -- | Return predicate indicating if two terms are equal.
 applyIEq :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applyIEq sbe = applyICmp sbe LLVM.Ieq 
+applyIEq sbe w x y = applyTypedExpr sbe (IntCmp L.Ieq Nothing w x y)
+
+applyIne :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
+applyIne sbe w x y = applyTypedExpr sbe (IntCmp L.Ine Nothing w x y)
 
 -- | Interpret the term as a concrete signed integer if it can be.
 asSignedInteger :: SBE m -> SBETerm m -> Maybe (Int,Integer)
@@ -261,30 +261,6 @@ asSignedInteger sbe t = s2u `fmap` (asUnsignedInteger sbe t :: Maybe (Int, Integ
   where s2u (0,v) = (0,v)  
         s2u (w,v) | v `testBit` (w-1) = (w,v - 2^w) 
                   | otherwise = (w,v)
-                                
--- | @applyPtrToInt tp rw t@ converts a pointer @t@ with type @tp@ to an
--- integer with width @rw@.  The value of the pointer is truncated or zero
--- extended as necessary to have the correct length.
-applyPtrToInt :: SBE m -> LLVM.Type -> Int -> SBETerm m -> m (SBETerm m)
-applyPtrToInt sbe itp rw t = applyTypedExpr sbe (PtrToInt itp t rw)
-
--- | @applyPtrToIntV n tp rw v@ converts a vector of pointers @v@ with type
---  @tp@ to an integer with width @rw@.  The value of each pointer is
--- truncated or zero extended as necessary to have the correct length.
-applyPtrToIntV :: SBE m -> Int -> LLVM.Type -> Int -> SBETerm m -> m (SBETerm m)
-applyPtrToIntV sbe n itp rw t = applyTypedExpr sbe (PtrToIntV n itp t rw)
-
--- | @applyIntToPtr iw tp t@ converts an integer @t@ with width @iw@ to
--- a pointer.  The value of the integer is truncated or zero
--- extended as necessary to have the correct length.
-applyIntToPtr :: SBE m -> Int -> LLVM.Type -> SBETerm m -> m (SBETerm m)
-applyIntToPtr sbe w tp t = applyTypedExpr sbe (IntToPtr w t tp)
-
--- | @applyIntToPtr iw tp t@ converts a vector of integers @t@ with width
--- @iw@ to a vector of pointers.  The value of each integer is truncated
--- or zero extended as necessary to have the correct length.
-applyIntToPtrV :: SBE m -> Int -> BitWidth -> LLVM.Type -> SBETerm m -> m (SBETerm m)
-applyIntToPtrV sbe n w tp t = applyTypedExpr sbe (IntToPtrV n w t tp)
 
 -- | @applySExt iw rw t@ assumes that @iw < rw@, and sign extends an
 -- integer @t@ with @iw@ bits to an integer with @rw@ bits.

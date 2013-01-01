@@ -54,7 +54,7 @@ bfi w v = LV.generate w (testBit v)
 
 memModelTests :: [(Args, Property)]
 memModelTests =
-  [ mmTest "symbolicTests" 1 $ \lc be SBE { .. } MemModel { .. } m0 -> do
+  [ mmTest "symbolicTests" 1 $ \lc be sbe@SBE { .. } MemModel { .. } m0 -> do
       let ptrWidth = llvmAddrWidthBits lc
       let ?be = be
       let bytes = lVectorFromInt 8 7
@@ -79,7 +79,7 @@ memModelTests =
          assertEval [True] tTrue  c1
       -- Test symbolic load succeeds under appropiate conditions.
       do cntExt <- runSBE $ applyTypedExpr (SExt 1 cnt ptrWidth)
-         rptr <- runSBE $ applyArith (LLVM.Sub False False) ptrWidth ptr cntExt
+         rptr <- runSBE $ applySub sbe Nothing ptrWidth ptr cntExt
          (c2, _) <- run $ mmLoad m2 rptr 1 
          assertEval [False] tTrue c2
          assertEval [True] tFalse c2

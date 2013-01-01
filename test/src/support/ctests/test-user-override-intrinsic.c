@@ -19,8 +19,10 @@ void llvm_memset_p0i8_i64(uint8_t* dst,
     /* For testing, change input array to const 1 */
     printf("Intrinsic override invoked.\n");
     dst[0] = 1;
-    for(int i = 1; i < len; ++i)
+    for(int i = 1; i < len; ++i) {
+      printf("i %d", i);
         dst[i] = val;
+    }
 }
 
 int main(int argc, char** argv)

@@ -26,7 +26,7 @@ symTests =
   , lssTest 0 "ctests/test-symbolic-alloc" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS (Just 1) Nothing
        -- This seems to hang in GHCI but not from the command line =/
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 0)
+      runTestLSSDag v cb []   $ chkLSS (Just 2) Nothing
   , lssTestAll 0 "ctests/test-fresh" [] $
       chkLSS Nothing (Just 16)
   , lssTestAll 0 "ctests/test-fresh-array" [] $
