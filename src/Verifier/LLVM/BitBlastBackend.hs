@@ -1527,61 +1527,6 @@ bitIte be _ (BitTerm c) (BitTerm a) (BitTerm b) = BitIO $ do
   return $ BitTerm $ lIteVector (c `lEqVector` zero) b a
  where ?be = be
 
-bitICmp :: (LV.Storable l, Eq l)
-        => BitEngine l -> LLVM.ICmpOp
-        -> BitWidth -> BitTerm l -> BitTerm l
-        -> BitIO m l (BitTerm l)
-bitICmp be op w (BitTerm a) (BitTerm b)
-   | LV.length a == LV.length b = BitIO $ (BitTerm . LV.singleton) <$> f be a b
-   | otherwise = error $ "bitICmp given different types " ++ show (w, LV.length a, LV.length b) 
-  where f = case op of
-              LLVM.Ieq -> beEqVector
-              LLVM.Ine -> neg beEqVector
-              LLVM.Iugt -> neg beUnsignedLeq
-              LLVM.Iuge -> neg beUnsignedLt
-              LLVM.Iult -> beUnsignedLt
-              LLVM.Iule -> beUnsignedLeq
-              LLVM.Isgt -> neg beSignedLeq
-              LLVM.Isge -> neg beSignedLt
-              LLVM.Islt -> beSignedLt
-              LLVM.Isle -> beSignedLeq
-        neg fn bend x y = beNeg bend <$> fn bend x y
-
-bitBitwise :: (LV.Storable l, Eq l)
-           => BitEngine l
-           -> LLVM.BitOp
-           -> BitWidth -> BitTerm l -> BitTerm l
-           -> BitIO m l (BitTerm l)
-bitBitwise be op _ (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
-  where f = case op of
-              LLVM.And -> beAndInt
-              LLVM.Or -> beOrInt
-              LLVM.Xor -> beXorInt
-              (LLVM.Shl _ _) -> beShl
-              (LLVM.Lshr _) -> beUnsignedShr
-              (LLVM.Ashr _) -> beSignedShr
-
-bitArith :: (LV.Storable l, Eq l)
-         => BitEngine l
-         -> LLVM.ArithOp
-         -> BitWidth -> BitTerm l -> BitTerm l
-         -> BitIO m l (BitTerm l)
-bitArith be op _ (BitTerm a) (BitTerm b) = BitIO $ BitTerm <$> f be a b
-  where f = case op of
-              (LLVM.Add _ _)  -> beAddInt
-              (LLVM.Mul _ _)  -> beMulInt
-              (LLVM.Sub _ _)  -> beSubInt
-              (LLVM.SDiv _) -> beQuot
-              LLVM.SRem -> beRem
-              (LLVM.UDiv _) -> beQuotUnsigned
-              LLVM.URem -> beRemUnsigned
-              LLVM.FAdd -> noFloats
-              LLVM.FSub -> noFloats
-              LLVM.FMul -> noFloats
-              LLVM.FDiv -> noFloats
-              LLVM.FRem -> noFloats
-        noFloats = bmError "floating point arithmetic not currently supported"
-
 bitBNot :: (LV.Storable l, Eq l) =>
            BitEngine l -> BitTerm l
         -> IO (BitTerm l)
@@ -1613,7 +1558,15 @@ sbeBitBlast :: (Eq l, LV.Storable l)
 sbeBitBlast lc be mm = sbe
   where
     ptrWidth = llvmAddrWidthBits lc
+    applyBin f Nothing (BitTerm x) (BitTerm y) = BitIO $ BitTerm <$> f be x y
+    applyBin f (Just n) (BitTerm x) (BitTerm y) = BitIO $
+      (BitTerm . joinN) <$> V.zipWithM (f be) (sliceN n x) (sliceN n y)
 
+    applyICmp f Nothing (BitTerm x) (BitTerm y) = BitIO $
+      (BitTerm . LV.singleton) <$> f be x y
+    applyICmp f (Just n) (BitTerm x) (BitTerm y) = BitIO $
+      (BitTerm . LV.fromList . V.toList)
+        <$> V.zipWithM (f be) (sliceN n x) (sliceN n y)
     retI :: (LV.Vector l -> LV.Vector l) -> BitTerm l -> BitIO m l (BitTerm l)
     retI f (BitTerm t) = return (BitTerm (f t))
     retV :: LV.Storable l
@@ -1631,12 +1584,36 @@ sbeBitBlast lc be mm = sbe
           , termDecomp       = return `c2` termDecompImpl lc be
           
           , applyIte         = bitIte be
-          , applyICmp        = bitICmp be
-          , applyBitwise     = bitBitwise be
-          , applyArith       = bitArith be
-
           , applyTypedExpr = \texpr ->
               case texpr of
+                IntArith op mn _ x y -> applyBin opFn mn x y
+                  where opFn = case op of
+                                 Add _ _ -> beAddInt
+                                 Sub _ _ -> beSubInt
+                                 Mul _ _ -> beMulInt
+                                 UDiv _  -> beQuotUnsigned
+                                 SDiv _  -> beQuot
+                                 URem    -> beRemUnsigned
+                                 SRem    -> beRem
+                                 Shl _ _ -> beShl
+                                 Lshr _  -> beUnsignedShr
+                                 Ashr _  -> beSignedShr
+                                 And -> beAndInt
+                                 Or  -> beOrInt
+                                 Xor -> beXorInt
+                IntCmp op mn _ x y -> applyICmp opFn mn x y
+                  where neg fn bend u v = beNeg bend <$> fn bend u v
+                        opFn = case op of
+                                 LLVM.Ieq -> beEqVector
+                                 LLVM.Ine -> neg beEqVector
+                                 LLVM.Iugt -> neg beUnsignedLeq
+                                 LLVM.Iuge -> neg beUnsignedLt
+                                 LLVM.Iult -> beUnsignedLt
+                                 LLVM.Iule -> beUnsignedLeq
+                                 LLVM.Isgt -> neg beSignedLeq
+                                 LLVM.Isge -> neg beSignedLt
+                                 LLVM.Islt -> beSignedLt
+                                 LLVM.Isle -> beSignedLeq
                 Trunc    _ t rw -> retI (beTrunc be rw) t
                 TruncV n _ t rw -> retV (beTrunc be rw) n t
                 ZExt     _ t rw -> retI (beZext  be rw) t

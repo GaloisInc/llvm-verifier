@@ -74,7 +74,7 @@ library
     Data.LLVM.TargetData
 
   other-modules:
-    LSS.Execution.MergeFrame
+    --LSS.Execution.MergeFrame
     LSS.Printf
     -- Keep these compiling even though they're not used at the moment
     --LSS.SBEConcrete 

@@ -75,12 +75,12 @@ primOpTests =
     int32sqr v        = primU v "int32_square" Nothing $ RV . sqr
     int32muladd v     = primB v "int32_muladd" Nothing $ \x y -> RV $ sqr (x + y)
     testFactorial v   = primU v "factorial" (Just $ elements [0..12]) (RV . fact)
-    dirInt32add v     = psk v $ chkArithBitEngineFn 32 True (L.Add False False) add
-    dirInt32mul v     = psk v $ chkArithBitEngineFn 32 True (L.Mul False False) mul
-    dirInt32sdiv v    = psk v $ chkArithBitEngineFn 32 True (L.SDiv False) idiv
-    dirInt32udiv v    = psk v $ chkArithBitEngineFn 32 False (L.UDiv False) wdiv
-    dirInt32srem v    = psk v $ chkArithBitEngineFn 32 True L.SRem irem
-    dirInt32urem v    = psk v $ chkArithBitEngineFn 32 False L.URem wrem
+    dirInt32add v     = psk v $ chkArithBitEngineFn 32 True (Add False False) add
+    dirInt32mul v     = psk v $ chkArithBitEngineFn 32 True (Mul False False) mul
+    dirInt32sdiv v    = psk v $ chkArithBitEngineFn 32 True (SDiv False) idiv
+    dirInt32udiv v    = psk v $ chkArithBitEngineFn 32 False (UDiv False) wdiv
+    dirInt32srem v    = psk v $ chkArithBitEngineFn 32 True SRem irem
+    dirInt32urem v    = psk v $ chkArithBitEngineFn 32 False URem wrem
     testArith v       = runMain v "test-arith.bc" (RV 0)
     testBranch v      = runMain v "test-branch.bc" (RV 0)
     testCallVR v      = runMainVoid v "test-call-voidrty.bc"
@@ -105,7 +105,7 @@ primOpTests =
     primB v nm mg f = psk v $ chkBinCInt32Fn   mg v (commonCB "test-primops.bc") (L.Symbol nm) f
 
 chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a) =>
-                       Int -> Bool -> L.ArithOp -> (a -> a -> a)
+                       Int -> Bool -> IntArithOp -> (a -> a -> a)
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
   be <- run createBitEngine
@@ -118,7 +118,7 @@ chkArithBitEngineFn w s op fn = do
         proj = if s then getSVal else getUVal
     x' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral x)
     y' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral y)
-    r' <- run . liftSBEBitBlast $ applyArith sbe op w x' y'
+    r' <- run . liftSBEBitBlast $ applyTypedExpr sbe (IntArith op Nothing w x' y')
     assert (proj (BitTermClosed (be, r')) == Just (fromIntegral r))
 
 testSetupPtrArgImpl ::

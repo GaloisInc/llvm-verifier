@@ -162,14 +162,33 @@ lssTestAll vi nm args hndlr =
 -- TODO: At some point we may want to inspect error paths and ensure
 -- that they are the /right/ error paths, rather just checking the
 -- count!.  We'll need something better than FailRsn to do that, though.
-chkLSS :: MonadIO m => Maybe Int -> Maybe Integer -> SBE sbe -> SBEMemory sbe -> ExecRslt sbe Integer -> m Bool
+chkLSS :: Maybe Int
+       -> Maybe Integer
+       -> ExecRsltHndlr sbe Integer Bool
 chkLSS mepsLen mexpectedRV _ _ execRslt = do
-  return $
-    case (mepsLen, mexpectedRV, execRslt) of
-      (Just epsLen, Just expectedRV, ConcRV eps _mm r) -> length eps == epsLen && expectedRV == r
-      (Just epsLen, Nothing, NoMainRV eps _mm)         -> length eps == epsLen
-      (Nothing, Just expectedRV, ConcRV _ _ r)         -> expectedRV == r
-      _                                                -> False
+  let chkLen eps =
+        case mepsLen of
+          Nothing -> return ()
+          Just epsLen ->
+            unless (length eps == epsLen) $ do
+              fail $ "Expected " ++ show epsLen ++ " error paths, but found " 
+                       ++ show (length eps)
+  case execRslt of
+    ConcRV eps _mm r -> do
+      chkLen eps
+      case mexpectedRV of
+        Nothing -> fail "Unexpected return value"
+        Just expectedRV ->
+          unless (expectedRV == r) $ do
+            fail $ "Expected " ++ show expectedRV ++ " return value, but found " ++ show r  
+    NoMainRV eps _mm -> do
+      chkLen eps
+      case mexpectedRV of
+        Nothing -> return ()
+        Just{} -> fail $ "Missing return value"
+    SymRV{} -> fail "Unexpected sym exec result"
+  return True
+
 
 type SBEPropM a =
   forall mem.

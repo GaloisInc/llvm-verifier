@@ -53,10 +53,6 @@ createSAWBackend _lc _mg = do
                 , termStruct = nyi "termStruct"
                 , termDecomp = nyi "termDecomp"
                 , applyIte   = nyi "applyIte"
-                , applyICmp  = nyi "applyICmp"
-                , applyBitwise = nyi "applyBitwise"
-                , applyArith = nyi "applyArith"
-
                 , applyBNot = nyi "applyBNot"
                 , applyUAddWithOverflow = nyi "applyUAddWithOverflow"
 

@@ -72,36 +72,39 @@ ltiBlocks (LTI cfg) = [ bb
                       | bb <- CFG.allBBs cfg
                       , not (blockIsDummyExit (snd (LLVM.bbLabel bb))) 
                       ]
-           
--- | @ltiPostDominators lti bb@ returns the post dominators obtained by
--- jumping to @bb@.  Entries are stored so that post-dominators visited
--- later are earlier in the list (e.g., the last entry is the immediate
--- post-dominator).
-ltiPostDominators :: LLVMTranslationInfo -> LLVM.BlockLabel -> [LLVM.BlockLabel]
-ltiPostDominators (LTI cfg) (CFG.asId cfg -> aid) =
-  case lookup aid (CFG.pdoms cfg) of
-    Nothing   -> []
-    Just apds -> [ CFG.asName cfg apd 
-                 | apd <- apds 
-                 , not (blockIsDummyExit (CFG.asName cfg apd)) ]
 
+-- | @ltiImmediatePostDominator lti bb@ returns the immediate post dominator
+-- of @bb@ or @Nothing@ if it has no post-dominator.
+ltiImmediatePostDominator :: LLVMTranslationInfo
+                            -> L.BlockLabel
+                            -> Maybe L.BlockLabel
+ltiImmediatePostDominator (LTI cfg) bb =
+  case CFG.ipdom cfg (CFG.asId cfg bb) of
+    Nothing    -> Nothing
+    Just apdId | blockIsDummyExit n -> Nothing
+               | otherwise -> Just n
+      where n = CFG.asName cfg apdId
+
+{-
 -- | @ltiIsImmediatePostDominator lti bb n@ returns true if @n@ is the immediate
 -- post-dominator of @bb@.
 ltiIsImmediatePostDominator :: LLVMTranslationInfo
                             -> LLVM.BlockLabel
                             -> LLVM.BlockLabel
                             -> Bool
-ltiIsImmediatePostDominator (LTI cfg) (CFG.asId cfg -> aid) (CFG.asId cfg -> bid) =
-  case CFG.ipdom cfg aid of
+ltiIsImmediatePostDominator (LTI cfg) bb n =
+  case CFG.ipdom cfg (CFG.asId cfg bb) of
     Nothing    -> False
-    Just apdId -> apdId == bid
+    Just apdId -> apdId == CFG.asId cfg n
 
 -- | @ltiNewPostDominators lti bb n@ returns the new post dominators obtained by
 -- jumping from @bb@ to @n@.  Entries are stored so that post-dominators
 -- visited later are earlier in the list (e.g., the last entry is the
 -- immediate post-dominator).
-ltiNewPostDominators :: LLVMTranslationInfo -> LLVM.BlockLabel -> LLVM.BlockLabel -> [LLVM.BlockLabel]
+ltiNewPostDominators :: LLVMTranslationInfo
+                     -> LLVM.BlockLabel -> LLVM.BlockLabel -> [LLVM.BlockLabel]
 ltiNewPostDominators lti a b = ltiPostDominators lti b L.\\ ltiPostDominators lti a
+-}
 
 -- Block generator Monad {{{1
 
@@ -263,7 +266,7 @@ liftValue tp L.ValUndef =
   return (SValUndef tp)
 liftValue tp L.ValZeroInit =
   return (SValZeroInit tp)
-liftValue _ _ = Nothing
+liftValue _ _ = fail "Could not interpret LLVM value"
 
 unsupportedStmt :: L.Stmt -> BlockGenerator SymStmt
 unsupportedStmt stmt = do
@@ -319,17 +322,45 @@ liftGEP inbounds (Typed initType initValue) = go [] initType
 liftStmt :: (?lc :: LLVMContext) => L.Stmt -> BlockGenerator SymStmt
 liftStmt stmt = do
   case stmt of
-    Effect (L.Store v addr malign) _ ->
-      return (Store v addr malign)
+    Effect (L.Store ptr addr malign) _ ->
+      trySymStmt stmt $ do
+        tptr <- returnTypedValue ptr
+        taddr <- liftTypedValue addr 
+        return (Store tptr taddr malign)
     Effect{} -> unsupportedStmt stmt
     Result r app _ -> trySymStmt stmt $ do
       let retExpr :: Monad m => SymExpr -> m SymStmt
           retExpr e = return (Assign r e)
       let retTExpr :: Monad m => TypedExpr TypedSymValue -> m SymStmt
           retTExpr v = retExpr (TypedExpr (typedExprType v) v)
+      let retIntArith op tp u v = do
+            x <- liftValue tp u
+            y <- liftValue tp v
+            case asMaybeIntVectorType tp of
+              ScalarType w -> retTExpr (IntArith op Nothing w x y)
+              VectorType n w -> retTExpr (IntArith op (Just n) w x y)
+              _ -> fail "Could not parse argument type"
       case app of
-        L.Arith op tpv1 v2   -> retExpr $ Arith op tpv1 v2
-        L.Bit   op tpv1 v2   -> retExpr $ Bit   op tpv1 v2
+        L.Arith llvmOp (L.Typed tp u) v   -> do
+          let retTotal op = retIntArith op tp u v
+          let retPartial op = retIntArith op tp u v
+          case llvmOp of
+            L.Add nuw nsw -> retTotal (Add nuw nsw)
+            L.Sub nuw nsw -> retTotal (Sub nuw nsw)
+            L.Mul nuw nsw -> retTotal (Mul nuw nsw)
+            L.UDiv exact  -> retPartial (UDiv exact)
+            L.SDiv exact  -> retPartial (SDiv exact)
+            L.URem        -> retPartial URem
+            L.SRem        -> retPartial SRem
+            _ -> fail "Do not support floating point operations"
+        L.Bit llvmOp (L.Typed tp u) v   -> retIntArith op tp u v
+          where op = case llvmOp of
+                       L.Shl nuw nsw -> Shl nuw nsw
+                       L.Lshr exact -> Lshr exact
+                       L.Ashr exact -> Ashr exact
+                       L.And -> And
+                       L.Or  -> Or
+                       L.Xor -> Xor
         L.Conv op (L.Typed itp e) rtp -> do
           sv <- liftValue itp e
           let intConv :: (BitWidth -> BitWidth -> Bool)
@@ -366,10 +397,14 @@ liftStmt stmt = do
             _ -> fail "Unsupported conversion operator"
         L.Alloca tp mtpv mi  -> retExpr $ Alloca tp mtpv mi
         L.Load tpv malign    -> retExpr $ Load tpv malign
-        L.ICmp op tpv1 v2    -> retExpr $ ICmp op tpv1 v2
-        L.FCmp op tpv1 v2    -> retExpr $ FCmp op tpv1 v2
-        L.GEP ib tp tpvl     -> do
-          retTExpr =<< liftGEP ib tp tpvl
+        L.ICmp op (L.Typed tp u) v -> do
+          x <- liftValue tp u
+          y <- liftValue tp v
+          case asMaybeIntVectorType tp of
+            ScalarType w -> retTExpr (IntCmp op Nothing w x y)
+            VectorType n w -> retTExpr (IntCmp op (Just n) w x y)
+            _ -> fail "Could not parse argument type"
+        L.GEP ib tp tpvl     -> retTExpr =<< liftGEP ib tp tpvl
         L.Select tpc tpv1 v2 -> retExpr $ Select tpc tpv1 v2
         L.ExtractValue tpv i -> retExpr $ ExtractValue tpv i
         L.InsertValue tpv tpa i -> retExpr $ InsertValue tpv tpa i
@@ -388,6 +423,8 @@ liftBB :: (?lc :: LLVMContext)
        -> BlockGenerator ()
 liftBB lti phiMap bb = do
   let llvmId = CFG.blockName bb
+      -- Block for post dominator
+      pd = flip symBlockID 0 <$> ltiImmediatePostDominator lti llvmId
       blockName :: Int -> SymBlockID
       blockName = symBlockID llvmId
       -- | Returns set block instructions for jumping to a particular target.
@@ -423,11 +460,7 @@ liftBB lti phiMap bb = do
       --       Set current block in state to branch target.
       brSymInstrs :: LLVM.BlockLabel -> [SymStmt]
       brSymInstrs tgt =
-        SetCurrentBlock (symBlockID tgt 0) : phiInstrs tgt ++
-          (if ltiIsImmediatePostDominator lti llvmId tgt
-             then [ MergePostDominator (symBlockID tgt 0) ]
-             else map (\d -> PushPostDominatorFrame (symBlockID d 0))
-                      (ltiNewPostDominators lti llvmId tgt))
+        SetCurrentBlock (symBlockID tgt 0) : phiInstrs tgt
       -- | Sequentially process statements.
       impl :: [LLVM.Stmt] -- ^ Remaining statements
            -> Int -- ^ Index of symbolic block that we are defining.
@@ -439,59 +472,51 @@ liftBB lti phiMap bb = do
                        text "after generating the following statements:" $$
                        (nest 2 . vcat . map ppSymStmt $ il)
       impl [Effect (LLVM.Ret tpv) _] idx il =
-        defineBlock (blockName idx) (reverse il ++ [MergeReturn (Just tpv)])
+        defineBlock (blockName idx) (reverse il ++ [Return (Just tpv)])
       impl [Effect LLVM.RetVoid _] idx il =
-        defineBlock (blockName idx) (reverse il ++ [MergeReturn Nothing])      
+        defineBlock (blockName idx) (reverse il ++ [Return Nothing])     
       -- For function calls, we:
       -- * Allocate block for next block after call.
       -- * Define previous block to end with pushing call frame.
       -- * Process rest of instructions.
       -- * TODO: Handle invoke instructions
-      impl (Result reg (LLVM.Call _b tp v tpvl) _:r) idx il = do
-        let res = case LLVM.elimFunPtr tp of
-                    -- NB: The LLVM bitcode parser always types call
-                    -- instructions with the full ptr-to-fun type in order to
-                    -- present a consistent form that also handles varargs.  We
-                    -- just extract the return type here for now, but will
-                    -- likely need to support varargs more explicitly
-                    -- later. TODO.
-                    Nothing -> error "internal: malformed call instruction type"
-                    Just (rty, _, _) -> Typed { typedType = rty, typedValue = reg}
-        defineBlock (blockName idx) $ reverse il ++
-          [ PushCallFrame v tpvl (Just res) (blockName (idx + 1)) ]
+      impl (stmt@(Result reg (LLVM.Call _b tp v tpvl) _):r) idx il = do
+        symStmt <-
+          case (liftValue tp v, asPtrType tp) of
+            -- NB: The LLVM bitcode parser always types call
+            -- instructions with the full ptr-to-fun type in order to
+            -- present a consistent form that also handles varargs.  We
+            -- just extract the return type here for now, but will
+            -- likely need to support varargs more explicitly
+            -- later. TODO.
+            (Just sv, Just (L.FunTy rty _args _va)) -> do
+              let res = Typed { typedType = rty, typedValue = reg }
+              return $ PushCallFrame sv tpvl (Just res) (blockName (idx + 1))
+            _ -> unsupportedStmt stmt
+        defineBlock (blockName idx) $ reverse (symStmt:il)
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
-      impl (Effect (LLVM.Call _b _tp v tpvl) _:r) idx il = do
-        defineBlock (blockName idx) $ reverse il ++
-          [ PushCallFrame v tpvl Nothing (blockName (idx+1)) ]
+      impl (stmt@(Effect (LLVM.Call _b tp v tpvl) _):r) idx il = do
+        symStmt <-
+          case liftValue tp v of
+            Just sv ->
+              return $ PushCallFrame sv tpvl Nothing (blockName (idx+1))
+            _ -> unsupportedStmt stmt
+        defineBlock (blockName idx) $ reverse (symStmt:il)
         impl r (idx+1) []
       impl [Effect (LLVM.Jump tgt) _] idx il = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
       impl [Effect (LLVM.Switch tpv def cases) _] idx il = do
-        defineBlock (blockName idx) $ reverse il ++ go cases
-        mapM_ (uncurry defineBlock) caseDefs
-          where go []            = [IfThenElse (NotConstValues tpv vs)
-                                               (brSymInstrs def)
-                                               symbolicCases]
-                go ((i, l) : cs) = [IfThenElse (HasConstValue tpv i)
-                                               (brSymInstrs l)
-                                               (go cs)]
-                symbolicCases    = concatMap mkCase caseConds
-                                   ++ brSymInstrs def
-                vs               = map fst cases
-                caseBlockIds     = [(idx + 1)..(idx + length cases)]
-                casePairs        = zip caseBlockIds cases
-                caseDefs         = map
-                                   (\(bid, (_, l)) ->
-                                      (blockName bid, brSymInstrs l))
-                                   casePairs
-                caseConds        = map
-                                   (\(bid, (cv, _)) -> (blockName bid, cv))
-                                   casePairs
-                mkCase (bid, cv) = [ SetCurrentBlock bid
-                                   , PushPendingExecution (HasConstValue tpv cv)
-                                   ]
+        defineBlock (blockName idx) $ reverse il ++ symbolicCases
+        zipWithM_ defineBlock caseBlockIds (brSymInstrs <$> targets)
+          where -- Get values and targets
+                (consts,targets) = unzip cases
+                caseBlockIds     = blockName <$> [(idx + 1)..(idx + length cases)]
+                symbolicCases    = foldr mkCase (brSymInstrs def)
+                                 $ zip consts caseBlockIds
+                mkCase (cv, bid) rest =
+                  [ PushPendingExecution bid (HasConstValue tpv cv) pd rest ]
       impl [Effect (LLVM.Br tc@(Typed tp _) tgt1 tgt2) _] idx il = do
         CE.assert (tp == i1) $ return ()
         let suspendSymBlockID = blockName (idx + 1)
@@ -504,14 +529,10 @@ liftBB lti phiMap bb = do
         --     Add pending execution for false branch, and execute true branch.
         --   Else
         defineBlock (blockName idx) $ reverse il ++
-          [ IfThenElse (HasConstValue tc 1)
-               (brSymInstrs tgt1)
-               [IfThenElse (HasConstValue tc 0)
-                           (brSymInstrs tgt2)
-                           ([ SetCurrentBlock suspendSymBlockID
-                            , PushPendingExecution (HasConstValue tc 0)
-                            ]
-                              ++ brSymInstrs tgt1)]]
+          [ PushPendingExecution suspendSymBlockID
+                                 (HasConstValue tc 0)
+                                 pd
+                                 (brSymInstrs tgt1) ]
         -- Define block for suspended thread.
         defineBlock suspendSymBlockID  (brSymInstrs tgt2)
       impl [Effect LLVM.Unreachable _] idx il = do
@@ -536,9 +557,7 @@ liftDefine lc d = (warnings,sd)
         initBlockLabel = CFG.blockName initBlock
         initSymBlock =
           mkSymBlock initSymBlockID
-                     ([ PushPostDominatorFrame (symBlockID dom 0)
-                        | dom <- ltiPostDominators lti initBlockLabel]
-                      ++ [SetCurrentBlock (symBlockID initBlockLabel 0)])
+                     [SetCurrentBlock (symBlockID initBlockLabel 0)]
         phiMap = blockPhiMap blocks
         (warnings,symBlocks) = runBlockGenerator (mapM_ (liftBB lti phiMap) blocks)
           where ?lc = lc

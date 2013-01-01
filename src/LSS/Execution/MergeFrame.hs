@@ -14,12 +14,14 @@ module LSS.Execution.MergeFrame
   , popMF
   , topMF
   -- * Merge frame manipulation/query
-  , pushPending
-  , popPending
-  , pendingPaths
+--  , pushPending
+--  , popPending
+--  , pendingPaths
+  , initialMergeFrame
   , getMergedState
   , setMergedState
   , isExitFrame
+  , branchMergeFrame
 
   -- * Path manipulation/query
   , modifyPathRegs
@@ -53,18 +55,33 @@ isExitFrame _                = False
 -- | Obtains the merged state from a merge frame; in the case of return merge
 -- frames, this function yields the merged state for normal function call
 -- return.
-getMergedState :: String -> MergeFrame term mem -> MergedState term mem
-getMergedState nm (ExitMergeFrame _)     = error $ nm ++ ": ExitFrame has no merged state"
-getMergedState _ (PostdomMergeFrame pdf) = pdfMergedState pdf
-getMergedState _ (ReturnMergeFrame rf)   = rfNormalState rf
+getMergedState :: MergeFrame term mem -> MergedState term mem
+getMergedState (ExitMergeFrame ef)     = efMergedState ef
+getMergedState (PostdomMergeFrame pdf) = pdfMergedState pdf
+getMergedState (ReturnMergeFrame rf)   = rfMergedState rf
 
 -- | Sets the merged state in the given merge frame; in the case of return merge
 -- frames, this function sets the merged state for normal function call return.
 setMergedState :: MergedState term mem -> MergeFrame term mem -> MergeFrame term mem
 setMergedState _ (ExitMergeFrame _)       = error "setMergedState: ExitFrame has no merged state"
 setMergedState ms (PostdomMergeFrame pdf) = PostdomMergeFrame pdf { pdfMergedState = ms }
-setMergedState ms (ReturnMergeFrame rf)   = ReturnMergeFrame rf { rfNormalState = ms }
+setMergedState ms (ReturnMergeFrame rf)   = ReturnMergeFrame rf { rfMergedState = ms }
 
+-- | Create initial merge frame.
+initialMergeFrame :: Path' term mem -> MergeFrame term mem
+initialMergeFrame p = ExitMergeFrame ef
+  where ef = ExitFrame { efMergedState = undefined p }
+
+modifyMergedState :: MergeFrame term mem
+                  -> (MergedState term mem -> MergedState term mem)
+                  -> MergeFrame term mem
+modifyMergedState mf fn =
+  case mf of
+    ExitMergeFrame ef     -> ExitMergeFrame     ef { efMergedState = fn (efMergedState ef) }
+    PostdomMergeFrame pdf -> PostdomMergeFrame pdf { pdfMergedState = fn (pdfMergedState pdf) }
+    ReturnMergeFrame rf   -> ReturnMergeFrame   rf { rfMergedState  = fn (rfMergedState rf) }
+
+{-
 -- | Yields all pending paths in the given non-exit merge frame
 pendingPaths :: MergeFrame term mem -> [Path' term mem]
 pendingPaths (ExitMergeFrame ef)     = efPending ef
@@ -73,6 +90,7 @@ pendingPaths (ReturnMergeFrame rf)   = rfPending rf
 
 -- | Push a pending path to the given non-exit merge frame
 pushPending :: Path' term mem -> MergeFrame term mem -> MergeFrame term mem
+pushPending = undefined
 pushPending p mf = case mf of
   ExitMergeFrame ef     -> ExitMergeFrame     ef { efPending  = p : efPending ef }
   PostdomMergeFrame pdf -> PostdomMergeFrame pdf { pdfPending = p : pdfPending pdf }
@@ -81,6 +99,7 @@ pushPending p mf = case mf of
 -- | Pop a pending path from the given non-exit merge frame; runtime error if
 -- | the merge frame's pending path list is empty.
 popPending :: MergeFrame term mem -> Maybe (Path' term mem, MergeFrame term mem)
+popPending = undefined
 popPending mf = case mf of
   ExitMergeFrame ef -> 
     case efPending ef of
@@ -94,6 +113,13 @@ popPending mf = case mf of
     case rfPending rf of
       [] -> Nothing
       p:ps -> Just (p, ReturnMergeFrame rf { rfPending = ps })
+-}
 
 modifyPathRegs :: (RegMap term -> RegMap term) -> Path' term mem -> Path' term mem
 modifyPathRegs f p = p { pathRegs = f (pathRegs p) }
+
+branchMergeFrame :: MergeFrame term mem
+                 -> term
+                 -> SymBlockID
+                 -> MergeFrame term mem
+branchMergeFrame _ _ _ = undefined   
