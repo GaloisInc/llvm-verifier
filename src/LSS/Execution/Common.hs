@@ -15,13 +15,10 @@ Point-of-contact : jhendrix
 {-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
 {-# LANGUAGE ViewPatterns               #-}
-{-# OPTIONS_GHC -fno-warn-orphans      #-}
-
 module LSS.Execution.Common 
   ( Simulator(SM)
   , runSM
   , dumpCtrlStk
-  , dumpCtrlStk'
 
   , GlobalMap
 
@@ -562,12 +559,3 @@ dumpCtrlStk :: (MonadIO m) => Simulator sbe m ()
 dumpCtrlStk = do
   (sbe, cs) <- gets (symBE &&& ctrlStk)
   banners $ show $ ppCtrlStk sbe cs
-
-dumpCtrlStk' :: (MonadIO m, LogMonad m) => Int -> Simulator sbe m ()
-dumpCtrlStk' lvl = whenVerbosity (>=lvl) dumpCtrlStk
-
-{-
-instance (LogMonad IO) where
-  setVerbosity _ = return ()
-  getVerbosity   = return 1
--}

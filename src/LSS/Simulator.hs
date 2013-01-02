@@ -192,8 +192,7 @@ llvmTypeAsInt lc = go
         go _ = Nothing
 
 callDefine_ ::
-  ( LogMonad m
-  , MonadIO m
+  ( MonadIO m
   , Functor m
   , Functor sbe
   )
@@ -494,8 +493,7 @@ pathAssertedFalse :: SBE sbe -> Path sbe -> Bool
 pathAssertedFalse sbe p = asBool sbe (pathAssertions p) == Just False
 
 run ::
-  ( LogMonad m
-  , Functor m
+  ( Functor m
   , MonadIO m
   , Functor sbe
   )
@@ -509,7 +507,7 @@ run = do
         -- Report termination info at appropriate verbosity levels; also,
         -- inform user about error paths when present and optionally dump
         -- them.
-        dumpCtrlStk' 5
+        whenVerbosity (>=5) $ dumpCtrlStk
         whenVerbosity (>=2) $ do
           dbugM "run terminating normally: found valid exit frame"
           case pathRetVal p of
@@ -716,8 +714,7 @@ insertGlobalTerm errMsg key ty act = do
 
 -- | Execute a single LLVM-Sym AST instruction
 step ::
-  ( LogMonad m
-  , MonadIO m
+  ( MonadIO m
   , Functor m
   , Functor sbe
   )
@@ -1059,8 +1056,7 @@ lkupIdent i regs = do
                  ++ " is not in regmap of given call frame."
 
 runStmts ::
-  ( LogMonad m
-  , Functor m
+  ( Functor m
   , MonadIO m
   , Functor sbe
   )
@@ -1189,8 +1185,7 @@ dumpMem v msg =
     withSBE (\s -> memDump s m Nothing)
 
 dbugStep ::
-  ( LogMonad m
-  , MonadIO m
+  ( MonadIO m
   , Functor m
   , Functor sbe
   )
@@ -1213,7 +1208,7 @@ dbugStep stmt = do
   cb1 onPreStep stmt
   step stmt
   cb1 onPostStep stmt
-  dumpCtrlStk' 5
+  whenVerbosity (>=5) dumpCtrlStk
 
 repl :: (Functor m, MonadIO m) => Simulator sbe m ()
 repl = do
