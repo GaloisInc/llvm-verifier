@@ -93,7 +93,7 @@ module LSS.Execution.Common
   , ppTuple
   ) where
 
-import Control.Applicative
+import Control.Applicative hiding (empty)
 import Control.Arrow             hiding ((<+>))
 import Control.Exception (assert)
 import Control.Monad.Error hiding (sequence)
@@ -106,11 +106,9 @@ import LSS.Execution.Codebase
 import LSS.Execution.Utils
 import LSS.LLVMUtils (i1)
 import Verifier.LLVM.Backend
-import Verifier.LLVM.BitBlastBackend (BitIO(..))
 import Text.LLVM                 (Typed(..))
 import Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM                 as L
-import qualified Text.PrettyPrint.HughesPJ as PP
 import Prelude hiding (foldr, sequence)
 
 newtype Simulator sbe m a =
@@ -122,9 +120,6 @@ newtype Simulator sbe m a =
     , MonadState (State sbe m)
     , MonadError (InternalExc sbe m)
     )
-
-liftBitBlastSim :: BitIO m l a -> Simulator sbe IO a
-liftBitBlastSim = SM . lift . lift . liftSBEBitBlast
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
 type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))
@@ -168,11 +163,10 @@ data BranchAction sbe
   | BAFalseComplete (SBETerm sbe) -- ^ Assertions before merge
                     (SBETerm sbe) -- ^ Branch condition
                     (Path sbe) -- ^ Completed true path
-                     -- | register for return if this is a branch merges on a non-void return statement.
-                    (Maybe Reg)
 
 data MergeInfo
-  = ReturnInfo Int
+  = ReturnInfo Int (Maybe Reg)
+
   | PostdomInfo Int SymBlockID
 
 data PathHandler sbe
@@ -272,7 +266,8 @@ addCtrlBranch c nb nm ml cs =
       ActiveCS p h -> Just $ ActiveCS p $ BranchHandler info (BARunFalse c pt) h
         where info = case ml of
                        Just b -> PostdomInfo (pathStackHt p) b
-                       Nothing -> ReturnInfo (pathStackHt p - 1)
+                       Nothing -> ReturnInfo (pathStackHt p - 1) (typedValue <$> cfRetReg cf)
+                         where cf : _ = pathStack p
               pt = p { pathCB = Just nb
                      , pathName = nm 
                      }
@@ -287,9 +282,9 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
     BARunFalse c tp -> do
       true <- sbeRunIO sbe $ termBool sbe True
       let tp' = tp { pathAssertions = true }
-      let act' = BAFalseComplete (pathAssertions tp) c p Nothing
+      let act' = BAFalseComplete (pathAssertions tp) c p
       return $ ActiveCS tp' (BranchHandler info act' h)
-    BAFalseComplete a c pf Nothing -> do
+    BAFalseComplete a c pf -> do
       let mergeTyped (Typed tp tt) (Typed _ ft) =
             Typed tp <$> sbeRunIO sbe (applyIte sbe tp c tt ft)
       -- Merge path regs
@@ -321,15 +316,14 @@ returnMerge :: SBE sbe
             -> IO (CS sbe)
 returnMerge _ p StopHandler | pathStackHt p == 0 =
   return (CompletedCS (Just p))
-returnMerge sbe p (BranchHandler info@(ReturnInfo n) act h) | n == pathStackHt p =
+returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackHt p =
   case act of
     BARunFalse c tp -> do
-      let cf : _ = pathStack tp
       true <- sbeRunIO sbe $ termBool sbe True
       let tp' = tp { pathAssertions = true }
-      let act' = BAFalseComplete (pathAssertions tp) c p (typedValue <$> cfRetReg cf)
+      let act' = BAFalseComplete (pathAssertions tp) c p
       return $ ActiveCS tp' (BranchHandler info act' h)
-    BAFalseComplete a c pf mr -> do
+    BAFalseComplete a c pf -> do
       -- Merge return value
       mergedRegs <-
         case mr of
@@ -374,7 +368,7 @@ branchError sbe (BARunFalse c pt) h = do
   a2 <- sbeRunIO sbe $ applyAnd sbe (pathAssertions pt) c
   let pt' = pt { pathAssertions = a2 }
   return $ ActiveCS pt' h
-branchError sbe (BAFalseComplete a c pf mr) h = do
+branchError sbe (BAFalseComplete a c pf) h = do
   -- Update assertions on current path
   a1   <- sbeRunIO sbe $ applyAnd sbe a (pathAssertions pf)
   cNot <- sbeRunIO sbe $ applyBNot sbe c
@@ -462,16 +456,6 @@ data SEH sbe m = SEH
   , onPostGlobInit    :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
   }
 
--- Carry aggregated symconds for pretty-printing; useful when symbolic term
--- contents are not visible.
-data Constraint term = Constraint { symConds :: SCExpr term, pcTerm :: term }
-
-data SCExpr term
-  = SCAtom SymCond
-  | SCTerm term
-  | SCEAnd (SCExpr term) (SCExpr term)
-  | SCEOr (SCExpr term) (SCExpr term)
-
 -- | A handler for a function override. This gets the function symbol as an
 -- argument so that one function can potentially be used to override multiple
 -- symbols.
@@ -505,45 +489,35 @@ ppFailRsn :: FailRsn -> Doc
 ppFailRsn (FailRsn msg) = text msg
 
 ppCtrlStk :: SBE sbe -> CS sbe -> Doc
-ppCtrlStk _ _ = text "ctrlstk"
+ppCtrlStk sbe (CompletedCS mp) =
+  maybe (text "All paths failed") (ppPath sbe) mp
+ppCtrlStk sbe (ActiveCS p h) =
+  text "Active path:" $$
+  ppPath sbe p $$
+  ppPathHandler sbe h
 
-{-
-undefined
-ppCtrlStk sbe (CtrlStk mfs) =
-  hang (text "CS" <+> lbrace) 2 (vcat (map (ppMergeFrame sbe) mfs)) $+$ rbrace
--}
+ppMergeInfo :: MergeInfo -> Doc
+ppMergeInfo (ReturnInfo n mr) = text "return" <> parens (int n <+> reg)
+  where reg = maybe empty L.ppIdent mr
+ppMergeInfo (PostdomInfo n b) =
+    text "postdom" <> parens (int n <+> ppSymBlockID b)
 
-{-
-ppMergeFrame :: SBE sbe -> MF sbe -> Doc
-ppMergeFrame sbe mf = case mf of
-  ExitMergeFrame ef ->
-    text "MF(Exit):"
-    $+$ nest 2 (mpath (efMergedState ef))    
-  PostdomMergeFrame pdf ->
-    text "MF(Pdom|" <>  ppSymBlockID (pdfLabel pdf) <> text "):"
-    $+$ nest 2 (mpath (pdfMergedState pdf))
-  ReturnMergeFrame rf ->
-    text "MF(Retn):" $+$ nest 2 rest
-      where
-        rest = text "Normal" <+> text "~>" <+> ppSymBlockID (rfNormalLabel rf) <> colon
-               $+$ nest 2 (mpath (rfMergedState rf))
-               $+$ maybe PP.empty
-                     ( \el ->
-                         text "Exc" <+> text "~>" <+> ppSymBlockID el <> colon
-                     )
-                     (rfExceptLabel rf)
-  where
-    mpath ms = case ms of
-                 SingletonState p -> ppmp p
-                 BranchState c t f -> text "Branch" <+> prettyTermD sbe c $+$
-                                        nest 2 (ppmp t) $+$
-                                        nest 2 (ppmp f)
-      where ppmp Nothing = text "Failed state"
-            ppmp (Just p) = ppPath sbe p
-    ppPendingPaths pps =
-      text "Pending paths:"
-      $+$ nest 2 (if null pps then text "(none)" else vcat (map (ppPath sbe) pps))
--}
+ppBranchAction :: SBE sbe -> BranchAction sbe -> Doc
+ppBranchAction sbe (BARunFalse c p) = 
+  text "runFalse" <+> prettyTermD sbe c $$
+  nest 2 (ppPath sbe p)
+ppBranchAction sbe (BAFalseComplete a c p) =
+  text "falseCompelte" <+> prettyTermD sbe c $$
+  nest 2 (text "assumptions:" <+> prettyTermD sbe a) $$
+  nest 2 (ppPath sbe p)
+
+ppPathHandler :: SBE sbe -> PathHandler sbe -> Doc
+ppPathHandler sbe (BranchHandler info act h) = 
+  text "on" <+> ppMergeInfo info <+> text "do" $$
+  nest 2 (ppBranchAction sbe act) $$
+  ppPathHandler sbe h
+ppPathHandler _ StopHandler = text "stop"
+
 
 ppPath :: SBE sbe -> Path sbe -> Doc
 ppPath sbe p =
@@ -556,8 +530,6 @@ ppPath sbe p =
   <>  colon
   $+$ nest 2 (text "Locals:" $+$ nest 2 (ppRegMap sbe (pathRegs p)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
-
---(Path cf mrv _mexc mcb _mpcb _mem c name) =
 
 -- Prints just the path's location and path constraints
 ppPathLoc :: SBE sbe -> Path sbe -> Doc
@@ -580,25 +552,6 @@ ppRegMap sbe mp =
       identLen       = length . show . L.ppIdent
       as             = M.toList mp
 
-ppFC :: SBE sbe -> Constraint (SBETerm sbe) -> Doc
-ppFC sbe (Constraint conds pc) =
-  prettyTermD sbe pc
-  <+> ( text "SCs:" <+> ppSCExpr sbe conds
-      )
-
-ppSymConds :: [SymCond] -> Doc
-ppSymConds = hcat . punctuate comma . map ppSymCond
-
-ppSCExpr :: SBE sbe -> SCExpr (SBETerm sbe) -> Doc
-ppSCExpr _   (SCAtom sc)                      = ppSymCond sc
-ppSCExpr sbe (SCTerm t)                       = parens $ text "?term:" <+> prettyTermD sbe t
-ppSCExpr sbe (SCEAnd (SCAtom TrueSymCond) b)  = ppSCExpr sbe b
-ppSCExpr sbe (SCEAnd a (SCAtom TrueSymCond))  = ppSCExpr sbe a
-ppSCExpr sbe (SCEAnd a b)                     = ppSCExpr sbe a <+> text "&" <+> ppSCExpr sbe b
-ppSCExpr sbe (SCEOr a@(SCAtom TrueSymCond) _) = ppSCExpr sbe a
-ppSCExpr sbe (SCEOr _ b@(SCAtom TrueSymCond)) = ppSCExpr sbe b
-ppSCExpr sbe (SCEOr a b)                      = ppSCExpr sbe a <+> text "|" <+> ppSCExpr sbe b
-
 ppTuple :: [Doc] -> Doc
 ppTuple = parens . hcat . punctuate comma
 
@@ -613,6 +566,8 @@ dumpCtrlStk = do
 dumpCtrlStk' :: (MonadIO m, LogMonad m) => Int -> Simulator sbe m ()
 dumpCtrlStk' lvl = whenVerbosity (>=lvl) dumpCtrlStk
 
+{-
 instance (LogMonad IO) where
   setVerbosity _ = return ()
   getVerbosity   = return 1
+-}

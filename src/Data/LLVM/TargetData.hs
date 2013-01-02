@@ -298,16 +298,6 @@ llvmStructInfo' lc packed fldTys =
         elemAlign | packed = 1 
                   | otherwise = llvmTypeABIAlignOf lc elemTy
 
--- | Constructs a function for obtaining target-specific size/alignment
--- information about structs.  The function produced corresponds to the
--- StructLayout object constructor in TargetData.cpp.
-llvmStructInfo :: LLVMContext -> L.Type -> StructSizeInfo
-llvmStructInfo lc ty =
-  case ty of
-    L.Struct tys       -> llvmStructInfo' lc False tys
-    L.PackedStruct tys -> llvmStructInfo' lc True tys
-    _ -> error "internal: struct info query given non-struct type"
-
 -- | Extract target pointer size from data layout, or fall back on default.
 dlPtrSize :: L.DataLayout -> Int
 dlPtrSize []                      = 64

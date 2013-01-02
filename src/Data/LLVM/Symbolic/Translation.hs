@@ -39,7 +39,6 @@ import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
 import           Text.PrettyPrint.HughesPJ
 import qualified Control.Exception          as CE
 import qualified Data.LLVM.CFG              as CFG
-import qualified Data.List                  as L
 import qualified Data.Map                   as Map
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as LLVM

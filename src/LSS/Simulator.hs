@@ -208,8 +208,7 @@ callDefine_ c t ag = callDefine c t ag >> return ()
 -- arguments.  In the case when no arguments created or invoking
 -- intrinsics/overrides, the return value will always be the empty list.
 callDefine ::
-  ( LogMonad m
-  , MonadIO m
+  ( MonadIO m
   , Functor m
   , Functor sbe
   )
