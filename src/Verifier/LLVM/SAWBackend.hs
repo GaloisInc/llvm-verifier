@@ -21,11 +21,16 @@ data SAWMemory = SAWMemory ()
 type instance SBETerm (SAWBackend s) = SharedTerm s
 type instance SBEMemory (SAWBackend s) = SAWMemory
 
+
+{-
 $(runDecWriter $ do
     prelude <- decModule [|preludeModule|] preludeModule
     llvm <- mkDecModule [prelude] "llvmModule" "saw/LLVM.saw"
     decSharedModuleFns "LLVM" (dmModule llvm)    
  )
+-}
+
+llvmModule = undefined
 
 lift2 :: (x -> y -> IO r) -> x -> y -> SAWBackend s r
 lift2 fn x y = SAWBackend (fn x y)

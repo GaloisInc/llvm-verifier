@@ -341,20 +341,14 @@ runNormalSymbol normalRetID calleeSym mreg args = do
 
     bindArg _ (Typed ft reg, (Typed at v)) mp =
       -- WARNING: This code now does an implcit conversion from ft to at.
-          let ok = M.insert reg (Typed ft v) mp
-          in
-            -- It's doubtful that anything will remain excluded here, but this
-            -- makes it explicit when we've not handled particular argument
-            -- types.
-            case at of
-            L.PrimType L.Integer{} -> ok
-            L.PtrTo{}              -> ok
-            _ -> err $ text "unsupported arg type:" <+> L.ppType at
-
---      | otherwise = err
---          $ text "formal/actual type mismatch:"
---            <+> L.ppType ft <+> text "vs." <+> L.ppType at
---            $+$ text (show ft) <+> text "vs." <+> text (show at)
+        let ok = M.insert reg (Typed ft v) mp
+        in -- It's doubtful that anything will remain excluded here, but this
+           -- makes it explicit when we've not handled particular argument
+           -- types.
+           case at of
+             L.PrimType L.Integer{} -> ok
+             L.PtrTo{}              -> ok
+             _ -> err $ text "unsupported arg type:" <+> L.ppType at
 
 intrinsic ::
   ( MonadIO m
