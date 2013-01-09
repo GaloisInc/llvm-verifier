@@ -9,10 +9,15 @@ Point-of-contact : jstanley
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 module Data.LLVM.TargetData
-  ( LLVMContext( llvmAddrWidthBits
+  ( TypeAliasMap
+  , LLVMContext( llvmAddrWidthBits
                , llvmPtrAlign
-               , llvmLookupAlias
+               , llvmTypeAliasMap
                )
+  , StructSizeInfo(..)
+  , llvmStructInfo'
+  , llvmLookupAlias
+  , llvmLookupAlias'
   , buildLLVMContext
   , llvmAllocSizeOf
   , llvmMinBitSizeOf
@@ -22,6 +27,8 @@ where
 
 import           Data.Bits
 import           Data.FingerTree
+import           Data.Map (Map)
+import qualified Data.Map as Map
 import           Data.Maybe
 import           Data.Monoid
 import           LSS.LLVMUtils
@@ -30,19 +37,26 @@ import qualified Data.FingerTree   as FT
 import qualified Data.Foldable     as DF
 import qualified Text.LLVM         as L
 
+type TypeAliasMap = Map L.Ident L.Type
+
 data LLVMContext = LLVMContext
   { llvmAddrWidthBits :: Int
   , llvmPtrAlign      :: Integer -- pointer alignment, in bytes
-  , llvmAlignmentOf   :: AlignQuery
-  , llvmStructInfo    :: StructSizeQuery
-  , llvmLookupAlias   :: L.Ident -> L.Type
+  , llvmTypeAliasMap  :: TypeAliasMap
   , llvmDataLayout    :: L.DataLayout
   }
+
 instance Show LLVMContext where
-  show (LLVMContext w a _ _ _ _) =
+  show (LLVMContext w a _ _) =
     "LC: Addrwidth = " ++ show w ++ ", Ptralign = " ++ show a
 
-type AlignQuery = L.Type -> AlignType -> AlignInfo
+llvmLookupAlias' :: LLVMContext -> L.Ident -> Maybe L.Type
+llvmLookupAlias' lc i = Map.lookup i (llvmTypeAliasMap lc) 
+
+llvmLookupAlias :: LLVMContext -> L.Ident -> L.Type
+llvmLookupAlias lc i = fromMaybe (error msg) $ llvmLookupAlias' lc i
+  where msg = "Failed to locate type alias named "
+                ++ show (L.ppIdent i) ++ " in code base"
 
 data AlignType
   = IntegerAlign
@@ -69,15 +83,13 @@ instance Monoid BW where
 instance Measured BW AlignInfo where
   measure (AlignInfo _ _ bw) = BW bw
 
-buildLLVMContext :: (L.Ident -> L.Type) -> L.DataLayout -> LLVMContext
-buildLLVMContext lkupAlias dl = lc
+buildLLVMContext :: TypeAliasMap -> L.DataLayout -> LLVMContext
+buildLLVMContext tam dl = lc
   where
     lc = LLVMContext
          { llvmAddrWidthBits = dlPtrSize dl
          , llvmPtrAlign      = (dlPtrAlign dl + 7) `shiftR` 3
-         , llvmAlignmentOf   = mkAlignQuery lc
-         , llvmStructInfo    = mkStructSizeQuery lc
-         , llvmLookupAlias   = lkupAlias
+         , llvmTypeAliasMap  = tam
          , llvmDataLayout    = dl
          }
 
@@ -90,8 +102,8 @@ llvmTypeABIAlignOf lc ty = case ty of
   L.PtrTo{}                -> llvmPtrAlign lc
   L.Array _ ety            -> llvmTypeABIAlignOf lc ety
   L.PackedStruct{}         -> 1
-  L.Struct{}               -> max (aiABI $ llvmAlignmentOf lc ty AggregateAlign)
-                                  (ssiAlign $ llvmStructInfo lc ty)
+  L.Struct tpl            -> max (aiABI $ llvmAlignmentOf lc ty AggregateAlign)
+                                 (ssiAlign $ llvmStructInfo' lc False tpl)
   L.PrimType L.Integer{}   -> align IntegerAlign
   L.PrimType L.Void        -> align IntegerAlign
   L.PrimType L.FloatType{} -> align FloatAlign
@@ -129,9 +141,9 @@ llvmMinBitSizeOf lc ty = case ty of
   L.Alias a                      -> llvmMinBitSizeOf lc (llvmLookupAlias lc a)
   L.Array (toInteger -> len) ety -> len * llvmMinBitSizeOf lc ety
   L.PtrTo{}                      -> toInteger (llvmAddrWidthBits lc)
-  L.Vector (toInteger -> len) pt -> toInteger len * prim pt
-  L.PackedStruct{}               -> (ssiBytes $ llvmStructInfo lc ty) `shiftL` 3
-  L.Struct{}                     -> (ssiBytes $ llvmStructInfo lc ty) `shiftL` 3
+  L.Vector (toInteger -> len) tp -> toInteger len * llvmMinBitSizeOf lc tp
+  L.PackedStruct tpl             -> (ssiBytes $ llvmStructInfo' lc True  tpl) `shiftL` 3
+  L.Struct tpl                   -> (ssiBytes $ llvmStructInfo' lc False tpl) `shiftL` 3
   L.FunTy{}                      -> error "internal: Cannot get size of function type."
   L.Opaque{}                     -> error "internal: Cannot get size of opaque type."
   where
@@ -154,9 +166,9 @@ llvmMinBitSizeOf lc ty = case ty of
 
 -- | Constructs a function for obtaining target-specific alignment info.  The
 -- function produced corresponds to TargetData::getAlignmentInfo().
-mkAlignQuery :: LLVMContext -> AlignQuery
-mkAlignQuery lc = \ty alignTy ->
-  let w = bitwidth ty in
+llvmAlignmentOf :: LLVMContext -> L.Type -> AlignType -> AlignInfo
+llvmAlignmentOf lc ty alignTy =
+  let w = bitwidth in
   case alignTy of
     IntegerAlign -> case lkupAlign i w of
       Exact ai -> ai
@@ -167,7 +179,7 @@ mkAlignQuery lc = \ty alignTy ->
       _        ->
         -- Fall back on "natural alignment for vector types"
         case ty of
-          L.Vector (toInteger -> len) (L.PrimType -> ety) ->
+          L.Vector (toInteger -> len) ety ->
             let ea        = llvmAllocSizeOf lc ety * len
                 elemAlign = if isPow2 ea then ea else nextPow2 ea
             in
@@ -178,8 +190,10 @@ mkAlignQuery lc = \ty alignTy ->
     AggregateAlign -> requireExact "aggregate" (lkupAlign ag w)
     StackAlign     -> requireExact "stack"     (lkupAlign st w)
   where
-    bitwidth L.Struct{} = 0
-    bitwidth ty         = llvmMinBitSizeOf lc ty
+    bitwidth =
+      case ty of
+        L.Struct{} -> 0
+        _ -> llvmMinBitSizeOf lc ty
     dl                  = llvmDataLayout lc
     splitBitwidth w     = FT.split $ \(BW y) -> y > w
     cmp x y             = aiBitwidth x `compare` aiBitwidth y
@@ -258,11 +272,10 @@ mkAlignQuery lc = \ty alignTy ->
       , AlignInfo AggregateAlign   0   0 -- struct
       ]
 
-type StructSizeQuery = L.Type -> StructSizeInfo
 data StructSizeInfo   = SSI
   { ssiBytes   :: Integer    -- struct size in bytes
   , ssiAlign   :: Integer    -- struct alignment in bytes
-  , _ssiOffsets :: [Integer] -- /i/th element contains the 0-based byte offset to
+  , ssiOffsets :: [Integer] -- /i/th element contains the 0-based byte offset to
                              -- struct member /i/
   }
   deriving (Show)
@@ -270,26 +283,20 @@ data StructSizeInfo   = SSI
 -- | Constructs a function for obtaining target-specific size/alignment
 -- information about structs.  The function produced corresponds to the
 -- StructLayout object constructor in TargetData.cpp.
-mkStructSizeQuery :: LLVMContext -> StructSizeQuery
-mkStructSizeQuery lc = \ty ->
-  let SSI sz align offs = foldl (impl packed) (SSI 0 0 []) fldTys
-      (fldTys, packed)  = case ty of
-                            L.Struct tys       -> (tys, False)
-                            L.PackedStruct tys -> (tys, True)
-                            _                  -> err
-      align'            = if align == 0 then 1 else align
-  in
-    SSI (nextMultiple align' sz) (align') offs
+llvmStructInfo' :: LLVMContext -> Bool -> [L.Type] -> StructSizeInfo
+llvmStructInfo' lc packed fldTys =
+    let SSI sz align offs = foldl impl (SSI 0 1 []) fldTys
+     in SSI (nextMultiple align sz) align offs
   where
-    err = error "internal: struct info query given non-struct type"
-    impl packed (SSI sz align offsets) elemTy =
+    impl (SSI sz align offsets) elemTy =
       SSI
         (sz' + llvmAllocSizeOf lc elemTy)
         (max elemAlign align)
         (offsets ++ [sz'])
       where
         sz'       = nextMultiple elemAlign sz
-        elemAlign = if packed then 1 else llvmTypeABIAlignOf lc elemTy
+        elemAlign | packed = 1 
+                  | otherwise = llvmTypeABIAlignOf lc elemTy
 
 -- | Extract target pointer size from data layout, or fall back on default.
 dlPtrSize :: L.DataLayout -> Int

@@ -11,11 +11,11 @@ import           Control.Monad.Trans
 import           Data.Bits
 import           Data.LLVM.TargetData
 import           LSS.Execution.Common
-import           LSS.SBEInterface
 import           LSS.Simulator
 import           Text.LLVM              (Typed(..))
 import qualified Control.Exception      as CE
 import qualified Text.LLVM              as L
+import           Verifier.LLVM.Backend
 
 -- NB: Currently only valid for SBEBitBlast mems
 sanityChecks ::
@@ -31,6 +31,9 @@ sanityChecks = SEH
   , onMkGlobTerm      = \_ -> return ()
   , onPostOverrideReg = return ()
 
+  , onPreGlobInit = \_ _ -> return ()
+
+{-
   , onPreGlobInit = \g (Typed ty gdata) -> do
       CE.assert (L.globalType g == ty) $ return ()
       sz  <- withLC (`llvmStoreSizeOf` ty)
@@ -39,6 +42,7 @@ sanityChecks = SEH
         dbugM $ "onPreGlobInit assert failure on " ++ show (L.ppSymbol $ L.globalSym g)
                 ++ " (size check)"
         CE.assert False $ return ()
+-}
 
   , onPostGlobInit = \_g (Typed _ty _gdata) -> do
       {-

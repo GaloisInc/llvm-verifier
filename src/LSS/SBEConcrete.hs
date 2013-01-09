@@ -12,7 +12,7 @@ Point-of-contact : atomb
 module LSS.SBEConcrete where
 
 import           Data.Bits
-import           LSS.SBEInterface
+import           Verifier.LLVM.Backend
 import qualified Text.LLVM.AST             as LLVM
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Verinf.Symbolic           as S
@@ -90,6 +90,7 @@ sbeConcrete = SBE
   , writeAiger       = nyi "writeAiger"
   , evalAiger        = nyi "evalAiger"
   , writeCnf         = nyi "writeCnf"
+  , sbeRunIO = return . runConcrete
   }
   where
     nyi :: forall a. String -> a

@@ -10,7 +10,7 @@ Point-of-contact : atomb
 {-# LANGUAGE TypeFamilies #-}
 
 module LSS.SBESymbolic
-  ( module LSS.SBEInterface
+  ( module Verifier.LLVM.Backend
   , sbeSymbolic
   ) where
 
@@ -18,7 +18,7 @@ import Control.Monad.Trans
   
 import qualified Verinf.Symbolic as S
 
-import LSS.SBEInterface
+import Verifier.LLVM.Backend
 
 --------------------------------------------------------------------------------
 -- Word-level symbolic backend
@@ -70,6 +70,7 @@ sbeSymbolic = SBE
   , writeAiger = nyi "writeAiger"
   , evalAiger = nyi "evalAiger"
   , writeCnf = nyi "writeCnf"
+  , sbeRunIO = liftSymbolicIO
   }
   where
     nyi :: forall a. String -> a
