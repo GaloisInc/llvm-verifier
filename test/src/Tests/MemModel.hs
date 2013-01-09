@@ -11,7 +11,7 @@ import Test.QuickCheck.Monadic
 
 import Data.LLVM.Memory
 import Data.LLVM.TargetData
-import LSS.SBEBitBlast
+import Verifier.LLVM.BitBlastBackend
 import qualified Text.LLVM.AST as LLVM
 import Verinf.Symbolic (createBitEngine)
 import Verinf.Symbolic.Lit
@@ -54,14 +54,13 @@ bfi w v = LV.generate w (testBit v)
 
 memModelTests :: [(Args, Property)]
 memModelTests =
-  [ mmTest "symbolicTests" 1 $ \lc be SBE { .. } MemModel { .. } m0 -> do
+  [ mmTest "symbolicTests" 1 $ \lc be sbe@SBE { .. } MemModel { .. } m0 -> do
       let ptrWidth = llvmAddrWidthBits lc
       let ?be = be
       let bytes = lVectorFromInt 8 7
       let assertEval inputs expected t = do
             r <- runSBE $ evalAiger inputs t
             assert (r == expected)
-      let sizeT = intType (fromIntegral ptrWidth)
       tTrue <- runSBE $ termBool True
       tFalse <- runSBE $ termBool False
       cnt <- runSBE $ freshInt 1
@@ -79,8 +78,8 @@ memModelTests =
       do assertEval [False] tFalse c1
          assertEval [True] tTrue  c1
       -- Test symbolic load succeeds under appropiate conditions.
-      do cntExt <- runSBE $ applyConv LLVM.SExt cnt sizeT
-         rptr <- runSBE $ applyArith (LLVM.Sub False False) ptr cntExt
+      do cntExt <- runSBE $ applyTypedExpr (SExt 1 cnt ptrWidth)
+         rptr <- runSBE $ applySub sbe Nothing ptrWidth ptr cntExt
          (c2, _) <- run $ mmLoad m2 rptr 1 
          assertEval [False] tTrue c2
          assertEval [True] tFalse c2

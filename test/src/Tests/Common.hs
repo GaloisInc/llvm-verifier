@@ -5,7 +5,11 @@
 {-# LANGUAGE ViewPatterns         #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 
-module Tests.Common where
+module Tests.Common 
+  ( module Tests.Common
+  , ExecRsltHndlr
+  , PropertyM
+  ) where
 
 import           Control.Applicative
 import           Control.Arrow
@@ -18,12 +22,14 @@ import           LSS.Execution.Codebase
 import           LSS.Execution.Common
 import           LSS.Execution.Utils
 import           LSS.LLVMUtils
-import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           LSSImpl
 import           System.FilePath
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
+import           Verifier.LLVM.BitBlastBackend
+import           Verifier.LLVM.SAWBackend
+
 import           Text.LLVM                     ((=:))
 import           Verinf.Symbolic               (Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
@@ -95,24 +101,33 @@ runAllMemModelTest v getCB act = do
   cb <- getCB
   assert . and =<< do
     forAllMemModels v cb $ \s m -> run $
-      runSimulator cb s m liftBitBlastSim defaultSEH
+      runSimulator cb s m defaultSEH
         Nothing (withVerbosity v act)
 
-runTestLSSCommon :: Int
-                 -> Codebase
-                 -> PropertyM IO
-                      ( LLVMContext
-                      , MemGeom
-                      , BitEngine Lit
-                      , LSS
-                      )
-runTestLSSCommon v cb = do
-  be <- run $ createBitEngine
-  return (lc cb, defaultMemGeom (lc cb), be, cmdLineOpts)
-  where
-    lc          = cbLLVMCtx
-    dbugLvl     = DbugLvl (fromIntegral v)
-    cmdLineOpts = LSS dbugLvl "" Nothing Nothing False False
+type CreateSBEFn sbe =
+       BitEngine Lit -> LLVMContext -> MemGeom
+                     -> IO (SBE sbe, SBEMemory sbe)
+
+runTestLSSCommon :: Functor sbe
+                 => String
+                 -> CreateSBEFn sbe
+                 -> RunLSSTest sbe
+runTestLSSCommon nm createFn v cb argv' hndlr = do
+   when (v >= 2) $ run $ putStrLn nm
+   assert =<< run m
+  where m = do be <- createBitEngine
+               (sbe, mem) <- createFn be (lc cb) (defaultMemGeom (lc cb))
+               rslt       <- lssImpl sbe mem cb argv' cmdLineOpts
+               hndlr sbe mem rslt
+        lc          = cbLLVMCtx
+        dbugLvl     = DbugLvl (fromIntegral v)
+        cmdLineOpts = LSS { dbug = dbugLvl
+                          , argv = "" 
+                          , backend = Nothing
+                          , errpaths = False
+                          , xlate = False
+                          , mname = Nothing
+                          }
 
 type RunLSSTest sbe = Int
                     -> Codebase
@@ -121,39 +136,59 @@ type RunLSSTest sbe = Int
                     -> PropertyM IO ()
 
 runTestLSSBuddy :: RunLSSTest (BitIO (BitMemory Lit) Lit)
-runTestLSSBuddy v cb argv' hndlr = do
-  when (v >= 2) $ run $ putStrLn "runTestLSSBuddy"
-  assert =<< do
-    (lc, mg, be, cmdLineOpts) <- runTestLSSCommon v cb
-    run $ do
-      (sbe, mem) <- createBuddyAll be lc mg
-      rslt       <- lssImpl sbe mem cb argv' BitBlastBuddyAlloc cmdLineOpts
-      hndlr sbe mem rslt
+runTestLSSBuddy = runTestLSSCommon "runTestLSSBuddy" createBuddyAll 
 
 runTestLSSDag :: RunLSSTest (BitIO (DagMemory Lit) Lit)
-runTestLSSDag v cb argv' hndlr = do
-  when (v >= 2) $ run $ putStrLn "runTestLSSDag"
-  assert =<< do
-    (lc, mg, be, cmdLineOpts) <- runTestLSSCommon v cb
-    run $ do
-      (sbe, mem) <- createDagAll be lc mg
-      rslt       <- lssImpl sbe mem cb argv' BitBlastDagBased cmdLineOpts
-      hndlr sbe mem rslt
+runTestLSSDag = runTestLSSCommon "runTestLSSDag" createDagAll
+
+runTestSAWBackend :: RunLSSTest (SAWBackend s)
+runTestSAWBackend = runTestLSSCommon "runTestLSSDag" (\_ -> createSAWBackend)
 
 lssTest :: Int -> String -> (Int -> Codebase -> PropertyM IO ()) -> (Args, Property)
 lssTest v bc act = test 1 False bc $ act v =<< testCB (bc <.> "bc")
 
+-- | Run test on all backends
+lssTestAll :: Int
+           -> String
+           -> [String]
+           -> (forall sbe . ExecRsltHndlr sbe Integer Bool)
+           -> (Args,Property)
+lssTestAll vi nm args hndlr =
+  lssTest vi nm $ \v cb -> do
+    runTestLSSBuddy v cb args hndlr
+    runTestLSSDag v cb args hndlr
+    --runTestSAWBackend v cb args hndlr
+
 -- TODO: At some point we may want to inspect error paths and ensure
 -- that they are the /right/ error paths, rather just checking the
 -- count!.  We'll need something better than FailRsn to do that, though.
-chkLSS :: MonadIO m => Maybe Int -> Maybe Integer -> SBE sbe -> SBEMemory sbe -> ExecRslt sbe Integer -> m Bool
+chkLSS :: Maybe Int
+       -> Maybe Integer
+       -> ExecRsltHndlr sbe Integer Bool
 chkLSS mepsLen mexpectedRV _ _ execRslt = do
-  return $
-    case (mepsLen, mexpectedRV, execRslt) of
-      (Just epsLen, Just expectedRV, ConcRV eps _mm r) -> length eps == epsLen && expectedRV == r
-      (Just epsLen, Nothing, NoMainRV eps _mm)         -> length eps == epsLen
-      (Nothing, Just expectedRV, ConcRV _ _ r)         -> expectedRV == r
-      _                                                -> False
+  let chkLen eps =
+        case mepsLen of
+          Nothing -> return ()
+          Just epsLen ->
+            unless (length eps == epsLen) $ do
+              fail $ "Expected " ++ show epsLen ++ " error paths, but found " 
+                       ++ show (length eps)
+  case execRslt of
+    ConcRV eps _mm r -> do
+      chkLen eps
+      case mexpectedRV of
+        Nothing -> fail "Unexpected return value"
+        Just expectedRV ->
+          unless (expectedRV == r) $ do
+            fail $ "Expected " ++ show expectedRV ++ " return value, but found " ++ show r  
+    NoMainRV eps _mm -> do
+      chkLen eps
+      case mexpectedRV of
+        Nothing -> return ()
+        Just{} -> fail $ "Missing return value"
+    SymRV{} -> fail "Unexpected sym exec result"
+  return True
+
 
 type SBEPropM a =
   forall mem.
@@ -211,7 +246,7 @@ runCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM 
 runCInt32Fn v getCB sym cargs = do
   cb <- getCB
   forAllMemModels v cb $ \s m -> run $ do
-    runSimulator cb s m liftBitBlastSim defaultSEH Nothing $ withVerbosity v $ do
+    runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
       args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
       callDefine_ sym i32 (map ((=:) i32) args)
       let fn rv = withSBE' $ \sbe -> snd <$> asSignedInteger sbe rv
@@ -221,7 +256,7 @@ runVoidFn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM IO
 runVoidFn v getCB sym cargs = do
   cb <- getCB
   _ <- forAllMemModels v cb $ \s m -> run $ do
-    runSimulator cb s m liftBitBlastSim defaultSEH Nothing $ withVerbosity v $ do
+    runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
       args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
       callDefine_ sym voidTy (map ((=:) i32) args)
   return ()

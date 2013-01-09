@@ -6,18 +6,18 @@ Point-of-contact : jstanley
 -}
 
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ViewPatterns     #-}
-
 module Tests.Symbolic (symTests) where
 
 import           Control.Monad
 import           LSS.LLVMUtils
-import           LSS.SBEBitBlast
 import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
 import           Text.LLVM              ((=:))
 import qualified Text.LLVM              as L
+import           Verifier.LLVM.BitBlastBackend
 
 symTests :: [(Args, Property)]
 symTests =
@@ -26,35 +26,27 @@ symTests =
   , lssTest 0 "ctests/test-symbolic-alloc" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS (Just 1) Nothing
        -- This seems to hang in GHCI but not from the command line =/
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 0)
-  , lssTest 0 "ctests/test-fresh" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 16)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 16)
-  , lssTest 0 "ctests/test-fresh-array" $ \v cb -> do
+      runTestLSSDag v cb []   $ chkLSS (Just 2) Nothing
+  , lssTestAll 0 "ctests/test-fresh" [] $
+      chkLSS Nothing (Just 16)
+  , lssTestAll 0 "ctests/test-fresh-array" [] $
       -- NB: This test writes an .aig file; we are just testing
       -- essentially that we don't crash.  At some point this really
       -- should be beefed up to automatically equivalence check the
       -- output against a golden AIG file.
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 0)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 0)
-  , lssTest 0 "ctests/test-const-false-path" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 0) (Just 1)
-      runTestLSSDag v cb []   $ chkLSS (Just 0) (Just 1)
-  , lssTest 0 "ctests/test-divergent-unreachables" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 1)
-      runTestLSSDag v cb []   $ chkLSS (Just 1) (Just 1)
-  , lssTest 0 "ctests/test-missing-define" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 1)
-      runTestLSSDag v cb []   $ chkLSS (Just 1) (Just 1)
-  , lssTest 0 "ctests/test-fresh-incremental" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 0) (Just 0)
-      runTestLSSDag v cb []   $ chkLSS (Just 0) (Just 0)
-  , lssTest 0 "ctests/test-fresh-array-incremental" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 0) (Just 0)
-      runTestLSSDag v cb []   $ chkLSS (Just 0) (Just 0)
-  , lssTest 0 "ctests/test-write-cnf" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 0) (Just 0)
-      runTestLSSDag v cb []   $ chkLSS (Just 0) (Just 0)
+      chkLSS Nothing (Just 0)
+  , lssTestAll 0 "ctests/test-const-false-path" [] $
+      chkLSS (Just 0) (Just 1)
+  , lssTestAll 0 "ctests/test-divergent-unreachables" [] $
+      chkLSS (Just 1) (Just 1)
+  , lssTestAll 0 "ctests/test-missing-define" [] $
+      chkLSS (Just 1) (Just 1)
+  , lssTestAll 0 "ctests/test-fresh-incremental" [] $
+      chkLSS (Just 0) (Just 0)
+  , lssTestAll 0 "ctests/test-fresh-array-incremental" [] $
+      chkLSS (Just 0) (Just 0)
+  , lssTestAll 0 "ctests/test-write-cnf" [] $
+      chkLSS (Just 0) (Just 0)
   ]
   where
     trivBranch v = psk v $ runSimple v $ trivBranchImpl "trivial_branch" $
