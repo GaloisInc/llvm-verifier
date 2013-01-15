@@ -5,16 +5,9 @@ Stability        : provisional
 Point-of-contact : jhendrix
 -}
 
-{-# LANGUAGE DeriveDataTypeable         #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE TypeSynonymInstances       #-}
-{-# LANGUAGE UndecidableInstances       #-}
-{-# LANGUAGE ViewPatterns               #-}
 module LSS.Execution.Common 
   ( Simulator(SM)
   , runSM
@@ -156,14 +149,14 @@ modifyCS f s = s { ctrlStk = f (ctrlStk s) }
 -- | Action to perform when branch.
 data BranchAction sbe
   = BARunFalse (SBETerm sbe) -- ^ Branch condition
-               (Path sbe) -- ^ False path to run
+               (Path sbe) -- ^ True path to run
   | BAFalseComplete (SBETerm sbe) -- ^ Assertions before merge
                     (SBETerm sbe) -- ^ Branch condition
                     (Path sbe) -- ^ Completed true path
 
 data MergeInfo
   = ReturnInfo Int (Maybe Reg)
-
+    -- | Contains the 
   | PostdomInfo Int SymBlockID
 
 data PathHandler sbe
@@ -173,7 +166,7 @@ data PathHandler sbe
                   (PathHandler sbe) -- ^ Handler once this handler is done.
   | StopHandler
 
-data CS (sbe :: * -> *)
+data CS sbe
   = CompletedCS (Maybe (Path sbe))
     -- | An active control stack.
   | ActiveCS (Path sbe) -- ^ Current path
@@ -360,28 +353,33 @@ returnCurrentPath sbe rt (ActiveCS p h) = Just $ do
                 }
   returnMerge sbe p' h
 
-branchError :: SBE sbe -> BranchAction sbe -> PathHandler sbe -> IO (CS sbe) 
-branchError sbe (BARunFalse c pt) h = do
+branchError :: SBE sbe
+            -> MergeInfo -- Info for current merge point.
+            -> BranchAction sbe -- Action to run if branch occurs.
+            -> PathHandler sbe -- Previous path handler.
+            -> IO (CS sbe) 
+branchError sbe _ (BARunFalse c pt) h = do
   a2 <- sbeRunIO sbe $ applyAnd sbe (pathAssertions pt) c
   let pt' = pt { pathAssertions = a2 }
   return $ ActiveCS pt' h
-branchError sbe (BAFalseComplete a c pf) h = do
+branchError sbe mi (BAFalseComplete a c pf) h = do
   -- Update assertions on current path
   a1   <- sbeRunIO sbe $ applyAnd sbe a (pathAssertions pf)
   cNot <- sbeRunIO sbe $ applyBNot sbe c
   a2   <- sbeRunIO sbe $ applyAnd sbe a1 cNot
   let pf' = pf { pathAssertions = a2 }
-
   -- Try to merge states that may have been waiting for the current path to terminate.
-  case h of
-    BranchHandler ReturnInfo{} _ _ -> returnMerge sbe pf' h
-    BranchHandler PostdomInfo{} _ _ -> postdomMerge sbe pf' h
-    StopHandler -> return (ActiveCS pf' h)
+  case (mi,h) of
+    ( ReturnInfo n _, BranchHandler (ReturnInfo n _) _ _) | n == pn ->
+      returnMerge sbe pf' h
+    ( PostdomInfo n _, BranchHandler (PostdomInfo n _) _ _) | n == pn ->
+      postdomMerge sbe pf' h
+    _ -> return (ActiveCS pf' h)
 
 -- | Mark the current path as an error path.
 markCurrentPathAsError :: SBE sbe -> CS sbe -> Maybe (IO (CS sbe))
 markCurrentPathAsError _ CompletedCS{} = fail "Path is completed"
-markCurrentPathAsError sbe (ActiveCS _ (BranchHandler _ a h)) = Just (branchError sbe a h)
+markCurrentPathAsError sbe (ActiveCS _ (BranchHandler mi a h)) = Just (branchError sbe mi a h)
 markCurrentPathAsError _ (ActiveCS _ StopHandler) = Just (return (CompletedCS Nothing))
 
 type RegMap term = M.Map Reg (Typed term)
