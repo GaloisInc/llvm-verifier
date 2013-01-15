@@ -22,6 +22,7 @@ import Data.Bits (testBit)
 import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM.AST   as L
 import Data.LLVM.Symbolic.AST
+import Verinf.Symbolic.Lit.DataTypes (SatResult)
 
 -- | SBETerm yields the type used to represent terms in particular SBE interface
 -- implementation.
