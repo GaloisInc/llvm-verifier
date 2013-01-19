@@ -38,8 +38,8 @@ module LSS.Simulator
   , Simulator (SM)
   , State(..)
   , SEH(..)
-  , callDefine
-  , callDefine_
+  , calldefine
+  , calldefine_
   , defaultSEH
   , lookupSymbolDef
   , getProgramReturnValue
