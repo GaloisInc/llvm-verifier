@@ -370,9 +370,9 @@ branchError sbe mi (BAFalseComplete a c pf) h = do
   let pf' = pf { pathAssertions = a2 }
   -- Try to merge states that may have been waiting for the current path to terminate.
   case (mi,h) of
-    ( ReturnInfo n _, BranchHandler (ReturnInfo n _) _ _) | n == pn ->
+    ( ReturnInfo n _, BranchHandler (ReturnInfo pn _) _ _) | n == pn ->
       returnMerge sbe pf' h
-    ( PostdomInfo n _, BranchHandler (PostdomInfo n _) _ _) | n == pn ->
+    ( PostdomInfo n _, BranchHandler (PostdomInfo pn _) _ _) | n == pn ->
       postdomMerge sbe pf' h
     _ -> return (ActiveCS pf' h)
 
