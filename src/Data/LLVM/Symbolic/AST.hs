@@ -22,8 +22,8 @@ module Data.LLVM.Symbolic.AST
   , NUWFlag
   , NSWFlag
   , ExactFlag
-  , OptVectorLength
   , IntArithOp(..)
+  , OptVectorLength
   , TypedExpr(..)
   , typedExprType
   , StructInfo(..)
@@ -181,12 +181,17 @@ ppGEPOffset _ (StructField _ i) = text "i32" <+> int i
 ppGEPOffset pp (ArrayElement _ w v) =
   ppIntType w <> integer (toInteger w) <+> pp v
 
+-- | NUW flag used with addition, subtraction, multiplication, and left shift to
+-- indicates that unsigned overflow is undefined.
 type NUWFlag = Bool
+
+-- | NSW flag used with addition, subtraction, multiplication, and left shift to
+-- indicates that signed overflow is undefined.
 type NSWFlag = Bool
+
+-- | Exact flag used on division, remainder and right-shift operation to indicate that
+-- operation should not have any remainder.  Otherwise the value is undefined.
 type ExactFlag = Bool
--- | Condition used to indicate this operation should be applied to
--- a vector (and the number of elements the vector(s) should contains).
-type OptVectorLength = Maybe Int
 
 data IntArithOp
   = Add NUWFlag NSWFlag
@@ -215,6 +220,10 @@ ppIntArithOp (Ashr e)      = text "ashr" <+> L.ppExact e
 ppIntArithOp And           = text "and"
 ppIntArithOp Or            = text "or"
 ppIntArithOp Xor           = text "xor"
+
+-- | Condition used to indicate this operation should be applied to
+-- a vector (and the number of elements the vector(s) should contains).
+type OptVectorLength = Maybe Int
 
 data TypedExpr v
     -- | @IntArith op mn w x y@ performs the operation @op@ on @x@ and @y@.
