@@ -23,9 +23,9 @@ type instance SBETerm (SAWBackend s) = SharedTerm s
 type instance SBEMemory (SAWBackend s) = SAWMemory
 
 $(runDecWriter $ do
-    prelude <- decModule [|preludeModule|] preludeModule
-    llvm <- mkDecModule [prelude] "llvmModule" "saw/LLVM.saw"
-    decSharedModuleFns "LLVM" (dmModule llvm)    
+    prelude <- importExp [|preludeModule|] preludeModule
+    llvm <- mkDecModule [prelude] "llvmModule" "saw/LLVM.sawcore"
+    decSharedModuleFns "LLVM" (decVal llvm)
  )
 
 lift2 :: (x -> y -> IO r) -> x -> y -> SAWBackend s r
