@@ -129,7 +129,7 @@ buildArgv ::
   , Functor sbe
   , Functor m
   )
-  => Int32 -> [String] -> Simulator sbe m [Typed (SBETerm sbe)]
+  => Int32 -> [String] -> Simulator sbe m [SBETerm sbe]
 buildArgv numArgs argv' = do
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   ec <- getEvalContext "buildArgv" Nothing
@@ -147,7 +147,7 @@ buildArgv numArgs argv' = do
   -- Write argument string data and argument string pointers
   forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p
   store (L.Array numArgs i8p =: argvArr) (tv argvBase)
-  return [i32 =: argc, argvBase]
+  return [argc, (L.typedValue argvBase)]
   where
     tv = typedValue
     tt = typedType

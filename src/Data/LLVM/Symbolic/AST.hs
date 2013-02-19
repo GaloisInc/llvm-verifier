@@ -378,14 +378,14 @@ ppSymExpr (InsertValue a v is) = text "insertvalue" <+> ppTypedValue a
 
 -- | Predicates in symbolic simulator context.
 data SymCond
-  -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.
-  = HasConstValue (Typed SymValue) Integer
+  -- | @HasConstValue v w i@ holds if @v@ corresponds to the constant @i@.
+  = HasConstValue TypedSymValue BitWidth Integer
   -- | @TrueSymCond@ always holds.
   | TrueSymCond
 
 -- | Pretty print symbolic condition.
 ppSymCond :: SymCond -> Doc
-ppSymCond (HasConstValue v i) = ppTypedValue v <+> text "==" <+> integer i
+ppSymCond (HasConstValue v _ i) = ppTypedSymValue v <+> text "==" <+> integer i
 ppSymCond TrueSymCond = text "true"
 
 -- | A merge location is a block or Nothing if the merge happens at a return.
@@ -396,7 +396,7 @@ data SymStmt
   -- | @PushCallFrame fn args res retTarget@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@, and store the result in @res@ if the function
   -- returns normally.  The calling function will resume execution at retTarget.
-  = PushCallFrame TypedSymValue [Typed SymValue] (Maybe (Typed Reg)) SymBlockID
+  = PushCallFrame TypedSymValue [TypedSymValue] (Maybe (Typed Reg)) SymBlockID
   -- | @Return@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
   | Return (Maybe (Typed SymValue))
@@ -422,7 +422,7 @@ data SymStmt
 ppSymStmt :: SymStmt -> Doc
 ppSymStmt (PushCallFrame fn args res retTgt)
   = text "pushCallFrame" <+> ppTypedSymValue fn
-  <> parens (commas (map ppTypedValue args))
+  <> parens (commas (map ppTypedSymValue args))
   <+> maybe (text "void") (LLVM.ppTyped ppReg) res
   <+> text "returns to" <+> ppSymBlockID retTgt
 --ppSymStmt (PushPostDominatorFrame b) = text "pushPostDominatorFrame" <+> ppSymBlockID b

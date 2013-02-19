@@ -247,7 +247,7 @@ runCInt32Fn v getCB sym cargs = do
   forAllMemModels v cb $ \s m -> run $ do
     runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
       args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-      callDefine_ sym i32 (map ((=:) i32) args)
+      callDefine_ sym i32 args
       let fn rv = withSBE' $ \sbe -> snd <$> asSignedInteger sbe rv
       mapM fn =<< getProgramReturnValue
 
@@ -257,7 +257,7 @@ runVoidFn v getCB sym cargs = do
   _ <- forAllMemModels v cb $ \s m -> run $ do
     runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
       args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-      callDefine_ sym voidTy (map ((=:) i32) args)
+      callDefine_ sym voidTy args
   return ()
 
 -- possibly skip a test

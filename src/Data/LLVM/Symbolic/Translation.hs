@@ -33,7 +33,6 @@ import Control.Applicative ((<$>))
 import           Control.Monad.State.Strict
 import Data.LLVM.TargetData
 import           Data.Map                   (Map)
-import qualified Control.Exception          as CE
 import qualified Data.LLVM.CFG              as CFG
 import qualified Data.Map                   as Map
 import qualified Data.Vector                as V
@@ -173,7 +172,6 @@ asIntType = go
   where go (L.Alias a)  = go =<< lookupAlias a
         go (L.PrimType (L.Integer w)) = return (fromIntegral w)
         go _ = Nothing
-
 
 asMaybeVectorType :: (?lc :: LLVMContext)
                   => (L.Type -> Maybe a)
@@ -493,61 +491,63 @@ liftBB lti phiMap bb = do
       -- * Define previous block to end with pushing call frame.
       -- * Process rest of instructions.
       -- * TODO: Handle invoke instructions
-      impl (stmt@(Result reg (LLVM.Call _b tp v tpvl) _):r) idx il = do
-        symStmt <-
-          case (liftValue tp v, asPtrType tp) of
-            -- NB: The LLVM bitcode parser always types call
-            -- instructions with the full ptr-to-fun type in order to
-            -- present a consistent form that also handles varargs.  We
-            -- just extract the return type here for now, but will
-            -- likely need to support varargs more explicitly
-            -- later. TODO.
-            (Just sv, Just (L.FunTy rty _args _va)) -> do
+      impl (stmt@(Result reg (L.Call _b tp v tpvl) _):r) idx il = do
+        -- NB: The LLVM bitcode parser always types call
+        -- instructions with the full ptr-to-fun type in order to
+        -- present a consistent form that also handles varargs.  We
+        -- just extract the return type here for now, but will
+        -- likely need to support varargs more explicitly
+        -- later. TODO.
+        let mstmt = do
+              sv <- liftValue tp v
+              L.FunTy rty _args _va <- asPtrType tp
+              svl <- mapM liftTypedValue tpvl
               let res = Typed { typedType = rty, typedValue = reg }
-              return $ PushCallFrame sv tpvl (Just res) (blockName (idx + 1))
-            _ -> unsupportedStmt stmt
+              return $ PushCallFrame sv svl (Just res) (blockName (idx + 1))
+        symStmt <- maybe (unsupportedStmt stmt) return mstmt
         defineBlock (blockName idx) $ reverse (symStmt:il)
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
-      impl (stmt@(Effect (LLVM.Call _b tp v tpvl) _):r) idx il = do
-        symStmt <-
-          case liftValue tp v of
-            Just sv ->
-              return $ PushCallFrame sv tpvl Nothing (blockName (idx+1))
-            _ -> unsupportedStmt stmt
+      impl (stmt@(Effect (L.Call _b tp v tpvl) _):r) idx il = do
+        let mstmt = do
+              sv <- liftValue tp v
+              svl <- mapM liftTypedValue tpvl
+              return $ PushCallFrame sv svl Nothing (blockName (idx+1))
+        symStmt <- maybe (unsupportedStmt stmt) return mstmt
         defineBlock (blockName idx) $ reverse (symStmt:il)
         impl r (idx+1) []
-      impl [Effect (LLVM.Jump tgt) _] idx il = do
+      impl [Effect (L.Jump tgt) _] idx il = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
-      impl [Effect (LLVM.Switch tpv def cases) _] idx il = do
-        defineBlock (blockName idx) $ reverse il ++ symbolicCases
-        zipWithM_ defineBlock caseBlockIds (brSymInstrs <$> targets)
-          where -- Get values and targets
-                (consts,targets) = unzip cases
-                caseBlockIds     = blockName <$> [(idx + 1)..(idx + length cases)]
-                symbolicCases    = foldr mkCase (brSymInstrs def)
-                                 $ zip consts caseBlockIds
-                mkCase (cv, bid) rest =
-                  [ PushPendingExecution bid (HasConstValue tpv cv) pd rest ]
-      impl [Effect (LLVM.Br tc@(Typed tp _) tgt1 tgt2) _] idx il = do
-        CE.assert (tp == i1) $ return ()
-        let suspendSymBlockID = blockName (idx + 1)
-        -- Define end of current block:
-        --   If c is true:
-        --     Treat as unconditional branch to tgt1.
-        --   Else if c if false:
-        --     Treat as unconditional branch to tgt2.
-        --   Else
-        --     Add pending execution for false branch, and execute true branch.
-        --   Else
-        defineBlock (blockName idx) $ reverse il ++
-          [ PushPendingExecution suspendSymBlockID
-                                 (HasConstValue tc 0)
-                                 pd
-                                 (brSymInstrs tgt1) ]
-        -- Define block for suspended thread.
-        defineBlock suspendSymBlockID  (brSymInstrs tgt2)
+      impl [stmt@(Effect (L.Switch (Typed tp v) def cases) _)] idx il = do
+          case (asIntType tp, liftValue tp v) of
+            (Just w, Just tsv) -> do
+              let mkCase (cv, bid) rest =
+                    [ PushPendingExecution bid (HasConstValue tsv w cv) pd rest ]
+              let symbolicCases = foldr mkCase (brSymInstrs def)
+                                $ zip consts caseBlockIds
+              defineBlock (blockName idx) $ reverse il ++ symbolicCases
+              zipWithM_ defineBlock caseBlockIds (brSymInstrs <$> targets)
+            _ -> do
+              symStmt <- unsupportedStmt stmt
+              defineBlock (blockName idx) $ reverse (symStmt:il)
+        where -- Get values and targets
+              (consts,targets) = unzip cases
+              caseBlockIds     = blockName <$> [(idx + 1)..(idx + length cases)]
+      impl [stmt@(Effect (L.Br (Typed tp c) tgt1 tgt2) _)] idx il =
+        case liftValue tp c of
+          Just tc | tp == i1 -> do
+            let suspendSymBlockID = blockName (idx + 1)
+            defineBlock (blockName idx) $ reverse il ++
+              [ PushPendingExecution suspendSymBlockID
+                                    (HasConstValue tc 1 0)
+                                    pd
+                                    (brSymInstrs tgt1) ]
+            -- Define block for suspended thread.
+            defineBlock suspendSymBlockID  (brSymInstrs tgt2)
+          _ -> do
+            ss <- unsupportedStmt stmt
+            defineBlock (blockName idx) $ reverse (ss:il)
       impl [Effect LLVM.Unreachable _] idx il = do
         defineBlock (blockName idx) (reverse (Unreachable : il))
       impl [Effect LLVM.Unwind _] idx il = do

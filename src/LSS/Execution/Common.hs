@@ -449,7 +449,7 @@ data SEH sbe m = SEH
 type OverrideHandler sbe m
   =  L.Symbol              -- ^ Callee symbol
   -> Maybe (Typed Reg)     -- ^ Callee return register
-  -> [Typed (SBETerm sbe)] -- ^ Callee arguments
+  -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m (Maybe (SBETerm sbe))
 
 -- | An override may specify a function to run within the simulator,
