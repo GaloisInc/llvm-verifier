@@ -32,17 +32,18 @@ module Data.LLVM.Symbolic.Translation
 import Control.Applicative ((<$>))
 import           Control.Monad.State.Strict
 import Data.LLVM.TargetData
-import           Data.LLVM.Symbolic.AST
 import           Data.Map                   (Map)
-import           LSS.LLVMUtils
-import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
-import           Text.PrettyPrint.HughesPJ
 import qualified Control.Exception          as CE
 import qualified Data.LLVM.CFG              as CFG
 import qualified Data.Map                   as Map
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as LLVM
 import qualified Text.LLVM                  as L
+import           Text.PrettyPrint.HughesPJ
+
+import           Data.LLVM.Symbolic.AST
+import           LSS.LLVMUtils
+import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
 
 import Debug.Trace
 
@@ -173,24 +174,28 @@ asIntType = go
         go (L.PrimType (L.Integer w)) = return (fromIntegral w)
         go _ = Nothing
 
-asMaybePtrVectorType :: (?lc :: LLVMContext) => L.Type -> MaybeVectorType L.Type
-asMaybePtrVectorType = go
+
+asMaybeVectorType :: (?lc :: LLVMContext)
+                  => (L.Type -> Maybe a)
+                  -> L.Type
+                  -> MaybeVectorType a
+asMaybeVectorType fn = go
   where lkup f a = maybe NotMaybeVector f (lookupAlias a)
         go (L.Alias a)  = lkup go a
-        go (L.PtrTo tp) = ScalarType tp
         go (L.Vector n (L.Alias a))  = lkup (go . L.Vector n) a
-        go (L.Vector n (L.PtrTo tp)) = VectorType (fromIntegral n) tp
-        go _ = NotMaybeVector
+        go (L.Vector n tp) =
+          maybe NotMaybeVector (VectorType (fromIntegral n)) (fn tp)
+        go tp = maybe NotMaybeVector ScalarType (fn tp)
+
+asMaybePtrVectorType :: (?lc :: LLVMContext) => L.Type -> MaybeVectorType L.Type
+asMaybePtrVectorType = asMaybeVectorType go
+  where go (L.PtrTo tp) = Just tp
+        go _ = Nothing
 
 asMaybeIntVectorType :: (?lc :: LLVMContext) => L.Type -> MaybeVectorType BitWidth
-asMaybeIntVectorType = go
-  where lkup f a = maybe NotMaybeVector f (lookupAlias a)
-        go (L.Alias a) = lkup go a
-        go (L.PrimType (L.Integer w)) = ScalarType (fromIntegral w)
-        go (L.Vector n (L.Alias a)) = lkup (go . L.Vector n) a
-        go (L.Vector n (L.PrimType (L.Integer w))) =
-          VectorType (fromIntegral n) (fromIntegral w)
-        go _ = NotMaybeVector
+asMaybeIntVectorType = asMaybeVectorType go
+  where go (L.PrimType (L.Integer w)) = Just (fromIntegral w)
+        go _ = Nothing
 
 -- | Check that two types are equal, returning simplied type if they are
 -- and nothing otherwise.
@@ -225,11 +230,11 @@ liftValue tp (L.ValConstExpr ce) = do
         L.PtrToInt -> do
           ptrType <- asPtrType itp
           w <- asIntType rtp
-          return $ SValExpr (PtrToInt ptrType v w)
+          return $ SValExpr (PtrToInt Nothing ptrType v w)
         L.IntToPtr -> do
           w <- asIntType itp
           ptrType <- asPtrType rtp
-          return $ SValExpr (IntToPtr w v ptrType)
+          return $ SValExpr (IntToPtr Nothing w v ptrType)
         L.BitCast ->
           return $ SValExpr (Bitcast itp v rtp)
         _ -> fail "Could not interpret constant expression"
@@ -328,6 +333,7 @@ liftStmt stmt = do
         return (Store tptr taddr malign)
     Effect{} -> unsupportedStmt stmt
     Result r app _ -> trySymStmt stmt $ do
+      -- Return an assignemnt statement for the value.
       let retExpr :: Monad m => SymExpr -> m SymStmt
           retExpr e = return (Assign r e)
       let retTExpr :: Monad m => TypedExpr TypedSymValue -> m SymStmt
@@ -363,34 +369,33 @@ liftStmt stmt = do
         L.Conv op (L.Typed itp e) rtp -> do
           sv <- liftValue itp e
           let intConv :: (BitWidth -> BitWidth -> Bool)
-                      -> (BitWidth -> TypedSymValue -> BitWidth -> TypedExpr TypedSymValue)
-                      -> (Int -> BitWidth -> TypedSymValue -> BitWidth
-                              -> TypedExpr TypedSymValue) 
+                      -> (Maybe Int -> BitWidth -> TypedSymValue -> BitWidth
+                                    -> TypedExpr TypedSymValue)
                       -> Maybe SymStmt
-              intConv cond sfn vfn =
+              intConv cond fn =
                 case (asMaybeIntVectorType itp, asMaybeIntVectorType rtp) of
                   (ScalarType iw, ScalarType rw) | cond iw rw ->
-                    retTExpr (sfn iw sv rw)
+                    retTExpr (fn Nothing iw sv rw)
                   (VectorType n iw, VectorType nr rw) | n == nr && cond iw rw ->
-                    retTExpr (vfn n iw sv rw)
+                    retTExpr (fn (Just n) iw sv rw)
                   _ -> fail "Could not parse conversion types"
           case op of
-            L.Trunc -> intConv (\iw rw -> iw > rw) Trunc TruncV
-            L.ZExt -> intConv (\iw rw -> iw < rw) ZExt ZExtV
-            L.SExt -> intConv (\iw rw -> iw < rw) SExt SExtV
+            L.Trunc -> intConv (\iw rw -> iw > rw) Trunc
+            L.ZExt -> intConv (\iw rw -> iw < rw) ZExt
+            L.SExt -> intConv (\iw rw -> iw < rw) SExt
             L.PtrToInt ->
               case (asMaybePtrVectorType itp, asMaybeIntVectorType rtp) of
                 (ScalarType ptr, ScalarType w) ->
-                  retTExpr (PtrToInt ptr sv w)
+                  retTExpr (PtrToInt Nothing ptr sv w)
                 (VectorType n ptr, VectorType nr w) | n == nr ->
-                  retTExpr (PtrToIntV n ptr sv w)
+                  retTExpr (PtrToInt (Just n) ptr sv w)
                 _ -> fail "Could not parse conversion types"
             L.IntToPtr ->
               case (asMaybeIntVectorType itp, asMaybePtrVectorType rtp) of
                 (ScalarType w, ScalarType ptr) ->
-                  retTExpr (IntToPtr w sv ptr)
+                  retTExpr (IntToPtr Nothing w sv ptr)
                 (VectorType n w, VectorType nr ptr) | n == nr ->
-                  retTExpr (IntToPtrV n w sv ptr)
+                  retTExpr (IntToPtr (Just n) w sv ptr)
                 _ -> fail "Could not parse conversion types"
             L.BitCast -> retTExpr (Bitcast itp sv rtp)
             _ -> fail "Unsupported conversion operator"
@@ -404,7 +409,16 @@ liftStmt stmt = do
             VectorType n w -> retTExpr (IntCmp op (Just n) w x y)
             _ -> fail "Could not parse argument type"
         L.GEP ib tp tpvl     -> retTExpr =<< liftGEP ib tp tpvl
-        L.Select tpc tpv1 v2 -> retExpr $ Select tpc tpv1 v2
+        L.Select (L.Typed tpc c') (L.Typed tpv v1') v2' -> do
+          c <- liftValue tpc c'
+          v1 <- liftValue tpv v1'
+          v2 <- liftValue tpv v2'
+          case (asMaybeIntVectorType tpc, asMaybeVectorType Just tpv) of
+            (ScalarType w,_) | w == 1 ->
+              retTExpr $ Select Nothing c tpv v1 v2
+            (VectorType n w, VectorType nr tpe) | w == 1 && n == nr ->
+              retTExpr $ Select (Just n) c tpe v1 v2
+            _  -> fail "Could not parse select intruction."
         L.ExtractValue tpv i -> retExpr $ ExtractValue tpv i
         L.InsertValue tpv tpa i -> retExpr $ InsertValue tpv tpa i
         _ -> fail "Unsupported instruction"

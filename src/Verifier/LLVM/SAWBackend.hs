@@ -20,6 +20,7 @@ data SAWBackend s a = SAWBackend { runSAWBackend :: IO a }
 data SAWMemory = SAWMemory ()
 
 type instance SBETerm (SAWBackend s) = SharedTerm s
+type instance SBEPred (SAWBackend s) = SharedTerm s
 type instance SBEMemory (SAWBackend s) = SAWMemory
 
 $(runDecWriter $ do
@@ -38,14 +39,19 @@ createSAWBackend _lc _mg = do
   sc <- mkSharedContext llvmModule
   let ?sc = sc
   t <- scApplyPreludeTrue sc
-  f <- scApplyPreludeFalse sc
-  integerToSigned <- undefined sc
   let nyi nm = error $ "Not yet implemented: " ++ show nm
-  let sbeBool b = if b then t else f
-      sbeInt w v = do
+  let sbeInt w v = do
         wt <- scNat (toInteger w)
-        integerToSigned wt =<< undefined v
-  let sbe = SBE { termBool = SAWBackend . return . sbeBool
+        scBitvector wt v
+  let sbe = SBE { sbeTruePred = t
+                , applyIEq = nyi "applyIEq"
+                , applyAnd = nyi "applyAnd"
+                , applyBNot = nyi "applyBNot"
+                , applyPredIte = nyi "applyPredIte"
+                , applyIte = nyi "applyIte"
+                , asBool = nyi "asBool"
+                , evalPred = nyi "evalPred"
+
                 , termInt = lift2 sbeInt
                 , freshInt = nyi "freshInt"
                 , termDouble = nyi "termDouble"
@@ -53,15 +59,13 @@ createSAWBackend _lc _mg = do
                 , termArray  = nyi "termArray"
                 , termStruct = nyi "termStruct"
                 , termDecomp = nyi "termDecomp"
-                , applyIte   = nyi "applyIte"
-                , applyBNot = nyi "applyBNot"
                 , applyUAddWithOverflow = nyi "applyUAddWithOverflow"
 
                 , applyTypedExpr  = nyi "applyTypedExpr"
 
                 , closeTerm = nyi "closeTerm"
                 , prettyTermD = nyi "prettyTermD"
-                , asBool = nyi "asBool"
+                , prettyPredD = nyi "prettyPredD"
                 , asUnsignedInteger = nyi "asUnsignedInteger"
                 , memDump = nyi "memDump"
                 , memLoad = nyi "memLoad"

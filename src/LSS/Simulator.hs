@@ -114,13 +114,12 @@ runSimulator :: forall sbe a .
   -> Simulator sbe IO a     -- ^ Simulator action to perform
   -> IO a
 runSimulator cb sbe mem seh mopts m = do
-  cs <- initialCtrlStk sbe mem
   let lifter :: forall v . sbe v -> Simulator sbe IO v
       lifter = SM . lift . lift . sbeRunIO sbe
   let newSt = State { codebase     = cb
                     , symBE        = sbe
                     , liftSymBE    = lifter
-                    , ctrlStk      = cs
+                    , ctrlStk      = initialCtrlStk sbe mem
                     , globalTerms  = M.empty
                     , fnOverrides  = M.empty
                     , verbosity    = 6
@@ -430,7 +429,7 @@ memSet dst val (Typed lenType len) align = do
 
 
 -- | Return value of this path.
-pathRetVal :: Path' term mem -> Maybe term
+pathRetVal :: Path sbe -> Maybe (SBETerm sbe)
 pathRetVal p = typedValue <$> M.lookup entryRsltReg (pathRegs p)
 
 getProgramReturnValue :: (Monad m, Functor m)
@@ -463,7 +462,7 @@ processMemCond ::
   , Functor sbe
   )
   => -- Maybe PMCInfo ->
-    FailRsn -> SBETerm sbe -> Simulator sbe m ()
+    FailRsn -> SBEPred sbe -> Simulator sbe m ()
 processMemCond rsn cond = do
   sbe <- gets symBE
   case asBool sbe cond of
@@ -560,25 +559,17 @@ run = do
 -- LLVM-Sym operations
 
 assign :: (Functor m, MonadIO m)
-  => Reg -> Typed (SBETerm sbe) -> Simulator sbe m ()
+       => Reg -> Typed (SBETerm sbe) -> Simulator sbe m ()
 assign reg v = modifyPathRegs $ M.insert reg v
 
 -- | Evaluate condition in current path.
-evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBETerm sbe)
-evalCond TrueSymCond = withSBE $ \sbe -> termBool sbe True
+evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBEPred sbe)
+evalCond TrueSymCond = withSBE' sbeTruePred
 evalCond (HasConstValue typedTerm i) = do
   Typed (L.PrimType (L.Integer w)) v <- getTypedTerm "evalCond" typedTerm
   sbe <- gets symBE
   iv <- liftSBE $ termInt sbe (fromIntegral w) i
   liftSBE $ applyIEq sbe (fromIntegral w) v iv
-evalCond (NotConstValues typedTerm is) = do
-  Typed (L.PrimType (L.Integer w)) t <- getTypedTerm "evalCond" typedTerm
-  sbe <- gets symBE
-  true <- liftSBE $ termBool sbe True
-  il <- mapM (liftSBE . termInt sbe (fromIntegral w)) is
-  ir <- mapM (liftSBE . applyIne sbe (fromIntegral w) t) il
-  let fn r v = liftSBE $ applyAnd sbe r v
-  foldM fn true ir
 
 data EvalContext sbe = EvalContext {
        evalContextName :: String
@@ -812,23 +803,6 @@ eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
 eval e@(Load _ _) = illegal $ "Load operand: " ++ show (ppSymExpr e)
 
 eval (Val tv)                  = getTypedTerm "eval@Val" tv
-eval (Select tc (Typed (L.Alias a) v1) v2) = do
-  t <- withLC (`llvmLookupAlias` a)
-  eval (Select tc (Typed t v1) v2)
-eval e@(Select tc tv1 v2)        = do
-  Typed tpc c <- getTypedTerm "eval@Select1" tc
-  Typed tpx x <- getTypedTerm "eval@Select2" tv1
-  Typed _ y   <- getTypedTerm "eval@Select3" (Typed tpx v2)
-  lc <- getLC
-  case llvmTypeAsInt lc tpc of
-    Just 1 -> do
-      sbe <- gets symBE
-      r <- case asBool sbe c of
-             Just True  -> return x
-             Just False -> return y
-             Nothing    -> liftSBE (applyIte sbe tpx c x y)
-      return (Typed tpx r)
-    _ -> unimpl $ "Select expr type: " ++ show (ppSymExpr e)
 eval (ExtractValue tv i      ) = evalExtractValue tv i
 eval (InsertValue _tv _ta _i ) = unimpl "eval InsertValue"
 
@@ -912,8 +886,8 @@ defaultSEH = SEH
 -- Memory operation helpers
 
 type AllocRslt sbe =
-  Either (StackAllocaResult (SBETerm sbe) (SBEMemory sbe))
-         (HeapAllocResult   (SBETerm sbe) (SBEMemory sbe))
+  Either (StackAllocaResult sbe)
+         (HeapAllocResult   sbe)
 type AllocAct sbe =
   SBE sbe -> SBEMemory sbe -> Typed (SBETerm sbe) -> sbe (AllocRslt sbe)
 

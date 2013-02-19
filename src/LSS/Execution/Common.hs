@@ -53,7 +53,6 @@ module LSS.Execution.Common
   , ppRegMap
 
   , Path
-  , Path'
   , pathFuncSym
   , pathCB
   , pathName
@@ -94,7 +93,6 @@ import Data.LLVM.Symbolic.AST
 import qualified Data.Map  as M
 import LSS.Execution.Codebase
 import LSS.Execution.Utils
-import LSS.LLVMUtils (i1)
 import Verifier.LLVM.Backend
 import Text.LLVM                 (Typed(..))
 import Text.PrettyPrint.HughesPJ
@@ -148,10 +146,10 @@ modifyCS f s = s { ctrlStk = f (ctrlStk s) }
 
 -- | Action to perform when branch.
 data BranchAction sbe
-  = BARunFalse (SBETerm sbe) -- ^ Branch condition
+  = BARunFalse (SBEPred sbe) -- ^ Branch condition
                (Path sbe) -- ^ True path to run
-  | BAFalseComplete (SBETerm sbe) -- ^ Assertions before merge
-                    (SBETerm sbe) -- ^ Branch condition
+  | BAFalseComplete (SBEPred sbe) -- ^ Assertions before merge
+                    (SBEPred sbe) -- ^ Branch condition
                     (Path sbe) -- ^ Completed true path
 
 data MergeInfo
@@ -172,19 +170,17 @@ data CS sbe
   | ActiveCS (Path sbe) -- ^ Current path
              (PathHandler sbe) -- ^ Handler that describes response once execution finishes.
 
-initialCtrlStk :: SBE sbe -> SBEMemory sbe -> IO (CS sbe)
-initialCtrlStk sbe mem = do
-  true <- sbeRunIO sbe $ termBool sbe True
-  let p = Path { pathFuncSym = entrySymbol
-               , pathCB = Nothing
-               , pathName = 0
-               , pathRegs = M.empty
-               , pathMem = mem
-               , pathAssertions = true
-               , pathStackHt = 0
-               , pathStack = []
-               }
-  return $ CompletedCS (Just p)
+initialCtrlStk :: SBE sbe -> SBEMemory sbe -> CS sbe
+initialCtrlStk sbe mem = CompletedCS (Just p)
+  where p = Path { pathFuncSym = entrySymbol
+                 , pathCB = Nothing
+                 , pathName = 0
+                 , pathRegs = M.empty
+                 , pathMem = mem
+                 , pathAssertions = sbeTruePred sbe
+                 , pathStackHt = 0
+                 , pathStack = []
+                 }
 
 -- | Return true if all paths in control stack have no more work.
 isFinished :: CS sbe -> Bool
@@ -244,7 +240,7 @@ pushCallFrame calleeSym returnBlock retReg cs =
                           }
 
 -- | Add a control branch
-addCtrlBranch :: SBETerm sbe -- ^ Condition to branch on.
+addCtrlBranch :: SBEPred sbe -- ^ Condition to branch on.
               -> SymBlockID -- ^ Location for newly branched paused path to start at.
               -> Integer -- ^ Name of path
               -> MergeLocation -- ^ Control point to merge at.
@@ -270,8 +266,7 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
    | n == pathStackHt p && Just b == pathCB p =
   case act of
     BARunFalse c tp -> do
-      true <- sbeRunIO sbe $ termBool sbe True
-      let tp' = tp { pathAssertions = true }
+      let tp' = tp { pathAssertions = sbeTruePred sbe}
       let act' = BAFalseComplete (pathAssertions tp) c p
       return $ ActiveCS tp' (BranchHandler info act' h)
     BAFalseComplete a c pf -> do
@@ -284,7 +279,7 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
       mergedMemory <- sbeRunIO sbe $ memMerge sbe c (pathMem p) (pathMem pf)
       -- Merge assertions
       mergedAssertions <- sbeRunIO sbe $
-        applyIte sbe i1 c (pathAssertions p) (pathAssertions pf)
+        applyPredIte sbe c (pathAssertions p) (pathAssertions pf)
       a' <- sbeRunIO sbe $ applyAnd sbe a mergedAssertions
       assert (pathFuncSym p == pathFuncSym pf && pathCB p == pathCB pf) $ do
       let p' = p { pathRegs = mergedRegs
@@ -309,8 +304,7 @@ returnMerge _ p StopHandler | pathStackHt p == 0 =
 returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackHt p =
   case act of
     BARunFalse c tp -> do
-      true <- sbeRunIO sbe $ termBool sbe True
-      let tp' = tp { pathAssertions = true }
+      let tp' = tp { pathAssertions = sbeTruePred sbe }
       let act' = BAFalseComplete (pathAssertions tp) c p
       return $ ActiveCS tp' (BranchHandler info act' h)
     BAFalseComplete a c pf -> do
@@ -327,7 +321,7 @@ returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackH
       mergedMemory <- sbeRunIO sbe $ memMerge sbe c (pathMem p) (pathMem pf)
       -- Merge assertions
       mergedAssertions <- sbeRunIO sbe $
-        applyIte sbe i1 c (pathAssertions p) (pathAssertions pf)
+        applyPredIte sbe c (pathAssertions p) (pathAssertions pf)
       a' <- sbeRunIO sbe $ applyAnd sbe a mergedAssertions
       let p' = p { pathRegs = mergedRegs
                  , pathMem = mergedMemory
@@ -394,31 +388,29 @@ setReturnValue nm (Just tr) Nothing   _  =
   error $ nm ++ ": Missing return value for "  ++ show (L.ppIdent (typedValue tr))
 
 -- | A Call frame for returning.
-data CallFrame term = CallFrame { cfFuncSym :: L.Symbol
-                                , cfReturnBlock :: Maybe SymBlockID
-                                , cfRegs :: RegMap term
-                                , cfRetReg :: Maybe (Typed Reg)
-                                , cfAssertions :: term
-                                }
+data CallFrame sbe = CallFrame { cfFuncSym :: L.Symbol
+                               , cfReturnBlock :: Maybe SymBlockID
+                               , cfRegs :: RegMap (SBETerm sbe)
+                               , cfRetReg :: Maybe (Typed Reg)
+                               , cfAssertions :: SBEPred sbe
+                               }
 
 -- | Captures all symbolic execution state for a unique control-flow path (as
 -- specified by the recorded path constraints)
-data Path' term mem = Path
+data Path sbe = Path
   { pathFuncSym      :: !L.Symbol
   , pathCB           :: !(Maybe SymBlockID) -- ^ The currently-executing basic
                                          -- block along this path, if any.
   , pathName         :: !(Integer)       -- ^ A unique name for this path
-  , pathRegs         :: !(RegMap term)
-  , pathMem          :: mem              -- ^ The memory model along this path
-  , pathAssertions   :: term             -- ^ Condition on path since last branch.
-  , pathStackHt    :: !Int             -- ^ Number of call frames count.
-  , pathStack      :: [CallFrame term]     -- ^ Return registers for current calls.
+  , pathRegs         :: !(RegMap (SBETerm sbe))
+  , pathMem          :: SBEMemory sbe    -- ^ The memory model along this path
+  , pathAssertions   :: SBEPred sbe      -- ^ Condition on path since last branch.
+  , pathStackHt      :: !Int             -- ^ Number of call frames count.
+  , pathStack        :: [CallFrame sbe] -- ^ Return registers for current calls.
   }
 
-type Path sbe      = Path' (SBETerm sbe) (SBEMemory sbe)
-
 addPathAssertion :: Functor sbe
-                 => SBE sbe -> SBETerm sbe -> Path sbe -> sbe (Path sbe)
+                 => SBE sbe -> SBEPred sbe -> Path sbe -> sbe (Path sbe)
 addPathAssertion sbe t p = set <$> applyAnd sbe (pathAssertions p) t
   where set a = p { pathAssertions = a }
 
@@ -499,11 +491,11 @@ ppMergeInfo (PostdomInfo n b) =
 
 ppBranchAction :: SBE sbe -> BranchAction sbe -> Doc
 ppBranchAction sbe (BARunFalse c p) = 
-  text "runFalse" <+> prettyTermD sbe c $$
+  text "runFalse" <+> prettyPredD sbe c $$
   nest 2 (ppPath sbe p)
 ppBranchAction sbe (BAFalseComplete a c p) =
-  text "falseCompelte" <+> prettyTermD sbe c $$
-  nest 2 (text "assumptions:" <+> prettyTermD sbe a) $$
+  text "falseComplete" <+> prettyPredD sbe c $$
+  nest 2 (text "assumptions:" <+> prettyPredD sbe a) $$
   nest 2 (ppPath sbe p)
 
 ppPathHandler :: SBE sbe -> PathHandler sbe -> Doc

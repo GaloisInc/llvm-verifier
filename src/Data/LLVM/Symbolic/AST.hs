@@ -127,7 +127,7 @@ ppSymValue :: SymValue -> Doc
 ppSymValue = LLVM.ppValue
 
 ppTypedValue :: Typed SymValue -> Doc
-ppTypedValue = LLVM.ppTyped ppSymValue  -- TODO: See if type information is needed.
+ppTypedValue = L.ppTyped ppSymValue  -- TODO: See if type information is needed.
 
 type BitWidth = Int 
 
@@ -236,42 +236,27 @@ data TypedExpr v
     -- @x@ and @y@ are vectors with integer elements of length @w@, and @mn@ contains the
     -- number of elements.
   | IntCmp L.ICmpOp OptVectorLength BitWidth v v
-    -- | @Trunc iw t rw@ assumes that @rw < iw@, and truncates an integer @t@
+    -- | @Trunc mn iw t rw@ assumes that @rw < iw@, and truncates an integer @t@
     -- with @iw@ bits to an integer with @rw@ bits.
-  | Trunc BitWidth v BitWidth
-    -- | @TruncV n iw t rw@ assumes that @rw < iw@, and truncates a vector of
-    -- integers @t@ with @iw@ bits to a vector of integers with @rw@ bits.
-  | TruncV Int BitWidth v BitWidth
-    -- | @ZExt iw t rw@ assumes that @iw < rw@, and zero extends an
+  | Trunc OptVectorLength BitWidth v BitWidth
+    -- | @ZExt mn iw t rw@ assumes that @iw < rw@, and zero extends an
     -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
-  | ZExt BitWidth v BitWidth
-    -- | @ZExtV n iw v rw@ assumes that @iw < rw@, and zero extends a
-    -- vector of integers @v@ each with @iw@ bits to a vector of integers with
-    -- @rw@ bits.
-  | ZExtV Int BitWidth v BitWidth
-    -- | @SExt iw t rw@ assumes that @iw < rw@, and sign extends an
+  | ZExt OptVectorLength BitWidth v BitWidth
+    -- | @SExt mn iw t rw@ assumes that @iw < rw@, and sign extends an
     -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
-  | SExt BitWidth v BitWidth
-    -- | @SExtV n iw v rw@ assumes that @iw < rw@, and sign extends a
-    -- vector of integers @v@ each with @iw@ bits to a vector of integers with
-    -- @rw@ bits.
-  | SExtV Int BitWidth v BitWidth
+  | SExt OptVectorLength BitWidth v BitWidth
     -- | @PtrToInt tp t rw@ converts a pointer @t@ with type @tp@ to an
     -- integer with width @rw@.  The value of the pointer is truncated or zero
     -- extended as necessary to have the correct length.
-  | PtrToInt L.Type v BitWidth
-    -- | @PtrToIntV n tp v rw@ converts a vector of pointers @v@ with type
-    --  @tp@ to an integer with width @rw@.  The value of each pointer is
-    -- truncated or zero extended as necessary to have the correct length.
-  | PtrToIntV Int L.Type v BitWidth
+  | PtrToInt OptVectorLength L.Type v BitWidth
     -- | @IntToPtr iw t tp@ converts an integer @t@ with width @iw@ to
     -- a pointer.  The value of the integer is truncated or zero
     -- extended as necessary to have the correct length.
-  | IntToPtr BitWidth v L.Type
-    -- | @IntToPtrV n iw t tp@ converts a vector of integers @t@ with width
-    -- @iw@ to a vector of pointers.  The value of each integer is truncated
-    -- or zero extended as necessary to have the correct length.
-  | IntToPtrV Int BitWidth v L.Type
+  | IntToPtr OptVectorLength BitWidth v L.Type
+    -- | @Select mn c tp x y@ selects the arguments in @x@ if @c@ evaluated to @1@ and
+    -- @y@ if @c@ evaluates to @0@.   @c@ must have type @i1@ and @x@ and @y@ have type
+    -- @tp@.  The function is extended pairwise to vectors if @mn@ holds an integer. 
+  | Select OptVectorLength v L.Type v v
     -- | @Bitcast itp t rtp@ converts @t@ from type @itp@ to type @rtp@.
     -- The size of types @itp@ and @rtp@ is assumed to be equal.
   | Bitcast L.Type v L.Type
@@ -284,16 +269,12 @@ typedExprType tpe =
   case tpe of
     IntArith _ mn w _ _ -> maybe id arrayLType mn (intLType w)
     IntCmp _ mn _ _ _   -> maybe id arrayLType mn (intLType 1)
-    Trunc       _ _ w -> intLType w
-    TruncV    n _ _ w -> arrayLType n (intLType w)
-    ZExt        _ _ w -> intLType w
-    ZExtV     n _ _ w -> arrayLType n (intLType w)
-    SExt        _ _ w -> intLType w
-    SExtV     n _ _ w -> arrayLType n (intLType w)
-    PtrToInt    _ _ w -> intLType w
-    PtrToIntV n _ _ w -> arrayLType n (intLType w)
-    IntToPtr    _ _ p -> L.PtrTo p
-    IntToPtrV n _ _ p -> arrayLType n (L.PtrTo p)
+    Trunc    mn _ _ w -> maybe id arrayLType mn (intLType w)
+    ZExt     mn _ _ w -> maybe id arrayLType mn (intLType w)
+    SExt     mn _ _ w -> maybe id arrayLType mn (intLType w)
+    PtrToInt mn _ _ w -> maybe id arrayLType mn (intLType w)
+    IntToPtr mn _ _ p -> maybe id arrayLType mn (L.PtrTo p)
+    Select mn _ tpv _ _ -> maybe id arrayLType mn tpv
     Bitcast _ _ tp    -> tp
     GEP _ _ _ tp      -> tp
 
@@ -311,19 +292,22 @@ ppTypedExpr ppConv ppValue tpExpr =
       IntCmp op mn w x y ->
          text "icmp" <+> L.ppICmpOp op <+> tp <+> ppValue x <> comma <+> ppValue y
        where tp  = maybe ppIntType ppIntVector mn w
-      Trunc    iw v rw    -> ppConv "trunc"    (ppIntType iw)      v (ppIntType rw)
-      TruncV n iw v rw    -> ppConv "trunc"    (ppIntVector n iw)  v (ppIntVector n rw)
-      ZExt     iw v rw    -> ppConv "zext"     (ppIntType iw)      v (ppIntType rw)
-      ZExtV  n iw v rw    -> ppConv "zext"     (ppIntVector n iw)  v (ppIntVector n rw)
-      SExt     iw v rw    -> ppConv "sext"     (ppIntType iw)      v (ppIntType rw)
-      SExtV  n iw v rw    -> ppConv "sext"     (ppIntVector n iw)  v (ppIntVector n rw)
-      PtrToInt    tp v rw -> ppConv "ptrtoint" (L.ppType tp)       v (ppIntType rw)
-      PtrToIntV n tp v rw -> ppConv "ptrtoint" (ppTypeVector n tp) v (ppIntVector n rw)
-      IntToPtr    iw v tp -> ppConv "inttoptr" (ppIntType iw)      v (L.ppType tp)
-      IntToPtrV n iw v tp -> ppConv "inttoptr" (ppIntVector n iw)  v (ppTypeVector n tp)
-      Bitcast itp v rtp   -> ppConv "bitcast"  (L.ppType itp)      v (L.ppType rtp)
+
+      Trunc mn iw v rw    -> ppConv "trunc"    (ppMIntType mn iw) v (ppMIntType mn rw)
+      ZExt  mn iw v rw    -> ppConv "zext"     (ppMIntType mn iw) v (ppMIntType mn rw)
+      SExt  mn iw v rw    -> ppConv "sext"     (ppMIntType mn iw) v (ppMIntType mn rw)
+      PtrToInt mn tp v rw -> ppConv "ptrtoint" (ppMType mn tp)    v (ppMIntType mn rw)
+      IntToPtr mn iw v tp -> ppConv "inttoptr" (ppMIntType mn iw) v (ppMType mn tp)
+      Select mn c tp t f -> text "select" <+> ppMIntType mn 1 <+> ppValue  c
+                              <> comma <+> ppMType mn tp <+> ppValue t
+                              <> comma <+> ppValue f
+      Bitcast itp v rtp   -> ppConv "bitcast"  (L.ppType itp)     v (L.ppType rtp)
       GEP ib ptr idxl _ -> text "getelementptr" <+> L.opt ib (text "inbounds")
           <+> commas (ppValue ptr : (ppGEPOffset ppValue <$> idxl))
+  where ppMIntType Nothing w = ppIntType w
+        ppMIntType (Just n) w = ppIntVector n w
+        ppMType Nothing tp = L.ppType tp
+        ppMType (Just n) tp = ppTypeVector n tp
 
 -- | Represents a value in the symbolic simulator.
 data TypedSymValue
@@ -376,7 +360,6 @@ data SymExpr
   | Load (Typed SymValue) (Maybe LLVM.Align)
   -- | A copy of a value.
   | Val (Typed SymValue)
-  | Select (Typed SymValue) (Typed SymValue) SymValue
   | ExtractValue (Typed SymValue) [Int32]
   | InsertValue (Typed SymValue) (Typed SymValue) [Int32]
 
@@ -387,9 +370,6 @@ ppSymExpr (TypedExpr _ te) = ppTypedExpr ppConv ppTypedSymValue te
 ppSymExpr (Alloca ty len align) = LLVM.ppAlloca ty len align
 ppSymExpr (Load ptr malign) = text "load" <+> ppTypedValue ptr <> LLVM.ppAlign malign
 ppSymExpr (Val v) = ppTypedValue v
-ppSymExpr (Select c t f) = text "select" <+> ppTypedValue c
-                         <> comma <+> ppTypedValue t
-                         <> comma <+> LLVM.ppType (LLVM.typedType t) <+> ppSymValue f
 ppSymExpr (ExtractValue v is) = text "extractvalue" <+> ppTypedValue v
                               <> comma <+> text (show is)
 ppSymExpr (InsertValue a v is) = text "insertvalue" <+> ppTypedValue a
@@ -400,17 +380,12 @@ ppSymExpr (InsertValue a v is) = text "insertvalue" <+> ppTypedValue a
 data SymCond
   -- | @HasConstValue v i@ holds if @v@ corresponds to the constant @i@.
   = HasConstValue (Typed SymValue) Integer
-  -- | @NotConstValues v is@ holds if @v@ does not correspond to any
-  -- of the constants in @is@.
-  | NotConstValues (Typed SymValue) [Integer]
   -- | @TrueSymCond@ always holds.
   | TrueSymCond
 
 -- | Pretty print symbolic condition.
 ppSymCond :: SymCond -> Doc
 ppSymCond (HasConstValue v i) = ppTypedValue v <+> text "==" <+> integer i
-ppSymCond (NotConstValues v is) = ppTypedValue v <+> text "not in" <+>
-                                  brackets (commas (map integer is))
 ppSymCond TrueSymCond = text "true"
 
 -- | A merge location is a block or Nothing if the merge happens at a return.
