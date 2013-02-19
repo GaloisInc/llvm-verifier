@@ -130,7 +130,7 @@ testSetupPtrArgImpl = do
   a <- withLC llvmPtrAlign
   one <- getSizeT 1
   p <- alloca i32 one (Just $ fromIntegral a) 
-  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) [p]
+  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) [L.typedValue p]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()
   mm  <- getProgramFinalMem

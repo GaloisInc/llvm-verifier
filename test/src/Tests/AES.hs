@@ -6,6 +6,8 @@ Point-of-contact : jstanley
 -}
 
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns     #-}
 
 module Tests.AES (aesTests) where
@@ -30,23 +32,26 @@ aesTests =
     aes128Concrete v = psk v $ runAES v aes128ConcreteImpl
     runAES v         = runAllMemModelTest v (commonCB "aes128BlockEncrypt.bc")
 
-aes128ConcreteImpl :: AllMemModelTest
+aes128ConcreteImpl :: forall sbe . Functor sbe => Simulator sbe IO Bool
 aes128ConcreteImpl = do
   setSEH sanityChecks
   ptptr  <- initArr ptVals
   keyptr <- initArr keyVals
   one <- getSizeT 1
   ctptr  <- typedValue <$> alloca arrayTy one (Just 4)
-  let args = map (i32p =:) [ptptr, keyptr, ctptr]
-  [_, _, typedValue -> ctRawPtr] <-
+  let args :: [SBETerm sbe]
+      args = [ptptr, keyptr, ctptr]
+  [_, _, ctRawPtr] <-
     callDefine (L.Symbol "aes128BlockEncrypt") voidTy args
   Just mem <- getProgramFinalMem
-  (_,ctarr) <- withSBE $ \s -> memLoad s mem (L.PtrTo arrayTy =: ctRawPtr)
+  ctarr <- withSBE $ \s -> snd <$> memLoad s mem (L.Typed (L.PtrTo arrayTy) ctRawPtr)
   ctVals <- withSBE $ \s ->
-              map (getVal s) <$> termDecomp s (replicate 4 i32) ctarr
+              fmap (getVal s) <$> termDecomp s (replicate 4 i32) ctarr
   return (ctVals == ctChks)
   where
-    getVal s v = snd $ fromJust $ asUnsignedInteger s (typedValue v)
+    getVal :: SBE sbe -> L.Typed (SBETerm sbe) -> (Int,Integer)
+    getVal s v = fromJust $ asUnsignedInteger s (typedValue v)
+    initArr :: [Integer] -> Simulator sbe IO (SBETerm sbe)
     initArr xs = do
        arrElts <- mapM (withSBE . \x s -> termInt s 32 x) xs
        arr <- withSBE $ \sbe -> termArray sbe (L.PrimType (L.Integer 32)) arrElts
@@ -58,7 +63,7 @@ aes128ConcreteImpl = do
     arrayTy = L.Array 4 i32
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]
     keyVals = [0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f]
-    ctChks  = [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]
+    ctChks  = (\v -> (32,v)) <$> [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]
 
 --------------------------------------------------------------------------------
 -- Scratch
