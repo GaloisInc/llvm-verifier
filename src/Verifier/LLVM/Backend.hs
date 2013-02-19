@@ -23,9 +23,14 @@ import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM.AST   as L
 import Data.LLVM.Symbolic.AST
 
--- | SBETerm yields the type used to represent terms in particular SBE interface
+
+-- | SBEPred yields the type used to represent predicates in particular SBE interface
 -- implementation.
 type family SBETerm (sbe :: * -> *)
+
+-- | SBEPred yields the type used to represent a Boolean predicate associated to
+-- a particular SBE interface implementation.
+type family SBEPred (sbe :: * -> *)
 
 -- | SBEClosedTerm yields the newtype-wrapped, isomorphic-to-tuple type used to
 -- represent SBE interface terms together with any SBE-specific state necessary
@@ -41,7 +46,7 @@ type family SBEMemory (sbe :: * -> *)
 -- The first element is the verification condition needed to show the result
 -- is valie, result, while the second is the verification condition
 -- needed to show the result is valid.
-type SBEPartialResult m r  = (SBETerm m, r)
+type SBEPartialResult m r  = (SBEPred m, r)
 
 -- | Represents a partial result of trying to obtain a concrete value from
 -- a symbolic term.
@@ -52,27 +57,27 @@ data LookupSymbolResult
   deriving Show
 
 -- | Result returned by @stackAlloca@ (defined below).
-data StackAllocaResult t m
+data StackAllocaResult sbe
   -- | @SAResult c p m@ is returned when allocation succeeded. @c@ is a symbolic
   -- path constraint that the allocation must satisfy for allocation to have
   -- succeeded, @m@ is the new memory state, and @p@ is a @ptr@ to the newly
   -- allocated space.  @c@ is false if the allocation failed due to
   -- insufficient space.
-  = SAResult t t m
+  = SAResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
   -- | Returned if stackAlloca given a symbolic length and the implementation
   -- does not support this.
   | SASymbolicCountUnsupported
 
 -- | Result returned by @heapAlloc@ (defined below). Currently
 -- isomorphic to StackAllocResult, but that might change.
-data HeapAllocResult t m
+data HeapAllocResult sbe
   -- | @HAResult c p m@ is returned when allocation succeeded. @c@
   -- is a symbolic path constraint that the allocation must satisfy
   -- for allocation to have succeeded, @m@ is the new memory state,
   -- and @p@ is a @ptr@ to the newly
   -- allocated space. @c@ is false if the allocation failed due to
   -- insufficient space.
-  = HAResult t t m
+  = HAResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
   -- | Returned if heapAlloc given a symbolic length and the
   -- implementation does not support this.
   | HASymbolicCountUnsupported
@@ -81,10 +86,27 @@ data SBE m = SBE
   {
     ----------------------------------------------------------------------------
     -- Term creation, operators
-        
+
     -- | @termBool b@ creates a term representing the constant boolean
     -- (1-bit) value @b@
-    termBool :: Bool -> m (SBETerm m)
+    sbeTruePred :: SBEPred m
+    -- | Return predicate indicating if two integer terms are equal.
+  , applyIEq :: BitWidth -> SBETerm m -> SBETerm m -> m (SBEPred m)
+    -- applyIEq sbe w x y = applyTypedExpr sbe (IntCmp L.Ieq Nothing w x y)
+    -- | Return conjunction of two predicates.
+  , applyAnd :: SBEPred m -> SBEPred m -> m (SBEPred m)
+    -- applyAnd sbe x y = applyTypedExpr sbe (IntArith And Nothing 1 x y)
+    -- | @applyBNot @a@ performs negation of a boolean term
+  , applyBNot :: SBEPred m -> m (SBEPred m)
+    -- | @applyPredIte a b c@ creates an if-then-else term
+  , applyPredIte    :: SBEPred m -> SBEPred m -> SBEPred m -> m (SBEPred m)
+    -- | @applyIte a b c@ creates an if-then-else term
+  , applyIte    :: L.Type -> SBEPred m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | Interpret the term as a concrete boolean if it can be.
+  , asBool :: SBEPred m -> Maybe Bool
+
+    -- | Evaluate a predicate for given input bits.
+  , evalPred :: [Bool] -> SBEPred m -> m Bool
 
     -- | @termInt w n@ creates a term representing the constant @w@-bit
     -- value @n@
@@ -113,10 +135,6 @@ data SBE m = SBE
     ----------------------------------------------------------------------------
     -- Term operator application
 
-    -- | @applyIte a b c@ creates an if-then-else term
-  , applyIte    :: L.Type -> SBETerm m -> SBETerm m -> SBETerm m -> m (SBETerm m)
-    -- | @applyBNot @a@ performs negation of a boolean term
-  , applyBNot :: SBETerm m -> m (SBETerm m)
     -- | Perform addition with overflow, returning carry bit as a 1-bit integer, and result.
   , applyUAddWithOverflow :: BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m, SBETerm m)
 
@@ -127,9 +145,8 @@ data SBE m = SBE
     -- Term miscellany
 
   , closeTerm   :: SBETerm m -> SBEClosedTerm m
+  , prettyPredD :: SBEPred m -> Doc
   , prettyTermD :: SBETerm m -> Doc
-    -- | Interpret the term as a concrete boolean if it can be.
-  , asBool :: SBETerm m -> Maybe Bool
     -- | Interpret the term as a concrete unsigned integer if it can be.
     -- The first int is the bitwidth.
   , asUnsignedInteger :: SBETerm m -> Maybe (Int,Integer)
@@ -187,7 +204,7 @@ data SBE m = SBE
                 -> L.Type
                 -> L.Typed (SBETerm m)
                 -> Int
-                -> m (StackAllocaResult (SBETerm m) (SBEMemory m))
+                -> m (StackAllocaResult m)
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
     -- stack frame to @mem@.
   , stackPushFrame :: SBEMemory m -> m (SBEPartialResult m (SBEMemory m))
@@ -201,7 +218,7 @@ data SBE m = SBE
               -> L.Type
               -> L.Typed (SBETerm m)
               -> Int
-              -> m (HeapAllocResult (SBETerm m) (SBEMemory m))
+              -> m (HeapAllocResult m)
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
     -- both of which must be aligned according to @align@ and must refer to
     -- non-overlapping regions.
@@ -221,7 +238,7 @@ data SBE m = SBE
     -- | @memMerge c t f@ returns a memory that corresponds to @t@ if @c@ is
     -- true and @f@ otherwise.  The memory should have the same number of stack
     -- and merge frames.
-  , memMerge :: SBETerm m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
+  , memMerge :: SBEPred m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
 
     ----------------------------------------------------------------------------
     -- Output functions
@@ -237,21 +254,14 @@ data SBE m = SBE
     -- | @evalAiger inps t@ evaluates an AIG with the given concrete inputs;
     -- result is always a concrete term.
   , evalAiger :: [Bool] -> SBETerm m -> m (SBETerm m)
+
     -- | Run sbe computation in IO.
   , sbeRunIO :: forall v . m v -> IO v 
   }
 
--- | Return conjunction of two terms.
-applyAnd :: SBE m -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applyAnd sbe x y = applyTypedExpr sbe (IntArith And Nothing 1 x y)
-
 applySub :: SBE m -> OptVectorLength -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
 applySub sbe mn w x y = applyTypedExpr sbe (IntArith (Sub False False) mn w x y)
  
--- | Return predicate indicating if two terms are equal.
-applyIEq :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applyIEq sbe w x y = applyTypedExpr sbe (IntCmp L.Ieq Nothing w x y)
-
 applyIne :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
 applyIne sbe w x y = applyTypedExpr sbe (IntCmp L.Ine Nothing w x y)
 
@@ -265,4 +275,4 @@ asSignedInteger sbe t = s2u `fmap` (asUnsignedInteger sbe t :: Maybe (Int, Integ
 -- | @applySExt iw rw t@ assumes that @iw < rw@, and sign extends an
 -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
 applySExt :: SBE m -> BitWidth -> BitWidth -> SBETerm m -> m (SBETerm m)
-applySExt sbe iw rw t = applyTypedExpr sbe (SExt iw t rw)
+applySExt sbe iw rw t = applyTypedExpr sbe (SExt Nothing iw t rw)

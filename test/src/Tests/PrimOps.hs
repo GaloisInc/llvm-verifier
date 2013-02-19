@@ -6,6 +6,7 @@ Point-of-contact : jstanley
 -}
 
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImplicitParams   #-}
 {-# LANGUAGE ViewPatterns     #-}
 
 module Tests.PrimOps (primOpTests) where
@@ -112,7 +113,7 @@ chkArithBitEngineFn w s op fn = do
   let lc  = buildLLVMContext
               (error "LLVM Context has no ident -> type relation defined")
               []
-      sbe = sbeBitBlast lc be (buddyMemModel lc be)
+      sbe = let ?be = be in sbeBitBlast lc (buddyMemModel lc be)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do
     let r = fn x y
         proj = if s then getSVal else getUVal

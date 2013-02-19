@@ -1,10 +1,10 @@
 {-# LANGUAGE DeriveFunctor        #-}
 {-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE ImplicitParams       #-}
 {-# LANGUAGE RankNTypes           #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE ViewPatterns         #-}
-{-# LANGUAGE ScopedTypeVariables  #-}
-
 module Tests.Common 
   ( module Tests.Common
   , ExecRsltHndlr
@@ -14,7 +14,6 @@ module Tests.Common
 import           Control.Applicative
 import           Control.Arrow
 import           Control.Monad hiding (mapM)
-import           Control.Monad.Trans
 import           Data.Int
 import           Data.LLVM.TargetData
 import           Data.Traversable (mapM)
@@ -210,7 +209,7 @@ forAllMemModels _v cb testProp = do
     runMemTest _lbl act = do
 --       run $ putStrLn $ "forAllMemModels: " ++ lbl
       be         <- run createBitEngine
-      (sbe, mem) <- first (sbeBitBlast lc be) <$> run (act lc be mg)
+      (sbe, mem) <- first (let ?be = be in sbeBitBlast lc) <$> run (act lc be mg)
       testProp sbe mem
       where
         lc = cbLLVMCtx cb
