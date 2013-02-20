@@ -14,12 +14,13 @@ Point-of-contact : jstanley
 module Tests.Aggregates (aggTests) where
 
 import           Control.Applicative
-import           LSS.LLVMUtils
-import           Verifier.LLVM.Backend
-import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
 import qualified Text.LLVM        as L
+
+import           Verifier.LLVM.Backend
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Utils
 
 aggTests :: [(Args, Property)]
 aggTests =

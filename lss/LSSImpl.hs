@@ -3,7 +3,7 @@ Module           : $Header$
 Description      : Implementation details for the command line driver;
                    primarily to facilitate programmatic invocation
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : jhendrix
 -}
 
 {-# LANGUAGE DeriveDataTypeable         #-}
@@ -21,18 +21,19 @@ import           Control.Applicative             hiding (many)
 import           Control.Monad.State
 import           Data.Char
 import           Data.Int
-import           Data.LLVM.Memory
-import           Data.LLVM.Symbolic.AST
-import           LSS.Execution.Codebase
-import           LSS.Execution.Common
-import           LSS.LLVMUtils
-import           Verifier.LLVM.Backend
-import           LSS.Simulator
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           Text.LLVM                       ((=:), Typed(..))
 import           Verinf.Utils.LogMonad
 import qualified Text.LLVM                       as L
+
+import           Verifier.LLVM.AST
+import           Verifier.LLVM.Backend
+import           Verifier.LLVM.Codebase
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Simulator.Common
+import           Verifier.LLVM.Utils
 
 data LSS = LSS
   { dbug    :: DbugLvl

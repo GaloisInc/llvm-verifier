@@ -13,18 +13,19 @@ module Tests.PrimOps (primOpTests) where
 
 import           Control.Applicative
 import           Data.Int
-import           Data.LLVM.TargetData
 import           Data.Maybe
 import           Data.Word
-import           LSS.LLVMUtils
-import           Verifier.LLVM.BitBlastBackend
-import           LSS.Simulator
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import           Tests.Common
 import           Verinf.Symbolic         (ConstantProjection(..), createBitEngine)
 import qualified Control.Exception       as CE
 import qualified Text.LLVM               as L
+
+import           Verifier.LLVM.BitBlastBackend
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Utils
 
 primOpTests :: [(Args, Property)]
 primOpTests =

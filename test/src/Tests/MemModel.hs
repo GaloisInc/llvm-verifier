@@ -9,13 +9,13 @@ import qualified Data.Vector.Storable as LV
 import Test.QuickCheck
 import Test.QuickCheck.Monadic
 
-import Data.LLVM.Memory
-import Data.LLVM.TargetData
-import Verifier.LLVM.BitBlastBackend
 import qualified Text.LLVM.AST as LLVM
 import Verinf.Symbolic (createBitEngine)
 import Verinf.Symbolic.Lit
 import Verinf.Symbolic.Lit.Functional
+
+import Verifier.LLVM.BitBlastBackend
+import Verifier.LLVM.LLVMContext
 
 mmTest :: String
        -> Int
@@ -66,7 +66,7 @@ memModelTests =
       assert (c0 == tTrue)
       -- Try filling up rest of memory and testing stack allocation
       -- failed.
-      do fill <- runSBE $ termInt 4 0x0F
+      do fill <- runSBE $ termInt sbe 4 0x0F
          SAResult c0' _ _ <- run $ mmStackAlloca m1 1 fill 1
          assert =<< runSBE (evalPred [False] c0')
       -- Test store to concrete address succeeds.
@@ -77,11 +77,11 @@ memModelTests =
          rptr <- runSBE $ applySub sbe Nothing ptrWidth ptr cntExt
          (c2, _) <- run $ mmLoad m2 rptr 1 
          assert =<< runSBE (evalPred [False] c2)
-  , mmTest "mergeTest" 1 $ \_lc be SBE { .. } MemModel { .. } m0 -> do
+  , mmTest "mergeTest" 1 $ \_lc be sbe@SBE { .. } MemModel { .. } m0 -> do
       let ?be = be
       let tTrue = sbeTruePred
       -- Allocate space on stack.
-      cnt <- runSBE $ termInt 8 1
+      cnt <- runSBE $ termInt sbe 8 1
       SAResult c0 ptr m1 <- run $ mmStackAlloca m0 1 cnt 0
       assert (c0 == tTrue)
       -- Store bytes
@@ -92,7 +92,7 @@ memModelTests =
       assert =<< runSBE (evalPred [] cf)
       -- Merge
       cond0 <- runSBE $ freshInt 1
-      cond <- runSBE $ applyIEq 1 cond0 =<< termInt 1 1
+      cond <- runSBE $ applyIEq 1 cond0 =<< termInt sbe 1 1
       m2 <- run $ mmMux cond mt mf
       -- Check result of merge
       (c2, v) <- run $ mmLoad m2 ptr 1 

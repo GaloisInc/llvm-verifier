@@ -11,13 +11,13 @@ Point-of-contact : jstanley
 module Tests.Symbolic (symTests) where
 
 import           Control.Monad
-import           LSS.LLVMUtils
-import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
-import           Text.LLVM              ((=:))
 import qualified Text.LLVM              as L
+
 import           Verifier.LLVM.BitBlastBackend
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Utils
 
 symTests :: [(Args, Property)]
 symTests =
