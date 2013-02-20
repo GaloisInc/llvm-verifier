@@ -9,7 +9,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-unused-do-bind #-}
 
-module LSS.Execution.Codebase
+module Verifier.LLVM.Codebase
   ( Codebase(..)
   , dumpSymDefine
   , loadCodebase
@@ -24,15 +24,16 @@ where
 
 import           Control.Monad
 import           Control.Monad.Trans
-import           Data.LLVM.TargetData
-import           Data.LLVM.Symbolic.AST
-import           Data.LLVM.Symbolic.Translation
 import           Text.PrettyPrint.HughesPJ
 import qualified Control.Exception              as CE
 import qualified Data.ByteString                as BS
 import qualified Data.LLVM.BitCode              as BC
 import qualified Data.Map                       as M
 import qualified Text.LLVM                      as LLVM
+
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.AST
+import           Verifier.LLVM.Translation
 
 -- NB: We assume for the moment that we can be given a single .bc input (whether
 -- or not we invoke the llvm linker ourselves in order to do this is something

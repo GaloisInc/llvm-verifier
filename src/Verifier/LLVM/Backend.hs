@@ -6,6 +6,7 @@ Point-of-contact : jstanley
 -}
 
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImplicitParams   #-}
 {-# LANGUAGE RankNTypes       #-}
 {-# LANGUAGE TypeFamilies     #-}
 
@@ -18,10 +19,12 @@ module Verifier.LLVM.Backend
   , GEPOffset(..)
   ) where
 
-import Data.Bits (testBit)
-import           Text.PrettyPrint.HughesPJ
+import           Data.Bits (testBit)
+import qualified Data.Vector as V
 import qualified Text.LLVM.AST   as L
-import Data.LLVM.Symbolic.AST
+import           Text.PrettyPrint.HughesPJ
+
+import Verifier.LLVM.AST
 
 
 -- | SBEPred yields the type used to represent predicates in particular SBE interface
@@ -31,12 +34,6 @@ type family SBETerm (sbe :: * -> *)
 -- | SBEPred yields the type used to represent a Boolean predicate associated to
 -- a particular SBE interface implementation.
 type family SBEPred (sbe :: * -> *)
-
--- | SBEClosedTerm yields the newtype-wrapped, isomorphic-to-tuple type used to
--- represent SBE interface terms together with any SBE-specific state necessary
--- to perform certain operations (e.g. constant projection/injection) on those
--- terms.
-type family SBEClosedTerm (sbe :: * -> *)
 
 -- | SBEMemory yields the type used to represent the memory in a particular SBE
 -- interface implementation.
@@ -104,48 +101,29 @@ data SBE m = SBE
   , applyIte     :: L.Type -> SBEPred m -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | Interpret the term as a concrete boolean if it can be.
   , asBool :: SBEPred m -> Maybe Bool
+  , prettyPredD :: SBEPred m -> Doc
 
     -- | Evaluate a predicate for given input bits.
   , evalPred :: [Bool] -> SBEPred m -> m Bool
 
-    -- | @termInt w n@ creates a term representing the constant @w@-bit
-    -- value @n@
-  , termInt  :: BitWidth -> Integer -> m (SBETerm m)
-
     -- | @freshInt w@ creates a term representing a symbolic @w@-bit value
   , freshInt :: Int -> m (SBETerm m)
-    
-    -- | Create an SBE term for the given concrete floating point value.
-  , termDouble :: Double -> m (SBETerm m)
-  
-    -- | Create an SBE term for the given concrete floating point value.
-  , termFloat :: Float -> m (SBETerm m)
-    
-    -- | @termArray tp ts@ creates a term representing an array with element terms
-    -- @ts@ (which must be nonempty).  Each element must have type tp.  
-  , termArray :: L.Type -> [SBETerm m] -> m (SBETerm m)
-
-    -- | Create an struct of terms, which may have different types.
-  , termStruct :: [L.Typed (SBETerm m)] -> m (SBETerm m)
 
     ----------------------------------------------------------------------------
     -- Term operator application
 
-    -- | Perform addition with overflow, returning carry bit as a 1-bit integer, and result.
-  , applyUAddWithOverflow :: BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m, SBETerm m)
-
     -- | Evaluate a typed expression.
   , applyTypedExpr :: TypedExpr (SBETerm m) -> m (SBETerm m)
 
-    ----------------------------------------------------------------------------
-    -- Term miscellany
+    -- | Perform addition with overflow, returning carry bit as a 1-bit integer, and result.
+  , applyUAddWithOverflow :: BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m, SBETerm m)
 
-  , closeTerm   :: SBETerm m -> SBEClosedTerm m
-  , prettyPredD :: SBEPred m -> Doc
-  , prettyTermD :: SBETerm m -> Doc
     -- | Interpret the term as a concrete unsigned integer if it can be.
     -- The first int is the bitwidth.
   , asUnsignedInteger :: SBETerm m -> Maybe (Int,Integer)
+
+  , prettyTermD :: SBETerm m -> Doc
+
     ----------------------------------------------------------------------------
     -- Memory model interface
 
@@ -272,3 +250,21 @@ asSignedInteger sbe t = s2u `fmap` (asUnsignedInteger sbe t :: Maybe (Int, Integ
 -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
 applySExt :: SBE m -> BitWidth -> BitWidth -> SBETerm m -> m (SBETerm m)
 applySExt sbe iw rw t = applyTypedExpr sbe (SExt Nothing iw t rw)
+
+-- | @termInt w n@ creates a term representing the constant @w@-bit
+-- value @n@
+termInt  :: SBE m -> BitWidth -> Integer -> m (SBETerm m)
+termInt sbe w v = applyTypedExpr sbe (SValInteger w v)
+
+-- | Create an SBE term for the given concrete floating point value.
+termDouble :: SBE m -> Double -> m (SBETerm m)
+termDouble sbe v = applyTypedExpr sbe (SValDouble v)
+
+-- | @termArray tp ts@ creates a term representing an array with element terms
+-- @ts@ (which must be nonempty).  Each element must have type tp.  
+termArray :: SBE m -> L.Type -> [SBETerm m] -> m (SBETerm m)
+termArray sbe tp l = applyTypedExpr sbe (SValArray tp (V.fromList l))
+
+-- | Create an struct of terms, which may have different types.
+termStruct :: (?sbe :: SBE m) => StructInfo -> [SBETerm m] -> m (SBETerm m)
+termStruct si l = applyTypedExpr ?sbe $ SValStruct si (V.fromList l)

@@ -8,7 +8,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
-module LSS.Execution.Common 
+module Verifier.LLVM.Simulator.Common 
   ( Simulator(SM)
   , runSM
   , dumpCtrlStk
@@ -89,15 +89,16 @@ import Control.Monad.Error hiding (sequence)
 import Control.Monad.State       hiding (State, sequence)
 import Data.Foldable
 import Data.Traversable
-import Data.LLVM.Symbolic.AST
 import qualified Data.Map  as M
-import LSS.Execution.Codebase
-import LSS.Execution.Utils
-import Verifier.LLVM.Backend
 import Text.LLVM                 (Typed(..))
 import Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM                 as L
 import Prelude hiding (foldr, sequence)
+
+import Verifier.LLVM.AST
+import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase
+import Verifier.LLVM.Simulator.SimUtils
 
 newtype Simulator sbe m a =
   SM { runSM :: ErrorT (InternalExc sbe m) (StateT (State sbe m) m) a }
@@ -110,7 +111,7 @@ newtype Simulator sbe m a =
     )
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
-type GlobalMap sbe = M.Map (L.Symbol, Maybe [L.Type]) (Typed (SBETerm sbe))
+type GlobalMap sbe = M.Map L.Symbol (Typed (SBETerm sbe))
 --type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
 type OvrMap sbe m  = M.Map L.Symbol (Override sbe m, Bool {- user override? -})
 

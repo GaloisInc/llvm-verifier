@@ -15,14 +15,15 @@ module Tests.AES (aesTests) where
 import           Control.Applicative
 import           Control.Monad (forM)
 import           Data.Maybe
-import           LSS.Execution.Debugging
-import           LSS.LLVMUtils
-import           LSS.Simulator
 import           Test.QuickCheck
 import           Tests.Common
 import           Text.LLVM               ((=:), Typed(..), typedValue)
 import qualified Text.LLVM               as L
+
 import           Verifier.LLVM.Backend
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Simulator.Debugging
+import           Verifier.LLVM.Utils
 
 aesTests :: [(Args, Property)]
 aesTests =

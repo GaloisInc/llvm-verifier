@@ -33,9 +33,8 @@ Point-of-contact : jstanley
 {-# LANGUAGE ViewPatterns          #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
-module LSS.Simulator
-  ( module LSS.Execution.Codebase
-  , Simulator (SM)
+module Verifier.LLVM.Simulator
+  ( Simulator (SM)
   , State(..)
   , SEH(..)
   , callDefine
@@ -74,33 +73,33 @@ module LSS.Simulator
 where
 
 import           Control.Applicative
+import qualified Control.Exception         as CE
 import           Control.Monad.Error hiding (mapM, sequence)
 import           Control.Monad.State       hiding (State, mapM, sequence)
 import           Data.Int
-import           Data.LLVM.TargetData
-import           Data.LLVM.Symbolic.AST
 import           Data.List                 hiding (union)
+import qualified Data.Map                  as M
 import           Data.Maybe
 import           Data.String
-import           LSS.Execution.Codebase
-import           LSS.Execution.Common
-import           LSS.Execution.Utils
-import           LSS.LLVMUtils
+import           Data.Traversable
+import qualified Data.Vector               as V
 import           Numeric                   (showHex)
 import           System.Exit
 import           System.IO
 import           Text.LLVM                 (Typed(..), (=:))
+import qualified Text.LLVM                 as L
 import           Text.PrettyPrint.HughesPJ
 import Prelude   hiding (mapM, sequence)
-import Data.Traversable
+
+import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
+import           Verifier.LLVM.Codebase
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.Simulator.Common
+import           Verifier.LLVM.Simulator.SimUtils
+import           Verifier.LLVM.Translation
+import           Verifier.LLVM.Utils
 
-import Data.LLVM.Symbolic.Translation
-
-import qualified Control.Exception         as CE
-import qualified Data.Map                  as M
-import qualified Text.LLVM                 as L
-import qualified Data.Vector               as V
 
 runSimulator :: forall sbe a .
   ( Functor sbe
@@ -156,24 +155,21 @@ initGlobals = do
      forM_ defines $ \d -> do
        let argTys    = map typedType $ sdArgs d
            sym       = sdName d
-           key       = (sym, Just argTys)
            fty       = L.FunTy (sdRetType d) argTys (sdVarArgs d)
            idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody d)
            noCodeSpc = "Not enough space in code memory to allocate new definition."
-       insertGlobalTerm noCodeSpc key fty $ \s m -> memAddDefine s m sym idl
+       insertGlobalTerm noCodeSpc sym fty $ \s m -> memAddDefine s m sym idl
   -- Add symbol for declarations.
   do declares <- L.modDeclares <$> origModule <$> gets codebase
      forM_ declares $ \d -> do
        let sym = L.decName d
        let errMsg = "Insufficient space for new declaration."
-       let key = (sym, Just (L.decArgs d))
        let ty = L.FunTy (L.decRetType d) (L.decArgs d) (L.decVarArgs d)
-       insertGlobalTerm errMsg key ty $ \s m -> memAddDefine s m sym []
+       insertGlobalTerm errMsg sym ty $ \s m -> memAddDefine s m sym []
   -- Initialize global data
   do let globals = [ g | (_,Left g) <- M.toList nms]
      ec <- getEvalContext "adGlobal" Nothing
      forM_ globals $ \g -> do
-       let key = (L.globalSym g, Nothing)
        cb1 onMkGlobTerm g
        Just symValue <- withLLVMContext $
          return $ liftValue (L.globalType g) (L.globalValue g)
@@ -181,7 +177,7 @@ initGlobals = do
        let tpcdata = L.Typed (L.globalType g) cdata
        cb2 onPreGlobInit g cdata
        let noDataSpc = "Not enough space in data segment to allocate new global."
-       _ <- insertGlobalTerm noDataSpc key (L.globalType g) $ \s m ->
+       _ <- insertGlobalTerm noDataSpc (L.globalSym g) (L.globalType g) $ \s m ->
               memInitGlobal s m tpcdata
        cb2 onPostGlobInit g tpcdata
 
@@ -194,7 +190,7 @@ callDefine_ ::
   -> L.Type       -- ^ Callee return type
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m ()
-callDefine_ c t ag = callDefine c t ag >> return ()
+callDefine_ c t ag = void $ callDefine c t ag
 
 -- | External entry point for a function call.  The argument generator is used
 -- to create actuals passed to the function, and the return value is those
@@ -357,9 +353,8 @@ intrinsic intr mreg args0 =
     uaddWithOverflow w reg = do
       let [x, y] = args0
       (ov,z') <- withSBE $ \sbe -> applyUAddWithOverflow sbe w x y
-      res <- withSBE $ \sbe -> termStruct sbe [ L.Typed (intn (fromIntegral w)) z'
-                                              , L.Typed i1 ov
-                                              ]
+      si <- withImplicitLC $ mkStructInfo False [ intn (fromIntegral w), i1 ]
+      res <- withImplicitSBE $ termStruct si [ z', ov ]
       assign reg res
     objSz w reg = do
       let [_ptr, maxOrMin] = args0
@@ -398,14 +393,12 @@ pathRetVal :: Path sbe -> Maybe (SBETerm sbe)
 pathRetVal p = typedValue <$> M.lookup entryRsltReg (pathRegs p)
 
 getProgramReturnValue :: (Monad m, Functor m)
-  => Simulator sbe m (Maybe (SBETerm sbe))
-getProgramReturnValue =
- (pathRetVal <=< getCurrentPath) <$> gets ctrlStk
+                      => Simulator sbe m (Maybe (SBETerm sbe))
+getProgramReturnValue = (pathRetVal <=< getCurrentPath) <$> gets ctrlStk
 
 getProgramFinalMem :: (Monad m, Functor m)
-  => Simulator sbe m (Maybe (SBEMemory sbe))
-getProgramFinalMem =
-  (fmap pathMem . getCurrentPath) <$> gets ctrlStk
+                   => Simulator sbe m (Maybe (SBEMemory sbe))
+getProgramFinalMem = (fmap pathMem . getCurrentPath) <$> gets ctrlStk
 
 withCurrentPath :: (Functor m, Monad m)
                 => String
@@ -545,13 +538,16 @@ data EvalContext sbe = EvalContext {
      }
 
 withLLVMContext :: Monad m
-                 => ((?lc :: LLVMContext) => Simulator sbe m a)
-                 -> Simulator sbe m a
+                => ((?lc :: LLVMContext) => Simulator sbe m a)
+                -> Simulator sbe m a
 withLLVMContext m = do
   lc <- gets (cbLLVMCtx . codebase)
   let ?lc = lc in m
 
-getEvalContext :: Monad m => String -> Maybe (RegMap (SBETerm sbe)) -> Simulator sbe m (EvalContext sbe)
+getEvalContext :: Monad m 
+               => String
+               -> Maybe (RegMap (SBETerm sbe))
+               -> Simulator sbe m (EvalContext sbe)
 getEvalContext nm mrm = do
   lc <- gets (cbLLVMCtx . codebase)
   gt <- gets globalTerms
@@ -562,16 +558,6 @@ getEvalContext nm mrm = do
                      , evalRegs = mrm
                      , evalSBE = sbe
                      }
-
-getGlobalPtrTerm :: EvalContext sbe
-                 -> (L.Symbol, Maybe [L.Type])
-                 -> Typed (SBETerm sbe)
-getGlobalPtrTerm ec key@(sym, tys) =
-  case M.lookup key (evalGlobalTerms ec) of
-    Just t  -> t
-    Nothing ->
-      error $ "getGlobalPtrTerm: symbol resolution failed: "
-              ++ show (L.ppSymbol sym) ++ " (" ++ show tys ++ ")"
 
 getCurrentEvalContext :: (Functor m, Monad m) => String -> Simulator sbe m (EvalContext sbe)
 getCurrentEvalContext nm = do
@@ -592,33 +578,20 @@ getTypedTerm' ::
   => EvalContext sbe -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
 getTypedTerm' ec tsv = do
   let sbe = evalSBE ec
-  let zeroInit ty = do
-        szBytes <- fromIntegral <$> withLC (`llvmAllocSizeOf` ty)
-        liftSBE $ termInt sbe (szBytes * 8) 0
   case tsv of
-    SValInteger w x -> liftSBE $ termInt sbe w x
-    SValDouble d -> liftSBE $ termDouble sbe d
     SValIdent i -> 
       case evalRegs ec of
         Just rm -> typedValue <$> lkupIdent i rm
         Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec
                       ++ " with missing frame."
-    SValSymbol sym maybeTypes ->
-      return $ typedValue $ getGlobalPtrTerm ec (sym, maybeTypes)
-    SValNull{} -> liftSBE $ termInt sbe ptrWidth 0
-      where ptrWidth = llvmAddrWidthBits (evalLLVMContext ec)
-    SValArray etp el -> do
-      valTerms <- mapM (getTypedTerm' ec) el
-      liftSBE $ termArray sbe etp valTerms
-    SValStruct flds -> do
-      let convertFld (Typed tp v) = Typed tp <$> getTypedTerm' ec v
-      fldv <- mapM convertFld flds
-      liftSBE $ termStruct sbe fldv
+    SValSymbol sym ->
+      case M.lookup sym (evalGlobalTerms ec) of
+        Just t -> return $ typedValue t
+        Nothing ->
+          error $ "Failed to find symbol: " ++ show (L.ppSymbol sym)
     SValExpr te -> do
       tv <- mapM (getTypedTerm' ec) te
       liftSBE $ applyTypedExpr sbe tv
-    SValUndef tp -> zeroInit tp
-    SValZeroInit tp -> zeroInit tp
 
 insertGlobalTerm ::
   ( Functor m
@@ -626,11 +599,11 @@ insertGlobalTerm ::
   , Functor sbe
   )
   => String
-  -> (L.Symbol, Maybe [L.Type])
+  -> L.Symbol
   -> L.Type
   -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
   -> Simulator sbe m (Typed (SBETerm sbe))
-insertGlobalTerm errMsg key ty act = do
+insertGlobalTerm errMsg sym ty act = do
   Just m <- getMem
   mr <- withSBE $ \s -> act s m
   case mr of
@@ -638,7 +611,7 @@ insertGlobalTerm errMsg key ty act = do
     Just (r,m')  -> do
       setMem m'
       let t = Typed (L.PtrTo ty) r
-      modify $ \s -> s{ globalTerms = M.insert key t (globalTerms s) }
+      modify $ \s -> s{ globalTerms = M.insert sym t (globalTerms s) }
       return t
 
 --------------------------------------------------------------------------------
@@ -657,7 +630,7 @@ step (PushCallFrame callee args mres retTgt) = do
   argTerms <- mapM (getTypedTerm' ec) args
   calleeSym <- 
     case callee of
-      SValSymbol sym _ -> return sym
+      SValSymbol sym -> return sym
       _ -> do
         fp <- getTypedTerm' ec callee
         r <- resolveFunPtrTerm fp
@@ -693,7 +666,24 @@ step (PushPendingExecution bid cond ml elseStmts) = do
 
 step (SetCurrentBlock bid) = setCurrentBlock bid
 
-step (Assign reg expr) = assign reg =<< eval expr
+step (Assign reg (Val tv)) = do
+  assign reg =<< getBackendValue "eval@Val" tv
+
+
+step (Assign reg (Alloca ty msztv malign)) = do
+  sizeTm <-
+    case msztv of
+      Just (w,v) -> L.Typed (L.PrimType (L.Integer (fromIntegral w))) <$>
+                      getBackendValue "alloca" v
+      Nothing -> getSizeT 1
+  assign reg . typedValue =<< alloca ty sizeTm malign
+
+step (Assign reg (Load v ty _malign)) = do
+  addrTerm <- getBackendValue "load" v
+  dumpMem 6 "load pre"
+  val <- load (L.Typed (L.PtrTo ty) addrTerm)
+  dumpMem 6 "load post"
+  assign reg val
 
 step (Store (Typed valType val) addr _malign) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
@@ -706,7 +696,6 @@ step (Store (Typed valType val) addr _malign) = do
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
 
-step Unwind = unimpl "unwind"
 step (BadSymStmt s) = unimpl (show (L.ppStmt s))
 
 -- | Return value one as an integer with the address width bits.
@@ -718,31 +707,11 @@ getSizeT v = do
 --------------------------------------------------------------------------------
 -- Symbolic expression evaluation
 
--- | @eval expr@ evaluates @expr@ via the symbolic backend
-eval ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  )
-  => SymExpr -> Simulator sbe m (SBETerm sbe)
-eval (Val tv) = getBackendValue "eval@Val" tv
-eval (Alloca ty msztv malign) = do
-  sizeTm <-
-    case msztv of
-      Just (w,v) -> L.Typed (L.PrimType (L.Integer (fromIntegral w))) <$>
-                      getBackendValue "alloca" v
-      Nothing -> getSizeT 1
-  typedValue <$> alloca ty sizeTm malign
-eval (Load v ty _malign) = do
-  addrTerm <- getBackendValue "load" v
-  dumpMem 6 "load pre"
-  load (L.Typed (L.PtrTo ty) addrTerm) <* dumpMem 6 "load post"
-
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
 
 termAdd :: (Functor m, Monad m)
-  => BitWidth -> SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
+        => BitWidth -> SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
 termAdd w x y = withSBE $ \sbe -> applyTypedExpr sbe (IntArith (Add False False) Nothing w x y)
 
 --------------------------------------------------------------------------------
@@ -757,6 +726,11 @@ withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
 withSBE' f = gets symBE >>= \sbe -> return (f sbe)
 
+withImplicitSBE :: (Functor m, Monad m)
+                => ((?sbe :: SBE sbe) => sbe a)
+                -> Simulator sbe m a
+withImplicitSBE m = gets symBE >>= \sbe -> liftSBE (let ?sbe = sbe in m)
+
 -- @getMem@ yields the memory model of the current path, which must exist.
 getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
 getMem = fmap (pathMem <$>) getPath
@@ -770,6 +744,10 @@ getLC = gets (cbLLVMCtx . codebase)
 
 withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
 withLC f = f <$> gets (cbLLVMCtx . codebase)
+
+withImplicitLC :: (Functor m, MonadIO m) => ((?lc::LLVMContext) => a) -> Simulator sbe m a
+withImplicitLC f = fn <$> gets (cbLLVMCtx . codebase)
+  where fn lc = let ?lc = lc in f
 
 --------------------------------------------------------------------------------
 -- Callbacks and event handlers
@@ -906,7 +884,7 @@ tellUser msg = unlessQuiet $ dbugM msg
 -- The result has width llvmAddrWidthBits
 sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m TypedSymValue
 sizeof ty = withLC $ \lc ->
-  SValInteger (llvmAddrWidthBits lc) (llvmAllocSizeOf lc ty)
+  SValExpr $ SValInteger (llvmAddrWidthBits lc) (llvmAllocSizeOf lc ty)
 
 resolveFunPtrTerm ::
   ( MonadIO m
@@ -1274,21 +1252,6 @@ userSetVebosityOverride = Override $ \_sym _rty args -> do
     _ -> e "Incorrect number of parameters passed to lss_set_verbosity"
   where
     e = errorPath . FailRsn
-
-{-
---TODO: Fix exit handler
-exitHandler :: StdOvd sbe m
-exitHandler = Override $ \_sym _rty args -> do
-  case args of
-    [Typed t v]
-      | not (isIntegerType t) -> e "Non-integer type passed to exit()"
-      | otherwise             -> do
-          rvt <- prettyTermSBE v
-          e $ "exit() invoked with argument " ++ show rvt
-    _ -> e "Incorrect number of parameters passed to exit()"
-  where
-    e = errorPath . FailRsn
--}
 
 assertHandler__assert_rtn :: StdOvd sbe m
 assertHandler__assert_rtn = Override $ \_sym _rty args -> do

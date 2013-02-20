@@ -20,8 +20,9 @@
 --   executed.  Since phi statements must appear at the top of the block, we can
 --   move phi statements to execute during the transition from the previous
 --   block to the new block.
-module Data.LLVM.Symbolic.Translation
-  ( liftDefine
+module Verifier.LLVM.Translation
+  ( module Verifier.LLVM.AST
+  , liftDefine
   , liftTypedValue
   , liftValue
   , MaybeVectorType(..)
@@ -30,19 +31,23 @@ module Data.LLVM.Symbolic.Translation
   ) where
 
 import Control.Applicative ((<$>))
-import           Control.Monad.State.Strict
-import Data.LLVM.TargetData
-import           Data.Map                   (Map)
+import Control.Monad (unless, zipWithM_)
+import Control.Monad.State.Strict (State, execState, modify)
+import           Data.Traversable
 import qualified Data.LLVM.CFG              as CFG
+import           Data.Map                   (Map)
 import qualified Data.Map                   as Map
 import qualified Data.Vector                as V
-import qualified Text.LLVM                  as LLVM
 import qualified Text.LLVM                  as L
+import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
 import           Text.PrettyPrint.HughesPJ
 
-import           Data.LLVM.Symbolic.AST
-import           LSS.LLVMUtils
-import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
+import Prelude hiding (mapM)
+
+
+import           Verifier.LLVM.AST
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.Utils
 
 import Debug.Trace
 
@@ -61,15 +66,15 @@ newtype LLVMTranslationInfo = LTI CFG.CFG
 mkLTI :: CFG.CFG -> LLVMTranslationInfo
 mkLTI = LTI
 
-blockIsDummyExit :: LLVM.BlockLabel -> Bool
-blockIsDummyExit (LLVM.Named (LLVM.Ident nm)) = nm == CFG.dummyExitName
+blockIsDummyExit :: L.BlockLabel -> Bool
+blockIsDummyExit (L.Named (L.Ident nm)) = nm == CFG.dummyExitName
 blockIsDummyExit _ = False
 
 -- | Returns basic blocks excluding dummy exit block.
 ltiBlocks :: LLVMTranslationInfo -> [CFG.BB]
 ltiBlocks (LTI cfg) = [ bb
                       | bb <- CFG.allBBs cfg
-                      , not (blockIsDummyExit (snd (LLVM.bbLabel bb))) 
+                      , not (blockIsDummyExit (snd (L.bbLabel bb))) 
                       ]
 
 -- | @ltiImmediatePostDominator lti bb@ returns the immediate post dominator
@@ -83,27 +88,6 @@ ltiImmediatePostDominator (LTI cfg) bb =
     Just apdId | blockIsDummyExit n -> Nothing
                | otherwise -> Just n
       where n = CFG.asName cfg apdId
-
-{-
--- | @ltiIsImmediatePostDominator lti bb n@ returns true if @n@ is the immediate
--- post-dominator of @bb@.
-ltiIsImmediatePostDominator :: LLVMTranslationInfo
-                            -> LLVM.BlockLabel
-                            -> LLVM.BlockLabel
-                            -> Bool
-ltiIsImmediatePostDominator (LTI cfg) bb n =
-  case CFG.ipdom cfg (CFG.asId cfg bb) of
-    Nothing    -> False
-    Just apdId -> apdId == CFG.asId cfg n
-
--- | @ltiNewPostDominators lti bb n@ returns the new post dominators obtained by
--- jumping from @bb@ to @n@.  Entries are stored so that post-dominators
--- visited later are earlier in the list (e.g., the last entry is the
--- immediate post-dominator).
-ltiNewPostDominators :: LLVMTranslationInfo
-                     -> LLVM.BlockLabel -> LLVM.BlockLabel -> [LLVM.BlockLabel]
-ltiNewPostDominators lti a b = ltiPostDominators lti b L.\\ ltiPostDominators lti a
--}
 
 -- Block generator Monad {{{1
 
@@ -136,22 +120,22 @@ defineBlock sbid stmts = modify fn
 
 -- Phi instruction parsing {{{1
 
-type PhiInstr = (LLVM.Ident, LLVM.Type, Map LLVM.BlockLabel LLVM.Value)
+type PhiInstr = (L.Ident, L.Type, Map L.BlockLabel L.Value)
 
 -- Define init block that pushes post dominator frames then jumps to first
 -- block.
 parsePhiStmts :: [Stmt] -> [PhiInstr]
 parsePhiStmts sl =
   [ (r, tp, valMap)
-  | LLVM.Result r (LLVM.Phi tp vals) _ <- sl
+  | L.Result r (L.Phi tp vals) _ <- sl
   , let valMap = Map.fromList [(b, v) | (v,b) <- vals]]
 
 -- | Maps LLVM Blocks to associated phi instructions.
-blockPhiMap :: [CFG.BB] -> Map LLVM.BlockLabel [PhiInstr]
+blockPhiMap :: [CFG.BB] -> Map L.BlockLabel [PhiInstr]
 blockPhiMap blocks =
   Map.fromList
     [ (l, parsePhiStmts sl)
-    | LLVM.BasicBlock { LLVM.bbLabel = (_bbid, l), LLVM.bbStmts = sl } <- blocks ]
+    | L.BasicBlock { L.bbLabel = (_bbid, l), L.bbStmts = sl } <- blocks ]
 
 data MaybeVectorType v = ScalarType v
                        | VectorType Int v
@@ -160,6 +144,9 @@ data MaybeVectorType v = ScalarType v
 
 lookupAlias :: (?lc :: LLVMContext) => L.Ident -> Maybe L.Type
 lookupAlias i = Map.lookup i (llvmTypeAliasMap ?lc)
+
+addrWidth :: (?lc :: LLVMContext) => BitWidth
+addrWidth = llvmAddrWidthBits ?lc
 
 asPtrType :: (?lc :: LLVMContext) => L.Type -> Maybe L.Type
 asPtrType = go
@@ -186,14 +173,10 @@ asMaybeVectorType fn = go
         go tp = maybe NotMaybeVector ScalarType (fn tp)
 
 asMaybePtrVectorType :: (?lc :: LLVMContext) => L.Type -> MaybeVectorType L.Type
-asMaybePtrVectorType = asMaybeVectorType go
-  where go (L.PtrTo tp) = Just tp
-        go _ = Nothing
+asMaybePtrVectorType = asMaybeVectorType asPtrType
 
 asMaybeIntVectorType :: (?lc :: LLVMContext) => L.Type -> MaybeVectorType BitWidth
-asMaybeIntVectorType = asMaybeVectorType go
-  where go (L.PrimType (L.Integer w)) = Just (fromIntegral w)
-        go _ = Nothing
+asMaybeIntVectorType = asMaybeVectorType asIntType
 
 -- | Check that two types are equal, returning simplied type if they are
 -- and nothing otherwise.
@@ -210,13 +193,40 @@ liftValue :: (?lc :: LLVMContext) => L.Type -> L.Value -> Maybe TypedSymValue
 liftValue (L.Alias i) v = do
   tp <- lookupAlias i
   liftValue tp v
-liftValue  (L.PrimType (L.Integer w)) (L.ValInteger x) =
-  return $ SValInteger (fromIntegral w) x
+liftValue (L.PrimType (L.Integer w)) (L.ValInteger x) =
+  return $ SValExpr $ SValInteger (fromIntegral w) x
 liftValue (L.PrimType (L.Integer 1)) (L.ValBool x) =
-  return $ SValInteger 1 (if x then 1 else 0)
+  return $ SValExpr $ SValInteger 1 (if x then 1 else 0)
+liftValue _ (L.ValFloat x) =
+  return $ SValExpr $ SValFloat x
+liftValue (L.PrimType (L.FloatType L.Double)) (L.ValDouble d) =
+  return $ SValExpr $ SValDouble d
+-- TODO: Figure out how to check ident types.
+liftValue _ (L.ValIdent i) =
+   return $ SValIdent i
+-- TODO: Figure out how to check symbol types.
+liftValue _ (L.ValSymbol sym) =
+  return $ SValSymbol sym
 liftValue (L.PtrTo etp) L.ValNull =
-  return $ SValNull etp
-liftValue tp (L.ValConstExpr ce) = do
+  return $ SValExpr $ SValNull (llvmAddrWidthBits ?lc) etp
+liftValue (L.Array len _) (L.ValArray vtp el0)
+    | fromIntegral len == V.length el
+    = SValExpr . SValArray vtp <$> mapM (liftValue vtp) el
+  where el = V.fromList el0
+liftValue (L.Vector len _) (L.ValVector vtp el0)
+    | fromIntegral len == V.length el
+    = SValExpr . SValArray vtp <$> mapM (liftValue vtp) el
+  where el = V.fromList el0
+liftValue _ (L.ValStruct fldvs) =
+    SValExpr . SValStruct si <$> mapM liftTypedValue (V.fromList fldvs)
+  where si = mkStructInfo False (typedType <$> fldvs)
+liftValue _ (L.ValPackedStruct fldvs) =
+    SValExpr . SValStruct si <$> mapM liftTypedValue (V.fromList fldvs)
+  where si = mkStructInfo True (typedType <$> fldvs)
+liftValue (L.Array len (L.PrimType (L.Integer 8))) (L.ValString str) = do
+  unless (fromIntegral len == length str) $ fail "Incompatible types"
+  return (sValString str)
+liftValue tp (L.ValConstExpr ce)  =
   case (tp,ce) of
     (_, L.ConstGEP inbounds (base:il)) -> do
       SValExpr <$> liftGEP inbounds base il
@@ -237,42 +247,39 @@ liftValue tp (L.ValConstExpr ce) = do
           return $ SValExpr (Bitcast itp v rtp)
         _ -> fail "Could not interpret constant expression"
     _ -> fail "Could not interpret constant expression"
-liftValue (L.Array len (L.Alias a)) v = do
-  tp <- lookupAlias a
-  liftValue (L.Array len tp) v
-liftValue (L.Array len etp) (L.ValArray vtp el) = do
-  rtp <- typesEq etp vtp
-  unless (fromIntegral len == length el) $ fail "Incompatible array types"
-  vl <- mapM (liftValue etp) el
-  return (SValArray rtp vl)
-liftValue (L.Array len (L.PrimType (L.Integer 8))) (L.ValString str) = do
-  unless (fromIntegral len == length str) $ fail "Incompatible types"
-  return (sValString str)
-liftValue tp (L.ValStruct fldvs) = do
-  _ <- typesEq tp (L.Struct (typedType <$> fldvs))
-  SValStruct <$> mapM returnTypedValue fldvs
-liftValue (L.PtrTo (L.Alias a)) v = do
-  tp <- lookupAlias a
-  liftValue (L.PtrTo tp) v
--- TODO: Figure out how to check symbol types.
-liftValue (L.PtrTo (L.FunTy _ argTps _)) (L.ValSymbol sym) =
-  return $ SValSymbol sym (Just argTps)
-liftValue _ (L.ValSymbol sym) =
-  return $ SValSymbol sym Nothing
-liftValue (L.PrimType (L.FloatType L.Double)) (L.ValDouble d) =
-  return $ SValDouble d
--- TODO: Figure out how to check ident types.
-liftValue _ (L.ValIdent i) =
-   return $ SValIdent i
-liftValue tp L.ValUndef =
-  return (SValUndef tp)
-liftValue tp L.ValZeroInit =
-  return (SValZeroInit tp)
+liftValue tp L.ValUndef = zeroValue tp
+liftValue _ L.ValLabel{} = fail "Could not interpret label"
+liftValue tp L.ValZeroInit = zeroValue tp
+liftValue _ L.ValAsm{} = fail "Could not interpret asm."
+liftValue _ L.ValMd{} = fail "Could not interpret metadata."
 liftValue _ _ = fail "Could not interpret LLVM value"
+
+zeroValue :: (?lc :: LLVMContext) => L.Type -> Maybe TypedSymValue
+zeroValue = fmap SValExpr . zeroExpr
+
+zeroExpr :: (?lc :: LLVMContext) => L.Type -> Maybe (TypedExpr TypedSymValue)
+zeroExpr tp0 =
+  case tp0 of
+    L.PrimType pt -> 
+      case pt of
+        L.Integer w -> return $ SValInteger (fromIntegral w) 0
+        L.FloatType L.Float -> return $ SValFloat 0
+        L.FloatType L.Double -> return $ SValDouble 0
+        _ -> fail "Bad prim type"
+    L.Alias i -> zeroExpr =<< lookupAlias i
+    L.Array n tp -> SValArray tp . V.replicate (fromIntegral n) <$> zeroValue tp
+    L.FunTy{} -> fail "Bad function type"
+    L.PtrTo tp -> return $ SValNull addrWidth tp
+    L.Struct l -> SValStruct si <$> mapM zeroValue (V.fromList l)
+      where si = mkStructInfo False l
+    L.PackedStruct l -> SValStruct si <$> mapM zeroValue (V.fromList l)
+      where si = mkStructInfo True l
+    L.Vector n tp -> SValVector tp . V.replicate (fromIntegral n) <$> zeroValue tp
+    L.Opaque -> fail "Opaque"
 
 unsupportedStmt :: L.Stmt -> BlockGenerator SymStmt
 unsupportedStmt stmt = do
-  addWarning $ text "Unsupported instruction: " <+> LLVM.ppStmt stmt
+  addWarning $ text "Unsupported instruction: " <+> L.ppStmt stmt
   return (BadSymStmt stmt)
 
 trySymStmt :: Stmt
@@ -448,12 +455,6 @@ liftStmt stmt = do
                     | 0 <= i && i < n = go tp is (SValExpr (GetConstArrayElt tp sv i))
                     | otherwise = fail "Illegal index"
                 go _ _ _ = fail "non-composite type in extractvalue"
-
-{-
-        L.InsertValue tpv@(L.Typed tp _) tpa i -> do
-          (_, rtp) <- liftAggregateOffsets tp i
-          retExpr rtp $ InsertValue tpv tpa i
--}
         _ -> fail "Unsupported instruction"
 
 -- Lift LLVM basic block to symbolic block {{{1
@@ -464,7 +465,7 @@ liftStmt stmt = do
 --   * The current block must set the phi value registers.
 liftBB :: (?lc :: LLVMContext)
        => LLVMTranslationInfo -- ^ Translation information from analysis
-       -> Map LLVM.BlockLabel [PhiInstr] -- ^ Maps block identifiers to phi instructions for block.
+       -> Map L.BlockLabel [PhiInstr] -- ^ Maps block identifiers to phi instructions for block.
        -> CFG.BB -- ^ Basic block to generate.
        -> BlockGenerator ()
 liftBB lti phiMap bb = do
@@ -476,7 +477,7 @@ liftBB lti phiMap bb = do
       -- | Returns set block instructions for jumping to a particular target.
       -- This includes setting the current block and executing any phi
       -- instructions.
-      phiInstrs :: LLVM.BlockLabel -> [SymStmt]
+      phiInstrs :: L.BlockLabel -> [SymStmt]
       phiInstrs tgt =
           [ Assign (L.Typed tp r) val
             | (r, tp, valMap) <- case Map.lookup tgt phiMap of
@@ -485,9 +486,9 @@ liftBB lti phiMap bb = do
             , let val = case liftValue tp =<< Map.lookup llvmId valMap of
                           Nothing -> error $
                             "AST xlate: expected to find "
-                            ++ show (LLVM.ppLabel llvmId)
+                            ++ show (L.ppLabel llvmId)
                             ++ " as a phi operand of block"
-                            ++ " labeled " ++ show (LLVM.ppLabel tgt)
+                            ++ " labeled " ++ show (L.ppLabel tgt)
                           Just x -> Val x
           ]
       -- @brSymInstrs tgt@ returns the code for jumping to the target block.
@@ -504,11 +505,11 @@ liftBB lti phiMap bb = do
       --       Clear current execution
       --     Else
       --       Set current block in state to branch target.
-      brSymInstrs :: LLVM.BlockLabel -> [SymStmt]
+      brSymInstrs :: L.BlockLabel -> [SymStmt]
       brSymInstrs tgt =
         SetCurrentBlock (symBlockID tgt 0) : phiInstrs tgt
       -- | Sequentially process statements.
-      impl :: [LLVM.Stmt] -- ^ Remaining statements
+      impl :: [L.Stmt] -- ^ Remaining statements
            -> Int -- ^ Index of symbolic block that we are defining.
            -> [SymStmt] -- ^ Previously generated statements in reverse order.
            -> BlockGenerator ()
@@ -517,13 +518,13 @@ liftBB lti phiMap bb = do
                        int idx <+>
                        text "after generating the following statements:" $$
                        (nest 2 . vcat . map ppSymStmt $ il)
-      impl [stmt@(Effect (LLVM.Ret tpv) _)] idx il = do
+      impl [stmt@(Effect (L.Ret tpv) _)] idx il = do
         symStmt <- 
           case liftTypedValue tpv of
             Just v -> return $ Return (Just v)
             Nothing -> unsupportedStmt stmt   
         defineBlock (blockName idx) (reverse il ++ [symStmt])
-      impl [Effect LLVM.RetVoid _] idx il =
+      impl [Effect L.RetVoid _] idx il =
         defineBlock (blockName idx) (reverse il ++ [Return Nothing])     
       -- For function calls, we:
       -- * Allocate block for next block after call.
@@ -587,22 +588,23 @@ liftBB lti phiMap bb = do
           _ -> do
             ss <- unsupportedStmt stmt
             defineBlock (blockName idx) $ reverse (ss:il)
-      impl [Effect LLVM.Unreachable _] idx il = do
+      impl [Effect L.Unreachable _] idx il = do
         defineBlock (blockName idx) (reverse (Unreachable : il))
-      impl [Effect LLVM.Unwind _] idx il = do
-        defineBlock (blockName idx) (reverse (Unwind : il))
+      impl [stmt@(Effect L.Unwind _)] idx il = do
+        ss <- unsupportedStmt stmt
+        defineBlock (blockName idx) (reverse (ss : il))
       -- | Phi statements are handled by initial blocks.
-      impl (Result _id (LLVM.Phi _ _) _:r) idx il = impl r idx il
-      impl (Effect (LLVM.Comment _) _:r) idx il = impl r idx il
+      impl (Result _id (L.Phi _ _) _:r) idx il = impl r idx il
+      impl (Effect (L.Comment _) _:r) idx il = impl r idx il
       impl (stmt:rest) idx il = do
         s' <- liftStmt stmt
         impl rest idx (s' : il)
-   in impl (LLVM.bbStmts bb) 0 []
+   in impl (L.bbStmts bb) 0 []
 
 -- Lift LLVM definition to symbolic definition {{{1
-liftDefine :: LLVMContext -> LLVM.Define -> ([TranslationWarning], SymDefine)
+liftDefine :: LLVMContext -> L.Define -> ([TranslationWarning], SymDefine)
 liftDefine lc d = (warnings,sd)
-  where cfg            = CFG.buildCFG (LLVM.defBody d)
+  where cfg            = CFG.buildCFG (L.defBody d)
         lti            = mkLTI cfg
         blocks         = ltiBlocks lti
         initBlock      = CFG.bbById cfg (CFG.entryId cfg)
@@ -613,10 +615,10 @@ liftDefine lc d = (warnings,sd)
         phiMap = blockPhiMap blocks
         (warnings,symBlocks) = runBlockGenerator (mapM_ (liftBB lti phiMap) blocks)
           where ?lc = lc
-        sd = SymDefine { sdName = LLVM.defName d
-                       , sdArgs = LLVM.defArgs d
-                       , sdVarArgs = LLVM.defVarArgs d
-                       , sdRetType = LLVM.defRetType d
+        sd = SymDefine { sdName = L.defName d
+                       , sdArgs = L.defArgs d
+                       , sdVarArgs = L.defVarArgs d
+                       , sdRetType = L.defRetType d
                        , sdBody = Map.fromList
                                     [ (sbId b,b) | b <- initSymBlock : symBlocks ]
                        }
@@ -624,12 +626,12 @@ liftDefine lc d = (warnings,sd)
 -- Test code {{{1
 {-
 -- | Translate the given module
-testTranslate :: LLVM.Module -> IO ()
+testTranslate :: L.Module -> IO ()
 testTranslate mdl = do
-  putStrLn $ render $ LLVM.ppModule mdl
+  putStrLn $ render $ L.ppModule mdl
   putStrLn $ replicate 80 '-'
   let lc = undefined
-  forM_ (LLVM.modDefines mdl) $ \def -> do
+  forM_ (L.modDefines mdl) $ \def -> do
     let (_,sd) = liftDefine lc def
     putStrLn $ render $ ppSymDefine sd
     putStrLn ""

@@ -10,12 +10,13 @@ import           System.Environment
 import           System.Process
 import           System.Directory
 import           System.FilePath
-import           LSS.Execution.Codebase
-import           LSS.Execution.Utils
-import           Data.LLVM.Symbolic.AST
-import           Data.LLVM.Symbolic.Translation
 import           Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM                      as LLVM
+
+import           Verifier.LLVM.AST
+import           Verifier.LLVM.Codebase
+import           Verifier.LLVM.Simulator.SimUtils
+import           Verifier.LLVM.Translation
 
 main :: IO ()
 main = do

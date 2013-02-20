@@ -15,19 +15,11 @@ import           Control.Applicative
 import           Control.Arrow
 import           Control.Monad hiding (mapM)
 import           Data.Int
-import           Data.LLVM.TargetData
 import           Data.Traversable (mapM)
-import           LSS.Execution.Codebase
-import           LSS.Execution.Common
-import           LSS.Execution.Utils
-import           LSS.LLVMUtils
-import           LSS.Simulator
 import           LSSImpl
 import           System.FilePath
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
-import           Verifier.LLVM.BitBlastBackend
-import           Verifier.LLVM.SAWBackend
 
 import           Text.LLVM                     ((=:))
 import           Verinf.Symbolic               (Lit, createBitEngine)
@@ -35,6 +27,15 @@ import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
 import Prelude hiding (mapM)
+
+import           Verifier.LLVM.BitBlastBackend
+import           Verifier.LLVM.Codebase
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.SAWBackend
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Simulator.Common
+import           Verifier.LLVM.Simulator.SimUtils
+import           Verifier.LLVM.Utils
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
 

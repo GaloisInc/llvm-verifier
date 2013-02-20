@@ -5,9 +5,8 @@
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 module Verifier.LLVM.SAWBackend where
 
-import Data.LLVM.Memory
-import Data.LLVM.TargetData
 import Verifier.LLVM.Backend
+import Verifier.LLVM.LLVMContext
 
 
 import Verifier.SAW
@@ -51,18 +50,11 @@ createSAWBackend _lc _mg = do
                 , applyIte = nyi "applyIte"
                 , asBool = nyi "asBool"
                 , evalPred = nyi "evalPred"
-
-                , termInt = lift2 sbeInt
                 , freshInt = nyi "freshInt"
-                , termDouble = nyi "termDouble"
-                , termFloat  = nyi "termFloat"
-                , termArray  = nyi "termArray"
-                , termStruct = nyi "termStruct"
                 , applyUAddWithOverflow = nyi "applyUAddWithOverflow"
 
                 , applyTypedExpr  = nyi "applyTypedExpr"
 
-                , closeTerm = nyi "closeTerm"
                 , prettyTermD = nyi "prettyTermD"
                 , prettyPredD = nyi "prettyPredD"
                 , asUnsignedInteger = nyi "asUnsignedInteger"

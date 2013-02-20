@@ -4,18 +4,19 @@
 {-# LANGUAGE RankNTypes       #-}
 {-# LANGUAGE ViewPatterns     #-}
 
-module LSS.Execution.Debugging where
+module Verifier.LLVM.Simulator.Debugging where
 
+import qualified Control.Exception      as CE
 import           Control.Monad
 import           Control.Monad.Trans
 import           Data.Bits
-import           Data.LLVM.TargetData
-import           LSS.Execution.Common
-import           LSS.Simulator
 import           Text.LLVM              (Typed(..))
-import qualified Control.Exception      as CE
 import qualified Text.LLVM              as L
+
 import           Verifier.LLVM.Backend
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.Simulator.Common
+import           Verifier.LLVM.Simulator
 
 -- NB: Currently only valid for SBEBitBlast mems
 sanityChecks ::

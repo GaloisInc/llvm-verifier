@@ -10,7 +10,7 @@
 --
 -- * The Symbolic IR includes explicit instructions for pushing and popping frames from
 --   the merge frame stack.
-module Data.LLVM.Symbolic.AST
+module Verifier.LLVM.AST
   ( FuncID
   , SymBlockID
   , Reg
@@ -68,7 +68,7 @@ import qualified Text.LLVM.AST as LLVM
 import qualified Text.LLVM.AST as L
 import Text.PrettyPrint.HughesPJ
 
-import Data.LLVM.TargetData
+import Verifier.LLVM.LLVMContext
 
 -- | A fake entry label to represent the function that calls a user function.
 entrySymbol :: LLVM.Symbol
@@ -153,12 +153,21 @@ arrayLType :: Int -> L.Type -> L.Type
 arrayLType n tp = L.Array (fromIntegral n) tp
 
 -- | Information about structs.  Offsets and size is in bytes.
-data StructInfo = StructInfo { structSize :: Size
-                             , structFields :: Vector (L.Type,Offset)
+data StructInfo = StructInfo { structPacked :: !Bool
+                             , structSize :: !Size
+                               
+                             , structFields :: !(Vector (L.Type,Offset))
                              }
 
+structInfoType :: StructInfo -> L.Type
+structInfoType si
+    | structPacked si = L.PackedStruct flds
+    | otherwise = L.Struct flds
+  where flds = V.toList $ fst <$> structFields si
+
 mkStructInfo :: (?lc :: LLVMContext) => Bool -> [L.Type] -> StructInfo
-mkStructInfo packed tpl = StructInfo { structSize = fromInteger (ssiBytes ssi)
+mkStructInfo packed tpl = StructInfo { structPacked = packed
+                                     , structSize = fromInteger (ssiBytes ssi)
                                      , structFields = V.fromList flds
                                      }
   where ssi = llvmStructInfo' ?lc packed tpl
@@ -267,7 +276,19 @@ data TypedExpr v
   | GetStructField StructInfo v Int
     -- | Return a specific elemnt of an array.
   | GetConstArrayElt L.Type v Int32
-  deriving (Functor, Foldable, Traversable)
+    -- | Integer width and value.
+  | SValInteger BitWidth Integer
+  | SValFloat  Float
+  | SValDouble Double
+    -- | Null pointer value with the width of the pointer and the type of the element
+    -- that it points to.
+  | SValNull BitWidth L.Type
+    -- | Array of values (strings are mapped to 8-bit integer arrays).
+  | SValArray L.Type (Vector v)
+  | SValStruct StructInfo (Vector v)
+    -- | Vector element with given values.
+  | SValVector L.Type (Vector v)
+ deriving (Functor, Foldable, Traversable)
 
 typedExprType :: TypedExpr v -> L.Type
 typedExprType tpe =
@@ -284,6 +305,13 @@ typedExprType tpe =
     GEP _ _ _ tp      -> tp
     GetStructField si _ i -> fst (structFields si V.! i)
     GetConstArrayElt tp _ _ -> tp
+    SValInteger w _ -> intLType w
+    SValDouble{} -> L.PrimType (L.FloatType L.Double)
+    SValFloat{} -> L.PrimType (L.FloatType L.Float)
+    SValNull _ tp -> L.PtrTo tp
+    SValArray tp l -> L.Array (fromIntegral (V.length l)) tp
+    SValStruct si _ -> structInfoType si
+    SValVector tp l -> L.Vector (fromIntegral (V.length l)) tp
 
 -- | Pretty print a typed expression.
 ppTypedExpr :: -- | Pretty printer for conversions
@@ -313,6 +341,15 @@ ppTypedExpr ppConv ppValue tpExpr =
           <+> commas (ppValue ptr : (ppGEPOffset ppValue <$> idxl))
       GetStructField _ v i -> text "extractfield" <+> ppValue v <+> text (show i)
       GetConstArrayElt _ v i -> text "arrayelt" <+> ppValue v <+> text (show i)
+      SValInteger _ i -> integer i
+      SValDouble i -> double i 
+      SValFloat i -> float i 
+      SValNull{} -> text "null"
+      SValArray _ es -> brackets $ commas $ V.toList $ ppValue <$> es
+      SValStruct si values -> L.structBraces (commas fl)
+        where fn (tp,_) v = L.ppType tp <+> ppValue v
+              fl = V.toList $ V.zipWith fn (structFields si) values
+      SValVector _ es -> brackets $ commas $ V.toList $ ppValue <$> es
   where ppMIntType Nothing w = ppIntType w
         ppMIntType (Just n) w = ppIntVector n w
         ppMType Nothing tp = L.ppType tp
@@ -320,42 +357,26 @@ ppTypedExpr ppConv ppValue tpExpr =
 
 -- | Represents a value in the symbolic simulator.
 data TypedSymValue
-    -- | Integer width and value.
-  = SValInteger Int Integer
-  -- Gap
-  | SValDouble Double
-  -- Gap
-  | SValIdent L.Ident 
-  -- | Symbol and arguments types if it is a function.
-  | SValSymbol L.Symbol (Maybe [L.Type])
-  -- | Null pointer value with the type of the element it points to.
-  | SValNull L.Type
-    -- | Array of values (strings are mapped to 8-bit integer arrays).
-  | SValArray L.Type [TypedSymValue]
-  | SValStruct [L.Typed TypedSymValue]
+    -- | Register identifier.
+  = SValIdent L.Ident 
+     -- | Symbol 
+  | SValSymbol L.Symbol
   | SValExpr (TypedExpr TypedSymValue)
-  | SValUndef L.Type
-  | SValZeroInit L.Type
 
 sValString :: String -> TypedSymValue
-sValString s = SValArray tp (toChar <$> s)
+sValString s = SValExpr $ SValArray tp (toChar <$> V.fromList s)
  where tp = L.PrimType (L.Integer 8)
-       toChar c = SValInteger 8 (toInteger (fromEnum c))
+       toChar c = SValExpr $ SValInteger 8 (toInteger (fromEnum c))
 
 ppTypedSymValue :: TypedSymValue -> Doc
 ppTypedSymValue = go
   where ppConv nm itp v rtp = text nm <+> parens (itp <+> go v <+> text "to" <+> rtp) 
-        go (SValInteger _ i) = integer i
-        --go (SValBool b) = L.ppBool b
-        go (SValDouble i) = double i 
         go (SValIdent i) = L.ppIdent i
-        go (SValSymbol s _) = L.ppSymbol s
-        go SValNull{} = text "null"
-        go (SValArray ty es) = brackets $ commas ((L.ppTyped go . L.Typed ty) <$> es)
-        go (SValStruct fs) = L.structBraces (commas (L.ppTyped go <$> fs))
+        go (SValSymbol s) = L.ppSymbol s
         go (SValExpr te) = ppTypedExpr ppConv go te
-        go (SValUndef _) = text "undef"
-        go (SValZeroInit _) = text "zeroinitializer"
+--        go (SValStruct fs) = L.structBraces (commas (L.ppTyped go <$> fs))
+--        go (SValUndef _) = text "undef"
+--        go (SValZeroInit _) = text "zeroinitializer"
 
 -- | Expression in Symbolic instruction set.
 -- | TODO: Make this data-type strict.
@@ -371,10 +392,6 @@ data SymExpr
 
 -- | Pretty print symbolic expression.
 ppSymExpr :: SymExpr -> Doc
-{-
-ppSymExpr (TypedExpr te) = ppTypedExpr ppConv ppTypedSymValue te
-  where ppConv nm itp v rtp = text nm <+> itp <+> ppTypedSymValue v <> comma <+> rtp
--}
 ppSymExpr (Val v) = ppTypedSymValue v
 ppSymExpr (Alloca ty mbLen mbAlign) = text "alloca" <+> L.ppType ty <> len <> align
   where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppTypedSymValue l) mbLen
@@ -419,8 +436,6 @@ data SymStmt
   | Store (L.Typed TypedSymValue) TypedSymValue (Maybe LLVM.Align)
   -- | Print out an error message if we reach an unreachable.
   | Unreachable
-  -- | Unwind exception path.
-  | Unwind
   -- | An LLVM statement that could not be translated.
   | BadSymStmt L.Stmt
   -- TODO: Support all exception handling.
@@ -431,8 +446,6 @@ ppSymStmt (PushCallFrame fn args res retTgt)
   <> parens (commas (map ppTypedSymValue args))
   <+> maybe (text "void") (LLVM.ppTyped ppReg) res
   <+> text "returns to" <+> ppSymBlockID retTgt
---ppSymStmt (PushPostDominatorFrame b) = text "pushPostDominatorFrame" <+> ppSymBlockID b
---ppSymStmt (MergePostDominator b) = text "mergePostDominator" <+> ppSymBlockID b 
 ppSymStmt (Return mv) = text "return" <+> maybe empty ppTypedSymValue mv
 ppSymStmt (PushPendingExecution b c ml rest) =
     text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
@@ -444,7 +457,6 @@ ppSymStmt (Store v addr malign) =
   text "store" <+> L.ppTyped ppTypedSymValue v <> comma
                <+> ppTypedSymValue addr <> LLVM.ppAlign malign
 ppSymStmt Unreachable = text "unreachable"
-ppSymStmt Unwind = text "unwind"
 ppSymStmt (BadSymStmt s) = L.ppStmt s
 
 data SymBlock = SymBlock {

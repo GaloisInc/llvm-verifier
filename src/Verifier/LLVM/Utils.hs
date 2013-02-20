@@ -1,4 +1,11 @@
-module LSS.LLVMUtils where
+{- |
+Module           : $Header$
+Description      : Utility functions for execution of LLVM Symbolic programs
+Stability        : provisional
+Point-of-contact : jhendrix
+-}
+
+module Verifier.LLVM.Utils where
 
 import           Control.Applicative
 import           Data.Bits
