@@ -6,6 +6,7 @@ Point-of-contact : jstanley
 -}
 
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE ImplicitParams      #-}
 {-# LANGUAGE Rank2Types          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns        #-}
@@ -57,8 +58,11 @@ structInitAccessImpl = do
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
     Just rv -> do
-      [L.Typed _ bx, L.Typed _ by, _] <- do
-        withSBE $ \sbe -> termDecomp sbe [i32, i8, padTy 3] rv
+      lc <- getLC
+      let ?lc = lc
+      let si = mkStructInfo False [i32, i8, padTy 3]
+      bx <- withSBE $ \sbe -> applyTypedExpr sbe (GetStructField si rv 0)
+      by <- withSBE $ \sbe -> applyTypedExpr sbe (GetStructField si rv 1)
       bxc <- withSBE' $ \s -> asSignedInteger s bx
       byc <- withSBE' $ \s -> asSignedInteger s by
       return $ bxc `constTermEq` 42

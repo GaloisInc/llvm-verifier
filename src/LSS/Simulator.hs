@@ -52,6 +52,8 @@ module LSS.Simulator
   , withSBE
   , withSBE'
   , getSizeT
+  , getLC
+  , mkStructInfo
   -- * Memory operations
   , alloca
   , load
@@ -82,7 +84,6 @@ import           Data.Maybe
 import           Data.String
 import           LSS.Execution.Codebase
 import           LSS.Execution.Common
---import           LSS.Execution.MergeFrame
 import           LSS.Execution.Utils
 import           LSS.LLVMUtils
 import           Numeric                   (showHex)
@@ -359,7 +360,7 @@ intrinsic intr mreg args0 =
       res <- withSBE $ \sbe -> termStruct sbe [ L.Typed (intn (fromIntegral w)) z'
                                               , L.Typed i1 ov
                                               ]
-      assign (typedValue reg) (Typed (L.Struct [intn (fromIntegral w), i1]) res)
+      assign reg res
     objSz is32 reg = do
       let [_ptr, maxOrMin] = args0
       mval <- withSBE' $ \s -> snd <$> asUnsignedInteger s maxOrMin
@@ -369,7 +370,7 @@ intrinsic intr mreg args0 =
                               then int32const $ if v == 0 then -1 else 0
                               else int64const $ if v == 0 then -1 else 0
                    in
-                     assign (typedValue reg) =<< getTypedTerm "objSz" tv
+                     assign reg . typedValue =<< getTypedTerm "objSz" tv
 
 
 memSet :: ( Functor m, MonadIO m
@@ -527,8 +528,8 @@ run = do
 -- LLVM-Sym operations
 
 assign :: (Functor m, MonadIO m)
-       => Reg -> Typed (SBETerm sbe) -> Simulator sbe m ()
-assign reg v = modifyPathRegs $ M.insert reg v
+       => L.Typed Reg -> SBETerm sbe -> Simulator sbe m ()
+assign (L.Typed tp reg) v = modifyPathRegs $ M.insert reg (L.Typed tp v)
 
 -- | Evaluate condition in current path.
 evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBEPred sbe)
@@ -694,8 +695,8 @@ step (PushCallFrame callee args mres retTgt) = do
 
 step (Return mtv) = do
   sbe <- gets symBE
-  mrv <- mapM (getTypedTerm "mergeReturn") mtv
-  tryModifyCSIO "Return" $ returnCurrentPath sbe (typedValue <$> mrv)
+  mrv <- mapM (getBackendValue "mergeReturn") mtv
+  tryModifyCSIO "Return" $ returnCurrentPath sbe mrv
 
 step (PushPendingExecution bid cond ml elseStmts) = do
   sbe <- gets symBE
@@ -745,57 +746,23 @@ eval ::
   , MonadIO m
   , Functor sbe
   )
-  => SymExpr -> Simulator sbe m (Typed (SBETerm sbe))
-
-eval (TypedExpr tp te) = do
+  => SymExpr -> Simulator sbe m (SBETerm sbe)
+eval (TypedExpr te) = do
   ec <- getCurrentEvalContext "typedExpr"
   tv <- mapM (getTypedTerm' ec) te
-  Typed tp <$> withSBE (\sbe -> applyTypedExpr sbe tv)
-eval (Alloca (L.Alias a) msztv malign) = do
-  ty <- withLC (`llvmLookupAlias` a)
-  eval (Alloca ty msztv malign)
-eval (Alloca ty msztv malign ) = do
+  withSBE (\sbe -> applyTypedExpr sbe tv)
+eval (Alloca ty msztv malign) = do
   sizeTm <-
     case msztv of
-      Just tv -> getTypedTerm "alloca" tv
+      Just (w,v) -> L.Typed (L.PrimType (L.Integer (fromIntegral w))) <$>
+                      getBackendValue "alloca" v
       Nothing -> getSizeT 1
-  alloca ty sizeTm malign
-eval (Load (Typed (L.Alias a) v) malign) = do
-  ty <- withLC (`llvmLookupAlias` a)
-  eval (Load (Typed ty v) malign)
-eval (Load tv@(Typed (L.PtrTo ty) _) _malign) = do
-  addrTerm <- getTypedTerm "load" tv
+  typedValue <$> alloca ty sizeTm malign
+eval (Load v ty _malign) = do
+  addrTerm <- getBackendValue "load" v
   dumpMem 6 "load pre"
-  v <- load addrTerm
-  return (Typed ty v) <* dumpMem 6 "load post"
-eval e@(Load _ _) = illegal $ "Load operand: " ++ show (ppSymExpr e)
-
-eval (Val tv)                  = getTypedTerm "eval@Val" tv
-eval (ExtractValue tv i      ) = evalExtractValue tv i
-eval (InsertValue _tv _ta _i ) = unimpl "eval InsertValue"
-
-evalExtractValue ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  )
-  => Typed SymValue -> [Int32] -> Simulator sbe m (Typed (SBETerm sbe))
-evalExtractValue (Typed (L.Alias a) v) idxs = do
-  t <- withLC (`llvmLookupAlias` a)
-  evalExtractValue (Typed t v) idxs
-evalExtractValue tv idxs = do
-  sv <- getTypedTerm "evalExtractValue" tv
-  go sv idxs
-    where go v [] = return v
-          go (Typed (L.Struct ftys) v) (i : is) = impl v ftys i is
-          go (Typed (L.PackedStruct ftys) v) (i : is) = impl v ftys i is
-          go (Typed (L.Array n ty) v) (i : is) =
-            impl v (replicate (fromIntegral n) ty) i is
-          go _ _ = error "non-composite type in extractvalue"
-          impl v tys i is =
-            CE.assert (fromIntegral i <= length tys) $ do
-              vs <- withSBE $ \sbe -> termDecomp sbe tys v
-              go (vs !! fromIntegral i) is
+  load (L.Typed (L.PtrTo ty) addrTerm) <* dumpMem 6 "load post"
+eval (Val tv)                  = getBackendValue "eval@Val" tv
 
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
@@ -1498,9 +1465,9 @@ loadArray ::
   , Functor m
   , Functor sbe
   )
-  => Typed (SBETerm sbe)
-  -> L.Type
-  -> Integer
+  => Typed (SBETerm sbe) -- Term
+  -> L.Type -- Element type
+  -> Integer -- Count
   -> Simulator sbe m [SBETerm sbe]
 loadArray ptr ety count = do
   ptrWidth <- withLC llvmAddrWidthBits
@@ -1512,26 +1479,6 @@ loadArray ptr ety count = do
         addr' <- termAdd ptrWidth (typedValue addr) one
         (t:) <$> go (typedAs addr addr') (size - 1)
   go ptr count
-
-storeArray ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  )
-  => SBETerm sbe
-  -> L.Type
-  -> [SBETerm sbe]
-  -> Simulator sbe m ()
-storeArray ptr ety elems = do
-  ptrWidth <- withLC llvmAddrWidthBits
-  elemWidth <- withLC (`llvmStoreSizeOf` ety)
-  one <- withSBE $ \s -> termInt s ptrWidth elemWidth
-  let go _addr [] = return ()
-      go addr (e:es) = do
-        store (Typed ety e) addr
-        addr' <- termAdd ptrWidth addr one
-        go addr' es
-  go ptr elems
 
 evalAigerOverride :: L.Type -> StdOvd m sbe
 evalAigerOverride ety =
@@ -1553,9 +1500,8 @@ evalAigerOverride ety =
     e = errorPath . FailRsn
 
 evalAigerArray :: L.Type -- Type of first argument pointer.
-               -> L.Type -- Type of input pointer
                -> StdOvd sbe m
-evalAigerArray ty ety =
+evalAigerArray ty =
   Override $ \_sym _rty args ->
     case args of
       [sym, dst, szTm, input, inputSz] -> do
@@ -1563,17 +1509,14 @@ evalAigerArray ty ety =
         misz <- withSBE' $ \s -> snd <$> asUnsignedInteger s inputSz
         case (msz, misz) of
           (Just sz, Just isz) -> do
-            inputs <- loadArray (L.Typed (L.PtrTo ety) input) ety isz
+            inputs <- loadArray (L.Typed (L.PtrTo i8) input) i8 isz
             ints <- mapM
                     (\t -> withSBE' $ \s -> snd <$> asUnsignedInteger s t)
                     inputs
             let bools = map (not . (== 0)) $ catMaybes ints
-            tm <- loadArray (L.Typed (L.PtrTo ty) sym) ty sz
-            tm' <- withSBE $ \s -> termArray s ty tm
-            res <- withSBE $ \s -> evalAiger s bools tm'
-            let tys = replicate (fromIntegral sz) ety
-            res' <- withSBE $ \s -> termDecomp s tys res
-            storeArray dst ty (typedValue <$> res')
+            tm <- load (L.Typed (L.Array (fromInteger sz) ty) sym)
+            res <- withSBE $ \s -> evalAiger s bools tm
+            store (L.Typed (L.Array (fromInteger sz) ty) dst) res
             return Nothing
           _ -> e "lss_eval_aiger_array: symbolic sizes not supported"
       _ -> e "lss_eval_aiger_array: wrong number of arguments"
@@ -1733,13 +1676,13 @@ registerLSSOverrides = registerOverrides
   , ("lss_eval_aiger_uint32", i32, [i32, i8p, i32], False, evalAigerOverride i8)
   , ("lss_eval_aiger_uint64", i64, [i64, i8p, i32], False, evalAigerOverride i8)
   , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False
-    , evalAigerArray i8 i8)
+    , evalAigerArray i8)
   , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False
-    , evalAigerArray i16 i8)
+    , evalAigerArray i16)
   , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False
-    , evalAigerArray i32 i8)
+    , evalAigerArray i32)
   , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False
-    , evalAigerArray i64 i8)
+    , evalAigerArray i64)
   , ("lss_write_cnf", voidTy, [i32, strTy], False, writeCNF)
   , ("lss_override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
   , ("lss_override_function_by_addr", voidTy, [strTy, strTy], False, overrideByAddr)

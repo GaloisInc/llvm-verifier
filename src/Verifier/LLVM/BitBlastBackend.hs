@@ -45,6 +45,7 @@ import           Data.Binary.IEEE754
 import           Data.Bits
 import           Data.Foldable
 import           Data.IORef
+import Data.LLVM.Symbolic.AST
 import           Data.LLVM.Memory
 import           Data.LLVM.TargetData
 import           Data.List                 (unfoldr)
@@ -1582,7 +1583,8 @@ sbeBitBlast lc mm = sbe
           , termFloat        = return . BitTerm . beVectorFromInt be 32 . toInteger . floatToWord
           , termArray        = \_ l -> return (termArrayImpl l)
           , termStruct       = \l -> return (termArrayImpl (L.typedValue <$> l))
-          , termDecomp       = return `c2` termDecompImpl lc be
+
+--          , termDecomp       = return `c2` termDecompImpl lc be
           
           , applyTypedExpr = \texpr -> BitIO $
               case texpr of
@@ -1645,6 +1647,13 @@ sbeBitBlast lc mm = sbe
                           let szv = beVectorFromInt be ptrWidth sz
                           let idx' = beZeroIntCoerce be ptrWidth idx
                           beAddInt be p =<< beMulInt be szv idx'
+                GetStructField si (BitTerm t) i ->
+                    return $ BitTerm (LV.slice (8 * fromIntegral off) sz t)
+                  where (etp,off) = structFields si V.! i
+                        sz = fromIntegral $ llvmMinBitSizeOf lc etp
+                GetConstArrayElt etp (BitTerm t) i ->
+                    return $ BitTerm (LV.slice (sz * fromIntegral i) sz t)
+                  where sz = fromIntegral $ llvmMinBitSizeOf lc etp
           , applyUAddWithOverflow = \_ (BitTerm x) (BitTerm y) -> do
               (c,z) <- BitIO $ beFullAddInt be x y
               return (BitTerm (LV.singleton c), BitTerm z)
@@ -1684,26 +1693,6 @@ sbeBitBlast lc mm = sbe
     getV (BitTerm v) = v
     termArrayImpl [] = BitTerm $ bmError "sbeBitBlast: termArray: empty term list"
     termArrayImpl ts = BitTerm $ foldr1 (LV.++) (map getV ts)
-
-termDecompImpl :: (LV.Storable l, Eq l)
-               => LLVMContext
-               -> BitEngine l
-               -> [LLVM.Type]
-               -> BitTerm l
-               -> [LLVM.Typed (BitTerm l)]
-termDecompImpl lc _be tys0 (BitTerm t)
-  | expectedLength /= fromIntegral (LV.length t)
-  = error $ "termDecompImpl: sum of type sizes must equal bitvector length"
-    ++ show (tys0, expectedLength, LV.length t)
-  | otherwise
-  = unfoldr slice (t, tys0)
-  where
-    expectedLength = sum (map (llvmMinBitSizeOf lc) tys0) 
-    slice (bv, [])       = assert (LV.null bv) Nothing
-    slice (bv, (ty:tys)) = Just (bt $ LV.take sz bv, (LV.drop sz bv, tys))
-      where
-        bt = LLVM.Typed ty . BitTerm
-        sz = fromIntegral $ llvmMinBitSizeOf lc ty
 
 -- Test code {{{1
 testSBEBitBlast :: IO ()

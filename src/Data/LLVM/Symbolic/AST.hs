@@ -27,8 +27,11 @@ module Data.LLVM.Symbolic.AST
   , TypedExpr(..)
   , typedExprType
   , StructInfo(..)
+  , Offset
+  , Size
   , mkStructInfo
   , structFieldOffset
+  , Int32
   , GEPOffset(..)
   , SymExpr(..)
   , SymCond(..)
@@ -122,20 +125,17 @@ type Typed v = LLVM.Typed v
 
 type SymValue = L.Value
 
- 
-ppSymValue :: SymValue -> Doc
-ppSymValue = LLVM.ppValue
-
-ppTypedValue :: Typed SymValue -> Doc
-ppTypedValue = L.ppTyped ppSymValue  -- TODO: See if type information is needed.
-
 type BitWidth = Int 
 
 type Size = Word64
 type Offset = Word64
 
+
 ppIntType :: BitWidth -> Doc
 ppIntType i = char 'i' <> integer (toInteger i)
+
+ppPtrType :: L.Type -> Doc
+ppPtrType tp = L.ppType tp <> char '*'
 
 ppVector :: Int -> Doc -> Doc
 ppVector n e = L.angles (int n <+> char 'x' <+> e)
@@ -152,6 +152,7 @@ intLType w = L.PrimType (L.Integer (fromIntegral w))
 arrayLType :: Int -> L.Type -> L.Type
 arrayLType n tp = L.Array (fromIntegral n) tp
 
+-- | Information about structs.  Offsets and size is in bytes.
 data StructInfo = StructInfo { structSize :: Size
                              , structFields :: Vector (L.Type,Offset)
                              }
@@ -262,6 +263,10 @@ data TypedExpr v
   | Bitcast L.Type v L.Type
     -- | GEP instruction
   | GEP Bool v [GEPOffset v] L.Type
+    -- | Return a field out of a struct 
+  | GetStructField StructInfo v Int
+    -- | Return a specific elemnt of an array.
+  | GetConstArrayElt L.Type v Int32
   deriving (Functor, Foldable, Traversable)
 
 typedExprType :: TypedExpr v -> L.Type
@@ -277,6 +282,8 @@ typedExprType tpe =
     Select mn _ tpv _ _ -> maybe id arrayLType mn tpv
     Bitcast _ _ tp    -> tp
     GEP _ _ _ tp      -> tp
+    GetStructField si _ i -> fst (structFields si V.! i)
+    GetConstArrayElt tp _ _ -> tp
 
 -- | Pretty print a typed expression.
 ppTypedExpr :: -- | Pretty printer for conversions
@@ -304,6 +311,8 @@ ppTypedExpr ppConv ppValue tpExpr =
       Bitcast itp v rtp   -> ppConv "bitcast"  (L.ppType itp)     v (L.ppType rtp)
       GEP ib ptr idxl _ -> text "getelementptr" <+> L.opt ib (text "inbounds")
           <+> commas (ppValue ptr : (ppGEPOffset ppValue <$> idxl))
+      GetStructField _ v i -> text "extractfield" <+> ppValue v <+> text (show i)
+      GetConstArrayElt _ v i -> text "arrayelt" <+> ppValue v <+> text (show i)
   where ppMIntType Nothing w = ppIntType w
         ppMIntType (Just n) w = ppIntVector n w
         ppMType Nothing tp = L.ppType tp
@@ -353,28 +362,24 @@ ppTypedSymValue = go
 -- | TODO: Make this data-type strict.
 data SymExpr
   -- | Statement for type-checked operations.
-  = TypedExpr L.Type (TypedExpr TypedSymValue)
+  = TypedExpr (TypedExpr TypedSymValue)
+  | Val TypedSymValue
   -- | @Alloca tp sz align@  allocates a new pointer to @sz@ elements of type
   -- @tp@ with alignment @align@.
-  | Alloca LLVM.Type (Maybe (Typed SymValue)) (Maybe Int)
-  | Load (Typed SymValue) (Maybe LLVM.Align)
-  -- | A copy of a value.
-  | Val (Typed SymValue)
-  | ExtractValue (Typed SymValue) [Int32]
-  | InsertValue (Typed SymValue) (Typed SymValue) [Int32]
+  | Alloca LLVM.Type (Maybe (BitWidth, TypedSymValue)) (Maybe Int)
+    -- @Load ptr tp malign@ tp is type to load.
+  | Load TypedSymValue L.Type (Maybe LLVM.Align)
 
 -- | Pretty print symbolic expression.
 ppSymExpr :: SymExpr -> Doc
-ppSymExpr (TypedExpr _ te) = ppTypedExpr ppConv ppTypedSymValue te
+ppSymExpr (TypedExpr te) = ppTypedExpr ppConv ppTypedSymValue te
   where ppConv nm itp v rtp = text nm <+> itp <+> ppTypedSymValue v <> comma <+> rtp
-ppSymExpr (Alloca ty len align) = LLVM.ppAlloca ty len align
-ppSymExpr (Load ptr malign) = text "load" <+> ppTypedValue ptr <> LLVM.ppAlign malign
-ppSymExpr (Val v) = ppTypedValue v
-ppSymExpr (ExtractValue v is) = text "extractvalue" <+> ppTypedValue v
-                              <> comma <+> text (show is)
-ppSymExpr (InsertValue a v is) = text "insertvalue" <+> ppTypedValue a
-                               <> comma <+> ppTypedValue v
-                               <> comma <+> text (show is)
+ppSymExpr (Alloca ty mbLen mbAlign) = text "alloca" <+> L.ppType ty <> len <> align
+  where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppTypedSymValue l) mbLen
+        align = maybe empty (\a -> comma <+> text "align" <+> int a) mbAlign
+ppSymExpr (Load ptr tp malign) =
+  text "load" <+> ppPtrType tp <+> ppTypedSymValue ptr <> L.ppAlign malign
+ppSymExpr (Val v) = ppTypedSymValue v
 
 -- | Predicates in symbolic simulator context.
 data SymCond
@@ -399,7 +404,7 @@ data SymStmt
   = PushCallFrame TypedSymValue [TypedSymValue] (Maybe (Typed Reg)) SymBlockID
   -- | @Return@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
-  | Return (Maybe (Typed SymValue))
+  | Return (Maybe TypedSymValue)
   -- | @PushPendingExecution tgt c rest@ make the current state a pending execution in the
   -- top-most merge frame with the additional path constraint c, and current block @tgt@.
   -- The final arguments contains the statements to execute with the other path (which 
@@ -408,7 +413,7 @@ data SymStmt
   -- | Sets the block to the given location.
   | SetCurrentBlock SymBlockID
   -- | Assign result of instruction to register.
-  | Assign Reg SymExpr
+  | Assign (L.Typed Reg) SymExpr
   -- | @Store v addr@ stores value @v@ in @addr@.
   | Store (L.Typed TypedSymValue) TypedSymValue (Maybe LLVM.Align)
   -- | Print out an error message if we reach an unreachable.
@@ -427,13 +432,13 @@ ppSymStmt (PushCallFrame fn args res retTgt)
   <+> text "returns to" <+> ppSymBlockID retTgt
 --ppSymStmt (PushPostDominatorFrame b) = text "pushPostDominatorFrame" <+> ppSymBlockID b
 --ppSymStmt (MergePostDominator b) = text "mergePostDominator" <+> ppSymBlockID b 
-ppSymStmt (Return mv) = text "return" <+> maybe empty ppTypedValue mv
+ppSymStmt (Return mv) = text "return" <+> maybe empty ppTypedSymValue mv
 ppSymStmt (PushPendingExecution b c ml rest) =
     text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
       $+$ vcat (fmap ppSymStmt rest)
   where loc = maybe (text "return") ppSymBlockID ml
 ppSymStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
-ppSymStmt (Assign v e) = ppReg v <+> char '=' <+> ppSymExpr e
+ppSymStmt (Assign (L.Typed _ v) e) = ppReg v <+> char '=' <+> ppSymExpr e
 ppSymStmt (Store v addr malign) =
   text "store" <+> L.ppTyped ppTypedSymValue v <> comma
                <+> ppTypedSymValue addr <> LLVM.ppAlign malign

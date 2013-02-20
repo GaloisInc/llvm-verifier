@@ -321,6 +321,7 @@ liftGEP inbounds (Typed initType initValue) = go [] initType
           go (StructField si idx:args) tp r
         goStruct _ _ _ = gepFailure "goStruct"
         
+
 liftStmt :: (?lc :: LLVMContext) => L.Stmt -> BlockGenerator SymStmt
 liftStmt stmt = do
   case stmt of
@@ -332,10 +333,10 @@ liftStmt stmt = do
     Effect{} -> unsupportedStmt stmt
     Result r app _ -> trySymStmt stmt $ do
       -- Return an assignemnt statement for the value.
-      let retExpr :: Monad m => SymExpr -> m SymStmt
-          retExpr e = return (Assign r e)
+      let retExpr :: Monad m => L.Type -> SymExpr -> m SymStmt
+          retExpr tp e = return (Assign (L.Typed tp r) e)
       let retTExpr :: Monad m => TypedExpr TypedSymValue -> m SymStmt
-          retTExpr v = retExpr (TypedExpr (typedExprType v) v)
+          retTExpr v = retExpr (typedExprType v) (TypedExpr v)
       let retIntArith op tp u v = do
             x <- liftValue tp u
             y <- liftValue tp v
@@ -397,8 +398,15 @@ liftStmt stmt = do
                 _ -> fail "Could not parse conversion types"
             L.BitCast -> retTExpr (Bitcast itp sv rtp)
             _ -> fail "Unsupported conversion operator"
-        L.Alloca tp mtpv mi  -> retExpr $ Alloca tp mtpv mi
-        L.Load tpv malign    -> retExpr $ Load tpv malign
+        L.Alloca tp Nothing mi -> retExpr (L.PtrTo tp) $ Alloca tp Nothing mi
+        L.Alloca tp (Just (L.Typed szTp sz)) mi -> do
+          w <- asIntType szTp
+          v <- liftValue szTp sz
+          retExpr (L.PtrTo tp) $ Alloca tp (Just (w,v)) mi 
+        L.Load (L.Typed tp ptr) malign -> do
+          etp <- asPtrType tp
+          v <- liftValue tp ptr
+          retExpr etp (Load v etp malign)
         L.ICmp op (L.Typed tp u) v -> do
           x <- liftValue tp u
           y <- liftValue tp v
@@ -417,8 +425,35 @@ liftStmt stmt = do
             (VectorType n w, VectorType nr tpe) | w == 1 && n == nr ->
               retTExpr $ Select (Just n) c tpe v1 v2
             _  -> fail "Could not parse select intruction."
-        L.ExtractValue tpv i -> retExpr $ ExtractValue tpv i
-        L.InsertValue tpv tpa i -> retExpr $ InsertValue tpv tpa i
+        L.ExtractValue (L.Typed vtp v) il -> go vtp il =<< liftValue vtp v
+          where go :: L.Type
+                   -> [Int32]
+                   -> TypedSymValue
+                   -> Maybe SymStmt
+                go tp [] sv = retExpr tp (Val sv)
+                go (L.Alias a) l sv = lookupAlias a >>= \t -> go t l sv
+                go (L.Struct ftys) (i0 : is) sv
+                   | 0 <= i && i < length ftys =
+                       go (ftys !! i) is (SValExpr (GetStructField si sv i))
+                   | otherwise = fail "Illegal index"
+                  where i = fromIntegral i0
+                        si = mkStructInfo False ftys
+                go (L.PackedStruct ftys) (i0 : is) sv
+                    | 0 <= i && i < length ftys =
+                       go (ftys !! i) is (SValExpr (GetStructField si sv i))
+                    | otherwise = fail "Illegal index"
+                  where i = fromIntegral i0
+                        si = mkStructInfo True ftys
+                go (L.Array n tp) (i : is) sv
+                    | 0 <= i && i < n = go tp is (SValExpr (GetConstArrayElt tp sv i))
+                    | otherwise = fail "Illegal index"
+                go _ _ _ = fail "non-composite type in extractvalue"
+
+{-
+        L.InsertValue tpv@(L.Typed tp _) tpa i -> do
+          (_, rtp) <- liftAggregateOffsets tp i
+          retExpr rtp $ InsertValue tpv tpa i
+-}
         _ -> fail "Unsupported instruction"
 
 -- Lift LLVM basic block to symbolic block {{{1
@@ -443,17 +478,17 @@ liftBB lti phiMap bb = do
       -- instructions.
       phiInstrs :: LLVM.BlockLabel -> [SymStmt]
       phiInstrs tgt =
-          [ Assign r (Val Typed { typedType = tp, typedValue = val })
+          [ Assign (L.Typed tp r) val
             | (r, tp, valMap) <- case Map.lookup tgt phiMap of
                 Nothing -> error "AST xlate: missing tgt entry in phiMap"
                 Just x  -> x
-            , let val = case Map.lookup llvmId valMap of
+            , let val = case liftValue tp =<< Map.lookup llvmId valMap of
                           Nothing -> error $
                             "AST xlate: expected to find "
                             ++ show (LLVM.ppLabel llvmId)
                             ++ " as a phi operand of block"
                             ++ " labeled " ++ show (LLVM.ppLabel tgt)
-                          Just x -> x
+                          Just x -> Val x
           ]
       -- @brSymInstrs tgt@ returns the code for jumping to the target block.
       -- Observations:
@@ -482,8 +517,12 @@ liftBB lti phiMap bb = do
                        int idx <+>
                        text "after generating the following statements:" $$
                        (nest 2 . vcat . map ppSymStmt $ il)
-      impl [Effect (LLVM.Ret tpv) _] idx il =
-        defineBlock (blockName idx) (reverse il ++ [Return (Just tpv)])
+      impl [stmt@(Effect (LLVM.Ret tpv) _)] idx il = do
+        symStmt <- 
+          case liftTypedValue tpv of
+            Just v -> return $ Return (Just v)
+            Nothing -> unsupportedStmt stmt   
+        defineBlock (blockName idx) (reverse il ++ [symStmt])
       impl [Effect LLVM.RetVoid _] idx il =
         defineBlock (blockName idx) (reverse il ++ [Return Nothing])     
       -- For function calls, we:

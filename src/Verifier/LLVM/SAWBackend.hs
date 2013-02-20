@@ -58,7 +58,6 @@ createSAWBackend _lc _mg = do
                 , termFloat  = nyi "termFloat"
                 , termArray  = nyi "termArray"
                 , termStruct = nyi "termStruct"
-                , termDecomp = nyi "termDecomp"
                 , applyUAddWithOverflow = nyi "applyUAddWithOverflow"
 
                 , applyTypedExpr  = nyi "applyTypedExpr"
