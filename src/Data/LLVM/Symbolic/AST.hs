@@ -322,7 +322,6 @@ ppTypedExpr ppConv ppValue tpExpr =
 data TypedSymValue
     -- | Integer width and value.
   = SValInteger Int Integer
-  -- | SValBool Bool
   -- Gap
   | SValDouble Double
   -- Gap
@@ -362,8 +361,8 @@ ppTypedSymValue = go
 -- | TODO: Make this data-type strict.
 data SymExpr
   -- | Statement for type-checked operations.
-  = TypedExpr (TypedExpr TypedSymValue)
-  | Val TypedSymValue
+  -- = TypedExpr (TypedExpr TypedSymValue)
+  = Val TypedSymValue
   -- | @Alloca tp sz align@  allocates a new pointer to @sz@ elements of type
   -- @tp@ with alignment @align@.
   | Alloca LLVM.Type (Maybe (BitWidth, TypedSymValue)) (Maybe Int)
@@ -372,14 +371,16 @@ data SymExpr
 
 -- | Pretty print symbolic expression.
 ppSymExpr :: SymExpr -> Doc
+{-
 ppSymExpr (TypedExpr te) = ppTypedExpr ppConv ppTypedSymValue te
   where ppConv nm itp v rtp = text nm <+> itp <+> ppTypedSymValue v <> comma <+> rtp
+-}
+ppSymExpr (Val v) = ppTypedSymValue v
 ppSymExpr (Alloca ty mbLen mbAlign) = text "alloca" <+> L.ppType ty <> len <> align
   where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppTypedSymValue l) mbLen
         align = maybe empty (\a -> comma <+> text "align" <+> int a) mbAlign
 ppSymExpr (Load ptr tp malign) =
   text "load" <+> ppPtrType tp <+> ppTypedSymValue ptr <> L.ppAlign malign
-ppSymExpr (Val v) = ppTypedSymValue v
 
 -- | Predicates in symbolic simulator context.
 data SymCond

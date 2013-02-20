@@ -66,7 +66,7 @@ module LSS.Simulator
   , dbugTypedTerm
   , dumpMem
   , getMem
-  , getTypedTerm
+--  , getTypedTerm
   , setSEH
   , withLC
   , warning
@@ -332,8 +332,8 @@ intrinsic intr mreg args0 =
     ("llvm.memcpy.p0i8.p0i8.i64", Nothing)    -> memcpy
     ("llvm.memset.p0i8.i64", Nothing)         -> memset 64
     ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow 64 reg
-    ("llvm.objectsize.i32", Just reg)         -> objSz True reg
-    ("llvm.objectsize.i64", Just reg)         -> objSz False reg
+    ("llvm.objectsize.i32", Just reg)         -> objSz 32 reg
+    ("llvm.objectsize.i64", Just reg)         -> objSz 64 reg
     -- Do nothing.
     ("llvm.lifetime.start", Nothing) -> return ()
     ("llvm.lifetime.end", Nothing) -> return ()
@@ -361,17 +361,13 @@ intrinsic intr mreg args0 =
                                               , L.Typed i1 ov
                                               ]
       assign reg res
-    objSz is32 reg = do
+    objSz w reg = do
       let [_ptr, maxOrMin] = args0
       mval <- withSBE' $ \s -> snd <$> asUnsignedInteger s maxOrMin
       case mval of
         Nothing -> errorPath $ FailRsn $ "llvm.objectsize.i{32,64} expects concrete 2nd parameter"
-        Just v  -> let tv = if is32
-                              then int32const $ if v == 0 then -1 else 0
-                              else int64const $ if v == 0 then -1 else 0
-                   in
-                     assign reg . typedValue =<< getTypedTerm "objSz" tv
-
+        Just v  -> assign reg =<< withSBE (\s -> termInt s w tv)
+          where tv = if v == 0 then -1 else 0
 
 memSet :: ( Functor m, MonadIO m
           , Functor sbe
@@ -582,24 +578,6 @@ getCurrentEvalContext nm = do
   mp <- getPath
   getEvalContext nm (pathRegs <$> mp)
 
--- | getTypedTerm' in the context of the current call frame
-getTypedTerm ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  )
-  => String -> Typed SymValue -> Simulator sbe m (Typed (SBETerm sbe))
-getTypedTerm nm tv@(L.Typed t v) = do
-  ec <- getCurrentEvalContext nm
-  withLLVMContext $
-    case liftTypedValue tv of
-      Nothing -> do
-        unimpl $ "getTypedTerm: unsupported value / call frame presence: "
-                  ++ "\n" ++ show (L.ppType t) ++ " =: " ++ show (L.ppValue v)
-                  ++ "\n" ++ show (parens $ text $ show tv)
-                 ++ "\nmrm = " ++ show (ppRegMap (evalSBE ec) <$> evalRegs ec)
-      Just tsv -> Typed t <$> getTypedTerm' ec tsv
-
 getBackendValue :: (Functor m, MonadIO m, Functor sbe) 
                 => String -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
 getBackendValue nm symValue = do
@@ -747,10 +725,7 @@ eval ::
   , Functor sbe
   )
   => SymExpr -> Simulator sbe m (SBETerm sbe)
-eval (TypedExpr te) = do
-  ec <- getCurrentEvalContext "typedExpr"
-  tv <- mapM (getTypedTerm' ec) te
-  withSBE (\sbe -> applyTypedExpr sbe tv)
+eval (Val tv) = getBackendValue "eval@Val" tv
 eval (Alloca ty msztv malign) = do
   sizeTm <-
     case msztv of
@@ -762,7 +737,6 @@ eval (Load v ty _malign) = do
   addrTerm <- getBackendValue "load" v
   dumpMem 6 "load pre"
   load (L.Typed (L.PtrTo ty) addrTerm) <* dumpMem 6 "load post"
-eval (Val tv)                  = getBackendValue "eval@Val" tv
 
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
@@ -1070,12 +1044,6 @@ errorPath rsn = do
 
 --------------------------------------------------------------------------------
 -- Debugging
-
-ppPathM :: (MonadIO m, Functor m) => String -> Path sbe -> Simulator sbe m ()
-ppPathM desc p = do
-  sbe <- gets symBE
-  dbugM $ desc ++ "\n" ++ show (ppPath sbe p)
-  withSBE (\s -> memDump s (pathMem p) Nothing)
 
 prettyTermSBE :: (Functor m, Monad m) => SBETerm sbe -> Simulator sbe m Doc
 prettyTermSBE t = withSBE' $ \s -> prettyTermD s t

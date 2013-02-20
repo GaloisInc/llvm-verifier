@@ -336,7 +336,7 @@ liftStmt stmt = do
       let retExpr :: Monad m => L.Type -> SymExpr -> m SymStmt
           retExpr tp e = return (Assign (L.Typed tp r) e)
       let retTExpr :: Monad m => TypedExpr TypedSymValue -> m SymStmt
-          retTExpr v = retExpr (typedExprType v) (TypedExpr v)
+          retTExpr v = retExpr (typedExprType v) (Val (SValExpr v))
       let retIntArith op tp u v = do
             x <- liftValue tp u
             y <- liftValue tp v

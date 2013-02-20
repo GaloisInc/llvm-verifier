@@ -99,9 +99,9 @@ data SBE m = SBE
     -- | @applyBNot @a@ performs negation of a boolean term
   , applyBNot :: SBEPred m -> m (SBEPred m)
     -- | @applyPredIte a b c@ creates an if-then-else term
-  , applyPredIte    :: SBEPred m -> SBEPred m -> SBEPred m -> m (SBEPred m)
+  , applyPredIte :: SBEPred m -> SBEPred m -> SBEPred m -> m (SBEPred m)
     -- | @applyIte a b c@ creates an if-then-else term
-  , applyIte    :: L.Type -> SBEPred m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIte     :: L.Type -> SBEPred m -> SBETerm m -> SBETerm m -> m (SBETerm m)
     -- | Interpret the term as a concrete boolean if it can be.
   , asBool :: SBEPred m -> Maybe Bool
 
@@ -127,12 +127,6 @@ data SBE m = SBE
 
     -- | Create an struct of terms, which may have different types.
   , termStruct :: [L.Typed (SBETerm m)] -> m (SBETerm m)
-
-{-
-    -- | @termDecomp tys t@ decomposes the given term into @(length tys)@ terms,
-    --  with each taking their type from the corresponding element of @tys@.
-  , termDecomp :: [L.Type] -> SBETerm m -> m [L.Typed (SBETerm m)]
--}
 
     ----------------------------------------------------------------------------
     -- Term operator application

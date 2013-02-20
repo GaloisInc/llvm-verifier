@@ -48,7 +48,6 @@ import           Data.IORef
 import Data.LLVM.Symbolic.AST
 import           Data.LLVM.Memory
 import           Data.LLVM.TargetData
-import           Data.List                 (unfoldr)
 import           Data.Map                  (Map)
 import           Data.Maybe (fromMaybe)
 import           Data.Set                  (Set)
