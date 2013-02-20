@@ -13,6 +13,7 @@ Point-of-contact : jstanley
 module Tests.AES (aesTests) where
 
 import           Control.Applicative
+import           Control.Monad (forM)
 import           Data.Maybe
 import           LSS.Execution.Debugging
 import           LSS.LLVMUtils
@@ -45,12 +46,13 @@ aes128ConcreteImpl = do
     callDefine (L.Symbol "aes128BlockEncrypt") voidTy args
   Just mem <- getProgramFinalMem
   ctarr <- withSBE $ \s -> snd <$> memLoad s mem (L.Typed (L.PtrTo arrayTy) ctRawPtr)
-  ctVals <- withSBE $ \s ->
-              fmap (getVal s) <$> termDecomp s (replicate 4 i32) ctarr
+
+  ctVals <- forM [0..3] $ \i ->
+    withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt i32 ctarr i)
   return (ctVals == ctChks)
   where
-    getVal :: SBE sbe -> L.Typed (SBETerm sbe) -> (Int,Integer)
-    getVal s v = fromJust $ asUnsignedInteger s (typedValue v)
+    getVal :: SBE sbe -> SBETerm sbe -> Integer
+    getVal s v = snd $ fromJust $ asUnsignedInteger s v
     initArr :: [Integer] -> Simulator sbe IO (SBETerm sbe)
     initArr xs = do
        arrElts <- mapM (withSBE . \x s -> termInt s 32 x) xs
@@ -63,7 +65,7 @@ aes128ConcreteImpl = do
     arrayTy = L.Array 4 i32
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]
     keyVals = [0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f]
-    ctChks  = (\v -> (32,v)) <$> [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]
+    ctChks  = [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]
 
 --------------------------------------------------------------------------------
 -- Scratch

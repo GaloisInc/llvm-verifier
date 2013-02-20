@@ -128,9 +128,11 @@ data SBE m = SBE
     -- | Create an struct of terms, which may have different types.
   , termStruct :: [L.Typed (SBETerm m)] -> m (SBETerm m)
 
+{-
     -- | @termDecomp tys t@ decomposes the given term into @(length tys)@ terms,
     --  with each taking their type from the corresponding element of @tys@.
   , termDecomp :: [L.Type] -> SBETerm m -> m [L.Typed (SBETerm m)]
+-}
 
     ----------------------------------------------------------------------------
     -- Term operator application
