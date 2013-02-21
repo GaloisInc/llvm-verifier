@@ -23,20 +23,16 @@
 module Verifier.LLVM.Translation
   ( module Verifier.LLVM.AST
   , liftDefine
-  , liftTypedValue
   , liftValue
-  , MaybeVectorType(..)
-  , asMaybePtrVectorType
-  , asMaybeIntVectorType
   ) where
 
 import Control.Applicative ((<$>))
 import Control.Monad (unless, zipWithM_)
 import Control.Monad.State.Strict (State, execState, modify)
-import           Data.Traversable
 import qualified Data.LLVM.CFG              as CFG
 import           Data.Map                   (Map)
 import qualified Data.Map                   as Map
+import           Data.Traversable
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as L
 import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
@@ -44,12 +40,9 @@ import           Text.PrettyPrint.HughesPJ
 
 import Prelude hiding (mapM)
 
-
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Utils
-
-import Debug.Trace
 
 -- Utility {{{1
 
@@ -296,7 +289,7 @@ liftGEP :: (?lc :: LLVMContext)
         -> [L.Typed L.Value]
         -> Maybe (L.Type, TypedExpr TypedSymValue)
 liftGEP inbounds (Typed initType initValue) = go [] initType
-  where gepFailure tp = trace ("GEPFailure: " ++ tp) fail "Could not parse GEP Value"
+  where gepFailure _ = fail "Could not parse GEP Value"
         go :: [GEPOffset TypedSymValue]
            -> L.Type
            -> [L.Typed L.Value]
@@ -459,8 +452,9 @@ liftStmt stmt = do
                   where i = fromIntegral i0
                         si = mkStructInfo True ftys
                 go (L.Array n tp) (i : is) sv
-                    | 0 <= i && i < n = go tp is (SValExpr (GetConstArrayElt tp sv i))
+                    | 0 <= i && i < n = go tp is (SValExpr expr)
                     | otherwise = fail "Illegal index"
+                  where expr = GetConstArrayElt (fromIntegral n) tp sv (fromIntegral i)
                 go _ _ _ = fail "non-composite type in extractvalue"
         _ -> fail "Unsupported instruction"
 

@@ -183,11 +183,8 @@ llvmAlignmentOf lc ty alignTy =
       _        ->
         -- Fall back on "natural alignment for vector types"
         case ty of
-          L.Vector (toInteger -> len) ety ->
-            let ea        = llvmAllocSizeOf lc ety * len
-                elemAlign = if isPow2 ea then ea else nextPow2 ea
-            in
-              AlignInfo VectorAlign elemAlign w
+          L.Vector (toInteger -> len) ety -> AlignInfo VectorAlign ea w
+            where ea = nextPow2 $ llvmAllocSizeOf lc ety * len
           _ -> error $ "internal: attempted to determine vector alignment "
                        ++ "for non-vector type"
     FloatAlign     -> requireExact "float"     (lkupAlign f w)

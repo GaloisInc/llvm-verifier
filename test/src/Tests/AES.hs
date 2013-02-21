@@ -17,7 +17,7 @@ import           Control.Monad (forM)
 import           Data.Maybe
 import           Test.QuickCheck
 import           Tests.Common
-import           Text.LLVM               ((=:), Typed(..), typedValue)
+import           Text.LLVM               ((=:))
 import qualified Text.LLVM               as L
 
 import           Verifier.LLVM.Backend
@@ -40,16 +40,15 @@ aes128ConcreteImpl = do
   ptptr  <- initArr ptVals
   keyptr <- initArr keyVals
   one <- getSizeT 1
-  ctptr  <- typedValue <$> alloca arrayTy one (Just 4)
+  ctptr  <- alloca arrayTy one (Just 4)
   let args :: [SBETerm sbe]
       args = [ptptr, keyptr, ctptr]
   [_, _, ctRawPtr] <-
     callDefine (L.Symbol "aes128BlockEncrypt") voidTy args
   Just mem <- getProgramFinalMem
-  ctarr <- withSBE $ \s -> snd <$> memLoad s mem (L.Typed (L.PtrTo arrayTy) ctRawPtr)
-
+  ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr
   ctVals <- forM [0..3] $ \i ->
-    withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt i32 ctarr i)
+    withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt 4 i32 ctarr i)
   return (ctVals == ctChks)
   where
     getVal :: SBE sbe -> SBETerm sbe -> Integer
@@ -59,7 +58,7 @@ aes128ConcreteImpl = do
        arrElts <- mapM (withSBE . \x s -> termInt s 32 x) xs
        arr <- withSBE $ \sbe -> termArray sbe (L.PrimType (L.Integer 32)) arrElts
        one <- getSizeT 1
-       p   <- typedValue <$> alloca arrayTy one (Just 4)
+       p   <- alloca arrayTy one (Just 4)
        store (arrayTy =: arr) p
        return p
 

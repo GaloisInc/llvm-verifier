@@ -68,6 +68,7 @@ import qualified Text.LLVM.AST as L
 import Text.PrettyPrint.HughesPJ
 
 import Verifier.LLVM.LLVMContext
+import Verifier.LLVM.Utils
 
 -- | A fake entry label to represent the function that calls a user function.
 entrySymbol :: LLVM.Symbol
@@ -118,45 +119,18 @@ ppSymBlockID (NamedBlock b n) = LLVM.ppLabel b <> char '.' <> int n
 type Reg = LLVM.Ident
 
 ppReg :: Reg -> Doc
-ppReg = LLVM.ppIdent
-
-type Typed v = LLVM.Typed v
+ppReg = L.ppIdent
 
 type SymValue = L.Value
-
-type BitWidth = Int 
 
 type Size = Word64
 type Offset = Word64
 
-
-ppIntType :: BitWidth -> Doc
-ppIntType i = char 'i' <> integer (toInteger i)
-
-ppPtrType :: L.Type -> Doc
-ppPtrType tp = L.ppType tp <> char '*'
-
-ppVector :: Int -> Doc -> Doc
-ppVector n e = L.angles (int n <+> char 'x' <+> e)
-
-ppIntVector :: Int -> BitWidth -> Doc
-ppIntVector n w = ppVector n (ppIntType w)
-
-ppTypeVector :: Int -> L.Type -> Doc
-ppTypeVector n w = ppVector n (L.ppType w)
-
 -- | Information about structs.  Offsets and size is in bytes.
 data StructInfo = StructInfo { structPacked :: !Bool
-                             , structSize :: !Size
-                               
+                             , structSize :: !Size                               
                              , structFields :: !(Vector (L.Type,Offset))
                              }
-
-structInfoType :: StructInfo -> L.Type
-structInfoType si
-    | structPacked si = L.PackedStruct flds
-    | otherwise = L.Struct flds
-  where flds = V.toList $ fst <$> structFields si
 
 mkStructInfo :: (?lc :: LLVMContext) => Bool -> [L.Type] -> StructInfo
 mkStructInfo packed tpl = StructInfo { structPacked = packed
@@ -171,6 +145,7 @@ structFieldOffset si i = assert (i < V.length f) o
   where f = structFields si
         (_,o) = f V.! i
 
+-- | Offset in GEP address calculation.
 data GEPOffset v
      -- | Returns the address of a field in a struct.
    = StructField StructInfo Int
@@ -196,6 +171,7 @@ type NSWFlag = Bool
 -- operation should not have any remainder.  Otherwise the value is undefined.
 type ExactFlag = Bool
 
+-- | Binary operation on integers.
 data IntArithOp
   = Add NUWFlag NSWFlag
   | Sub NUWFlag NSWFlag
@@ -270,8 +246,9 @@ data TypedExpr v
   | GEP Bool v [GEPOffset v] L.Type
     -- | Return a field out of a struct 
   | GetStructField StructInfo v Int
-    -- | Return a specific elemnt of an array.
-  | GetConstArrayElt L.Type v Int32
+    -- | Return a specific element of an array.
+    -- Arguments are: number of elements, element type, array, and index.
+  | GetConstArrayElt Int L.Type v Int
     -- | Integer width and value.
   | SValInteger BitWidth Integer
   | SValFloat  Float
@@ -315,7 +292,7 @@ ppTypedExpr ppConv ppValue tpExpr =
       GEP ib ptr idxl _ -> text "getelementptr" <+> L.opt ib (text "inbounds")
           <+> commas (ppValue ptr : (ppGEPOffset ppValue <$> idxl))
       GetStructField _ v i -> text "extractfield" <+> ppValue v <+> text (show i)
-      GetConstArrayElt _ v i -> text "arrayelt" <+> ppValue v <+> text (show i)
+      GetConstArrayElt _ _ v i -> text "arrayelt" <+> ppValue v <+> text (show i)
       SValInteger _ i -> integer i
       SValDouble i -> double i 
       SValFloat i -> float i 
@@ -375,13 +352,10 @@ ppSymExpr (Load ptr tp malign) =
 data SymCond
   -- | @HasConstValue v w i@ holds if @v@ corresponds to the constant @i@.
   = HasConstValue TypedSymValue BitWidth Integer
-  -- | @TrueSymCond@ always holds.
-  | TrueSymCond
 
 -- | Pretty print symbolic condition.
 ppSymCond :: SymCond -> Doc
 ppSymCond (HasConstValue v _ i) = ppTypedSymValue v <+> text "==" <+> integer i
-ppSymCond TrueSymCond = text "true"
 
 -- | A merge location is a block or Nothing if the merge happens at a return.
 type MergeLocation = Maybe SymBlockID
@@ -391,7 +365,7 @@ data SymStmt
   -- | @PushCallFrame fn args res retTarget@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@, and store the result in @res@ if the function
   -- returns normally.  The calling function will resume execution at retTarget.
-  = PushCallFrame TypedSymValue [TypedSymValue] (Maybe (Typed Reg)) SymBlockID
+  = PushCallFrame TypedSymValue [TypedSymValue] (Maybe (L.Typed Reg)) SymBlockID
   -- | @Return@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
   | Return (Maybe TypedSymValue)
@@ -410,7 +384,6 @@ data SymStmt
   | Unreachable
   -- | An LLVM statement that could not be translated.
   | BadSymStmt L.Stmt
-  -- TODO: Support all exception handling.
 
 ppSymStmt :: SymStmt -> Doc
 ppSymStmt (PushCallFrame fn args res retTgt)
@@ -441,8 +414,8 @@ ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (map ppSymStmt (sbStmts 
 
 -- | Symbolically lifted version of a LLVM definition.
 data SymDefine = SymDefine {
-         sdName :: LLVM.Symbol
-       , sdArgs :: [Typed Reg]
+         sdName :: L.Symbol
+       , sdArgs :: [L.Typed Reg]
        , sdVarArgs :: Bool
        , sdRetType :: LLVM.Type
        , sdBody :: Map SymBlockID SymBlock

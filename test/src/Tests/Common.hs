@@ -16,24 +16,23 @@ import           Control.Arrow
 import           Control.Monad hiding (mapM)
 import           Data.Int
 import           Data.Traversable (mapM)
-import           LSSImpl
 import           System.FilePath
+import qualified Text.LLVM                     as L
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
-
-import           Text.LLVM                     ((=:))
+import qualified Test.QuickCheck.Test          as T
 import           Verinf.Symbolic               (Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
-import qualified Test.QuickCheck.Test          as T
-import qualified Text.LLVM                     as L
+
 import Prelude hiding (mapM)
+
+import           LSSImpl
 
 import           Verifier.LLVM.BitBlastBackend
 import           Verifier.LLVM.Codebase
 import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.SAWBackend
 import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Simulator.Common
 import           Verifier.LLVM.Simulator.SimUtils
 import           Verifier.LLVM.Utils
 

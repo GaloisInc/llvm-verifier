@@ -366,13 +366,12 @@ loadTerm :: (Eq l, LV.Storable l)
          => LLVMContext
          -> MemModel (BitIO m l) (LV.Vector l)
          -> m
-         -> L.Typed (BitTerm l)
+         -> L.Type -- ^ Type to read
+         -> BitTerm l -- ^ Pointer to load
          -> IO (l, BitTerm l)
-loadTerm lc mm bm ptr
-  | L.PtrTo tp <- resolveType lc (L.typedType ptr) = do
-      Arrow.second (bytesToTerm lc tp) <$>
-        mmLoad mm bm (L.typedValue ptr) (llvmStoreSizeOf lc tp)
-  | otherwise = bmError "internal: Illegal type given to load"
+loadTerm lc mm bm tp ptr =
+  Arrow.second (bytesToTerm lc tp) <$>
+    mmLoad mm bm ptr (llvmStoreSizeOf lc tp)
 
 -- | Store term in memory model.
 storeTerm :: (Eq l, LV.Storable l)
@@ -1646,7 +1645,7 @@ sbeBitBlast lc mm = sbe
                     return $ BitTerm (LV.slice (8 * fromIntegral off) sz t)
                   where (etp,off) = structFields si V.! i
                         sz = fromIntegral $ llvmMinBitSizeOf lc etp
-                GetConstArrayElt etp (BitTerm t) i ->
+                GetConstArrayElt _ etp (BitTerm t) i ->
                     return $ BitTerm (LV.slice (sz * fromIntegral i) sz t)
                   where sz = fromIntegral $ llvmMinBitSizeOf lc etp
                 SValInteger w v ->
@@ -1670,7 +1669,7 @@ sbeBitBlast lc mm = sbe
               (LV.! 0) <$> beEvalAigV be (LV.fromList inps) (LV.singleton p)
           , asUnsignedInteger = \(BitTerm t) -> (LV.length t,) <$> lGetUnsigned t
           , memDump          = BitIO `c2` mmDump mm True
-          , memLoad          = BitIO `c2` loadTerm lc mm
+          , memLoad          = BitIO `c3` loadTerm lc mm
           , memStore         = BitIO `c3` storeTerm lc be mm
           , memBranch  = BitIO . mmRecordBranch mm
           , memBranchAbort   = BitIO . mmBranchAbort mm
@@ -1723,7 +1722,7 @@ testSBEBitBlast = do
     (_,m2) <- memStore sbe m1 (L.Typed i32 lv) sp
     liftIO $ putStrLn "m2:"
     memDump sbe m2 Nothing
-    (_lc2, BitTerm _lv2) <- memLoad sbe m2 (L.Typed (ptr i32) sp)
+    (_lc2, BitTerm _lv2) <- memLoad sbe m2 i32 sp
     liftIO $ putStrLn $ show $ (0x12345678 :: Integer)
     --liftIO $ putStrLn $ render $ text "Load condition:" <+> (let ?be = be in lPrettyLV lc2)
     --liftIO $ putStrLn $ render $ text "Load value:    " <+> (let ?be = be in lPrettyLV lv2)
