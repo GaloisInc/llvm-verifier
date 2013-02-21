@@ -229,7 +229,7 @@ liftValue (L.Array len (L.PrimType (L.Integer 8))) (L.ValString str) = do
 liftValue tp (L.ValConstExpr ce)  =
   case (tp,ce) of
     (_, L.ConstGEP inbounds (base:il)) -> do
-      SValExpr <$> liftGEP inbounds base il
+      SValExpr . snd <$> liftGEP inbounds base il
     --  evalGEP (GEP inbounds ptr idxs)
     (tp0, L.ConstConv op (L.Typed itp t) tp1) -> do
       rtp <- typesEq tp0 tp1
@@ -294,16 +294,16 @@ liftGEP :: (?lc :: LLVMContext)
         => Bool 
         -> L.Typed L.Value
         -> [L.Typed L.Value]
-        -> Maybe (TypedExpr TypedSymValue)
+        -> Maybe (L.Type, TypedExpr TypedSymValue)
 liftGEP inbounds (Typed initType initValue) = go [] initType
   where gepFailure tp = trace ("GEPFailure: " ++ tp) fail "Could not parse GEP Value"
         go :: [GEPOffset TypedSymValue]
            -> L.Type
            -> [L.Typed L.Value]
-           -> Maybe (TypedExpr TypedSymValue)
+           -> Maybe (L.Type, TypedExpr TypedSymValue)
         go args tp [] = do
           sv <- liftValue initType initValue
-          return $ GEP inbounds sv (reverse args) tp
+          return $ (tp, GEP inbounds sv (reverse args) tp)
         go args (L.Alias a) l = do
            tp <- lookupAlias a
            go args tp l
@@ -329,6 +329,12 @@ liftGEP inbounds (Typed initType initValue) = go [] initType
         goStruct _ _ _ = gepFailure "goStruct"
         
 
+intLType :: BitWidth -> L.Type
+intLType w = L.PrimType (L.Integer (fromIntegral w))
+
+vecLType :: Int -> L.Type -> L.Type
+vecLType = L.Vector . fromIntegral
+
 liftStmt :: (?lc :: LLVMContext) => L.Stmt -> BlockGenerator SymStmt
 liftStmt stmt = do
   case stmt of
@@ -342,28 +348,29 @@ liftStmt stmt = do
       -- Return an assignemnt statement for the value.
       let retExpr :: Monad m => L.Type -> SymExpr -> m SymStmt
           retExpr tp e = return (Assign (L.Typed tp r) e)
-      let retTExpr :: Monad m => TypedExpr TypedSymValue -> m SymStmt
-          retTExpr v = retExpr (typedExprType v) (Val (SValExpr v))
+      let retTExpr :: Monad m => L.Type -> TypedExpr TypedSymValue -> m SymStmt
+          retTExpr tp v = retExpr tp (Val (SValExpr v))
       let retIntArith op tp u v = do
             x <- liftValue tp u
             y <- liftValue tp v
             case asMaybeIntVectorType tp of
-              ScalarType w -> retTExpr (IntArith op Nothing w x y)
-              VectorType n w -> retTExpr (IntArith op (Just n) w x y)
+              ScalarType w   -> retTExpr rtp (IntArith op Nothing w x y)
+                where rtp = intLType w
+              VectorType n w -> retTExpr rtp (IntArith op (Just n) w x y)
+                where rtp = vecLType n (intLType w)
               _ -> fail "Could not parse argument type"
       case app of
-        L.Arith llvmOp (L.Typed tp u) v   -> do
-          let retTotal op = retIntArith op tp u v
-          let retPartial op = retIntArith op tp u v
-          case llvmOp of
-            L.Add nuw nsw -> retTotal (Add nuw nsw)
-            L.Sub nuw nsw -> retTotal (Sub nuw nsw)
-            L.Mul nuw nsw -> retTotal (Mul nuw nsw)
-            L.UDiv exact  -> retPartial (UDiv exact)
-            L.SDiv exact  -> retPartial (SDiv exact)
-            L.URem        -> retPartial URem
-            L.SRem        -> retPartial SRem
-            _ -> fail "Do not support floating point operations"
+        L.Arith llvmOp (L.Typed tp u) v -> do
+           op <- case llvmOp of
+                   L.Add nuw nsw -> return (Add nuw nsw)
+                   L.Sub nuw nsw -> return (Sub nuw nsw)
+                   L.Mul nuw nsw -> return (Mul nuw nsw)
+                   L.UDiv exact  -> return (UDiv exact)
+                   L.SDiv exact  -> return (SDiv exact)
+                   L.URem        -> return URem
+                   L.SRem        -> return SRem
+                   _ -> fail "Do not support floating point operations"
+           retIntArith op tp u v
         L.Bit llvmOp (L.Typed tp u) v   -> retIntArith op tp u v
           where op = case llvmOp of
                        L.Shl nuw nsw -> Shl nuw nsw
@@ -381,9 +388,9 @@ liftStmt stmt = do
               intConv cond fn =
                 case (asMaybeIntVectorType itp, asMaybeIntVectorType rtp) of
                   (ScalarType iw, ScalarType rw) | cond iw rw ->
-                    retTExpr (fn Nothing iw sv rw)
+                    retTExpr (intLType rw) (fn Nothing iw sv rw)
                   (VectorType n iw, VectorType nr rw) | n == nr && cond iw rw ->
-                    retTExpr (fn (Just n) iw sv rw)
+                    retTExpr (vecLType n (intLType rw)) (fn (Just n) iw sv rw)
                   _ -> fail "Could not parse conversion types"
           case op of
             L.Trunc -> intConv (\iw rw -> iw > rw) Trunc
@@ -392,18 +399,18 @@ liftStmt stmt = do
             L.PtrToInt ->
               case (asMaybePtrVectorType itp, asMaybeIntVectorType rtp) of
                 (ScalarType ptr, ScalarType w) ->
-                  retTExpr (PtrToInt Nothing ptr sv w)
+                  retTExpr (intLType w)  (PtrToInt Nothing ptr sv w)
                 (VectorType n ptr, VectorType nr w) | n == nr ->
-                  retTExpr (PtrToInt (Just n) ptr sv w)
+                  retTExpr (vecLType n (intLType w))  (PtrToInt (Just n) ptr sv w)
                 _ -> fail "Could not parse conversion types"
             L.IntToPtr ->
               case (asMaybeIntVectorType itp, asMaybePtrVectorType rtp) of
                 (ScalarType w, ScalarType ptr) ->
-                  retTExpr (IntToPtr Nothing w sv ptr)
+                  retTExpr (L.PtrTo ptr) (IntToPtr Nothing w sv ptr)
                 (VectorType n w, VectorType nr ptr) | n == nr ->
-                  retTExpr (IntToPtr (Just n) w sv ptr)
+                  retTExpr (vecLType n (L.PtrTo ptr)) (IntToPtr (Just n) w sv ptr)
                 _ -> fail "Could not parse conversion types"
-            L.BitCast -> retTExpr (Bitcast itp sv rtp)
+            L.BitCast -> retTExpr rtp (Bitcast itp sv rtp)
             _ -> fail "Unsupported conversion operator"
         L.Alloca tp Nothing mi -> retExpr (L.PtrTo tp) $ Alloca tp Nothing mi
         L.Alloca tp (Just (L.Typed szTp sz)) mi -> do
@@ -418,19 +425,19 @@ liftStmt stmt = do
           x <- liftValue tp u
           y <- liftValue tp v
           case asMaybeIntVectorType tp of
-            ScalarType w -> retTExpr (IntCmp op Nothing w x y)
-            VectorType n w -> retTExpr (IntCmp op (Just n) w x y)
+            ScalarType w -> retTExpr i1 (IntCmp op Nothing w x y)
+            VectorType n w -> retTExpr (vecLType n i1) (IntCmp op (Just n) w x y)
             _ -> fail "Could not parse argument type"
-        L.GEP ib tp tpvl     -> retTExpr =<< liftGEP ib tp tpvl
+        L.GEP ib tp tpvl     -> uncurry retTExpr =<< liftGEP ib tp tpvl
         L.Select (L.Typed tpc c') (L.Typed tpv v1') v2' -> do
           c <- liftValue tpc c'
           v1 <- liftValue tpv v1'
           v2 <- liftValue tpv v2'
           case (asMaybeIntVectorType tpc, asMaybeVectorType Just tpv) of
             (ScalarType w,_) | w == 1 ->
-              retTExpr $ Select Nothing c tpv v1 v2
+              retTExpr tpv $ Select Nothing c tpv v1 v2
             (VectorType n w, VectorType nr tpe) | w == 1 && n == nr ->
-              retTExpr $ Select (Just n) c tpe v1 v2
+              retTExpr (vecLType n tpe) $ Select (Just n) c tpe v1 v2
             _  -> fail "Could not parse select intruction."
         L.ExtractValue (L.Typed vtp v) il -> go vtp il =<< liftValue vtp v
           where go :: L.Type

@@ -294,8 +294,9 @@ runNormalSymbol ::
   -> Simulator sbe m [SBETerm sbe]
 runNormalSymbol normalRetID calleeSym mreg args = do
   def <- lookupSymbolDef calleeSym
+  sbe <- gets symBE
   tryModifyCS "runNormalSymbol" $
-    pushCallFrame calleeSym normalRetID mreg
+    pushCallFrame sbe calleeSym normalRetID mreg
   dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
   modifyPathRegs $ \_ -> bindArgs (sdArgs def) args
   -- Push stack frame in current process memory.
@@ -350,12 +351,9 @@ intrinsic intr mreg args0 =
     memset lenWidth = do
       let [dst, val, len, align, _isvol] = args0
       memSet dst val lenWidth len align
-    uaddWithOverflow w reg = do
-      let [x, y] = args0
-      (ov,z') <- withSBE $ \sbe -> applyUAddWithOverflow sbe w x y
-      si <- withImplicitLC $ mkStructInfo False [ intn (fromIntegral w), i1 ]
-      res <- withImplicitSBE $ termStruct si [ z', ov ]
-      assign reg res
+    uaddWithOverflow w reg = assign reg =<< withSBE fn
+      where [x, y] = args0
+            fn sbe = applyTypedExpr sbe (UAddWithOverflow w x y)
     objSz w reg = do
       let [_ptr, maxOrMin] = args0
       mval <- withSBE' $ \s -> snd <$> asUnsignedInteger s maxOrMin
@@ -661,7 +659,8 @@ step (PushPendingExecution bid cond ml elseStmts) = do
      s <- get
      let nm = pathCounter s
      put s { pathCounter = nm + 1 }
-     tryModifyCS "PushPendingExecution" $ addCtrlBranch c bid nm ml
+     tryModifyCSIO "PushPendingExecution" $
+       addCtrlBranch (symBE s) c bid nm ml
      runStmts elseStmts
 
 step (SetCurrentBlock bid) = setCurrentBlock bid

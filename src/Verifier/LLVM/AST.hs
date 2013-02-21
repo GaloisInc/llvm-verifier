@@ -25,7 +25,6 @@ module Verifier.LLVM.AST
   , IntArithOp(..)
   , OptVectorLength
   , TypedExpr(..)
-  , typedExprType
   , StructInfo(..)
   , Offset
   , Size
@@ -146,12 +145,6 @@ ppIntVector n w = ppVector n (ppIntType w)
 ppTypeVector :: Int -> L.Type -> Doc
 ppTypeVector n w = ppVector n (L.ppType w)
 
-intLType :: BitWidth -> L.Type
-intLType w = L.PrimType (L.Integer (fromIntegral w))
-
-arrayLType :: Int -> L.Type -> L.Type
-arrayLType n tp = L.Array (fromIntegral n) tp
-
 -- | Information about structs.  Offsets and size is in bytes.
 data StructInfo = StructInfo { structPacked :: !Bool
                              , structSize :: !Size
@@ -241,6 +234,9 @@ data TypedExpr v
     -- @x@ and @y@ are vectors with integer elements of length @w@, and @mn@ contains the
     -- number of elements.
   = IntArith IntArithOp OptVectorLength BitWidth v v
+    -- | @UAddWithOverflow w x y@ adds @x@ and @y@ and returns a struct whose first element
+    -- contains a @w@-bit sum of @x@ and @y@ and second element contains the single overflow bit. 
+  | UAddWithOverflow BitWidth v v
     -- | @IntCmp op mn w x y@ performs the operation @op@ on @x@ and @y@.
     -- If @mn@ is @Nothing@, then @x@ and @y@ are integers with length @w@.  Otherwise
     -- @x@ and @y@ are vectors with integer elements of length @w@, and @mn@ contains the
@@ -290,29 +286,6 @@ data TypedExpr v
   | SValVector L.Type (Vector v)
  deriving (Functor, Foldable, Traversable)
 
-typedExprType :: TypedExpr v -> L.Type
-typedExprType tpe =
-  case tpe of
-    IntArith _ mn w _ _ -> maybe id arrayLType mn (intLType w)
-    IntCmp _ mn _ _ _   -> maybe id arrayLType mn (intLType 1)
-    Trunc    mn _ _ w -> maybe id arrayLType mn (intLType w)
-    ZExt     mn _ _ w -> maybe id arrayLType mn (intLType w)
-    SExt     mn _ _ w -> maybe id arrayLType mn (intLType w)
-    PtrToInt mn _ _ w -> maybe id arrayLType mn (intLType w)
-    IntToPtr mn _ _ p -> maybe id arrayLType mn (L.PtrTo p)
-    Select mn _ tpv _ _ -> maybe id arrayLType mn tpv
-    Bitcast _ _ tp    -> tp
-    GEP _ _ _ tp      -> tp
-    GetStructField si _ i -> fst (structFields si V.! i)
-    GetConstArrayElt tp _ _ -> tp
-    SValInteger w _ -> intLType w
-    SValDouble{} -> L.PrimType (L.FloatType L.Double)
-    SValFloat{} -> L.PrimType (L.FloatType L.Float)
-    SValNull _ tp -> L.PtrTo tp
-    SValArray tp l -> L.Array (fromIntegral (V.length l)) tp
-    SValStruct si _ -> structInfoType si
-    SValVector tp l -> L.Vector (fromIntegral (V.length l)) tp
-
 -- | Pretty print a typed expression.
 ppTypedExpr :: -- | Pretty printer for conversions
                (String -> Doc -> e -> Doc -> Doc)
@@ -324,6 +297,8 @@ ppTypedExpr ppConv ppValue tpExpr =
       IntArith op mn w x y ->
         ppIntArithOp op <+> tp <+> ppValue x <> comma <+> ppValue y
        where tp  = maybe ppIntType ppIntVector mn w
+      UAddWithOverflow w x y -> text ("@llvm.uadd.with.overflow.i" ++ show w)
+        <> parens (ppValue x <> comma <+> ppValue y)
       IntCmp op mn w x y ->
          text "icmp" <+> L.ppICmpOp op <+> tp <+> ppValue x <> comma <+> ppValue y
        where tp  = maybe ppIntType ppIntVector mn w
@@ -374,9 +349,6 @@ ppTypedSymValue = go
         go (SValIdent i) = L.ppIdent i
         go (SValSymbol s) = L.ppSymbol s
         go (SValExpr te) = ppTypedExpr ppConv go te
---        go (SValStruct fs) = L.structBraces (commas (L.ppTyped go <$> fs))
---        go (SValUndef _) = text "undef"
---        go (SValZeroInit _) = text "zeroinitializer"
 
 -- | Expression in Symbolic instruction set.
 -- | TODO: Make this data-type strict.

@@ -51,10 +51,7 @@ createSAWBackend _lc _mg = do
                 , asBool = nyi "asBool"
                 , evalPred = nyi "evalPred"
                 , freshInt = nyi "freshInt"
-                , applyUAddWithOverflow = nyi "applyUAddWithOverflow"
-
                 , applyTypedExpr  = nyi "applyTypedExpr"
-
                 , prettyTermD = nyi "prettyTermD"
                 , prettyPredD = nyi "prettyPredD"
                 , asUnsignedInteger = nyi "asUnsignedInteger"
@@ -70,8 +67,8 @@ createSAWBackend _lc _mg = do
                 , stackPopFrame = nyi "stackPopFrame"
                 , heapAlloc = nyi "heapAlloc"
                 , memCopy = nyi "memCopy"
-                , memPushMergeFrame = SAWBackend . return
-                , memPopMergeFrame = SAWBackend . return
+                , memBranch = SAWBackend . return
+                , memBranchAbort = SAWBackend . return
                 , memMerge = nyi "memMerge"
                 , writeAiger = nyi "writeAiger"
                 , writeCnf = nyi "writeCnf"

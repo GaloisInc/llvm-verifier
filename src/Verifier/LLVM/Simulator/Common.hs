@@ -212,12 +212,13 @@ modifyCurrentPathM cs f =
  where run :: (Path sbe -> CS sbe) -> Path sbe -> m (a, CS sbe) 
        run csfn = fmap (id *** csfn) . f
 
-pushCallFrame :: L.Symbol -- ^ Function we are jumping to. 
+pushCallFrame :: SBE sbe
+              -> L.Symbol -- ^ Function we are jumping to. 
               -> SymBlockID -- ^ Block to return to.
               -> Maybe (Typed Reg) -- ^ Where to write return value to (if any).
               -> CS sbe -- ^ Current control stack
               -> Maybe (CS sbe)
-pushCallFrame calleeSym returnBlock retReg cs =
+pushCallFrame sbe calleeSym returnBlock retReg cs =
     case cs of
       CompletedCS Nothing -> fail "All paths failed"
       CompletedCS (Just p) -> do
@@ -235,29 +236,35 @@ pushCallFrame calleeSym returnBlock retReg cs =
                           , pathName = pathName p
                           , pathRegs = M.empty
                           , pathMem = pathMem p
-                          , pathAssertions = pathAssertions p
+                          , pathAssertions = sbeTruePred sbe
                           , pathStackHt = pathStackHt p + 1
                           , pathStack   = cf : pathStack p
                           }
 
 -- | Add a control branch
-addCtrlBranch :: SBEPred sbe -- ^ Condition to branch on.
+addCtrlBranch :: SBE sbe
+              -> SBEPred sbe -- ^ Condition to branch on.
               -> SymBlockID -- ^ Location for newly branched paused path to start at.
               -> Integer -- ^ Name of path
               -> MergeLocation -- ^ Control point to merge at.
               -> CS sbe -- ^  Current control stack.
-              -> Maybe (CS sbe) 
-addCtrlBranch c nb nm ml cs =
-    case cs of
-      CompletedCS{} -> fail "Path is completed"
-      ActiveCS p h -> Just $ ActiveCS p $ BranchHandler info (BARunFalse c pt) h
-        where info = case ml of
-                       Just b -> PostdomInfo (pathStackHt p) b
-                       Nothing -> ReturnInfo (pathStackHt p - 1) (typedValue <$> cfRetReg cf)
-                         where cf : _ = pathStack p
-              pt = p { pathCB = Just nb
-                     , pathName = nm 
-                     }
+              -> Maybe (IO (CS sbe)) 
+addCtrlBranch _ _ _ _ _ CompletedCS{} =
+  fail "Path is completed"
+addCtrlBranch sbe c nb nm ml (ActiveCS p h) = Just $ do
+    fmap fn $ sbeRunIO sbe $ memBranch sbe (pathMem p)
+  where fn mem = ActiveCS pf $ BranchHandler info (BARunFalse c pt) h
+          where pf = p { pathMem = mem
+                       , pathAssertions = sbeTruePred sbe
+                       }
+                pt = p { pathCB = Just nb
+                       , pathName = nm 
+                       , pathMem = mem
+                       }
+        info = case ml of
+                 Just b -> PostdomInfo (pathStackHt p) b
+                 Nothing -> ReturnInfo (pathStackHt p - 1) (typedValue <$> cfRetReg cf)
+                   where cf : _ = pathStack p
               
 postdomMerge :: SBE sbe
              -> Path sbe
@@ -267,7 +274,7 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
    | n == pathStackHt p && Just b == pathCB p =
   case act of
     BARunFalse c tp -> do
-      let tp' = tp { pathAssertions = sbeTruePred sbe}
+      let tp' = tp { pathAssertions = sbeTruePred sbe }
       let act' = BAFalseComplete (pathAssertions tp) c p
       return $ ActiveCS tp' (BranchHandler info act' h)
     BAFalseComplete a c pf -> do
@@ -355,14 +362,20 @@ branchError :: SBE sbe
             -> IO (CS sbe) 
 branchError sbe _ (BARunFalse c pt) h = do
   a2 <- sbeRunIO sbe $ applyAnd sbe (pathAssertions pt) c
-  let pt' = pt { pathAssertions = a2 }
+  mem' <- sbeRunIO sbe $ memBranchAbort sbe (pathMem pt)
+  let pt' = pt { pathAssertions = a2
+               , pathMem = mem'
+               }
   return $ ActiveCS pt' h
 branchError sbe mi (BAFalseComplete a c pf) h = do
   -- Update assertions on current path
   a1   <- sbeRunIO sbe $ applyAnd sbe a (pathAssertions pf)
   cNot <- sbeRunIO sbe $ applyBNot sbe c
   a2   <- sbeRunIO sbe $ applyAnd sbe a1 cNot
-  let pf' = pf { pathAssertions = a2 }
+  mem' <- sbeRunIO sbe $ memBranchAbort sbe (pathMem pf)
+  let pf' = pf { pathAssertions = a2
+               , pathMem = mem'
+               }
   -- Try to merge states that may have been waiting for the current path to terminate.
   case (mi,h) of
     ( ReturnInfo n _, BranchHandler (ReturnInfo pn _) _ _) | n == pn ->

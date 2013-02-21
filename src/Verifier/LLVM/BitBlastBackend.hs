@@ -38,7 +38,7 @@ module Verifier.LLVM.BitBlastBackend
 import           Control.Applicative       ((<$>), (<$))
 import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
-import           Control.Monad (ap, liftM, unless)
+import           Control.Monad (ap, liftM, unless, when)
 import           Control.Monad.IO.Class
 import           Data.Binary.IEEE754
 import           Data.Bits
@@ -349,9 +349,9 @@ data MemModel sbe bytes = MemModel {
               -> SBETerm sbe            -- ^ Alignment in bytes
               -> IO (SBEPred sbe, SBEMemory sbe) -- ^ Condition and new value.
     -- | Push a merge frame.
-  , mmPushMergeFrame :: SBEMemory sbe -> IO (SBEMemory sbe)
+  , mmRecordBranch :: SBEMemory sbe -> IO (SBEMemory sbe)
     -- | Pop a merge frame without merging.
-  , mmPopMergeFrame :: SBEMemory sbe -> IO (SBEMemory sbe)
+  , mmBranchAbort :: SBEMemory sbe -> IO (SBEMemory sbe)
     -- | @mmMux c t f@ returns a memory equivalent to @t@ when @c@ holds,
     -- and @f@ otherwise.  The number of merge frames 
   , mmMux :: SBEPred sbe -> SBEMemory sbe -> SBEMemory sbe -> IO (SBEMemory sbe)
@@ -919,8 +919,8 @@ buddyMemModel lc be = mm
               , mmStackPop = return . bmStackPop (llvmAddrWidthBits lc)
               , mmHeapAlloc = return `c4` bmHeapAlloc be ptrWidth
               , mmMemCopy = bmMemCopy be
-              , mmPushMergeFrame = return -- do nothing
-              , mmPopMergeFrame = return -- do nothing
+              , mmRecordBranch = return -- do nothing
+              , mmBranchAbort = return -- do nothing
               , mmMux = bmMux be
               }
 
@@ -1414,16 +1414,18 @@ dmMemCopy ptrWidth ref mem (BitTerm dest) (BitTerm src) (BitTerm l) (BitTerm _)
     let c = lIsZero l `lOr` (lNeg addrOverflow `lAnd` memValid)
     (c,) <$> dmMemCopyImpl ref dest destEnd src mem
 
-dmPushMergeFrame :: (?be :: BitEngine l, LV.Storable l) => RefIdx -> DagMemory l -> IO (DagMemory l)
+dmRecordBranch :: (?be :: BitEngine l, LV.Storable l) => RefIdx -> DagMemory l -> IO (DagMemory l)
 -- We can essentially undo merge frame changes if no merges happened since pop.
-dmPushMergeFrame _ (dmNodeApp -> DMMergeFramePop mem) = return mem
-dmPushMergeFrame ref mem = do
+--dmRecordBranch _ (dmNodeApp -> DMMergeFramePop mem) = do
+--  return mem
+dmRecordBranch ref mem =
   dmGetMem ref (DMMergeFramePush mem) mem { dmMergeDepth = dmMergeDepth mem + 1 }
 
-dmPopMergeFrame :: LV.Storable l => RefIdx -> DagMemory l -> IO (DagMemory l)
-dmPopMergeFrame ref mem 
-  | d <= 0 = error "internal: dmPopMergeFrame called on negative merge depth"
-  | otherwise = dmGetMem ref (DMMergeFramePop mem) mem { dmMergeDepth = d - 1 }
+dmBranchAbort :: LV.Storable l => RefIdx -> DagMemory l -> IO (DagMemory l)
+dmBranchAbort ref mem 
+  | d <= 0 = error "internal: dmBranchAbort called on negative merge depth"
+  | otherwise = do
+      dmGetMem ref (DMMergeFramePop mem) mem { dmMergeDepth = d - 1 }
  where d = dmMergeDepth mem
 
 dmMux :: (?be :: BitEngine l, Ord l, LV.Storable l)
@@ -1438,6 +1440,8 @@ dmMux ref c t f = do
     fail "internal: Attempt to merge memories with different code addresses."
   unless (dmMergeDepth t == dmMergeDepth f) $
     fail "internal: Attempt to merge memories with different merge depths."
+  when (dmMergeDepth t == 0) $
+    fail "Merging before branch"
   let ta = dmState t
   let fa = dmState f
   unless (dmsData ta == dmsData fa) $
@@ -1448,10 +1452,12 @@ dmMux ref c t f = do
                       , dmsData = dmsData ta
                       , dmsHeap = LV.zipWith mux (dmsHeap ta) (dmsHeap fa) }
       , dmStackFrames   = zipWith (LV.zipWith mux) (dmStackFrames t) (dmStackFrames f)
+      , dmMergeDepth = dmMergeDepth t - 1
       , dmIsAllocated   = memo $ \r -> mux (dmIsAllocated   t r) (dmIsAllocated   f r)
       , dmIsInitialized = memo $ \r -> mux (dmIsInitialized t r) (dmIsInitialized f r)
       , dmLoadByte      = memo $ \p -> LV.zipWith mux (dmLoadByte t p) (dmLoadByte f p)
       }
+
 
 createDagMemModel :: (Ord l, LV.Storable l)
                   => LLVMContext
@@ -1478,8 +1484,8 @@ createDagMemModel lc be mg = do
              , mmStackPop = dmStackPopFrame stackGrowsUp ref
              , mmHeapAlloc = dmHeapAlloc ptrWidth (ptrEnd (mgHeap mg)) ref
              , mmMemCopy = dmMemCopy ptrWidth ref
-             , mmPushMergeFrame = dmPushMergeFrame ref
-             , mmPopMergeFrame = dmPopMergeFrame ref
+             , mmRecordBranch = dmRecordBranch ref
+             , mmBranchAbort = dmBranchAbort ref
              , mmMux = dmMux ref
              }
   let mem = DagMemory { dmNodeIdx = 0
@@ -1590,6 +1596,8 @@ sbeBitBlast lc mm = sbe
                                  And -> beAndInt
                                  Or  -> beOrInt
                                  Xor -> beXorInt
+                UAddWithOverflow _ (BitTerm x) (BitTerm y) ->
+                    BitTerm . uncurry LV.cons <$> beFullAddInt be x y
                 IntCmp op mn _ x y -> applyICmp opFn mn x y
                   where neg fn bend u v = beNeg bend <$> fn bend u v
                         opFn = case op of
@@ -1655,10 +1663,6 @@ sbeBitBlast lc mm = sbe
                   return (termArrayImpl (unBitTerm <$> valTerms))
                 SValStruct _ valTerms ->
                   return (termArrayImpl (unBitTerm <$> valTerms))
-
-          , applyUAddWithOverflow = \_ (BitTerm x) (BitTerm y) -> do
-              (c,z) <- BitIO $ beFullAddInt be x y
-              return (BitTerm (LV.singleton c), BitTerm z)
           , prettyPredD      = lPrettyLV . LV.singleton
           , prettyTermD      = \(BitTerm bv) -> lPrettyLV bv
           , asBool           = beAsBool
@@ -1668,8 +1672,8 @@ sbeBitBlast lc mm = sbe
           , memDump          = BitIO `c2` mmDump mm True
           , memLoad          = BitIO `c2` loadTerm lc mm
           , memStore         = BitIO `c3` storeTerm lc be mm
-          , memPushMergeFrame = BitIO . mmPushMergeFrame mm
-          , memPopMergeFrame  = BitIO . mmPopMergeFrame mm
+          , memBranch  = BitIO . mmRecordBranch mm
+          , memBranchAbort   = BitIO . mmBranchAbort mm
           , memMerge         = BitIO `c3` mmMux mm
           , memAddDefine     = \mem d vl -> BitIO $ mmAddDefine mm mem d (V.fromList vl)
           , memInitGlobal    = \m (L.Typed ty gd) ->

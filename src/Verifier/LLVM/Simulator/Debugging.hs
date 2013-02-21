@@ -6,17 +6,10 @@
 
 module Verifier.LLVM.Simulator.Debugging where
 
-import qualified Control.Exception      as CE
-import           Control.Monad
 import           Control.Monad.Trans
-import           Data.Bits
 import           Text.LLVM              (Typed(..))
-import qualified Text.LLVM              as L
 
-import           Verifier.LLVM.Backend
-import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator.Common
-import           Verifier.LLVM.Simulator
 
 -- NB: Currently only valid for SBEBitBlast mems
 sanityChecks ::
