@@ -60,25 +60,19 @@ library
   hs-source-dirs: src
 
   exposed-modules:
-    Data.LLVM.Memory
-    Data.LLVM.Symbolic.AST
-    Data.LLVM.Symbolic.Translation
-    LSS.Execution.Codebase
-    LSS.Execution.Common
-    LSS.Execution.Utils
-    LSS.LLVMUtils
-    LSS.Simulator
+    Verifier.LLVM.AST
     Verifier.LLVM.Backend
+    Verifier.LLVM.Codebase
     Verifier.LLVM.BitBlastBackend
+    Verifier.LLVM.LLVMContext
+    Verifier.LLVM.Printf
     Verifier.LLVM.SAWBackend
-    Data.LLVM.TargetData
-
-  other-modules:
-    --LSS.Execution.MergeFrame
-    LSS.Printf
-    -- Keep these compiling even though they're not used at the moment
-    --LSS.SBEConcrete 
-    --LSS.SBESymbolic
+    Verifier.LLVM.Simulator
+    Verifier.LLVM.Simulator.Common
+    Verifier.LLVM.Simulator.Debugging
+    Verifier.LLVM.Simulator.SimUtils
+    Verifier.LLVM.Translation
+    Verifier.LLVM.Utils
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   if os(darwin)

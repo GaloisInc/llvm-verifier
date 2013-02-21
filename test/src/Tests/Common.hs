@@ -1,10 +1,10 @@
 {-# LANGUAGE DeriveFunctor        #-}
 {-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE ImplicitParams       #-}
 {-# LANGUAGE RankNTypes           #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE ViewPatterns         #-}
-{-# LANGUAGE ScopedTypeVariables  #-}
-
 module Tests.Common 
   ( module Tests.Common
   , ExecRsltHndlr
@@ -14,21 +14,12 @@ module Tests.Common
 import           Control.Applicative
 import           Control.Arrow
 import           Control.Monad hiding (mapM)
-import           Control.Monad.Trans
 import           Data.Int
-import           Data.LLVM.TargetData
 import           Data.Traversable (mapM)
-import           LSS.Execution.Codebase
-import           LSS.Execution.Common
-import           LSS.Execution.Utils
-import           LSS.LLVMUtils
-import           LSS.Simulator
 import           LSSImpl
 import           System.FilePath
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
-import           Verifier.LLVM.BitBlastBackend
-import           Verifier.LLVM.SAWBackend
 
 import           Text.LLVM                     ((=:))
 import           Verinf.Symbolic               (Lit, createBitEngine)
@@ -36,6 +27,15 @@ import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
 import qualified Test.QuickCheck.Test          as T
 import qualified Text.LLVM                     as L
 import Prelude hiding (mapM)
+
+import           Verifier.LLVM.BitBlastBackend
+import           Verifier.LLVM.Codebase
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.SAWBackend
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Simulator.Common
+import           Verifier.LLVM.Simulator.SimUtils
+import           Verifier.LLVM.Utils
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
 
@@ -210,7 +210,7 @@ forAllMemModels _v cb testProp = do
     runMemTest _lbl act = do
 --       run $ putStrLn $ "forAllMemModels: " ++ lbl
       be         <- run createBitEngine
-      (sbe, mem) <- first (sbeBitBlast lc be) <$> run (act lc be mg)
+      (sbe, mem) <- first (let ?be = be in sbeBitBlast lc) <$> run (act lc be mg)
       testProp sbe mem
       where
         lc = cbLLVMCtx cb
@@ -248,7 +248,7 @@ runCInt32Fn v getCB sym cargs = do
   forAllMemModels v cb $ \s m -> run $ do
     runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
       args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-      callDefine_ sym i32 (map ((=:) i32) args)
+      callDefine_ sym i32 args
       let fn rv = withSBE' $ \sbe -> snd <$> asSignedInteger sbe rv
       mapM fn =<< getProgramReturnValue
 
@@ -258,7 +258,7 @@ runVoidFn v getCB sym cargs = do
   _ <- forAllMemModels v cb $ \s m -> run $ do
     runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
       args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-      callDefine_ sym voidTy (map ((=:) i32) args)
+      callDefine_ sym voidTy args
   return ()
 
 -- possibly skip a test

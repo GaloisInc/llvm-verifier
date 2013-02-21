@@ -10,7 +10,7 @@ Based on suggestions from emertens.
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE Rank2Types #-}
 
-module LSS.Printf where
+module Verifier.LLVM.Printf where
 
 import Text.Printf
 

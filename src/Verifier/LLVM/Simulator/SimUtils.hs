@@ -2,10 +2,10 @@
 Module           : $Header$
 Description      : Utility functions for execution of LLVM Symbolic programs
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : jhendrix
 -}
 
-module LSS.Execution.Utils
+module Verifier.LLVM.Simulator.SimUtils
   ( module Verinf.Utils.LogMonad
   , banners
   , banners'
