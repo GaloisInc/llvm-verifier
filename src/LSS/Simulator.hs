@@ -2198,8 +2198,8 @@ registerLibcOverrides = do
   registerOverrides
     [ ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
     --, ("exit", voidTy, [i32], False, exitHandler)
-    , ("alloca", voidPtr, [sizeT], False, allocHandler alloca)
-    , ("free", voidTy, [voidPtr], False,
+    , ("alloca", i8p, [sizeT], False, allocHandler alloca)
+    , ("free", voidTy, [i8p], False,
        -- TODO: stub! Does this need to be implemented?
        Override $ \_sym _rty _args -> return Nothing)
     , ("printf", i32, [strTy], True, printfHandler)

@@ -129,7 +129,7 @@ llvmMinBitSizeOf lc ty = case ty of
   L.Alias a                      -> llvmMinBitSizeOf lc (llvmLookupAlias lc a)
   L.Array (toInteger -> len) ety -> len * llvmMinBitSizeOf lc ety
   L.PtrTo{}                      -> toInteger (llvmAddrWidthBits lc)
-  L.Vector (toInteger -> len) pt -> toInteger len * prim pt
+  L.Vector (toInteger -> len) et -> toInteger len * llvmMinBitSizeOf lc et
   L.PackedStruct{}               -> (ssiBytes $ llvmStructInfo lc ty) `shiftL` 3
   L.Struct{}                     -> (ssiBytes $ llvmStructInfo lc ty) `shiftL` 3
   L.FunTy{}                      -> error "internal: Cannot get size of function type."
@@ -167,7 +167,7 @@ mkAlignQuery lc = \ty alignTy ->
       _        ->
         -- Fall back on "natural alignment for vector types"
         case ty of
-          L.Vector (toInteger -> len) (L.PrimType -> ety) ->
+          L.Vector (toInteger -> len) ety ->
             let ea        = llvmAllocSizeOf lc ety * len
                 elemAlign = if isPow2 ea then ea else nextPow2 ea
             in
