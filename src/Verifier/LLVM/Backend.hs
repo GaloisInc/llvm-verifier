@@ -115,9 +115,6 @@ data SBE m = SBE
     -- | Evaluate a typed expression.
   , applyTypedExpr :: TypedExpr (SBETerm m) -> m (SBETerm m)
 
-    -- | Perform addition with overflow, returning carry bit as a 1-bit integer, and result.
-  , applyUAddWithOverflow :: BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m, SBETerm m)
-
     -- | Interpret the term as a concrete unsigned integer if it can be.
     -- The first int is the bitwidth.
   , asUnsignedInteger :: SBETerm m -> Maybe (Int,Integer)
@@ -202,13 +199,16 @@ data SBE m = SBE
             -> SBETerm m -- ^ Number of bytes to copy
             -> SBETerm m -- ^ Alignment in bytes
             -> m (SBEPartialResult m (SBEMemory m))
-    -- | @memPushMerge mem@ returns a memory with an intra-procedural merge frame
-    -- pushed.  Merge frames should have no impact on the semantics of the memory,
-    -- but let the memory modify it's behavior based on when it may be shared
-    -- across multiple symbolic path executions.
-  , memPushMergeFrame :: SBEMemory m -> m (SBEMemory m)
-    -- | @memPopMerge mem@ returns a memory with the top merge frame removed.
-  , memPopMergeFrame :: SBEMemory m -> m (SBEMemory m)
+
+    -- | @memBranch mem@ records that this memory is for a path that is
+    -- about to branch.  This function should have no impact on the memory state,
+    -- but allows the backend information about branches for optimization purposes.
+    -- This call will be matched with a following call to @memBranchAbort@ or
+    -- @memMerge@.
+  , memBranch :: SBEMemory m -> m (SBEMemory m)
+    -- | @memBranchAbort mem@ is called to indicate that the branch ended
+    -- without a merge, because the other path failed.
+  , memBranchAbort :: SBEMemory m -> m (SBEMemory m)
     -- | @memMerge c t f@ returns a memory that corresponds to @t@ if @c@ is
     -- true and @f@ otherwise.  The memory should have the same number of stack
     -- and merge frames.

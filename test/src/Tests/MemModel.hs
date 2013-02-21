@@ -82,7 +82,8 @@ memModelTests =
       let tTrue = sbeTruePred
       -- Allocate space on stack.
       cnt <- runSBE $ termInt sbe 8 1
-      SAResult c0 ptr m1 <- run $ mmStackAlloca m0 1 cnt 0
+      m0' <- run $ mmRecordBranch m0
+      SAResult c0 ptr m1 <- run $ mmStackAlloca m0' 1 cnt 0
       assert (c0 == tTrue)
       -- Store bytes
       let lvi = lVectorFromInt
