@@ -1,0 +1,142 @@
+module LLVM where 
+
+import Prelude;
+
+data LLVMType :: sort 0 where {
+    -- Primitive types that we support.
+    IntType :: (n :: Nat) -> LLVMType;
+    DoubleType :: LLVMType;
+    FloatType :: LLVMType;
+
+    ArrayType :: (n :: Nat) -> LLVMType -> LLVMType;
+
+    FuncType :: (n :: Nat) -> Vec n LLVMType -> Maybe LLVMType -> LLVMType;
+
+    -- | Nat is the width of the pointer.
+    PtrType :: Nat -> Maybe LLVMType -> LLVMType;
+
+    -- Type for structs.
+    -- Take a list of types for the arguments.
+    -- Bool is flag indicating if struct is packed.
+    StructType :: (n :: Nat) -> Vec n LLVMType -> Bool -> LLVMType;
+
+    VectorType :: (n :: Nat) -> LLVMType -> LLVMType;
+  } 
+
+data LLVMValue :: LLVMType -> sort 0 where {
+    LLVMInt :: (n :: Nat) -> bitvector n -> LLVMValue (IntType n);
+    LLVMDouble :: Double -> LLVMValue DoubleType;
+    LLVMFloat :: Float -> LLVMValue FloatType;
+    LLVMArray :: (n :: Nat)
+              -> (tp :: LLVMType)
+              -> Vec n (LLVMValue tp)
+              -> LLVMValue (ArrayType n tp);
+  }
+
+nullPtr :: (n :: Nat) -> (tp :: Maybe LLVMType) -> LLVMValue (PtrType n tp);
+
+int :: (n :: Nat) -> bitvector n -> LLVMValue (IntType n);
+
+ptrValue :: (n :: Nat) -> Maybe LLVMType -> sort 0;
+ptrValue n tp = LLVMValue (PtrType n tp);
+
+intValue :: (n :: Nat) -> sort 0;
+intValue n = LLVMValue (IntType n);
+
+data NonZeroLLVMInt :: (w :: Nat) -> (v :: intValue w) -> sort 0 where {
+  }
+
+addInt :: (w :: Nat)
+       -> intValue w
+       -> intValue w
+       -> intValue w;
+
+subInt :: (w :: Nat) -> intValue w -> intValue w -> intValue w;
+mulInt :: (w :: Nat) -> intValue w -> intValue w -> intValue w;
+
+
+uDivInt :: (w :: Nat)
+        -> intValue w
+        -> (v :: intValue w)
+        -> NonZeroLLVMInt w v
+        -> intValue w;
+
+sDivInt :: (w :: Nat)
+        -> intValue w
+        -> (v :: intValue w)
+        -> NonZeroLLVMInt w v
+        -> intValue w;
+
+uRemInt :: (w :: Nat)
+        -> intValue w
+        -> (v :: intValue w)
+        -> NonZeroLLVMInt w v
+        -> intValue w;
+
+sRemInt :: (w :: Nat)
+        -> intValue w
+        -> (v :: intValue w)
+        -> NonZeroLLVMInt w v
+        -> intValue w;
+
+-- TODO: shift left shift right, and, or, xor, etc.
+shl :: (w :: Nat) -> intValue w -> intValue w -> intValue w;
+
+zResize :: (w r :: Nat) -> intValue w -> intValue r;
+
+sResize :: (w r :: Nat) -> intValue w -> intValue r;
+
+ptrToInt :: (w r :: Nat) -> (tp :: Maybe LLVMType) -> ptrValue w tp -> intValue r;
+intToPtr :: (w r :: Nat) -> (tp :: Maybe LLVMType) -> intValue w -> ptrValue r tp;
+
+-- Bitcast between two values.
+-- TODO: Require that the types have the same size.
+bitcast :: (i o :: LLVMType) -> LLVMValue i -> LLVMValue o;
+
+gepStructField :: (w c :: Nat)
+               -> (tps :: Vec c LLVMType)
+               -> (packed :: Bool)
+               -> ptrValue w (Just LLVMType (StructType c tps packed))
+               -> (i :: Fin c)
+               -> ptrValue w (Just LLVMType (get c LLVMType tps i));
+
+-- Return a ptr to a given array element.
+gepArrayElm :: (w c iw :: Nat)
+            -> (tp :: LLVMType)
+            -> ptrValue w (Just LLVMType (ArrayType c tp))
+            -> (i :: intValue iw)
+            -> ptrValue w (Just LLVMType tp);
+
+
+-- | Get the ith element of a given pointer.
+gepPtrOff :: (w c iw :: Nat)
+          -> (tp :: LLVMType)
+          -> ptrValue w (Just LLVMType tp)
+          -> (i :: intValue iw)
+          -> ptrValue w (Just LLVMType tp);
+
+vectorMap :: (n :: Nat)
+          -> (i r :: LLVMType)
+          -> (LLVMValue i -> LLVMValue r)
+          -> LLVMValue (VectorType n i)
+          -> LLVMValue (VectorType n r);
+
+
+llvmValue :: LLVMType -> sort 0;
+llvmValue tp = LLVMValue tp;
+
+array :: (n :: Nat)
+      -> (tp :: LLVMType)
+      -> Vec n (LLVMValue tp)
+      -> LLVMValue (ArrayType n tp);
+
+struct :: (n :: Nat)
+       -> (tps :: Vec n LLVMType)
+       -> Tuple n (vMap LLVMType (sort 0) llvmValue n tps)
+       -> (packed :: Bool)
+       -> LLVMValue (StructType n tps packed);
+
+vector :: (n :: Nat)
+       -> (tp :: LLVMType)
+       -> Vec n (LLVMValue tp)
+       -> LLVMValue (ArrayType n tp);

@@ -9,13 +9,13 @@ import qualified Data.Vector.Storable as LV
 import Test.QuickCheck
 import Test.QuickCheck.Monadic
 
-import Data.LLVM.Memory
-import Data.LLVM.TargetData
-import Verifier.LLVM.BitBlastBackend
 import qualified Text.LLVM.AST as LLVM
 import Verinf.Symbolic (createBitEngine)
 import Verinf.Symbolic.Lit
 import Verinf.Symbolic.Lit.Functional
+
+import Verifier.LLVM.BitBlastBackend
+import Verifier.LLVM.LLVMContext
 
 mmTest :: String
        -> Int
@@ -41,7 +41,8 @@ mmTest testName n fn =
                  }
       be <- run $ createBitEngine
       (mm, mem) <- run $ createDagMemModel lc be mg
-      fn lc be (sbeBitBlast lc be mm) mm mem
+      let ?be = be
+      fn lc be (sbeBitBlast lc mm) mm mem
       run $ beFree be)
 
 
@@ -58,49 +59,41 @@ memModelTests =
       let ptrWidth = llvmAddrWidthBits lc
       let ?be = be
       let bytes = lVectorFromInt 8 7
-      let assertEval inputs expected t = do
-            r <- runSBE $ evalAiger inputs t
-            assert (r == expected)
-      tTrue <- runSBE $ termBool True
-      tFalse <- runSBE $ termBool False
+      let tTrue = sbeTruePred
       cnt <- runSBE $ freshInt 1
       -- Try allocating symbolic ammount.
       SAResult c0 ptr m1 <- run $ mmStackAlloca m0 1 cnt 0
       assert (c0 == tTrue)
       -- Try filling up rest of memory and testing stack allocation
       -- failed.
-      do fill <- runSBE $ termInt 4 0x0F
+      do fill <- runSBE $ termInt sbe 4 0x0F
          SAResult c0' _ _ <- run $ mmStackAlloca m1 1 fill 1
-         assertEval [False] tTrue c0'
-         assertEval [True] tFalse c0'
+         assert =<< runSBE (evalPred [False] c0')
       -- Test store to concrete address succeeds.
       (c1, m2) <- run $ mmStore m1 bytes ptr
-      do assertEval [False] tFalse c1
-         assertEval [True] tTrue  c1
+      do assert =<< runSBE (evalPred [True] c1)
       -- Test symbolic load succeeds under appropiate conditions.
-      do cntExt <- runSBE $ applyTypedExpr (SExt 1 cnt ptrWidth)
+      do cntExt <- runSBE $ applyTypedExpr (SExt Nothing 1 cnt ptrWidth)
          rptr <- runSBE $ applySub sbe Nothing ptrWidth ptr cntExt
          (c2, _) <- run $ mmLoad m2 rptr 1 
-         assertEval [False] tTrue c2
-         assertEval [True] tFalse c2
-  , mmTest "mergeTest" 1 $ \_lc be SBE { .. } MemModel { .. } m0 -> do
+         assert =<< runSBE (evalPred [False] c2)
+  , mmTest "mergeTest" 1 $ \_lc be sbe@SBE { .. } MemModel { .. } m0 -> do
       let ?be = be
-      let assertEval inputs expected t = do
-            r <- runSBE $ evalAiger inputs t
-            assert (r == expected)
-      tTrue <- runSBE $ termBool True
+      let tTrue = sbeTruePred
       -- Allocate space on stack.
-      cnt <- runSBE $ termInt 8 1
-      SAResult c0 ptr m1 <- run $ mmStackAlloca m0 1 cnt 0
+      cnt <- runSBE $ termInt sbe 8 1
+      m0' <- run $ mmRecordBranch m0
+      SAResult c0 ptr m1 <- run $ mmStackAlloca m0' 1 cnt 0
       assert (c0 == tTrue)
       -- Store bytes
       let lvi = lVectorFromInt
       (ct, mt) <- run $ mmStore m1 (lvi 8 1) ptr
-      assertEval [] tTrue ct
+      assert =<< runSBE (evalPred [] ct)
       (cf, mf) <- run $ mmStore m1 (lvi 8 0) ptr
-      assertEval [] tTrue cf
+      assert =<< runSBE (evalPred [] cf)
       -- Merge
-      cond <- runSBE $ freshInt 1
+      cond0 <- runSBE $ freshInt 1
+      cond <- runSBE $ applyIEq 1 cond0 =<< termInt sbe 1 1
       m2 <- run $ mmMux cond mt mf
       -- Check result of merge
       (c2, v) <- run $ mmLoad m2 ptr 1 

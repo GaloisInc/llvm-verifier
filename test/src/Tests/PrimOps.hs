@@ -6,24 +6,26 @@ Point-of-contact : jstanley
 -}
 
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImplicitParams   #-}
 {-# LANGUAGE ViewPatterns     #-}
 
 module Tests.PrimOps (primOpTests) where
 
 import           Control.Applicative
 import           Data.Int
-import           Data.LLVM.TargetData
 import           Data.Maybe
 import           Data.Word
-import           LSS.LLVMUtils
-import           Verifier.LLVM.BitBlastBackend
-import           LSS.Simulator
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import           Tests.Common
 import           Verinf.Symbolic         (ConstantProjection(..), createBitEngine)
 import qualified Control.Exception       as CE
 import qualified Text.LLVM               as L
+
+import           Verifier.LLVM.BitBlastBackend
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Utils
 
 primOpTests :: [(Args, Property)]
 primOpTests =
@@ -112,7 +114,7 @@ chkArithBitEngineFn w s op fn = do
   let lc  = buildLLVMContext
               (error "LLVM Context has no ident -> type relation defined")
               []
-      sbe = sbeBitBlast lc be (buddyMemModel lc be)
+      sbe = let ?be = be in sbeBitBlast lc (buddyMemModel lc be)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do
     let r = fn x y
         proj = if s then getSVal else getUVal
@@ -129,7 +131,7 @@ testSetupPtrArgImpl = do
   a <- withLC llvmPtrAlign
   one <- getSizeT 1
   p <- alloca i32 one (Just $ fromIntegral a) 
-  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) [p]
+  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) [L.typedValue p]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()
   mm  <- getProgramFinalMem

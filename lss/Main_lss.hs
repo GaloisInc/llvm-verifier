@@ -14,11 +14,6 @@ module Main where
 import           Control.Applicative             hiding (many)
 import           Control.Monad
 import           Data.Char
-import           Data.LLVM.Symbolic.AST
-import           Data.LLVM.Symbolic.Translation  (liftDefine)
-import           LSS.Execution.Codebase
-import           LSS.Execution.Utils
-import           LSSImpl
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           System.Environment              (getArgs)
 import           System.Exit
@@ -27,9 +22,15 @@ import           Verinf.Symbolic                 (createBitEngine)
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
 
-import           Verifier.LLVM.Backend
-import           Verifier.LLVM.BitBlastBackend
-import           Verifier.LLVM.SAWBackend
+import           LSSImpl
+
+import           Verifier.LLVM.Backend (prettyTermD)
+import           Verifier.LLVM.BitBlastBackend (createBuddyAll, createDagAll)
+import           Verifier.LLVM.SAWBackend (createSAWBackend)
+
+import           Verifier.LLVM.Codebase (loadCodebase, origModule, cbLLVMCtx)
+import           Verifier.LLVM.LLVMContext (defaultMemGeom)
+import           Verifier.LLVM.Translation  (ppSymDefine, liftDefine)
 
 main :: IO ()
 main = do
@@ -96,18 +97,18 @@ main = do
         case execRslt of
             NoMainRV _eps _mm -> do
               unless (dbug args == 0) $
-                dbugM "Obtained no return value from main()."
+                putStrLn "Obtained no return value from main()."
               _ <- exitWith ExitSuccess
               return ()
             SymRV _eps _mm rv -> do
               unless (dbug args == 0) $
-                dbugM "Obtained symbolic return value from main():"
-              dbugM $ show $ prettyTermD sbe rv
+                putStrLn "Obtained symbolic return value from main():"
+              putStrLn $ show $ prettyTermD sbe rv
               _ <- exitWith ExitSuccess
               return ()
             ConcRV _eps _mm (fromIntegral -> rv) -> do
               unless (dbug args == 0) $
-                dbugM $ "Obtained concrete return value from main(): " ++ show rv
+                putStrLn $ "Obtained concrete return value from main(): " ++ show rv
               _ <- exitWith (if rv == 0 then ExitSuccess else ExitFailure rv)
               return ()
   case backEnd of

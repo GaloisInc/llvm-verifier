@@ -3,7 +3,7 @@ Module           : $Header$
 Description      : Implementation details for the command line driver;
                    primarily to facilitate programmatic invocation
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : jhendrix
 -}
 
 {-# LANGUAGE DeriveDataTypeable         #-}
@@ -21,18 +21,19 @@ import           Control.Applicative             hiding (many)
 import           Control.Monad.State
 import           Data.Char
 import           Data.Int
-import           Data.LLVM.Memory
-import           Data.LLVM.Symbolic.AST
-import           LSS.Execution.Codebase
-import           LSS.Execution.Common
-import           LSS.LLVMUtils
-import           Verifier.LLVM.Backend
-import           LSS.Simulator
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           Text.LLVM                       ((=:), Typed(..))
 import           Verinf.Utils.LogMonad
 import qualified Text.LLVM                       as L
+
+import           Verifier.LLVM.AST
+import           Verifier.LLVM.Backend
+import           Verifier.LLVM.Codebase
+import           Verifier.LLVM.LLVMContext
+import           Verifier.LLVM.Simulator
+import           Verifier.LLVM.Simulator.Common
+import           Verifier.LLVM.Utils
 
 data LSS = LSS
   { dbug    :: DbugLvl
@@ -129,7 +130,7 @@ buildArgv ::
   , Functor sbe
   , Functor m
   )
-  => Int32 -> [String] -> Simulator sbe m [Typed (SBETerm sbe)]
+  => Int32 -> [String] -> Simulator sbe m [SBETerm sbe]
 buildArgv numArgs argv' = do
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   ec <- getEvalContext "buildArgv" Nothing
@@ -147,7 +148,7 @@ buildArgv numArgs argv' = do
   -- Write argument string data and argument string pointers
   forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p
   store (L.Array numArgs i8p =: argvArr) (tv argvBase)
-  return [i32 =: argc, argvBase]
+  return [argc, (L.typedValue argvBase)]
   where
     tv = typedValue
     tt = typedType
