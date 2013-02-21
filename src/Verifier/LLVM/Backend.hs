@@ -128,12 +128,13 @@ data SBE m = SBE
     -- parameter optionally constrains address ranges.
   , memDump :: SBEMemory m -> Maybe [(Integer, Integer)] -> m ()
 
-    -- | @memLoad m p@ returns a pair @(c,v)@ where @v@ denotes the value at
+    -- | @memLoad m tp p@ returns a pair @(c,v)@ where @v@ denotes the value at
     -- address @p@ in memory @m@, and @c@ denotes an additional path constraint
     -- that ensures the address @p@ is a valid memory location in @m@.
     -- In other words, @p@ is a valid memory location if @c@ is true.
   , memLoad :: SBEMemory m
-            -> L.Typed (SBETerm m)
+            -> L.Type
+            -> SBETerm m
             -> m (SBEPartialResult m (SBETerm m))
     -- | @memStore m v p@ returns a pair @(c,m')@ where @m'@ denotes the memory
     -- obtained by storing value @v@ at address @p@, and @c@ denotes an

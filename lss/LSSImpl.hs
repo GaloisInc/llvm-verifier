@@ -141,16 +141,15 @@ buildArgv numArgs argv' = do
      v <- getTypedTerm' ec (sValString (str ++ [chr 0]))
      return (Typed tp v)
   one <- getSizeT 1
-  strPtrs  <- mapM (\ty -> tv <$> alloca ty one Nothing) (tt <$> strVals)
+  strPtrs  <- mapM (\ty -> alloca ty one Nothing) (tt <$> strVals)
   num <- getSizeT (toInteger numArgs)
   argvBase <- alloca i8p num Nothing
   argvArr  <- withSBE (\s -> termArray s i8p strPtrs)
   -- Write argument string data and argument string pointers
   forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p
-  store (L.Array numArgs i8p =: argvArr) (tv argvBase)
-  return [argc, (L.typedValue argvBase)]
+  store (L.Array numArgs i8p =: argvArr) argvBase
+  return [argc, argvBase]
   where
-    tv = typedValue
     tt = typedType
 
 warnNoArgv :: IO ()

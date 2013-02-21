@@ -65,7 +65,6 @@ module Verifier.LLVM.Simulator
   , dbugTypedTerm
   , dumpMem
   , getMem
---  , getTypedTerm
   , setSEH
   , withLC
   , warning
@@ -520,7 +519,6 @@ assign (L.Typed tp reg) v = modifyPathRegs $ M.insert reg (L.Typed tp v)
 
 -- | Evaluate condition in current path.
 evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBEPred sbe)
-evalCond TrueSymCond = withSBE' sbeTruePred
 evalCond (HasConstValue t w i) = do
   v <- getBackendValue "evalCond" t
   sbe <- gets symBE
@@ -579,7 +577,11 @@ getTypedTerm' ec tsv = do
   case tsv of
     SValIdent i -> 
       case evalRegs ec of
-        Just rm -> typedValue <$> lkupIdent i rm
+        Just regs ->
+          case M.lookup i regs of
+            Just x  -> return (typedValue x)
+            Nothing -> illegal $ "getTypedTerm' could not find register: "
+                         ++ show (L.ppIdent i) ++ " in " ++ show (M.keys regs)
         Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec
                       ++ " with missing frame."
     SValSymbol sym ->
@@ -651,7 +653,7 @@ step (PushPendingExecution bid cond ml elseStmts) = do
   sbe <- gets symBE
   c <- evalCond cond
   case asBool sbe c of
-   -- Don't bother with elseStmts as condition is true. 
+   -- Don't bother with elseStmts as condition is true. q
    Just True  -> setCurrentBlock bid
    -- Don't bother with pending path as condition is false.
    Just False -> runStmts elseStmts
@@ -675,12 +677,12 @@ step (Assign reg (Alloca ty msztv malign)) = do
       Just (w,v) -> L.Typed (L.PrimType (L.Integer (fromIntegral w))) <$>
                       getBackendValue "alloca" v
       Nothing -> getSizeT 1
-  assign reg . typedValue =<< alloca ty sizeTm malign
+  assign reg =<< alloca ty sizeTm malign
 
 step (Assign reg (Load v ty _malign)) = do
   addrTerm <- getBackendValue "load" v
   dumpMem 6 "load pre"
-  val <- load (L.Typed (L.PtrTo ty) addrTerm)
+  val <- load ty addrTerm
   dumpMem 6 "load post"
   assign reg val
 
@@ -785,7 +787,7 @@ alloca, malloc ::
   => L.Type
   -> Typed (SBETerm sbe)
   -> Maybe Int
-  -> Simulator sbe m (Typed (SBETerm sbe))
+  -> Simulator sbe m (SBETerm sbe)
 alloca ty sztm malign = do
   Just m <- getMem
   sbe <- gets symBE
@@ -798,7 +800,9 @@ alloca ty sztm malign = do
       setMem m'
       let fr = memFailRsn sbe ("Failed alloca allocation of type " ++ show (L.ppType ty)) []
       processMemCond fr c
-      return (Typed (L.PtrTo ty) t)
+      return t
+--TODO: return (Typed (L.PtrTo ty) t)
+
 
 malloc ty sztm malign = doAlloc ty sztm $ \s m nt ->
   Right <$> heapAlloc s m ty nt (maybe 0 lg malign)
@@ -809,7 +813,7 @@ doAlloc ::
   , Functor sbe
   )
   => L.Type -> Typed (SBETerm sbe) -> AllocAct sbe
-  -> Simulator sbe m (Typed (SBETerm sbe))
+  -> Simulator sbe m (SBETerm sbe)
 doAlloc ty sztm allocActFn = do
   Just m        <- getMem
   rslt          <- withSBE $ \s -> allocActFn s m sztm
@@ -824,7 +828,7 @@ doAlloc ty sztm allocActFn = do
   setMem m'
   let fr =  memFailRsn sbe ("Failed " ++ s ++ " allocation of type " ++ show (L.ppType ty)) []
   processMemCond fr c
-  return (Typed (L.PtrTo ty) t)
+  return t
   where
     err s = FailRsn
             $ s ++ " only support concrete element count "
@@ -836,12 +840,12 @@ load ::
   , MonadIO m
   , Functor sbe
   )
-  => Typed (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
-load addr = do
+  => L.Type -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
+load tp addr = do
   sbe <- gets symBE
   Just mem <- getMem
-  (cond, v) <- liftSBE $ memLoad sbe mem addr
-  let fr = memFailRsn sbe "Invalid load address" [typedValue addr]
+  (cond, v) <- liftSBE $ memLoad sbe mem tp addr
+  let fr = memFailRsn sbe "Invalid load address" [addr]
   processMemCond fr cond
   return v
 
@@ -894,20 +898,6 @@ resolveFunPtrTerm ::
 resolveFunPtrTerm fp = do
   Just m <- getMem
   withSBE $ \s -> codeLookupSymbol s m fp
-
-lkupIdent ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  )
-  => L.Ident -> RegMap (SBETerm sbe) -> Simulator sbe m (Typed (SBETerm sbe))
-lkupIdent i regs = do
-  case M.lookup i regs of
-    Just x  -> return x
-    Nothing -> illegal
-               $ "lkupIdent failure: "
-                 ++ show (L.ppIdent i)
-                 ++ " is not in regmap of given call frame."
 
 runStmts ::
   ( Functor m
@@ -983,13 +973,10 @@ registerOverride sym retTy argTys va handler = do
 --------------------------------------------------------------------------------
 -- Error handling
 
-unimpl, illegal ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  )
-  => String -> Simulator sbe m a
+unimpl :: (MonadIO m, Functor m, Functor sbe) => String -> Simulator sbe m a
 unimpl msg  = errorPath $ FailRsn $ "UN{SUPPORTED,IMPLEMENTED}: " ++ msg
+
+illegal :: (MonadIO m, Functor m, Functor sbe) => String -> Simulator sbe m a
 illegal msg = errorPath $ FailRsn $ "ILLEGAL: " ++ msg
 
 errorPath ::
@@ -999,14 +986,13 @@ errorPath ::
   )
   => FailRsn -> Simulator sbe m a
 errorPath rsn = do
-  sbe <- gets symBE
-  -- Update control stack.
-  Just p <- gets (getCurrentPath . ctrlStk)
+  s <- get
+  let sbe = symBE s
+  let Just p = getCurrentPath (ctrlStk s)
   -- Log error path  
   whenVerbosity (>=3) $ do
     dbugM $ "Error path encountered: " ++ show (ppFailRsn rsn)
     dbugM $ show $ ppPath sbe p
-  s <- get
   let Just mkCS = markCurrentPathAsError sbe (ctrlStk s)
   cs <- liftIO mkCS
   let s' = s { ctrlStk = cs
@@ -1125,7 +1111,7 @@ loadString nm ptr = do
     cs <- go ptr
     return $ map (toEnum . fromEnum) $ cs
   where go addr = do
-          t <- load (L.Typed i8p addr)
+          t <- load i8 addr
           c <- withSBE' $ \s -> snd <$> asUnsignedInteger s t
           ptrWidth <- withLC llvmAddrWidthBits
           one <- withSBE $ \s -> termInt s ptrWidth 1
@@ -1191,11 +1177,11 @@ printfHandler = Override $ \_sym _rty args ->
       Just <$> termIntS 32 (length resString)
     _ -> errorPath $ FailRsn "printf called with no arguments"
 
-printSymbolic :: L.Type -> StdOvd sbe m
-printSymbolic tp = Override $ \_sym _rty args ->
+printSymbolic :: StdOvd sbe m
+printSymbolic = Override $ \_sym _rty args ->
   case args of
     [ptr] -> do
-      v <- load (L.Typed tp ptr)
+      v <- load i8 ptr
       d <- withSBE' $ \sbe -> prettyTermD sbe v
       liftIO $ print d
       return Nothing
@@ -1206,11 +1192,11 @@ allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe)
              -> (L.Type
                    -> Typed (SBETerm sbe)
                    -> Maybe Int
-                   -> Simulator sbe m (Typed (SBETerm sbe)))
+                   -> Simulator sbe m (SBETerm sbe))
              -> Override sbe m
 allocHandler aw fn = Override $ \_sym _rty args ->
   case args of
-    [sizeTm] -> (Just . typedValue) <$> fn i8 (L.Typed (intn aw) sizeTm) Nothing
+    [sizeTm] -> Just <$> fn i8 (L.Typed (intn aw) sizeTm) Nothing
     _ -> e "alloca: wrong number of arguments"
   where
     e = errorPath . FailRsn
@@ -1283,7 +1269,7 @@ freshIntArray n = Override $ \_sym _rty args ->
           let sz = fromIntegral size
               ety = intn . toEnum . fromEnum $ n
               ty = L.Array (fromIntegral size) ety
-          arrPtr <- typedValue <$> alloca ety (L.Typed i32 sizeTm) Nothing
+          arrPtr <- alloca ety (L.Typed i32 sizeTm) Nothing
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ \sbe -> termArray sbe ety elts
           let typedArrTm = Typed ty arrTm
@@ -1334,7 +1320,7 @@ addAigArrayOutput tgtTy = Override $ \_sym _rty args ->
       msize <- withSBE' $ \s -> snd <$> asUnsignedInteger s sizeTm
       case msize of
         Just size -> do
-          elems <- loadArray (L.Typed (L.PtrTo tgtTy) tptr) tgtTy size
+          elems <- loadArray tptr tgtTy size
           arrTm <- withSBE $ \sbe -> termArray sbe tgtTy elems
           modify $ \s -> s{ aigOutputs = arrTm : aigOutputs s }
           return Nothing
@@ -1367,7 +1353,7 @@ writeIntArrayAiger ety = Override $ \_sym _rty args ->
       msize <- withSBE' $ \s -> snd <$> asUnsignedInteger s sizeTm
       case msize of
         Just size -> do
-          elems <- loadArray (L.Typed (L.PtrTo ety) tptr) ety size
+          elems <- loadArray tptr ety size
           arrTm <- withSBE $ \sbe -> termArray sbe ety elems
           file <- loadString "lss_write_aiger_array_uint" fptr
           checkAigFile file
@@ -1395,20 +1381,18 @@ loadArray ::
   , Functor m
   , Functor sbe
   )
-  => Typed (SBETerm sbe) -- Term
+  => SBETerm sbe -- Term
   -> L.Type -- Element type
   -> Integer -- Count
   -> Simulator sbe m [SBETerm sbe]
-loadArray ptr ety count = do
-  ptrWidth <- withLC llvmAddrWidthBits
-  elemWidth <- withLC (`llvmStoreSizeOf` ety)
-  one <- withSBE $ \s -> termInt s ptrWidth elemWidth
-  let go _addr 0 = return []
-      go addr size = do
-        t     <- load addr
-        addr' <- termAdd ptrWidth (typedValue addr) one
-        (t:) <$> go (typedAs addr addr') (size - 1)
-  go ptr count
+loadArray ptr tp count = go 0 =<< load (L.Array (fromInteger count) tp) ptr
+  where c = fromInteger count
+        go i a 
+          | i == c = return []
+          | otherwise = do
+             v <- withSBE $ \s ->
+               applyTypedExpr s (GetConstArrayElt c tp a i)
+             (v:) <$> go (i+1) a
 
 evalAigerOverride :: L.Type -> StdOvd m sbe
 evalAigerOverride ety =
@@ -1418,7 +1402,7 @@ evalAigerOverride ety =
         msz <- withSBE' $ \s -> snd <$> asUnsignedInteger s szTm
         case msz of
           Just sz -> do
-            elems <- loadArray (L.Typed (L.PtrTo ety) p) ety sz
+            elems <- loadArray p ety sz
             ints <- mapM
                     (\t -> withSBE' $ \s -> snd <$> asUnsignedInteger s t)
                     elems
@@ -1439,12 +1423,12 @@ evalAigerArray ty =
         misz <- withSBE' $ \s -> snd <$> asUnsignedInteger s inputSz
         case (msz, misz) of
           (Just sz, Just isz) -> do
-            inputs <- loadArray (L.Typed (L.PtrTo i8) input) i8 isz
+            inputs <- loadArray input i8 isz
             ints <- mapM
                     (\t -> withSBE' $ \s -> snd <$> asUnsignedInteger s t)
                     inputs
             let bools = map (not . (== 0)) $ catMaybes ints
-            tm <- load (L.Typed (L.Array (fromInteger sz) ty) sym)
+            tm <- load (L.Array (fromInteger sz) ty) sym
             res <- withSBE $ \s -> evalAiger s bools tm
             store (L.Typed (L.Array (fromInteger sz) ty) dst) res
             return Nothing
@@ -1571,7 +1555,7 @@ registerLibcOverrides = do
 registerLSSOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
 registerLSSOverrides = registerOverrides
   [ ("lss_abort", voidTy, [strTy], False, abortHandler)
-  , ("lss_print_symbolic", voidTy, [i8p], False, printSymbolic i8)
+  , ("lss_print_symbolic", voidTy, [i8p], False, printSymbolic)
   , ("lss_fresh_uint8",   i8,  [i8], False, freshInt'  8)
   , ("lss_fresh_uint16", i16, [i16], False, freshInt' 16)
   , ("lss_fresh_uint32", i32, [i32], False, freshInt' 32)
