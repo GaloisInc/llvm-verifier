@@ -39,7 +39,7 @@ createSAWBackend _lc _mg = do
   let ?sc = sc
   t <- scApplyPreludeTrue sc
   let nyi nm = error $ "Not yet implemented: " ++ show nm
-  let sbeInt w v = do
+  let _sbeInt w v = do
         wt <- scNat (toInteger w)
         scBitvector wt v
   let sbe = SBE { sbeTruePred = t

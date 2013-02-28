@@ -12,15 +12,12 @@ module Verifier.LLVM.Utils
   , nextMultiple
     -- * LLVM pretty AST constants.
   , intn
-  , i1, i8, i16, i32, i64
-  , i8p, i16p, i32p, i64p
-  , voidPtr
-  , voidTy
-  , strTy
     -- * Pretty print utilities.
   , BitWidth
   , ppIntType
   , ppPtrType
+  , ppArrayType
+  , ppVectorType
   , ppIntVector
   , ppTypeVector
   ) where
@@ -54,24 +51,6 @@ nextMultiple x y = ((y + x - 1) `div` x) * x
 intn :: Int32 -> Type
 intn = L.iT
 
-i1, i8, i16, i32, i64 :: Type
-i1     = intn 1
-i8     = intn 8
-i16    = intn 16
-i32    = intn 32
-i64    = intn 64
-
-i8p, i16p, i32p, i64p :: Type
-i8p    = PtrTo i8
-i16p   = PtrTo i16
-i32p   = PtrTo i32
-i64p   = PtrTo i64
-
-voidTy, strTy, voidPtr :: Type
-voidTy = PrimType Void
-strTy  = i8p
-voidPtr = PtrTo voidTy
-
 type BitWidth = Int 
 
 -- | Pretty print int type with width.
@@ -79,14 +58,17 @@ ppIntType :: BitWidth -> Doc
 ppIntType i = char 'i' <> integer (toInteger i)
 
 -- | Pretty print pointer type.
-ppPtrType :: L.Type -> Doc
-ppPtrType tp = L.ppType tp <> char '*'
+ppPtrType :: Doc -> Doc
+ppPtrType tp = tp <> char '*'
 
-ppVector :: Int -> Doc -> Doc
-ppVector n e = L.angles (int n <+> char 'x' <+> e)
+ppArrayType :: Int -> Doc -> Doc
+ppArrayType n e = brackets (int n <+> char 'x' <+> e)
+
+ppVectorType :: Int -> Doc -> Doc
+ppVectorType n e = angles (int n <+> char 'x' <+> e)
 
 ppIntVector :: Int -> BitWidth -> Doc
-ppIntVector n w = ppVector n (ppIntType w)
+ppIntVector n w = ppVectorType n (ppIntType w)
 
 ppTypeVector :: Int -> L.Type -> Doc
-ppTypeVector n w = ppVector n (L.ppType w)
+ppTypeVector n e = ppVectorType n (L.ppType e)

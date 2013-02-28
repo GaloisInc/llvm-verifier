@@ -18,14 +18,13 @@ import           Data.Word
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import           Tests.Common
-import           Verinf.Symbolic         (ConstantProjection(..), createBitEngine)
+import           Verinf.Symbolic         (createBitEngine)
 import qualified Control.Exception       as CE
 import qualified Text.LLVM               as L
 
 import           Verifier.LLVM.BitBlastBackend
 import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Utils
 
 primOpTests :: [(Args, Property)]
 primOpTests =
@@ -42,7 +41,8 @@ primOpTests =
   , test  1  False "test-branch"           $ testBranch      1
   , test 10  False "test-factorial"        $ testFactorial   1
   , test  1  False "test-call-voidrty"     $ testCallVR      1
-  , test  1  False "test-ptr-simple"       $ testPtrSimple   1
+  , test  1  False "test-ptr-simple"       $
+      runMain 1 "test-ptr-simple.bc" (RV 99)
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
   , test  1  False  "test-call-exit"       $ testCallExit    1
   , lssTestAll 0  "test-call-simple" [] $
@@ -86,7 +86,6 @@ primOpTests =
     testArith v       = runMain v "test-arith.bc" (RV 0)
     testBranch v      = runMain v "test-branch.bc" (RV 0)
     testCallVR v      = runMainVoid v "test-call-voidrty.bc"
-    testPtrSimple v   = runMain v "test-ptr-simple.bc" (RV 99)
     testSetupPtrArg v = psk v $ runAllMemModelTest v (commonCB "test-primops.bc")
                                   testSetupPtrArgImpl
     testCallExit v    = runMain' True v "test-call-exit.bc" AllPathsErr
@@ -111,17 +110,17 @@ chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a) =>
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
   be <- run createBitEngine
-  let lc  = buildLLVMContext
-              (error "LLVM Context has no ident -> type relation defined")
-              []
+  let (_,lc)  = buildLLVMContext
+                  (error "LLVM Context has no ident -> type relation defined")
+                  []
       sbe = let ?be = be in sbeBitBlast lc (buddyMemModel lc be)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do
     let r = fn x y
-        proj = if s then getSVal else getUVal
+        proj = if s then asSignedInteger else asUnsignedInteger
     x' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral x)
     y' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral y)
     r' <- run . liftSBEBitBlast $ applyTypedExpr sbe (IntArith op Nothing w x' y')
-    assert (proj (BitTermClosed (be, r')) == Just (fromIntegral r))
+    assert ((snd <$> proj sbe r') == Just (fromIntegral r))
 
 testSetupPtrArgImpl ::
   ( Functor sbe
@@ -129,9 +128,10 @@ testSetupPtrArgImpl ::
   => Simulator sbe IO Bool
 testSetupPtrArgImpl = do
   a <- withLC llvmPtrAlign
-  one <- getSizeT 1
-  p <- alloca i32 one (Just $ fromIntegral a) 
-  callDefine_ (L.Symbol "ptrarg") (L.PrimType L.Void) [p]
+  let w = 1
+  one <- withSBE $ \sbe -> termInt sbe w 1
+  p <- alloca i32 w one (Just $ fromIntegral a) 
+  callDefine_ (L.Symbol "ptrarg") Nothing [p]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()
   mm  <- getProgramFinalMem

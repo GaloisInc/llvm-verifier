@@ -8,6 +8,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE TupleSections              #-}
 module Verifier.LLVM.Simulator.Common 
   ( Simulator(SM)
   , runSM
@@ -83,14 +84,14 @@ module Verifier.LLVM.Simulator.Common
   ) where
 
 import Control.Applicative hiding (empty)
-import Control.Arrow             hiding ((<+>))
+import qualified Control.Arrow as A
 import Control.Exception (assert)
+import Control.Lens hiding (act, set)
 import Control.Monad.Error hiding (sequence)
 import Control.Monad.State       hiding (State, sequence)
 import Data.Foldable
 import Data.Traversable
 import qualified Data.Map  as M
-import Text.LLVM                 (Typed(..))
 import Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM                 as L
 import Prelude hiding (foldr, sequence)
@@ -111,7 +112,7 @@ newtype Simulator sbe m a =
     )
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
-type GlobalMap sbe = M.Map L.Symbol (Typed (SBETerm sbe))
+type GlobalMap sbe = M.Map L.Symbol (SBETerm sbe)
 --type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
 type OvrMap sbe m  = M.Map L.Symbol (Override sbe m, Bool {- user override? -})
 
@@ -154,7 +155,7 @@ data BranchAction sbe
                     (Path sbe) -- ^ Completed true path
 
 data MergeInfo
-  = ReturnInfo Int (Maybe Reg)
+  = ReturnInfo Int (Maybe L.Ident)
     -- | Contains the 
   | PostdomInfo Int SymBlockID
 
@@ -210,12 +211,12 @@ modifyCurrentPathM cs f =
     ActiveCS p h -> Just (run fn p)
       where fn p' = ActiveCS p' h
  where run :: (Path sbe -> CS sbe) -> Path sbe -> m (a, CS sbe) 
-       run csfn = fmap (id *** csfn) . f
+       run csfn = fmap (A.second csfn) . f
 
 pushCallFrame :: SBE sbe
               -> L.Symbol -- ^ Function we are jumping to. 
               -> SymBlockID -- ^ Block to return to.
-              -> Maybe (Typed Reg) -- ^ Where to write return value to (if any).
+              -> Maybe (MemType, L.Ident) -- ^ Where to write return value to (if any).
               -> CS sbe -- ^ Current control stack
               -> Maybe (CS sbe)
 pushCallFrame sbe calleeSym returnBlock retReg cs =
@@ -263,7 +264,7 @@ addCtrlBranch sbe c nb nm ml (ActiveCS p h) = Just $ do
                        }
         info = case ml of
                  Just b -> PostdomInfo (pathStackHt p) b
-                 Nothing -> ReturnInfo (pathStackHt p - 1) (typedValue <$> cfRetReg cf)
+                 Nothing -> ReturnInfo (pathStackHt p - 1) (snd <$> cfRetReg cf)
                    where cf : _ = pathStack p
               
 postdomMerge :: SBE sbe
@@ -278,8 +279,9 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
       let act' = BAFalseComplete (pathAssertions tp) c p
       return $ ActiveCS tp' (BranchHandler info act' h)
     BAFalseComplete a c pf -> do
-      let mergeTyped (Typed tp tt) (Typed _ ft) =
-            Typed tp <$> sbeRunIO sbe (applyIte sbe tp c tt ft)
+      -- TODO: Collect and print merge errors.
+      let mergeTyped (tt,tp) (ft,_) =
+            (,tp) . either (const tt) id <$> sbeRunIO sbe (applyIte sbe tp c tt ft)
       -- Merge path regs
       mergedRegs <- sequence $
         M.intersectionWith mergeTyped (pathRegs p) (pathRegs pf)
@@ -303,28 +305,32 @@ jumpCurrentPath :: SBE sbe -> SymBlockID -> CS sbe -> Maybe (IO (CS sbe))
 jumpCurrentPath _ _ CompletedCS{} = fail "Path is completed"
 jumpCurrentPath sbe b (ActiveCS p h) = Just $ postdomMerge sbe p { pathCB = Just b } h
 
+-- | Handle merge of paths.
+-- The first element of the return pair contains a mesage if error(s) occured
+-- during merging.
 returnMerge :: SBE sbe
             -> Path sbe
             -> PathHandler sbe
-            -> IO (CS sbe)
+            -> IO ([String], CS sbe)
 returnMerge _ p StopHandler | pathStackHt p == 0 =
-  return (CompletedCS (Just p))
+  return ([], CompletedCS (Just p))
 returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackHt p =
   case act of
     BARunFalse c tp -> do
       let tp' = tp { pathAssertions = sbeTruePred sbe }
       let act' = BAFalseComplete (pathAssertions tp) c p
-      return $ ActiveCS tp' (BranchHandler info act' h)
+      return $ ([], ActiveCS tp' (BranchHandler info act' h))
     BAFalseComplete a c pf -> do
       -- Merge return value
-      mergedRegs <-
+      (errs, mergedRegs) <-
         case mr of
-          Nothing -> return (pathRegs p)
+          Nothing -> return ([], pathRegs p)
           Just r -> do
-            let Just (Typed tp vt) = M.lookup r (pathRegs p)
-            let Just (Typed _ vf)  = M.lookup r (pathRegs pf)
-            v <- sbeRunIO sbe $ applyIte sbe tp c vt vf
-            return $ M.insert r (Typed tp v) (pathRegs p)
+            let Just (vt,tp) = M.lookup r (pathRegs p)
+            let Just (vf,_)  = M.lookup r (pathRegs pf)
+            mv <- sbeRunIO sbe $ applyIte sbe tp c vt vf
+            let v = either (const vt) id mv
+            return (mv ^.. _Left, M.insert r (v, tp) (pathRegs p))
       -- Merge memory
       mergedMemory <- sbeRunIO sbe $ memMerge sbe c (pathMem p) (pathMem pf)
       -- Merge assertions
@@ -335,8 +341,8 @@ returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackH
                  , pathMem = mergedMemory
                  , pathAssertions = a'
                  }
-      returnMerge sbe p' h
-returnMerge _ p h = return (ActiveCS p h)
+      A.first (errs ++) <$> returnMerge sbe p' h
+returnMerge _ p h = return ([], ActiveCS p h)
 
 -- | Return from current path
 returnCurrentPath :: SBE sbe -> Maybe (SBETerm sbe) -> CS sbe -> Maybe (IO (CS sbe))
@@ -353,7 +359,7 @@ returnCurrentPath sbe rt (ActiveCS p h) = Just $ do
                 , pathStackHt = pathStackHt p - 1
                 , pathStack  = cfs
                 }
-  returnMerge sbe p' h
+  snd <$> returnMerge sbe p' h
 
 branchError :: SBE sbe
             -> MergeInfo -- Info for current merge point.
@@ -379,7 +385,7 @@ branchError sbe mi (BAFalseComplete a c pf) h = do
   -- Try to merge states that may have been waiting for the current path to terminate.
   case (mi,h) of
     ( ReturnInfo n _, BranchHandler (ReturnInfo pn _) _ _) | n == pn ->
-      returnMerge sbe pf' h
+      snd <$> returnMerge sbe pf' h
     ( PostdomInfo n _, BranchHandler (PostdomInfo pn _) _ _) | n == pn ->
       postdomMerge sbe pf' h
     _ -> return (ActiveCS pf' h)
@@ -390,22 +396,22 @@ markCurrentPathAsError _ CompletedCS{} = fail "Path is completed"
 markCurrentPathAsError sbe (ActiveCS _ (BranchHandler mi a h)) = Just (branchError sbe mi a h)
 markCurrentPathAsError _ (ActiveCS _ StopHandler) = Just (return (CompletedCS Nothing))
 
-type RegMap term = M.Map Reg (Typed term)
+type RegMap term = M.Map L.Ident (term, MemType)
 
-setReturnValue :: String -> Maybe (Typed Reg) -> Maybe t
+setReturnValue :: String -> Maybe (MemType, L.Ident) -> Maybe t
                ->  RegMap t -> RegMap t
-setReturnValue _n (Just (Typed tp r)) (Just rv) rm = M.insert r (Typed tp rv) rm
+setReturnValue _n (Just (tp, r)) (Just rv) rm = M.insert r (rv, tp) rm
 setReturnValue _n Nothing   Nothing   rm = rm
 setReturnValue nm Nothing   (Just _) _  =
   error $ nm ++ ": Return value where non expected"
-setReturnValue nm (Just tr) Nothing   _  =
-  error $ nm ++ ": Missing return value for "  ++ show (L.ppIdent (typedValue tr))
+setReturnValue nm (Just (_,tr)) Nothing   _  =
+  error $ nm ++ ": Missing return value for "  ++ show (L.ppIdent tr)
 
 -- | A Call frame for returning.
 data CallFrame sbe = CallFrame { cfFuncSym :: L.Symbol
                                , cfReturnBlock :: Maybe SymBlockID
                                , cfRegs :: RegMap (SBETerm sbe)
-                               , cfRetReg :: Maybe (Typed Reg)
+                               , cfRetReg :: Maybe (MemType, L.Ident)
                                , cfAssertions :: SBEPred sbe
                                }
 
@@ -450,11 +456,11 @@ data SEH sbe m = SEH
     -- | Invoked after each instruction executes
   , onPostStep        :: SymStmt  -> Simulator sbe m ()
     -- | Invoked before construction of a global term value
-  , onMkGlobTerm      :: L.Global -> Simulator sbe m ()
+  , onMkGlobTerm      :: Global -> Simulator sbe m ()
     -- | Invoked before memory model initialization of global data
-  , onPreGlobInit     :: L.Global -> SBETerm sbe -> Simulator sbe m ()
+  , onPreGlobInit     :: Global -> SBETerm sbe -> Simulator sbe m ()
     -- | Invoked after memory model initialization of global data
-  , onPostGlobInit    :: L.Global -> Typed (SBETerm sbe) -> Simulator sbe m ()
+  , onPostGlobInit    :: Global -> SBETerm sbe -> Simulator sbe m ()
   }
 
 -- | A handler for a function override. This gets the function symbol as an
@@ -462,7 +468,7 @@ data SEH sbe m = SEH
 -- symbols.
 type OverrideHandler sbe m
   =  L.Symbol              -- ^ Callee symbol
-  -> Maybe (Typed Reg)     -- ^ Callee return register
+  -> Maybe (MemType, L.Ident)     -- ^ Callee return register
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m (Maybe (SBETerm sbe))
 
@@ -544,7 +550,7 @@ ppPathLoc _ p =
 
 ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
 ppRegMap sbe mp =
-    vcat [ ppIdentAssoc r <> (L.ppTyped (prettyTermD sbe) v) | (r,v) <- as ]
+    vcat [ ppIdentAssoc r <> prettyTermD sbe v | (r,(v,_)) <- as ]
     where
       ppIdentAssoc r = L.ppIdent r
                        <> text (replicate (maxLen - identLen r) ' ')
@@ -561,5 +567,5 @@ ppTuple = parens . hcat . punctuate comma
 
 dumpCtrlStk :: (MonadIO m) => Simulator sbe m ()
 dumpCtrlStk = do
-  (sbe, cs) <- gets (symBE &&& ctrlStk)
+  (sbe, cs) <- gets (symBE A.&&& ctrlStk)
   banners $ show $ ppCtrlStk sbe cs

@@ -15,7 +15,6 @@ module Verifier.LLVM.Backend
   , BitWidth
   , IntArithOp(..)
   , TypedExpr(..)
-  , structFieldOffset
   , GEPOffset(..)
   ) where
 
@@ -98,7 +97,11 @@ data SBE m = SBE
     -- | @applyPredIte a b c@ creates an if-then-else term
   , applyPredIte :: SBEPred m -> SBEPred m -> SBEPred m -> m (SBEPred m)
     -- | @applyIte a b c@ creates an if-then-else term
-  , applyIte     :: L.Type -> SBEPred m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+  , applyIte :: MemType
+             -> SBEPred m
+             -> SBETerm m
+             -> SBETerm m
+             -> m (Either String (SBETerm m))
     -- | Interpret the term as a concrete boolean if it can be.
   , asBool :: SBEPred m -> Maybe Bool
   , prettyPredD :: SBEPred m -> Doc
@@ -133,16 +136,17 @@ data SBE m = SBE
     -- that ensures the address @p@ is a valid memory location in @m@.
     -- In other words, @p@ is a valid memory location if @c@ is true.
   , memLoad :: SBEMemory m
-            -> L.Type
+            -> MemType
             -> SBETerm m
             -> m (SBEPartialResult m (SBETerm m))
-    -- | @memStore m v p@ returns a pair @(c,m')@ where @m'@ denotes the memory
-    -- obtained by storing value @v@ at address @p@, and @c@ denotes an
+    -- | @memStore m p tp v@ returns a pair @(c,m')@ where @m'@ denotes the memory
+    -- obtained by storing value @v@ with type @tp@ at address @p@, and @c@ denotes an
     -- additional path constraint that ensures the address @p@ is a valid memory
     -- location in @m@.
   , memStore :: SBEMemory m
-             -> L.Typed (SBETerm m)
-             -> SBETerm m
+             -> SBETerm m -- ^ Address to store value at. 
+             -> MemType    -- ^ Type of value
+             -> SBETerm m -- ^ Value to store
              -> m (SBEPartialResult m (SBEMemory m))
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
     -- labels @blocks@ to the memory @mem@ and returns a pointer to
@@ -154,27 +158,28 @@ data SBE m = SBE
                  -> L.Symbol
                  -> [L.BlockLabel]
                  -> m (Maybe (SBETerm m, SBEMemory m))
-    -- | @memInitGlobal mem data@ attempts to write @data@ to a newly
+    -- | @memInitGlobal mem tp data@ attempts to write @data@ to a newly
     -- allocated region of memory in address space for globals.  If
     -- space is available, returns a pointer to the region
     -- and updated memory.  Otherwise returns @Nothing@.
   , memInitGlobal :: SBEMemory m
-                  -> L.Typed (SBETerm m)
+                  -> MemType 
+                  -> SBETerm m
                   -> m (Maybe (SBETerm m, SBEMemory m))
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , codeBlockAddress :: SBEMemory m -> L.Symbol -> L.BlockLabel -> m (SBETerm m)
-    -- | @codeLookupSymbol ptr@ returns the symbol at the given address.
-    -- Lookup may fail if the pointer does not point to a symbol, or if
-    -- the pointer is a symbolic value without a clear meaning.
-    -- TODO: Consider moving this function to the symbolic simulator.
+    -- | @codeLookupSymbol mem ptr@ returns the symbol at the given address
+    -- in mem.  Lookup may fail if the pointer does not point to a symbol, or
+    -- if the pointer is a symbolic value without a clear meaning.
   , codeLookupSymbol :: SBEMemory m -> SBETerm m -> m LookupSymbolResult
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
   , stackAlloca :: SBEMemory m
-                -> L.Type
-                -> L.Typed (SBETerm m)
+                -> MemType
+                -> BitWidth
+                -> SBETerm m
                 -> Int
                 -> m (StackAllocaResult m)
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
@@ -183,12 +188,13 @@ data SBE m = SBE
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
-    -- | @heapAlloc h tp i align@ allocates memory in the heap for the given
+    -- | @heapAlloc h tp i align@ allocates memory @h@ in the heap for
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
   , heapAlloc :: SBEMemory m
-              -> L.Type
-              -> L.Typed (SBETerm m)
+              -> MemType
+              -> BitWidth
+              -> SBETerm m
               -> Int
               -> m (HeapAllocResult m)
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
@@ -263,7 +269,7 @@ termDouble sbe v = applyTypedExpr sbe (SValDouble v)
 
 -- | @termArray tp ts@ creates a term representing an array with element terms
 -- @ts@ (which must be nonempty).  Each element must have type tp.  
-termArray :: SBE m -> L.Type -> [SBETerm m] -> m (SBETerm m)
+termArray :: SBE m -> MemType -> [SBETerm m] -> m (SBETerm m)
 termArray sbe tp l = applyTypedExpr sbe (SValArray tp (V.fromList l))
 
 -- | Create an struct of terms, which may have different types.

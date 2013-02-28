@@ -19,8 +19,8 @@ import           Tests.Common
 import qualified Text.LLVM        as L
 
 import           Verifier.LLVM.Backend
+import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Utils
 
 aggTests :: [(Args, Property)]
 aggTests =
@@ -30,7 +30,8 @@ aggTests =
   , test 1 False "test-array-1d-initializer"        $ arrayInit1D      1
   , test 1 False "test-array-2d-initializer"        $ arrayInit2D      1
   , test 1 False "test-array-mat4x4-mult"           $ arrayMat4x4      1
-  , test 1 False "test-struct-init-and-access"      $ structInitAccess 1
+  , test 1 False "test-struct-init-and-access"      $ 
+      runStruct 1 structInitAccessImpl
   , test 1 False "test-array-of-structs"            $ structArray      1
   {-
   , lssTest 0 "ctests/test-struct-member-indirect-call" $ \v cb -> do
@@ -44,7 +45,6 @@ aggTests =
     arrayInit1D v         = t1 v "onedim_init" (RV 3)
     arrayInit2D v         = t1 v "twodim_init" (RV 21)
     arrayMat4x4 v         = t2 v "matrix_mul_4x4" (RV 304)
-    structInitAccess v    = psk v $ runStruct v structInitAccessImpl
     structArray v         = psk v $ runStruct v structArrayImpl
     t1                    = mkNullaryTest "test-arrays.bc"
     t2                    = mkNullaryTest "test-mat4x4.bc"
@@ -54,14 +54,14 @@ aggTests =
 
 structInitAccessImpl :: AllMemModelTest
 structInitAccessImpl = do
-  callDefine_ (L.Symbol "struct_test") i64 []
+  lc <- getLC
+  let ?lc = lc
+  let si = mkStructInfo (llvmDataLayout lc) False [i32, i8]
+  callDefine_ (L.Symbol "struct_test") (Just (StructType si)) []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
     Just rv -> do
-      lc <- getLC
-      let ?lc = lc
-      let si = mkStructInfo False [i32, i8, padTy 3]
       bx <- withSBE $ \sbe -> applyTypedExpr sbe (GetStructField si rv 0)
       by <- withSBE $ \sbe -> applyTypedExpr sbe (GetStructField si rv 1)
       bxc <- withSBE' $ \s -> asSignedInteger s bx
@@ -72,7 +72,7 @@ structInitAccessImpl = do
 
 structArrayImpl :: AllMemModelTest
 structArrayImpl = do
-  callDefine_ (L.Symbol "struct_test_two") i32 []
+  callDefine_ (L.Symbol "struct_test_two") (Just i32) []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False

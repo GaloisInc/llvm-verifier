@@ -30,9 +30,9 @@ mmTest :: String
 mmTest testName n fn = 
   ( stdArgs {maxSuccess = n}
   , label testName $ monadicIO $ do
-      let lc  = buildLLVMContext
-              (error "LLVM Context has no ident -> type relation defined")
-              []
+      let (_,lc)  = buildLLVMContext
+                     (error "LLVM Context has no ident -> type relation defined")
+                     []
       let mg = MemGeom { 
                    mgStack = (0x10,0x0)
                  , mgCode = (0x0,0x0)
@@ -70,11 +70,11 @@ memModelTests =
          SAResult c0' _ _ <- run $ mmStackAlloca m1 1 fill 1
          assert =<< runSBE (evalPred [False] c0')
       -- Test store to concrete address succeeds.
-      (c1, m2) <- run $ mmStore m1 bytes ptr
+      (c1, m2) <- run $ mmStore m1 ptr bytes
       do assert =<< runSBE (evalPred [True] c1)
       -- Test symbolic load succeeds under appropiate conditions.
       do cntExt <- runSBE $ applyTypedExpr (SExt Nothing 1 cnt ptrWidth)
-         rptr <- runSBE $ applySub sbe Nothing ptrWidth ptr cntExt
+         rptr <- runSBE $ applyTypedExpr (PtrAdd ptr cntExt)
          (c2, _) <- run $ mmLoad m2 rptr 1 
          assert =<< runSBE (evalPred [False] c2)
   , mmTest "mergeTest" 1 $ \_lc be sbe@SBE { .. } MemModel { .. } m0 -> do
@@ -87,9 +87,9 @@ memModelTests =
       assert (c0 == tTrue)
       -- Store bytes
       let lvi = lVectorFromInt
-      (ct, mt) <- run $ mmStore m1 (lvi 8 1) ptr
+      (ct, mt) <- run $ mmStore m1 ptr (lvi 8 1)
       assert =<< runSBE (evalPred [] ct)
-      (cf, mf) <- run $ mmStore m1 (lvi 8 0) ptr
+      (cf, mf) <- run $ mmStore m1 ptr (lvi 8 0)
       assert =<< runSBE (evalPred [] cf)
       -- Merge
       cond0 <- runSBE $ freshInt 1

@@ -17,23 +17,19 @@ Point-of-contact : jhendrix
 
 module LSSImpl where
 
-import           Control.Applicative             hiding (many)
 import           Control.Monad.State
 import           Data.Char
 import           Data.Int
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
-import           Text.LLVM                       ((=:), Typed(..))
 import           Verinf.Utils.LogMonad
 import qualified Text.LLVM                       as L
 
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
 import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator
 import           Verifier.LLVM.Simulator.Common
-import           Verifier.LLVM.Utils
 
 data LSS = LSS
   { dbug    :: DbugLvl
@@ -134,23 +130,22 @@ buildArgv ::
 buildArgv numArgs argv' = do
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   ec <- getEvalContext "buildArgv" Nothing
-
-  strVals <- forM argv' $ \str -> do
-     let len = length str + 1
-     let tp = L.Array (fromIntegral len) (L.PrimType (L.Integer 8))
-     v <- getTypedTerm' ec (sValString (str ++ [chr 0]))
-     return (Typed tp v)
+  aw <- withLC llvmAddrWidthBits
   one <- getSizeT 1
-  strPtrs  <- mapM (\ty -> alloca ty one Nothing) (tt <$> strVals)
+  strPtrs  <- forM argv' $ \str -> do
+     let len = length str + 1
+     let tp = ArrayType len (IntType 8)
+     v <- getTypedTerm' ec (sValString (str ++ [chr 0]))
+     p <- alloca tp aw one Nothing
+     store tp v p
+     return p
+
   num <- getSizeT (toInteger numArgs)
-  argvBase <- alloca i8p num Nothing
+  argvBase <- alloca i8p aw num Nothing
   argvArr  <- withSBE (\s -> termArray s i8p strPtrs)
   -- Write argument string data and argument string pointers
-  forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p
-  store (L.Array numArgs i8p =: argvArr) argvBase
+  store (ArrayType (fromIntegral numArgs) i8p) argvArr argvBase
   return [argc, argvBase]
-  where
-    tt = typedType
 
 warnNoArgv :: IO ()
 warnNoArgv = putStrLn "WARNING: main() takes no argv; ignoring provided arguments."
