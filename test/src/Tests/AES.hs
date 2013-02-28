@@ -17,13 +17,12 @@ import           Control.Monad (forM)
 import           Data.Maybe
 import           Test.QuickCheck
 import           Tests.Common
-import           Text.LLVM               ((=:))
 import qualified Text.LLVM               as L
 
 import           Verifier.LLVM.Backend
+import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator
 import           Verifier.LLVM.Simulator.Debugging
-import           Verifier.LLVM.Utils
 
 aesTests :: [(Args, Property)]
 aesTests =
@@ -39,12 +38,13 @@ aes128ConcreteImpl = do
   setSEH sanityChecks
   ptptr  <- initArr ptVals
   keyptr <- initArr keyVals
-  one <- getSizeT 1
-  ctptr  <- alloca arrayTy one (Just 4)
+  let aw = 8
+  one <- withSBE $ \sbe -> termInt sbe aw 1
+  ctptr  <- alloca arrayTy aw one (Just 4)
   let args :: [SBETerm sbe]
       args = [ptptr, keyptr, ctptr]
   [_, _, ctRawPtr] <-
-    callDefine (L.Symbol "aes128BlockEncrypt") voidTy args
+    callDefine (L.Symbol "aes128BlockEncrypt") Nothing args
   Just mem <- getProgramFinalMem
   ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr
   ctVals <- forM [0..3] $ \i ->
@@ -56,13 +56,14 @@ aes128ConcreteImpl = do
     initArr :: [Integer] -> Simulator sbe IO (SBETerm sbe)
     initArr xs = do
        arrElts <- mapM (withSBE . \x s -> termInt s 32 x) xs
-       arr <- withSBE $ \sbe -> termArray sbe (L.PrimType (L.Integer 32)) arrElts
-       one <- getSizeT 1
-       p   <- alloca arrayTy one (Just 4)
-       store (arrayTy =: arr) p
+       arr <- withSBE $ \sbe -> termArray sbe i32 arrElts
+       let aw = 8
+       one <- withSBE $ \sbe -> termInt sbe aw 1
+       p   <- alloca arrayTy aw one (Just 4)
+       store arrayTy arr p
        return p
 
-    arrayTy = L.Array 4 i32
+    arrayTy = ArrayType 4 i32
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]
     keyVals = [0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f]
     ctChks  = [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]

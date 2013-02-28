@@ -30,6 +30,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
+{-# LANGUAGE TupleSections         #-}
 {-# LANGUAGE ViewPatterns          #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
@@ -52,7 +53,6 @@ module Verifier.LLVM.Simulator
   , withSBE'
   , getSizeT
   , getLC
-  , mkStructInfo
   -- * Memory operations
   , alloca
   , load
@@ -68,6 +68,10 @@ module Verifier.LLVM.Simulator
   , setSEH
   , withLC
   , warning
+  , i8
+  , i32
+  , i64
+  , i8p
   )
 where
 
@@ -85,7 +89,7 @@ import qualified Data.Vector               as V
 import           Numeric                   (showHex)
 import           System.Exit
 import           System.IO
-import           Text.LLVM                 (Typed(..), (=:))
+import           Text.LLVM                 (Typed(..))
 import qualified Text.LLVM                 as L
 import           Text.PrettyPrint.HughesPJ
 import Prelude   hiding (mapM, sequence)
@@ -93,10 +97,8 @@ import Prelude   hiding (mapM, sequence)
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
 import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator.Common
 import           Verifier.LLVM.Simulator.SimUtils
-import           Verifier.LLVM.Translation
 import           Verifier.LLVM.Utils
 
 
@@ -152,33 +154,28 @@ initGlobals = do
   -- Register all function definitions.
   do let defines = [ d | (_,Right d) <- M.toList nms]
      forM_ defines $ \d -> do
-       let argTys    = map typedType $ sdArgs d
+       let argTys    = snd <$> sdArgs d
            sym       = sdName d
-           fty       = L.FunTy (sdRetType d) argTys (sdVarArgs d)
+           fty       = FunType $ FunDecl (sdRetType d) argTys False
            idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody d)
            noCodeSpc = "Not enough space in code memory to allocate new definition."
        insertGlobalTerm noCodeSpc sym fty $ \s m -> memAddDefine s m sym idl
   -- Add symbol for declarations.
-  do declares <- L.modDeclares <$> origModule <$> gets codebase
-     forM_ declares $ \d -> do
-       let sym = L.decName d
+  do declares <- cbUndefinedFns . codebase <$> get
+     forM_ declares $ \(sym,d) -> do
        let errMsg = "Insufficient space for new declaration."
-       let ty = L.FunTy (L.decRetType d) (L.decArgs d) (L.decVarArgs d)
-       insertGlobalTerm errMsg sym ty $ \s m -> memAddDefine s m sym []
+       insertGlobalTerm errMsg sym (FunType d) $ \s m -> memAddDefine s m sym []
   -- Initialize global data
   do let globals = [ g | (_,Left g) <- M.toList nms]
      ec <- getEvalContext "adGlobal" Nothing
      forM_ globals $ \g -> do
        cb1 onMkGlobTerm g
-       Just symValue <- withLLVMContext $
-         return $ liftValue (L.globalType g) (L.globalValue g)
-       cdata <- getTypedTerm' ec symValue
-       let tpcdata = L.Typed (L.globalType g) cdata
+       cdata <- getTypedTerm' ec (globalValue g)
        cb2 onPreGlobInit g cdata
        let noDataSpc = "Not enough space in data segment to allocate new global."
-       _ <- insertGlobalTerm noDataSpc (L.globalSym g) (L.globalType g) $ \s m ->
-              memInitGlobal s m tpcdata
-       cb2 onPostGlobInit g tpcdata
+       insertGlobalTerm noDataSpc (globalSym g) (MemType (globalType g)) $ \s m ->
+              memInitGlobal s m (globalType g) cdata
+       cb2 onPostGlobInit g cdata
 
 callDefine_ ::
   ( MonadIO m
@@ -186,7 +183,7 @@ callDefine_ ::
   , Functor sbe
   )
   => L.Symbol     -- ^ Callee symbol
-  -> L.Type       -- ^ Callee return type
+  -> RetType      -- ^ Callee return type
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m ()
 callDefine_ c t ag = void $ callDefine c t ag
@@ -201,23 +198,22 @@ callDefine ::
   , Functor sbe
   )
   => L.Symbol     -- ^ Callee symbol
-  -> L.Type       -- ^ Callee return type
+  -> RetType       -- ^ Callee return type
   -> [SBETerm sbe] -- ^ Callee argument generator
   -> Simulator sbe m [SBETerm sbe]
 callDefine calleeSym t args = do
   def <- lookupSymbolDef calleeSym
-  let retReg = case sdRetType def of
-                 L.PrimType L.Void -> Nothing
-                 retType -> Just (retType =: entryRsltReg)
+  let retReg = (,entryRsltReg) <$> sdRetType def
+  lc <- getLC
+  let ?lc = lc
   unless (t == sdRetType def) $
     dbugM $ show $
       text "Warning: callDefine given incorrect return type of"
-              <+> L.ppType t
+              <+> ppRetType t
               <+>  text "for" <+> L.ppSymbol calleeSym <+> text "when actual type is"
-              <+> L.ppType (sdRetType def) <> text "."
+              <+> ppRetType (sdRetType def) <> text "."
   r <- callDefine' False entryRetNormalID calleeSym retReg args
-  run
-  return r
+  r <$ run
 
 tryModifyCS :: Monad m => String -> (CS sbe -> Maybe (CS sbe)) -> Simulator sbe m ()
 tryModifyCS ctx f = modify $ modifyCS fn
@@ -244,7 +240,7 @@ callDefine' ::
   => Bool                                         -- ^ Is this a redirected call?
   -> SymBlockID                                   -- ^ Normal call return block id
   -> L.Symbol                                     -- ^ Callee symbol
-  -> Maybe (Typed Reg)                            -- ^ Callee return type and result register
+  -> Maybe (MemType, L.Ident)                        -- ^ Callee return type and result register
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m [SBETerm sbe]
 callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg args = do
@@ -288,7 +284,7 @@ runNormalSymbol ::
   )
   => SymBlockID            -- ^ Normal call return block id
   -> L.Symbol              -- ^ Callee symbol
-  -> Maybe (Typed Reg)     -- ^ Callee return type and result register
+  -> Maybe (MemType, L.Ident)     -- ^ Callee return type and result register
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m [SBETerm sbe]
 runNormalSymbol normalRetID calleeSym mreg args = do
@@ -311,33 +307,35 @@ runNormalSymbol normalRetID calleeSym mreg args = do
     bindArgs formals actuals
       | length formals /= length actuals =
           err $ text "incorrect number of actual parameters"
-            $+$ text "formals: " <> text (show formals)
+            $+$ text "formals: " <> text (show (fst <$> formals))
       | otherwise =
-          foldr bindArg M.empty (formals `zip` actuals)
-    bindArg (k,v) = M.insert (typedValue k) (L.Typed (typedType k) v) 
+          foldr (uncurry bindArg) M.empty (formals `zip` actuals)
+    bindArg (r,tp) v = M.insert r (v,tp)
 
 intrinsic ::
   ( MonadIO m
   , Functor m
   , Functor sbe
   )
-  => String -> Maybe (Typed Reg) -> [SBETerm sbe]
+  => String -> Maybe (MemType, L.Ident) -> [SBETerm sbe]
   -> Simulator sbe m ()
 intrinsic intr mreg args0 =
-  case (intr, mreg) of
-    ("llvm.memcpy.p0i8.p0i8.i64", Nothing)    -> memcpy
-    ("llvm.memset.p0i8.i64", Nothing)         -> memset 64
-    ("llvm.uadd.with.overflow.i64", Just reg) -> uaddWithOverflow 64 reg
-    ("llvm.objectsize.i32", Just reg)         -> objSz 32 reg
-    ("llvm.objectsize.i64", Just reg)         -> objSz 64 reg
+  case (intr, mreg, args0) of
+    ("llvm.memcpy.p0i8.p0i8.i64", Nothing, [dst, src, len, align, _isvol]) ->
+      memcpy dst src len align
+    ("llvm.memset.p0i8.i64", Nothing, [dst, val, len, align, _]) ->
+      memSet dst val 64 len align
+    ("llvm.uadd.with.overflow.i64", Just reg, [x, y]) ->
+      uaddWithOverflow 64 reg x y
+    ("llvm.objectsize.i32", Just reg, _)         -> objSz 32 reg
+    ("llvm.objectsize.i64", Just reg, _)         -> objSz 64 reg
     -- Do nothing.
-    ("llvm.lifetime.start", Nothing) -> return ()
-    ("llvm.lifetime.end", Nothing) -> return ()
+    ("llvm.lifetime.start", Nothing,_) -> return ()
+    ("llvm.lifetime.end", Nothing,_) -> return ()
     _ -> whenVerbosity (>= 1) $ do --TODO: Give option of stopping on warnings like this.
       tellUser $ "Warning: skipping unsupported LLVM intrinsic " ++ show intr     
   where
-    memcpy = do
-      let [dst, src, len, align, _isvol] = args0
+    memcpy dst src len align = do
       Just m <- getMem
       (c,m') <- withSBE $ \sbe -> memCopy sbe m dst src len align
       setMem m'
@@ -347,18 +345,14 @@ intrinsic intr mreg args0 =
                  "memcopy operation was not valid: (dst,src,len) = "
                    ++ show (parens $ hcat $ punctuate comma $ pts)
       processMemCond fr c
-    memset lenWidth = do
-      let [dst, val, len, align, _isvol] = args0
-      memSet dst val lenWidth len align
-    uaddWithOverflow w reg = assign reg =<< withSBE fn
-      where [x, y] = args0
-            fn sbe = applyTypedExpr sbe (UAddWithOverflow w x y)
-    objSz w reg = do
+    uaddWithOverflow w (tp,reg) x y= assign reg tp =<< withSBE fn
+      where fn sbe = applyTypedExpr sbe (UAddWithOverflow w x y)
+    objSz w (tp,reg) = do
       let [_ptr, maxOrMin] = args0
       mval <- withSBE' $ \s -> snd <$> asUnsignedInteger s maxOrMin
       case mval of
         Nothing -> errorPath $ FailRsn $ "llvm.objectsize.i{32,64} expects concrete 2nd parameter"
-        Just v  -> assign reg =<< withSBE (\s -> termInt s w tv)
+        Just v  -> assign reg tp =<< withSBE (\s -> termInt s w tv)
           where tv = if v == 0 then -1 else 0
 
 memSet :: ( Functor m, MonadIO m
@@ -375,19 +369,16 @@ memSet dst val lenWidth len align = do
   case lenVal of
     Just 0 -> return ()
     _ -> do
-      store (L.Typed i8 val) dst
-      lc <- getLC
-      let ptrWidth = llvmAddrWidthBits lc
-      one      <- withSBE  $ \s -> termInt s ptrWidth 1
+      store i8 val dst
       negone   <- withSBE  $ \s -> termInt s lenWidth (-1)
-      dst'     <- termAdd ptrWidth dst one
+      dst'     <- ptrInc dst
       len'     <- termAdd lenWidth len negone
       memSet dst' val lenWidth len' align
 
 
 -- | Return value of this path.
 pathRetVal :: Path sbe -> Maybe (SBETerm sbe)
-pathRetVal p = typedValue <$> M.lookup entryRsltReg (pathRegs p)
+pathRetVal p = fst <$> M.lookup entryRsltReg (pathRegs p)
 
 getProgramReturnValue :: (Monad m, Functor m)
                       => Simulator sbe m (Maybe (SBETerm sbe))
@@ -514,8 +505,8 @@ run = do
 -- LLVM-Sym operations
 
 assign :: (Functor m, MonadIO m)
-       => L.Typed Reg -> SBETerm sbe -> Simulator sbe m ()
-assign (L.Typed tp reg) v = modifyPathRegs $ M.insert reg (L.Typed tp v)
+       => L.Ident -> MemType -> SBETerm sbe -> Simulator sbe m ()
+assign reg tp v = modifyPathRegs $ M.insert reg (v,tp)
 
 -- | Evaluate condition in current path.
 evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBEPred sbe)
@@ -532,13 +523,6 @@ data EvalContext sbe = EvalContext {
      , evalRegs :: Maybe (RegMap (SBETerm sbe))
      , evalSBE :: SBE sbe
      }
-
-withLLVMContext :: Monad m
-                => ((?lc :: LLVMContext) => Simulator sbe m a)
-                -> Simulator sbe m a
-withLLVMContext m = do
-  lc <- gets (cbLLVMCtx . codebase)
-  let ?lc = lc in m
 
 getEvalContext :: Monad m 
                => String
@@ -579,14 +563,14 @@ getTypedTerm' ec tsv = do
       case evalRegs ec of
         Just regs ->
           case M.lookup i regs of
-            Just x  -> return (typedValue x)
+            Just (x,_)  -> return x
             Nothing -> illegal $ "getTypedTerm' could not find register: "
                          ++ show (L.ppIdent i) ++ " in " ++ show (M.keys regs)
         Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec
                       ++ " with missing frame."
     SValSymbol sym ->
       case M.lookup sym (evalGlobalTerms ec) of
-        Just t -> return $ typedValue t
+        Just t -> return t
         Nothing ->
           error $ "Failed to find symbol: " ++ show (L.ppSymbol sym)
     SValExpr te -> do
@@ -600,19 +584,17 @@ insertGlobalTerm ::
   )
   => String
   -> L.Symbol
-  -> L.Type
+  -> SymType
   -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
-  -> Simulator sbe m (Typed (SBETerm sbe))
-insertGlobalTerm errMsg sym ty act = do
+  -> Simulator sbe m ()
+insertGlobalTerm errMsg sym _ act = do
   Just m <- getMem
   mr <- withSBE $ \s -> act s m
   case mr of
     Nothing -> errorPath (FailRsn errMsg)
     Just (r,m')  -> do
       setMem m'
-      let t = Typed (L.PtrTo ty) r
-      modify $ \s -> s{ globalTerms = M.insert sym t (globalTerms s) }
-      return t
+      modify $ \s -> s{ globalTerms = M.insert sym r (globalTerms s) }
 
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
@@ -667,31 +649,34 @@ step (PushPendingExecution bid cond ml elseStmts) = do
 
 step (SetCurrentBlock bid) = setCurrentBlock bid
 
-step (Assign reg (Val tv)) = do
-  assign reg =<< getBackendValue "eval@Val" tv
+step (Assign reg tp (Val tv)) = do
+  assign reg tp =<< getBackendValue "eval@Val" tv
 
 
-step (Assign reg (Alloca ty msztv malign)) = do
-  sizeTm <-
+step (Assign reg tp (Alloca ty msztv malign)) = do
+  assign reg tp =<<
     case msztv of
-      Just (w,v) -> L.Typed (L.PrimType (L.Integer (fromIntegral w))) <$>
-                      getBackendValue "alloca" v
-      Nothing -> getSizeT 1
-  assign reg =<< alloca ty sizeTm malign
+      Just (w,v) -> do
+        sizeTm <- getBackendValue "alloca" v
+        alloca ty w sizeTm malign
+      Nothing -> do
+        aw <- withLC llvmAddrWidthBits
+        sizeTm <- withSBE $ \sbe -> termInt sbe aw 1
+        alloca ty aw sizeTm malign
 
-step (Assign reg (Load v ty _malign)) = do
+step (Assign reg tp (Load v ty _malign)) = do
   addrTerm <- getBackendValue "load" v
   dumpMem 6 "load pre"
   val <- load ty addrTerm
   dumpMem 6 "load post"
-  assign reg val
+  assign reg tp val
 
-step (Store (Typed valType val) addr _malign) = do
+step (Store valType val addr _malign) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
   ec <- getCurrentEvalContext "store"
   valTerm  <- getTypedTerm' ec val
   addrTerm <- getTypedTerm' ec addr
-  store (Typed valType valTerm) addrTerm
+  store valType valTerm addrTerm
   whenVerbosity (<=6) $ dumpMem 6 "store post"
 
 step Unreachable
@@ -700,16 +685,23 @@ step Unreachable
 step (BadSymStmt s) = unimpl (show (L.ppStmt s))
 
 -- | Return value one as an integer with the address width bits.
-getSizeT :: (Functor m, MonadIO m) => Integer -> Simulator sbe m (Typed (SBETerm sbe))
+getSizeT :: (Functor m, MonadIO m) => Integer -> Simulator sbe m (SBETerm sbe)
 getSizeT v = do
   aw <- withLC llvmAddrWidthBits
-  Typed (L.iT (fromIntegral aw)) <$> withSBE (\sbe -> termInt sbe aw v)
+  withSBE (\sbe -> termInt sbe aw v)
 
 --------------------------------------------------------------------------------
 -- Symbolic expression evaluation
 
 -----------------------------------------------------------------------------------------
 -- Term operations and helpers
+
+ptrInc :: (Functor m, MonadIO m)
+        => SBETerm sbe -> Simulator sbe m (SBETerm sbe)
+ptrInc x = do
+  w <- withLC llvmAddrWidthBits
+  y <- withSBE  $ \s -> termInt s w 1
+  withSBE $ \sbe -> applyTypedExpr sbe (PtrAdd x y)
 
 termAdd :: (Functor m, Monad m)
         => BitWidth -> SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
@@ -727,11 +719,6 @@ withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
 withSBE' f = gets symBE >>= \sbe -> return (f sbe)
 
-withImplicitSBE :: (Functor m, Monad m)
-                => ((?sbe :: SBE sbe) => sbe a)
-                -> Simulator sbe m a
-withImplicitSBE m = gets symBE >>= \sbe -> liftSBE (let ?sbe = sbe in m)
-
 -- @getMem@ yields the memory model of the current path, which must exist.
 getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
 getMem = fmap (pathMem <$>) getPath
@@ -745,10 +732,6 @@ getLC = gets (cbLLVMCtx . codebase)
 
 withLC :: (Functor m, MonadIO m) => (LLVMContext -> a) -> Simulator sbe m a
 withLC f = f <$> gets (cbLLVMCtx . codebase)
-
-withImplicitLC :: (Functor m, MonadIO m) => ((?lc::LLVMContext) => a) -> Simulator sbe m a
-withImplicitLC f = fn <$> gets (cbLLVMCtx . codebase)
-  where fn lc = let ?lc = lc in f
 
 --------------------------------------------------------------------------------
 -- Callbacks and event handlers
@@ -773,66 +756,55 @@ defaultSEH = SEH
 --------------------------------------------------------------------------------
 -- Memory operation helpers
 
-type AllocRslt sbe =
-  Either (StackAllocaResult sbe)
-         (HeapAllocResult   sbe)
-type AllocAct sbe =
-  SBE sbe -> SBEMemory sbe -> Typed (SBETerm sbe) -> sbe (AllocRslt sbe)
-
-alloca, malloc ::
+alloca ::
   ( MonadIO m
   , Functor m
   , Functor sbe
   )
-  => L.Type
-  -> Typed (SBETerm sbe)
+  => MemType
+  -> BitWidth
+  -> SBETerm sbe
   -> Maybe Int
   -> Simulator sbe m (SBETerm sbe)
-alloca ty sztm malign = do
+alloca ty szw sztm malign = do
   Just m <- getMem
   sbe <- gets symBE
-  rslt <- liftSBE $ stackAlloca sbe m ty sztm (maybe 0 lg malign)
+  rslt <- liftSBE $ stackAlloca sbe m ty szw sztm (maybe 0 lg malign)
   case rslt of
     SASymbolicCountUnsupported  -> errorPath $ FailRsn $
       "Stack allocation only supports a concrete element count "
         ++ "(try a different memory model?)"
     SAResult c t m' -> do
       setMem m'
-      let fr = memFailRsn sbe ("Failed alloca allocation of type " ++ show (L.ppType ty)) []
+      let fr = memFailRsn sbe ("Failed alloca allocation of type " ++ show (ppMemType ty)) []
       processMemCond fr c
       return t
 --TODO: return (Typed (L.PtrTo ty) t)
 
-
-malloc ty sztm malign = doAlloc ty sztm $ \s m nt ->
-  Right <$> heapAlloc s m ty nt (maybe 0 lg malign)
-
-doAlloc ::
+malloc ::
   ( MonadIO m
   , Functor m
   , Functor sbe
   )
-  => L.Type -> Typed (SBETerm sbe) -> AllocAct sbe
+  => MemType
+  -> BitWidth -- ^ Width of size
+  -> SBETerm sbe -- ^ Size
+  -> Maybe Int -- ^ Alignment
   -> Simulator sbe m (SBETerm sbe)
-doAlloc ty sztm allocActFn = do
+malloc ty szw sztm malign  = do
   Just m        <- getMem
-  rslt          <- withSBE $ \s -> allocActFn s m sztm
+  rslt          <- withSBE $ \s -> 
+    heapAlloc s m ty szw sztm (maybe 0 lg malign)
   sbe <- gets symBE
-  (c, t, m', s) <- case rslt of
-    Left SASymbolicCountUnsupported  -> errorPath $ err "alloca"
-    Left (SAResult c t m')           -> do
-      liftSBE $ memDump sbe m' Nothing
-      return (c, t, m', "alloca")
-    Right HASymbolicCountUnsupported -> errorPath $ err "malloc"
-    Right (HAResult c t m')          -> return (c, t, m', "malloc")
-  setMem m'
-  let fr =  memFailRsn sbe ("Failed " ++ s ++ " allocation of type " ++ show (L.ppType ty)) []
-  processMemCond fr c
-  return t
-  where
-    err s = FailRsn
-            $ s ++ " only support concrete element count "
-                ++ "(try a different memory model?)"
+  case rslt of
+    HASymbolicCountUnsupported -> errorPath $ FailRsn $
+      "malloc only supports concrete element count "
+        ++ "(try a different memory model?)"
+    HAResult c t m' -> do
+      setMem m'
+      let fr =  memFailRsn sbe ("Failed malloc allocation of type " ++ show (ppMemType ty)) []
+      processMemCond fr c
+      return t
 
 -- | Load value at addr in current path.
 load ::
@@ -840,7 +812,7 @@ load ::
   , MonadIO m
   , Functor sbe
   )
-  => L.Type -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
+  => MemType -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
 load tp addr = do
   sbe <- gets symBE
   Just mem <- getMem
@@ -854,11 +826,11 @@ store ::
   , MonadIO m
   , Functor sbe
   )
-  => Typed (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
-store val dst = do
+  => MemType -> SBETerm sbe -> SBETerm sbe -> Simulator sbe m ()
+store tp val dst = do
   Just m <- getMem
   sbe <- gets symBE
-  (c, m') <- liftSBE $ memStore sbe m val dst
+  (c, m') <- liftSBE $ memStore sbe m dst tp val
   setMem m'
   let fr = memFailRsn sbe "Invalid store address: " [dst]
   processMemCond fr c
@@ -885,9 +857,9 @@ tellUser msg = unlessQuiet $ dbugM msg
 -- | Returns the a term representing the target-specific number of bytes
 -- required to store a value of the given type.
 -- The result has width llvmAddrWidthBits
-sizeof :: (MonadIO m, Functor m) => L.Type -> Simulator sbe m TypedSymValue
+sizeof :: (MonadIO m, Functor m) => MemType -> Simulator sbe m TypedSymValue
 sizeof ty = withLC $ \lc ->
-  SValExpr $ SValInteger (llvmAddrWidthBits lc) (llvmAllocSizeOf lc ty)
+  SValExpr $ SValInteger (llvmAddrWidthBits lc) (toInteger (memTypeSize (llvmDataLayout lc) ty))
 
 resolveFunPtrTerm ::
   ( MonadIO m
@@ -907,7 +879,7 @@ runStmts ::
   => [SymStmt] -> Simulator sbe m ()
 runStmts = mapM_ dbugStep
 
-entryRsltReg :: Reg
+entryRsltReg :: L.Ident
 entryRsltReg = L.Ident "__galois_final_rslt"
 
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
@@ -929,43 +901,46 @@ type StdOvd m sbe =
   )
   => Override sbe m
 
-checkTypeCompat :: Monad m => L.Declare -> String -> L.Declare -> Simulator sbe m ()      
-checkTypeCompat fd tnm td = do
-  let nm = show . L.ppSymbol . L.decName
-  let e rsn = error $ "Attempt to replace " ++ nm fd
+checkTypeCompat :: Monad m
+                => L.Symbol
+                -> FunDecl -- ^ Declaration of function to be overriden.
+                -> String -- ^ Name of override function
+                -> FunDecl -- ^ Type of override function
+                -> Simulator sbe m ()      
+checkTypeCompat fnm (FunDecl frtn fargs fva) tnm (FunDecl trtn targs tva) = do
+  lc <- getLC
+  let ?lc = lc
+  let nm = show . L.ppSymbol
+  let e rsn = error $ "Attempt to replace " ++ nm fnm
                      ++ " with function " ++ tnm ++ " that " ++ rsn
-  let ppTypes :: [L.Type] -> String
-      ppTypes tys = '(' : intercalate ", " (map (show . L.ppType) tys) ++ ")" 
-  unless (L.decArgs fd == L.decArgs td) $ e $ "has different argument types.\n" 
-    ++ "  Argument types of " ++ nm fd ++ ": " ++ ppTypes (L.decArgs fd) ++ "\n"
-    ++ "  Argument types of " ++ tnm ++ ": " ++ ppTypes (L.decArgs td) ++ "\n"
-  when (L.decVarArgs fd && not (L.decVarArgs td)) $
-    e "is a non-variable argument function."
-  when (not (L.decVarArgs fd) && L.decVarArgs td) $
-    e "is a variable argument function."
-  unless (L.decRetType fd == L.decRetType td) $ e $ "has a different return type.\n"
-    ++ "  Return type of " ++ nm fd ++ ": " ++ show (L.ppType (L.decRetType fd)) ++ "\n"
-    ++ "  Return type of " ++ tnm ++ ": " ++ show (L.ppType (L.decRetType td)) ++ "\n"
+  let ppTypes :: [MemType] -> String
+      ppTypes tys = show (parens (commas (ppMemType <$> tys)))
+  unless (fargs == targs) $ e $ "has different argument types.\n" 
+    ++ "  Argument types of " ++ nm fnm ++ ": " ++ ppTypes fargs ++ "\n"
+    ++ "  Argument types of " ++ tnm ++ ": " ++ ppTypes targs ++ "\n"
+  unless (frtn == trtn) $ e $ "has a different return type.\n"
+    ++ "  Return type of " ++ nm fnm ++ ": " ++ show (ppRetType frtn) ++ "\n"
+    ++ "  Return type of " ++ tnm ++ ": " ++ show (ppRetType trtn) ++ "\n"
+  when (fva && not tva) $ e $ "does not accept varargs.\n"
+  when (not fva && tva) $ e $ "allows varargs.\n"
+
+  
 
 registerOverride ::
   ( Functor m
   , Functor sbe
   , MonadIO m
   )
-  => L.Symbol -> L.Type -> [L.Type] -> Bool -> Override sbe m
+  => L.Symbol
+  -> FunDecl 
+  -> Override sbe m
   -> Simulator sbe m ()
-registerOverride sym retTy argTys va handler = do
-  -- TODO: Verify function exists and argument types match types of override.
-  dm <- gets (cbDeclareMap . codebase)
-  case M.lookup sym dm of
+registerOverride sym decl handler = do
+  cb <- gets codebase
+  case lookupFunctionType sym cb of
     Nothing -> return ()
     Just fd -> do
-      let td = L.Declare { L.decName = L.Symbol "override"   
-                         , L.decArgs = argTys
-                         , L.decVarArgs = va
-                         , L.decRetType = retTy
-                         }
-      checkTypeCompat fd "override" td
+      checkTypeCompat sym fd "override" decl -- (FunDecl retTy argTys)
       modify $ \s ->
         s { fnOverrides = M.insert sym (handler, False) (fnOverrides s)
           }
@@ -1113,9 +1088,7 @@ loadString nm ptr = do
   where go addr = do
           t <- load i8 addr
           c <- withSBE' $ \s -> snd <$> asUnsignedInteger s t
-          ptrWidth <- withLC llvmAddrWidthBits
-          one <- withSBE $ \s -> termInt s ptrWidth 1
-          addr' <- termAdd ptrWidth addr one
+          addr' <- ptrInc addr
           case c of
             Nothing -> do
               errorPath $ FailRsn $
@@ -1188,15 +1161,16 @@ printSymbolic = Override $ \_sym _rty args ->
     _ -> errorPath $ FailRsn "lss_print_symbolic: wrong number of arguments"
 
 allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe)
-             => Int32
-             -> (L.Type
-                   -> Typed (SBETerm sbe)
+             => BitWidth
+             -> (MemType
+                   -> BitWidth
+                   -> SBETerm sbe
                    -> Maybe Int
                    -> Simulator sbe m (SBETerm sbe))
              -> Override sbe m
 allocHandler aw fn = Override $ \_sym _rty args ->
   case args of
-    [sizeTm] -> Just <$> fn i8 (L.Typed (intn aw) sizeTm) Nothing
+    [sizeTm] -> Just <$> fn i8 aw sizeTm Nothing
     _ -> e "alloca: wrong number of arguments"
   where
     e = errorPath . FailRsn
@@ -1267,13 +1241,12 @@ freshIntArray n = Override $ \_sym _rty args ->
       case msize of
         Just size -> do
           let sz = fromIntegral size
-              ety = intn . toEnum . fromEnum $ n
-              ty = L.Array (fromIntegral size) ety
-          arrPtr <- alloca ety (L.Typed i32 sizeTm) Nothing
+              ety = IntType n
+              ty = ArrayType (fromIntegral size) ety
+          arrPtr <- alloca ety 32 sizeTm Nothing
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- withSBE $ \sbe -> termArray sbe ety elts
-          let typedArrTm = Typed ty arrTm
-          store typedArrTm arrPtr
+          store ty arrTm arrPtr
           return (Just arrPtr)
         Nothing -> e "lss_fresh_array_uint called with symbolic size"
     _ -> e "lss_fresh_array_uint: wrong number of arguments"
@@ -1312,7 +1285,7 @@ addAigOutput = Override $ \_sym _rty args ->
     _   -> errorPath
            $ FailRsn "lss_aiger_add_output: wrong number of arguments"
 
-addAigArrayOutput :: L.Type -- ^ Type of value target points to.
+addAigArrayOutput :: MemType -- ^ Type of value target points to.
                   -> StdOvd sbe m
 addAigArrayOutput tgtTy = Override $ \_sym _rty args ->
   case args of
@@ -1346,7 +1319,7 @@ writeCollectedAigerOutputs = Override $ \_sym _rty args ->
   where
     e = errorPath . FailRsn
 
-writeIntArrayAiger :: L.Type -> StdOvd sbe m
+writeIntArrayAiger :: MemType -> StdOvd sbe m
 writeIntArrayAiger ety = Override $ \_sym _rty args ->
   case args of
     [tptr, sizeTm, fptr] -> do
@@ -1382,10 +1355,10 @@ loadArray ::
   , Functor sbe
   )
   => SBETerm sbe -- Term
-  -> L.Type -- Element type
+  -> MemType -- Element type
   -> Integer -- Count
   -> Simulator sbe m [SBETerm sbe]
-loadArray ptr tp count = go 0 =<< load (L.Array (fromInteger count) tp) ptr
+loadArray ptr tp count = go 0 =<< load (ArrayType (fromInteger count) tp) ptr
   where c = fromInteger count
         go i a 
           | i == c = return []
@@ -1394,7 +1367,7 @@ loadArray ptr tp count = go 0 =<< load (L.Array (fromInteger count) tp) ptr
                applyTypedExpr s (GetConstArrayElt c tp a i)
              (v:) <$> go (i+1) a
 
-evalAigerOverride :: L.Type -> StdOvd m sbe
+evalAigerOverride :: MemType -> StdOvd m sbe
 evalAigerOverride ety =
   Override $ \_sym _rty args ->
     case args of
@@ -1413,7 +1386,7 @@ evalAigerOverride ety =
   where
     e = errorPath . FailRsn
 
-evalAigerArray :: L.Type -- Type of first argument pointer.
+evalAigerArray :: MemType -- Type of first argument pointer.
                -> StdOvd sbe m
 evalAigerArray ty =
   Override $ \_sym _rty args ->
@@ -1423,14 +1396,14 @@ evalAigerArray ty =
         misz <- withSBE' $ \s -> snd <$> asUnsignedInteger s inputSz
         case (msz, misz) of
           (Just sz, Just isz) -> do
-            inputs <- loadArray input i8 isz
+            inputs <- loadArray input (IntType 8) isz
             ints <- mapM
                     (\t -> withSBE' $ \s -> snd <$> asUnsignedInteger s t)
                     inputs
             let bools = map (not . (== 0)) $ catMaybes ints
-            tm <- load (L.Array (fromInteger sz) ty) sym
+            tm <- load (ArrayType (fromInteger sz) ty) sym
             res <- withSBE $ \s -> evalAiger s bools tm
-            store (L.Typed (L.Array (fromInteger sz) ty) dst) res
+            store (ArrayType (fromInteger sz) ty) dst res
             return Nothing
           _ -> e "lss_eval_aiger_array: symbolic sizes not supported"
       _ -> e "lss_eval_aiger_array: wrong number of arguments"
@@ -1477,14 +1450,14 @@ overrideIntrinsic = Override $ \_sym _rty args ->
 userRedirectTo :: MonadIO m
   => L.Symbol -> L.Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
 userRedirectTo from to = do
-  dm <- gets (cbDeclareMap . codebase)
+  cb <- gets codebase
   let nameOf = show . L.ppSymbol 
   --TODO: Add better error messages.
-  case (M.lookup from dm, M.lookup to dm) of
+  case (lookupFunctionType from cb, lookupFunctionType to cb) of
     (Nothing,_) -> error $ "Could not find symbol " ++ nameOf from ++ "."
     (_,Nothing) -> error $ "Could not find symbol " ++ nameOf to ++ "."  
-    (Just fd,Just td) -> do
-      checkTypeCompat fd (show (L.ppSymbol (L.decName td))) td
+    (Just fd, Just td) -> do
+      checkTypeCompat from fd (show (L.ppSymbol to)) td
       modify $ \s ->
         s{ fnOverrides = M.insert from (Redirect to, True) (fnOverrides s) }
       return Nothing
@@ -1524,89 +1497,99 @@ overrideResetAll = Override $ \_sym _rty args ->
   where
     e = errorPath . FailRsn
 
-type OverrideEntry sbe m = (L.Symbol, L.Type, [L.Type], Bool, Override sbe m)
+type OverrideEntry sbe m = (L.Symbol, FunDecl, Override sbe m)
 
 registerLibcOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
 registerLibcOverrides = do
   aw <- withLC llvmAddrWidthBits
-  let sizeT = intn (fromIntegral aw)
-  dm <- gets (cbDeclareMap . codebase)
+  let sizeT = IntType aw
+  cb <- gets codebase
   -- Register malloc
-  case M.lookup "malloc" dm of
+  case lookupFunctionType "malloc" cb of
     Nothing -> return ()
     Just d -> do
-      unless (L.decArgs d == [sizeT] && not (L.decVarArgs d)) $ do
-        error "malloc has unexpected arguments."
-      case L.decRetType d of
-        L.PtrTo _ -> return ()
+      --unless (L.decArgs d == [sizeT] && not (L.decVarArgs d)) $ do
+      --  error "malloc has unexpected arguments."
+      case fdRetType d of
+        Just _ ->
+          registerOverride "malloc" d $
+            allocHandler (fromIntegral aw) malloc
         _ -> error "malloc has unexpected return type."
-      registerOverride "malloc" (L.decRetType d) [sizeT] False $
-        allocHandler (fromIntegral aw) malloc
   registerOverrides
-    [ ("__assert_rtn", voidTy, [i8p, i8p, i32, i8p], False, assertHandler__assert_rtn)
+    [ ("__assert_rtn", voidFunDecl [i8p, i8p, i32, i8p], assertHandler__assert_rtn)
     --, ("exit", voidTy, [i32], False, exitHandler)
-    , ("alloca", voidPtr, [sizeT], False, allocHandler (fromIntegral aw) alloca)
-    , ("free", voidTy, [voidPtr], False,
+    , ("alloca", funDecl voidPtr [sizeT], allocHandler (fromIntegral aw) alloca)
+    , ("free", voidFunDecl [voidPtr],
        -- TODO: stub! Does this need to be implemented?
        Override $ \_sym _rty _args -> return Nothing)
-    , ("printf", i32, [strTy], True, printfHandler)
+    , ("printf", FunDecl (Just i32) [strTy] True, printfHandler)
     ]
+
+i8, i16, i32, i64 :: MemType
+i8     = IntType 8
+i16    = IntType 16
+i32    = IntType 32
+i64    = IntType 64
+
+i8p, i16p, i32p, i64p :: MemType
+i8p    = PtrType (MemType i8)
+i16p   = PtrType (MemType i16)
+i32p   = PtrType (MemType i32)
+i64p   = PtrType (MemType i64)
+
+strTy :: MemType
+strTy = i8p
+
+voidPtr :: MemType
+voidPtr = PtrType VoidType
 
 registerLSSOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
 registerLSSOverrides = registerOverrides
-  [ ("lss_abort", voidTy, [strTy], False, abortHandler)
-  , ("lss_print_symbolic", voidTy, [i8p], False, printSymbolic)
-  , ("lss_fresh_uint8",   i8,  [i8], False, freshInt'  8)
-  , ("lss_fresh_uint16", i16, [i16], False, freshInt' 16)
-  , ("lss_fresh_uint32", i32, [i32], False, freshInt' 32)
-  , ("lss_fresh_uint64", i64, [i64], False, freshInt' 64)
-  , ("lss_fresh_array_uint8",   i8p, [i32,  i8, i8p], False, freshIntArray 8)
-  , ("lss_fresh_array_uint16", i16p, [i32, i16, i16p], False, freshIntArray 16)
-  , ("lss_fresh_array_uint32", i32p, [i32, i32, i32p], False, freshIntArray 32)
-  , ("lss_fresh_array_uint64", i64p, [i32, i64, i64p], False, freshIntArray 64)
-  , ("lss_aiger_add_output_uint8",  voidTy,  [i8], False, addAigOutput)
-  , ("lss_aiger_add_output_uint16", voidTy, [i16], False, addAigOutput)
-  , ("lss_aiger_add_output_uint32", voidTy, [i32], False, addAigOutput)
-  , ("lss_aiger_add_output_uint64", voidTy, [i64], False, addAigOutput)
-  , ("lss_aiger_add_output_array_uint8" , voidTy, [ i8p, i32], False, addAigArrayOutput i8)
-  , ("lss_aiger_add_output_array_uint16", voidTy, [i16p, i32], False, addAigArrayOutput i16)
-  , ("lss_aiger_add_output_array_uint32", voidTy, [i32p, i32], False, addAigArrayOutput i32)
-  , ("lss_aiger_add_output_array_uint64", voidTy, [i64p, i32], False, addAigArrayOutput i64)
-  , ("lss_write_aiger", voidTy, [strTy], False, writeCollectedAigerOutputs)
-  , ("lss_write_aiger_uint8",  voidTy, [i8,  strTy], False, writeIntAiger)
-  , ("lss_write_aiger_uint16", voidTy, [i16, strTy], False, writeIntAiger)
-  , ("lss_write_aiger_uint32", voidTy, [i32, strTy], False, writeIntAiger)
-  , ("lss_write_aiger_uint64", voidTy, [i64, strTy], False, writeIntAiger)
-  , ("lss_write_aiger_array_uint8", voidTy, [i8p, i32, strTy], False,
-     writeIntArrayAiger i8)
-  , ("lss_write_aiger_array_uint16", voidTy, [i16p, i32, strTy], False,
-     writeIntArrayAiger i16)
-  , ("lss_write_aiger_array_uint32", voidTy, [i32p, i32, strTy], False,
-     writeIntArrayAiger i32)
-  , ("lss_write_aiger_array_uint64", voidTy, [i64p, i32, strTy], False,
-     writeIntArrayAiger i64)
-  , ("lss_eval_aiger_uint8",   i8, [i8,  i8p, i32], False, evalAigerOverride i8)
-  , ("lss_eval_aiger_uint16", i16, [i16, i8p, i32], False, evalAigerOverride i8)
-  , ("lss_eval_aiger_uint32", i32, [i32, i8p, i32], False, evalAigerOverride i8)
-  , ("lss_eval_aiger_uint64", i64, [i64, i8p, i32], False, evalAigerOverride i8)
-  , ("lss_eval_aiger_array_uint8",  voidTy, [i8p,  i8p,  i32, i8p, i32], False
-    , evalAigerArray i8)
-  , ("lss_eval_aiger_array_uint16", voidTy, [i16p, i16p, i32, i8p, i32], False
-    , evalAigerArray i16)
-  , ("lss_eval_aiger_array_uint32", voidTy, [i32p, i32p, i32, i8p, i32], False
-    , evalAigerArray i32)
-  , ("lss_eval_aiger_array_uint64", voidTy, [i64p, i64p, i32, i8p, i32], False
-    , evalAigerArray i64)
-  , ("lss_write_cnf", voidTy, [i32, strTy], False, writeCNF)
-  , ("lss_override_function_by_name", voidTy, [strTy, strTy], False, overrideByName)
-  , ("lss_override_function_by_addr", voidTy, [strTy, strTy], False, overrideByAddr)
-  , ("lss_override_llvm_intrinsic", voidTy, [strTy, strTy], False, overrideIntrinsic)
-  , ("lss_override_reset_by_name", voidTy, [strTy], False, overrideResetByName)
-  , ("lss_override_reset_by_addr", voidTy, [strTy], False, overrideResetByAddr)
-  , ("lss_override_reset_all", voidTy, [], False, overrideResetAll)
-  , ("lss_show_path", voidTy, [], False, showPathOverride)
-  , ("lss_show_mem", voidTy, [], False, showMemOverride)
-  , ("lss_set_verbosity", voidTy, [i32], False, userSetVebosityOverride)
+  [ ("lss_abort",          voidFunDecl [strTy], abortHandler)
+  , ("lss_print_symbolic", voidFunDecl [i8p],   printSymbolic)
+  , ("lss_fresh_uint8",    funDecl  i8 [ i8],   freshInt'  8)
+  , ("lss_fresh_uint16",   funDecl i16 [i16],   freshInt' 16)
+  , ("lss_fresh_uint32",   funDecl i32 [i32],   freshInt' 32)
+  , ("lss_fresh_uint64",   funDecl i64 [i64],   freshInt' 64)
+  , ("lss_fresh_array_uint8",  funDecl  i8p [i32,  i8,  i8p], freshIntArray 8)
+  , ("lss_fresh_array_uint16", funDecl i16p [i32, i16, i16p], freshIntArray 16)
+  , ("lss_fresh_array_uint32", funDecl i32p [i32, i32, i32p], freshIntArray 32)
+  , ("lss_fresh_array_uint64", funDecl i64p [i32, i64, i64p], freshIntArray 64)
+  , ("lss_aiger_add_output_uint8",  voidFunDecl [ i8], addAigOutput)
+  , ("lss_aiger_add_output_uint16", voidFunDecl [i16], addAigOutput)
+  , ("lss_aiger_add_output_uint32", voidFunDecl [i32], addAigOutput)
+  , ("lss_aiger_add_output_uint64", voidFunDecl [i64], addAigOutput)
+  , ("lss_aiger_add_output_array_uint8" , voidFunDecl [ i8p, i32], addAigArrayOutput i8)
+  , ("lss_aiger_add_output_array_uint16", voidFunDecl [i16p, i32], addAigArrayOutput i16)
+  , ("lss_aiger_add_output_array_uint32", voidFunDecl [i32p, i32], addAigArrayOutput i32)
+  , ("lss_aiger_add_output_array_uint64", voidFunDecl [i64p, i32], addAigArrayOutput i64)
+  , ("lss_write_aiger",        voidFunDecl [strTy], writeCollectedAigerOutputs)
+  , ("lss_write_aiger_uint8",  voidFunDecl [ i8, strTy], writeIntAiger)
+  , ("lss_write_aiger_uint16", voidFunDecl [i16, strTy], writeIntAiger)
+  , ("lss_write_aiger_uint32", voidFunDecl [i32, strTy], writeIntAiger)
+  , ("lss_write_aiger_uint64", voidFunDecl [i64, strTy], writeIntAiger)
+  , ("lss_write_aiger_array_uint8",  voidFunDecl [i8p,  i32, strTy], writeIntArrayAiger i8)
+  , ("lss_write_aiger_array_uint16", voidFunDecl [i16p, i32, strTy], writeIntArrayAiger i16)
+  , ("lss_write_aiger_array_uint32", voidFunDecl [i32p, i32, strTy], writeIntArrayAiger i32)
+  , ("lss_write_aiger_array_uint64", voidFunDecl [i64p, i32, strTy], writeIntArrayAiger i64)
+  , ("lss_eval_aiger_uint8",  funDecl  i8 [ i8, i8p, i32], evalAigerOverride i8)
+  , ("lss_eval_aiger_uint16", funDecl i16 [i16, i8p, i32], evalAigerOverride i8)
+  , ("lss_eval_aiger_uint32", funDecl i32 [i32, i8p, i32], evalAigerOverride i8)
+  , ("lss_eval_aiger_uint64", funDecl i64 [i64, i8p, i32], evalAigerOverride i8)
+  , ("lss_eval_aiger_array_uint8",  voidFunDecl [i8p,  i8p,  i32, i8p, i32], evalAigerArray i8)
+  , ("lss_eval_aiger_array_uint16", voidFunDecl [i16p, i16p, i32, i8p, i32], evalAigerArray i16)
+  , ("lss_eval_aiger_array_uint32", voidFunDecl [i32p, i32p, i32, i8p, i32], evalAigerArray i32)
+  , ("lss_eval_aiger_array_uint64", voidFunDecl [i64p, i64p, i32, i8p, i32], evalAigerArray i64)
+  , ("lss_write_cnf", voidFunDecl [i32, strTy], writeCNF)
+  , ("lss_override_function_by_name", voidFunDecl [strTy, strTy], overrideByName)
+  , ("lss_override_function_by_addr", voidFunDecl [strTy, strTy], overrideByAddr)
+  , ("lss_override_llvm_intrinsic",   voidFunDecl [strTy, strTy], overrideIntrinsic)
+  , ("lss_override_reset_by_name",    voidFunDecl [strTy], overrideResetByName)
+  , ("lss_override_reset_by_addr",    voidFunDecl [strTy], overrideResetByAddr)
+  , ("lss_override_reset_all", voidFunDecl [], overrideResetAll)
+  , ("lss_show_path", voidFunDecl [], showPathOverride)
+  , ("lss_show_mem",  voidFunDecl [], showMemOverride)
+  , ("lss_set_verbosity", voidFunDecl [i32], userSetVebosityOverride)
   ]
 
 registerOverrides ::
@@ -1616,4 +1599,4 @@ registerOverrides ::
   )
   => [OverrideEntry sbe m] -> Simulator sbe m ()
 registerOverrides = mapM_ fn
-  where fn (sym, rty, atys, va, handler) = registerOverride sym rty atys va handler
+  where fn (sym, fd, handler) = registerOverride sym fd handler

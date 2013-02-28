@@ -7,6 +7,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE ViewPatterns               #-}
 
 module Main where
@@ -79,8 +80,9 @@ main = do
 
   cb <- loadCodebase bcFile
   when (xlate args) $ do
+    let ?lc = cbLLVMCtx cb
     let xlateDefine d = ppSymDefine sd
-          where (_,sd) = liftDefine (cbLLVMCtx cb) d
+          where Right (_,sd) = liftDefine d
     -- Dump the translated module and exit
     let via s f = mapM_ (putStrLn . show  . f) (s $ origModule cb)
     ((:[]) . L.modDataLayout) `via` L.ppDataLayout

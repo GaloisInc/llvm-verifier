@@ -17,7 +17,6 @@ import qualified Text.LLVM              as L
 
 import           Verifier.LLVM.BitBlastBackend
 import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Utils
 
 symTests :: [(Args, Property)]
 symTests =
@@ -63,7 +62,7 @@ evalClosed sbe v = fmap (\t -> fmap snd $ asSignedInteger sbe t)
 trivBranchImpl :: String -> (Maybe Integer -> Maybe Integer -> Bool) -> AllMemModelTest
 trivBranchImpl symName chk = do
   b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine_ (L.Symbol symName) i32 [b]
+  callDefine_ (L.Symbol symName) (Just i32) [b]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
