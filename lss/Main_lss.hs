@@ -28,9 +28,7 @@ import           LSSImpl
 import           Verifier.LLVM.Backend (prettyTermD)
 import           Verifier.LLVM.BitBlastBackend (createBuddyAll, createDagAll)
 import           Verifier.LLVM.SAWBackend (createSAWBackend)
-
-import           Verifier.LLVM.Codebase (loadCodebase, origModule, cbLLVMCtx)
-import           Verifier.LLVM.LLVMContext (defaultMemGeom)
+import           Verifier.LLVM.Codebase
 import           Verifier.LLVM.Translation  (ppSymDefine, liftDefine)
 
 main :: IO ()
@@ -78,13 +76,14 @@ main = do
                 Left _e -> error "Unable to parse command-line arguments (argv)."
                 Right x -> x
 
-  cb <- loadCodebase bcFile
+  mdl <- loadModule bcFile
+  cb <- mkCodebase mdl
   when (xlate args) $ do
-    let ?lc = cbLLVMCtx cb
+    let ?lc = cbLLVMContext cb
     let xlateDefine d = ppSymDefine sd
           where Right (_,sd) = liftDefine d
     -- Dump the translated module and exit
-    let via s f = mapM_ (putStrLn . show  . f) (s $ origModule cb)
+    let via s f = mapM_ (putStrLn . show  . f) (s mdl)
     ((:[]) . L.modDataLayout) `via` L.ppDataLayout
     L.modTypes                `via` L.ppTypeDecl
     L.modGlobals              `via` L.ppGlobal
@@ -93,8 +92,8 @@ main = do
     exitWith ExitSuccess
 
   be <- createBitEngine
-  let lc = cbLLVMCtx cb
-      mg = defaultMemGeom lc
+  let dl = cbDataLayout cb
+      mg = defaultMemGeom dl
       processRslt sbe execRslt = do
         case execRslt of
             NoMainRV _eps _mm -> do
@@ -115,11 +114,11 @@ main = do
               return ()
   case backEnd of
     BitBlastDagBased -> do
-      (sbe, mem) <- createDagAll be lc mg --first (sbeBitBlast lc be) <$> createDagMemModel lc be mg
+      (sbe, mem) <- createDagAll be dl mg
       processRslt sbe =<< lssImpl sbe mem cb argv' args
     BitBlastBuddyAlloc -> do
-       (sbe, mem) <- createBuddyAll be lc mg
+       (sbe, mem) <- createBuddyAll be dl mg
        processRslt sbe =<< lssImpl sbe mem cb argv' args
     SAWBackendType -> do
-      (sbe,mem) <- createSAWBackend lc mg    
+      (sbe,mem) <- createSAWBackend dl mg    
       processRslt sbe =<< lssImpl sbe mem cb argv' args

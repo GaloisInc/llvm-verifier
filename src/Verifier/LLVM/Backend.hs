@@ -52,30 +52,16 @@ data LookupSymbolResult
   deriving Show
 
 -- | Result returned by @stackAlloca@ (defined below).
-data StackAllocaResult sbe
+data AllocResult sbe
   -- | @SAResult c p m@ is returned when allocation succeeded. @c@ is a symbolic
   -- path constraint that the allocation must satisfy for allocation to have
   -- succeeded, @m@ is the new memory state, and @p@ is a @ptr@ to the newly
   -- allocated space.  @c@ is false if the allocation failed due to
   -- insufficient space.
-  = SAResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
+  = AResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
   -- | Returned if stackAlloca given a symbolic length and the implementation
   -- does not support this.
-  | SASymbolicCountUnsupported
-
--- | Result returned by @heapAlloc@ (defined below). Currently
--- isomorphic to StackAllocResult, but that might change.
-data HeapAllocResult sbe
-  -- | @HAResult c p m@ is returned when allocation succeeded. @c@
-  -- is a symbolic path constraint that the allocation must satisfy
-  -- for allocation to have succeeded, @m@ is the new memory state,
-  -- and @p@ is a @ptr@ to the newly
-  -- allocated space. @c@ is false if the allocation failed due to
-  -- insufficient space.
-  = HAResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
-  -- | Returned if heapAlloc given a symbolic length and the
-  -- implementation does not support this.
-  | HASymbolicCountUnsupported
+  | ASymbolicCountUnsupported
 
 data SBE m = SBE
   {
@@ -144,9 +130,10 @@ data SBE m = SBE
     -- location in @m@.
   , memStore :: SBEMemory m
              -> SBETerm m -- ^ Address to store value at. 
-             -> MemType    -- ^ Type of value
+             -> MemType   -- ^ Type of value
              -> SBETerm m -- ^ Value to store
              -> m (SBEPartialResult m (SBEMemory m))
+
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
     -- labels @blocks@ to the memory @mem@ and returns a pointer to
     -- the definition, and updated memory if space is available.  If space
@@ -165,28 +152,32 @@ data SBE m = SBE
                   -> MemType 
                   -> SBETerm m
                   -> m (Maybe (SBETerm m, SBEMemory m))
+
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
   , codeBlockAddress :: SBEMemory m -> L.Symbol -> L.BlockLabel -> m (SBETerm m)
+
     -- | @codeLookupSymbol mem ptr@ returns the symbol at the given address
     -- in mem.  Lookup may fail if the pointer does not point to a symbol, or
     -- if the pointer is a symbolic value without a clear meaning.
   , codeLookupSymbol :: SBEMemory m -> SBETerm m -> m LookupSymbolResult
+
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
-  , stackAlloca :: SBEMemory m
-                -> MemType
-                -> BitWidth
-                -> SBETerm m
-                -> Int
-                -> m (StackAllocaResult m)
+  , stackAlloc :: SBEMemory m
+               -> MemType
+               -> BitWidth
+               -> SBETerm m
+               -> Int
+               -> m (AllocResult m)
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
     -- stack frame to @mem@.
   , stackPushFrame :: SBEMemory m -> m (SBEPartialResult m (SBEMemory m))
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
+
     -- | @heapAlloc h tp i align@ allocates memory @h@ in the heap for
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
@@ -195,7 +186,8 @@ data SBE m = SBE
               -> BitWidth
               -> SBETerm m
               -> Int
-              -> m (HeapAllocResult m)
+              -> m (AllocResult m)
+
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
     -- both of which must be aligned according to @align@ and must refer to
     -- non-overlapping regions.
