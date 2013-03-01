@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 -- | This module defines the translation from LLVM IR to Symbolic IR.
@@ -237,14 +238,14 @@ liftGEP :: (?lc :: LLVMContext)
         -> L.Typed L.Value
         -> [L.Typed L.Value]
         -> Maybe (MemType, TypedExpr TypedSymValue)
-liftGEP inbounds (Typed initType0 initValue) args0 = do
+liftGEP _inbounds (Typed initType0 initValue) args0 = do
      rtp <- liftMemType initType0
      let fn (L.Typed tp v) = (,v) <$> liftMemType tp
      go (SValExpr (SValInteger aw 0)) rtp =<< traverse fn args0
   where gepFailure = fail "Could not parse GEP Value"
         pdl = llvmDataLayout ?lc
         aw :: BitWidth
-        aw = 8 * fromIntegral (pdlPtrSize pdl) 
+        aw = ptrBitwidth pdl 
         mn = Nothing
        
         go :: TypedSymValue
@@ -257,7 +258,7 @@ liftGEP inbounds (Typed initType0 initValue) args0 = do
           return (tp, PtrAdd sv args)
         go args (ArrayType _ etp) r = goArray args etp r
         go args (PtrType tp) r = do
-          mtp <- asMemType tp
+          mtp <- asMemType (llvmAliasMap ?lc) tp
           goArray args mtp r
         go args (StructType si) r = goStruct args si r
         go _ _ _ = gepFailure
@@ -271,9 +272,9 @@ liftGEP inbounds (Typed initType0 initValue) args0 = do
         goArray args etp ((IntType w, v0) : r)= do
           v1 <- liftValue (IntType w) v0
           let v2 | SValExpr (SValInteger _ i) <- v1 = SValExpr (SValInteger aw i)
-                 | aw == w = v1
-                 | aw >  w = SValExpr $ ZExt  mn w v1 aw
-                 | aw <  w = SValExpr $ Trunc mn w v1 aw
+                 | aw == w   = v1
+                 | aw >  w   = SValExpr $ ZExt  mn w v1 aw
+                 | otherwise = SValExpr $ Trunc mn w v1 aw
           let sz = fromIntegral $ memTypeSize pdl etp
           let v3 | SValExpr (SValInteger _ i) <- v2 = SValExpr (SValInteger aw (sz*i))
                  | sz == 1 = v2
@@ -287,8 +288,8 @@ liftGEP inbounds (Typed initType0 initValue) args0 = do
 
         goStruct args si  ((IntType 32, L.ValInteger i) : r) = do       
           fi <- siFieldInfo si (fromIntegral i)
-          let i = SValExpr (SValInteger aw (toInteger (fiOffset fi)))
-          go (mergeAdd args i) (fiType fi) r
+          let val = SValExpr (SValInteger aw (toInteger (fiOffset fi)))
+          go (mergeAdd args val) (fiType fi) r
         goStruct _ _ _ = gepFailure
 
 liftStmt :: (?lc :: LLVMContext) => L.Stmt -> BlockGenerator SymStmt
@@ -383,7 +384,7 @@ liftStmt stmt = do
           retExpr (PtrType (MemType tp)) $ Alloca tp ssz mi 
         L.Load (L.Typed tp0 ptr) malign -> do
           tp@(PtrType etp0) <- liftMemType tp0
-          etp <- asMemType etp0
+          etp <- asMemType (llvmAliasMap ?lc) etp0
           v <- liftValue tp ptr
           retExpr etp (Load v etp malign)
         L.ICmp op (L.Typed tp0 u) v -> do
@@ -418,7 +419,7 @@ liftStmt stmt = do
                    -> Maybe SymStmt
                 go tp [] sv = retExpr tp (Val sv)
                 go (StructType si) (i0 : is) sv =
-                    case siFieldType si i of
+                    case fiType <$> siFieldInfo si i of
                       Nothing -> fail "Illegal index"
                       Just tp -> go tp is (SValExpr (GetStructField si sv i))
                   where i = fromIntegral i0

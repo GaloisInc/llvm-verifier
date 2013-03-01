@@ -31,7 +31,7 @@ $(runDecWriter $ do
 lift2 :: (x -> y -> IO r) -> x -> y -> SAWBackend s r
 lift2 fn x y = SAWBackend (fn x y)
 
-createSAWBackend :: LLVMContext
+createSAWBackend :: DataLayout
                  -> MemGeom
                  -> IO (SBE (SAWBackend s), SAWMemory)
 createSAWBackend _lc _mg = do
@@ -62,7 +62,7 @@ createSAWBackend _lc _mg = do
                 , memInitGlobal = nyi "memInitGlobal"
                 , codeBlockAddress = nyi "codeBlockAddress"
                 , codeLookupSymbol = nyi "codeLookupSymbol"
-                , stackAlloca = nyi "stackAlloca"
+                , stackAlloc = nyi "stackAlloc"
                 , stackPushFrame = nyi "stackPushFrame"
                 , stackPopFrame = nyi "stackPopFrame"
                 , heapAlloc = nyi "heapAlloc"

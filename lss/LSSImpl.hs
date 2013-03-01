@@ -80,8 +80,8 @@ lssImpl sbe mem cb argv0 args = do
   runBitBlast sbe mem cb mg argv' args mainDef
   where
     argv' = "lss" : argv0
-    lc    = cbLLVMCtx cb
-    mg    = defaultMemGeom lc
+    mg    = defaultMemGeom (cbDataLayout cb)
+
 
 runBitBlast :: Functor sbe
             => SBE sbe -- ^ SBE to use
@@ -130,8 +130,8 @@ buildArgv ::
 buildArgv numArgs argv' = do
   argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
   ec <- getEvalContext "buildArgv" Nothing
-  aw <- withLC llvmAddrWidthBits
-  one <- getSizeT 1
+  aw <- withDL ptrBitwidth
+  one <- withSBE $ \sbe -> termInt sbe aw 1
   strPtrs  <- forM argv' $ \str -> do
      let len = length str + 1
      let tp = ArrayType len (IntType 8)
@@ -139,8 +139,7 @@ buildArgv numArgs argv' = do
      p <- alloca tp aw one Nothing
      store tp v p
      return p
-
-  num <- getSizeT (toInteger numArgs)
+  num <- withSBE $ \sbe -> termInt sbe aw (toInteger numArgs)
   argvBase <- alloca i8p aw num Nothing
   argvArr  <- withSBE (\s -> termArray s i8p strPtrs)
   -- Write argument string data and argument string pointers

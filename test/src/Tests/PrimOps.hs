@@ -110,10 +110,12 @@ chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a) =>
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
   be <- run createBitEngine
-  let (_,lc)  = buildLLVMContext
-                  (error "LLVM Context has no ident -> type relation defined")
-                  []
-      sbe = let ?be = be in sbeBitBlast lc (buddyMemModel lc be)
+--  let
+-- (_,lc)  = buildLLVMContext
+--                  (error "LLVM Context has no ident -> type relation defined")
+--                  []
+  let dl = defaultDataLayout
+  let sbe = let ?be = be in sbeBitBlast dl (buddyMemModel dl be)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do
     let r = fn x y
         proj = if s then asSignedInteger else asUnsignedInteger
@@ -127,7 +129,7 @@ testSetupPtrArgImpl ::
   )
   => Simulator sbe IO Bool
 testSetupPtrArgImpl = do
-  a <- withLC llvmPtrAlign
+  a <- withDL (view ptrAlign)
   let w = 1
   one <- withSBE $ \sbe -> termInt sbe w 1
   p <- alloca i32 w one (Just $ fromIntegral a) 

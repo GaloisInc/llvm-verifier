@@ -9,13 +9,14 @@ module Tests.Common
   ( module Tests.Common
   , ExecRsltHndlr
   , PropertyM
+  , view
   ) where
 
 import           Control.Applicative
 import           Control.Arrow
-import           Control.Monad hiding (mapM)
+import           Control.Lens hiding (act, (<.>))
+import           Control.Monad 
 import           Data.Int
-import           Data.Traversable (mapM)
 import           System.FilePath
 import qualified Text.LLVM                     as L
 import           Test.QuickCheck
@@ -24,13 +25,10 @@ import qualified Test.QuickCheck.Test          as T
 import           Verinf.Symbolic               (Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
 
-import Prelude hiding (mapM)
-
 import           LSSImpl
 
 import           Verifier.LLVM.BitBlastBackend
 import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.SAWBackend
 import           Verifier.LLVM.Simulator
 import           Verifier.LLVM.Simulator.SimUtils
@@ -92,7 +90,7 @@ runAllMemModelTest v getCB act = do
         Nothing (withVerbosity v act)
 
 type CreateSBEFn sbe =
-       BitEngine Lit -> LLVMContext -> MemGeom
+       BitEngine Lit -> DataLayout -> MemGeom
                      -> IO (SBE sbe, SBEMemory sbe)
 
 runTestLSSCommon :: Functor sbe
@@ -103,10 +101,10 @@ runTestLSSCommon nm createFn v cb argv' hndlr = do
    when (v >= 2) $ run $ putStrLn nm
    assert =<< run m
   where m = do be <- createBitEngine
-               (sbe, mem) <- createFn be (lc cb) (defaultMemGeom (lc cb))
+               (sbe, mem) <- createFn be dl (defaultMemGeom dl)
                rslt       <- lssImpl sbe mem cb argv' cmdLineOpts
                hndlr sbe mem rslt
-        lc          = cbLLVMCtx
+        dl          = cbDataLayout cb
         dbugLvl     = DbugLvl (fromIntegral v)
         cmdLineOpts = LSS { dbug = dbugLvl
                           , argv = "" 
@@ -184,7 +182,7 @@ type SBEPropM a =
   -> PropertyM IO a
 
 type MemCreator mem =
-  LLVMContext -> BitEngine Lit -> MemGeom -> IO (BitBlastMemModel mem Lit, mem)
+  DataLayout -> BitEngine Lit -> MemGeom -> IO (BitBlastMemModel mem Lit, mem)
 
 forAllMemModels :: forall a. Int -> Codebase -> SBEPropM a -> PropertyM IO [a]
 forAllMemModels _v cb testProp = do
@@ -197,11 +195,11 @@ forAllMemModels _v cb testProp = do
     runMemTest _lbl act = do
 --       run $ putStrLn $ "forAllMemModels: " ++ lbl
       be         <- run createBitEngine
-      (sbe, mem) <- first (let ?be = be in sbeBitBlast lc) <$> run (act lc be mg)
+      (sbe, mem) <- first (let ?be = be in sbeBitBlast dl) <$> run (act dl be mg)
       testProp sbe mem
       where
-        lc = cbLLVMCtx cb
-        mg = defaultMemGeom lc
+        dl = cbDataLayout cb
+        mg = defaultMemGeom dl
 
 chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
                -> Int
@@ -241,7 +239,7 @@ runCInt32Fn v getCB sym cargs erv = do
         args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
         callDefine_ sym (Just i32) args
         let fn rv = withSBE' $ \sbe -> snd <$> asSignedInteger sbe rv
-        mrv <- mapM fn =<< getProgramReturnValue
+        mrv <- traverse fn =<< getProgramReturnValue
         case erv of
           RV chk ->
             case mrv of

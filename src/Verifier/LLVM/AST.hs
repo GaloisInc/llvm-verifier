@@ -49,8 +49,8 @@ module Verifier.LLVM.AST
   ) where
 
 import Control.Applicative ((<$>))
+import Control.Lens hiding (op)
 import Data.Foldable
-import Data.Traversable
 import Data.Int
 import Data.List (intersperse)
 import Data.Map (Map)

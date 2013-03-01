@@ -65,6 +65,7 @@ library
     Verifier.LLVM.Backend
     Verifier.LLVM.Codebase
     Verifier.LLVM.BitBlastBackend
+    Verifier.LLVM.DataLayout
     Verifier.LLVM.LLVMContext
     Verifier.LLVM.Printf
     Verifier.LLVM.SAWBackend

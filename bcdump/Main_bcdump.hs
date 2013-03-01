@@ -39,13 +39,13 @@ main = do
       putStrLn dis
       removeFile tmpll
 
-  cb <- loadCodebase bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
-  let mdl = origModule cb
+  mdl <- loadModule bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
+  cb <- mkCodebase mdl
   banners $ "llvm-pretty module"
   putStrLn $ show (LLVM.ppModule mdl)
   putStrLn ""
   sdl <- forM (LLVM.modDefines mdl) $ \d -> do
-    let ?lc = cbLLVMCtx cb
+    let ?lc = cbLLVMContext cb
     case liftDefine d of
       Left ed -> do putStrLn $ show ed
                     return empty

@@ -60,11 +60,9 @@ module Verifier.LLVM.Simulator.Common
   , pathRegs
   , pathMem
   , pathAssertions
-  , addPathAssertion
   , ppPath
   , ppPathLoc
   
-
   , FailRsn(FailRsn)
   , ppFailRsn
 
@@ -87,14 +85,11 @@ import Control.Applicative hiding (empty)
 import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens hiding (act, set)
-import Control.Monad.Error hiding (sequence)
-import Control.Monad.State       hiding (State, sequence)
-import Data.Foldable
-import Data.Traversable
+import Control.Monad.Error
+import Control.Monad.State hiding (State)
 import qualified Data.Map  as M
 import Text.PrettyPrint.HughesPJ
 import qualified Text.LLVM                 as L
-import Prelude hiding (foldr, sequence)
 
 import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
@@ -177,9 +172,9 @@ initialCtrlStk sbe mem = CompletedCS (Just p)
   where p = Path { pathFuncSym = entrySymbol
                  , pathCB = Nothing
                  , pathName = 0
-                 , pathRegs = M.empty
-                 , pathMem = mem
-                 , pathAssertions = sbeTruePred sbe
+                 , _pathRegs = M.empty
+                 , _pathMem = mem
+                 , _pathAssertions = sbeTruePred sbe
                  , pathStackHt = 0
                  , pathStack = []
                  }
@@ -228,19 +223,18 @@ pushCallFrame sbe calleeSym returnBlock retReg cs =
   where newPath p = p'
           where cf = CallFrame { cfFuncSym = pathFuncSym p
                                , cfReturnBlock = Just returnBlock
-                               , cfRegs = pathRegs p
+                               , cfRegs = p^.pathRegs
                                , cfRetReg = retReg
-                               , cfAssertions = pathAssertions p
+                               , cfAssertions = p^.pathAssertions
                                }
-                p' = Path { pathFuncSym = calleeSym
-                          , pathCB = Just initSymBlockID
-                          , pathName = pathName p
-                          , pathRegs = M.empty
-                          , pathMem = pathMem p
-                          , pathAssertions = sbeTruePred sbe
-                          , pathStackHt = pathStackHt p + 1
-                          , pathStack   = cf : pathStack p
-                          }
+                p' = p { pathFuncSym = calleeSym
+                       , pathCB = Just initSymBlockID
+                       , pathName = pathName p
+                       , _pathRegs = M.empty
+                       , _pathAssertions = sbeTruePred sbe
+                       , pathStackHt = pathStackHt p + 1
+                       , pathStack   = cf : pathStack p
+                       }
 
 -- | Add a control branch
 addCtrlBranch :: SBE sbe
@@ -253,15 +247,13 @@ addCtrlBranch :: SBE sbe
 addCtrlBranch _ _ _ _ _ CompletedCS{} =
   fail "Path is completed"
 addCtrlBranch sbe c nb nm ml (ActiveCS p h) = Just $ do
-    fmap fn $ sbeRunIO sbe $ memBranch sbe (pathMem p)
+    fmap fn $ sbeRunIO sbe $ memBranch sbe (p^.pathMem)
   where fn mem = ActiveCS pf $ BranchHandler info (BARunFalse c pt) h
-          where pf = p { pathMem = mem
-                       , pathAssertions = sbeTruePred sbe
-                       }
+          where pf = p & pathMem .~ mem
+                       & pathAssertions .~ sbeTruePred sbe
                 pt = p { pathCB = Just nb
                        , pathName = nm 
-                       , pathMem = mem
-                       }
+                       } & pathMem .~ mem
         info = case ml of
                  Just b -> PostdomInfo (pathStackHt p) b
                  Nothing -> ReturnInfo (pathStackHt p - 1) (snd <$> cfRetReg cf)
@@ -275,27 +267,26 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
    | n == pathStackHt p && Just b == pathCB p =
   case act of
     BARunFalse c tp -> do
-      let tp' = tp { pathAssertions = sbeTruePred sbe }
-      let act' = BAFalseComplete (pathAssertions tp) c p
+      let tp' = tp & pathAssertions .~ sbeTruePred sbe
+      let act' = BAFalseComplete (tp^.pathAssertions) c p
       return $ ActiveCS tp' (BranchHandler info act' h)
     BAFalseComplete a c pf -> do
       -- TODO: Collect and print merge errors.
       let mergeTyped (tt,tp) (ft,_) =
             (,tp) . either (const tt) id <$> sbeRunIO sbe (applyIte sbe tp c tt ft)
       -- Merge path regs
-      mergedRegs <- sequence $
-        M.intersectionWith mergeTyped (pathRegs p) (pathRegs pf)
+      mergedRegs <- traverse id $
+        M.intersectionWith mergeTyped (p^.pathRegs) (pf^.pathRegs)
       -- Merge memory
-      mergedMemory <- sbeRunIO sbe $ memMerge sbe c (pathMem p) (pathMem pf)
+      mergedMemory <- sbeRunIO sbe $ memMerge sbe c (p^.pathMem) (pf^.pathMem)
       -- Merge assertions
       mergedAssertions <- sbeRunIO sbe $
-        applyPredIte sbe c (pathAssertions p) (pathAssertions pf)
+        applyPredIte sbe c (p^.pathAssertions) (pf^.pathAssertions)
       a' <- sbeRunIO sbe $ applyAnd sbe a mergedAssertions
       assert (pathFuncSym p == pathFuncSym pf && pathCB p == pathCB pf) $ do
-      let p' = p { pathRegs = mergedRegs
-                 , pathMem = mergedMemory
-                 , pathAssertions = a'
-                 }
+      let p' = p & pathRegs .~ mergedRegs
+                 & pathMem  .~ mergedMemory
+                 & pathAssertions .~ a'
       -- Recurse to check if more merges should be performed.
       postdomMerge sbe p' h
 postdomMerge _ p h = return (ActiveCS p h)
@@ -317,30 +308,30 @@ returnMerge _ p StopHandler | pathStackHt p == 0 =
 returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackHt p =
   case act of
     BARunFalse c tp -> do
-      let tp' = tp { pathAssertions = sbeTruePred sbe }
-      let act' = BAFalseComplete (pathAssertions tp) c p
+      let tp' = tp & pathAssertions .~ sbeTruePred sbe
+      let act' = BAFalseComplete (tp^.pathAssertions) c p
       return $ ([], ActiveCS tp' (BranchHandler info act' h))
     BAFalseComplete a c pf -> do
       -- Merge return value
       (errs, mergedRegs) <-
         case mr of
-          Nothing -> return ([], pathRegs p)
+          Nothing -> return ([], p^.pathRegs)
           Just r -> do
-            let Just (vt,tp) = M.lookup r (pathRegs p)
-            let Just (vf,_)  = M.lookup r (pathRegs pf)
+            let Just (vt,tp) =  p^.pathRegs^.at r
+            let Just (vf,_)  = pf^.pathRegs^.at r
             mv <- sbeRunIO sbe $ applyIte sbe tp c vt vf
             let v = either (const vt) id mv
-            return (mv ^.. _Left, M.insert r (v, tp) (pathRegs p))
+            return (mv ^.. _Left, p^.pathRegs & at r ?~ (v, tp))
+
       -- Merge memory
-      mergedMemory <- sbeRunIO sbe $ memMerge sbe c (pathMem p) (pathMem pf)
+      mergedMemory <- sbeRunIO sbe $ memMerge sbe c (p^.pathMem) (pf^.pathMem)
       -- Merge assertions
       mergedAssertions <- sbeRunIO sbe $
-        applyPredIte sbe c (pathAssertions p) (pathAssertions pf)
+        applyPredIte sbe c (p^.pathAssertions) (pf^.pathAssertions)
       a' <- sbeRunIO sbe $ applyAnd sbe a mergedAssertions
-      let p' = p { pathRegs = mergedRegs
-                 , pathMem = mergedMemory
-                 , pathAssertions = a'
-                 }
+      let p' = p & pathRegs .~ mergedRegs
+                 & pathMem .~ mergedMemory
+                 & pathAssertions .~ a'
       A.first (errs ++) <$> returnMerge sbe p' h
 returnMerge _ p h = return ([], ActiveCS p h)
 
@@ -349,13 +340,13 @@ returnCurrentPath :: SBE sbe -> Maybe (SBETerm sbe) -> CS sbe -> Maybe (IO (CS s
 returnCurrentPath _ _ CompletedCS{} = fail "Path is completed"
 returnCurrentPath sbe rt (ActiveCS p h) = Just $ do
   let cf : cfs = pathStack p
-  m <- sbeRunIO sbe $ stackPopFrame sbe (pathMem p)
+  m <- sbeRunIO sbe $ stackPopFrame sbe (p^.pathMem)
   let p' = Path { pathFuncSym = cfFuncSym cf
                 , pathCB   = cfReturnBlock cf
                 , pathName = pathName p
-                , pathRegs = setReturnValue "returnCurrentpath" (cfRetReg cf) rt (cfRegs cf)
-                , pathMem  = m
-                , pathAssertions = cfAssertions cf
+                , _pathRegs = setReturnValue "returnCurrentpath" (cfRetReg cf) rt (cfRegs cf)
+                , _pathMem  = m
+                , _pathAssertions = cfAssertions cf
                 , pathStackHt = pathStackHt p - 1
                 , pathStack  = cfs
                 }
@@ -367,21 +358,19 @@ branchError :: SBE sbe
             -> PathHandler sbe -- Previous path handler.
             -> IO (CS sbe) 
 branchError sbe _ (BARunFalse c pt) h = do
-  a2 <- sbeRunIO sbe $ applyAnd sbe (pathAssertions pt) c
-  mem' <- sbeRunIO sbe $ memBranchAbort sbe (pathMem pt)
-  let pt' = pt { pathAssertions = a2
-               , pathMem = mem'
-               }
+  a2 <- sbeRunIO sbe $ applyAnd sbe (pt^.pathAssertions) c
+  mem' <- sbeRunIO sbe $ memBranchAbort sbe (pt^.pathMem)
+  let pt' = pt & pathMem .~ mem'
+               & pathAssertions .~ a2
   return $ ActiveCS pt' h
 branchError sbe mi (BAFalseComplete a c pf) h = do
   -- Update assertions on current path
-  a1   <- sbeRunIO sbe $ applyAnd sbe a (pathAssertions pf)
+  a1   <- sbeRunIO sbe $ applyAnd sbe a (pf^.pathAssertions)
   cNot <- sbeRunIO sbe $ applyBNot sbe c
   a2   <- sbeRunIO sbe $ applyAnd sbe a1 cNot
-  mem' <- sbeRunIO sbe $ memBranchAbort sbe (pathMem pf)
-  let pf' = pf { pathAssertions = a2
-               , pathMem = mem'
-               }
+  mem' <- sbeRunIO sbe $ memBranchAbort sbe (pf^.pathMem)
+  let pf' = pf & pathMem .~ mem'
+               & pathAssertions .~ a2
   -- Try to merge states that may have been waiting for the current path to terminate.
   case (mi,h) of
     ( ReturnInfo n _, BranchHandler (ReturnInfo pn _) _ _) | n == pn ->
@@ -422,17 +411,21 @@ data Path sbe = Path
   , pathCB           :: !(Maybe SymBlockID) -- ^ The currently-executing basic
                                          -- block along this path, if any.
   , pathName         :: !(Integer)       -- ^ A unique name for this path
-  , pathRegs         :: !(RegMap (SBETerm sbe))
-  , pathMem          :: SBEMemory sbe    -- ^ The memory model along this path
-  , pathAssertions   :: SBEPred sbe      -- ^ Condition on path since last branch.
+  , _pathRegs        :: !(RegMap (SBETerm sbe))
+  , _pathMem          :: SBEMemory sbe    -- ^ The memory model along this path
+  , _pathAssertions   :: SBEPred sbe      -- ^ Condition on path since last branch.
   , pathStackHt      :: !Int             -- ^ Number of call frames count.
   , pathStack        :: [CallFrame sbe] -- ^ Return registers for current calls.
   }
 
-addPathAssertion :: Functor sbe
-                 => SBE sbe -> SBEPred sbe -> Path sbe -> sbe (Path sbe)
-addPathAssertion sbe t p = set <$> applyAnd sbe (pathAssertions p) t
-  where set a = p { pathAssertions = a }
+pathRegs :: Simple Lens (Path sbe) (RegMap (SBETerm sbe))
+pathRegs = lens _pathRegs (\p r -> p { _pathRegs = r })
+
+pathMem :: Simple Lens (Path sbe) (SBEMemory sbe)
+pathMem = lens _pathMem (\p r -> p { _pathMem = r })
+
+pathAssertions :: Simple Lens (Path sbe) (SBEPred sbe)
+pathAssertions = lens _pathAssertions (\p r -> p { _pathAssertions = r })
 
 data FailRsn       = FailRsn String deriving (Show)
 data ErrorPath sbe = EP { epRsn :: FailRsn, epPath :: Path sbe }
@@ -535,7 +528,7 @@ ppPath sbe p =
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
   <>  colon
-  $+$ nest 2 (text "Locals:" $+$ nest 2 (ppRegMap sbe (pathRegs p)))
+  $+$ nest 2 (text "Locals:" $+$ nest 2 (ppRegMap sbe (p^.pathRegs)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
 
 -- Prints just the path's location and path constraints
