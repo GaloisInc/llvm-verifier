@@ -26,6 +26,7 @@ module Verifier.LLVM.LLVMContext
   , FieldInfo(..)
   , mkStructInfo
   , siFields
+  , siFieldInfo
   , siFieldTypes
   , siFieldType
   , siFieldOffset
@@ -71,6 +72,7 @@ import qualified Text.LLVM         as L
 import Text.PrettyPrint
 
 import Verifier.LLVM.Utils
+
 
 data EndianForm = BigEndian | LittleEndian
 
@@ -346,18 +348,19 @@ mkStructInfo pdl packed tps =
 siFieldTypes :: StructInfo -> Vector MemType
 siFieldTypes si = fiType <$> siFields si
 
-siFieldType :: StructInfo -> Int -> Maybe MemType
-siFieldType si i
-   | 0 <= i && i < V.length flds = Just $ fiType (flds V.! i)
+siFieldInfo :: StructInfo -> Int -> Maybe FieldInfo
+siFieldInfo si i
+   | 0 <= i && i < V.length flds = Just $ flds V.! i
    | otherwise = Nothing
  where flds = siFields si
 
+
+siFieldType :: StructInfo -> Int -> Maybe MemType
+siFieldType si i = fiType <$> siFieldInfo si i
+
 -- | Returns offset of field if it is defined.
 siFieldOffset :: StructInfo -> Int -> Maybe Offset
-siFieldOffset si i
-    | 0 <= i && i < V.length flds = Just $ fiOffset (flds V.! i)
-    | otherwise = Nothing
-  where flds = siFields si
+siFieldOffset si i = fiOffset <$> siFieldInfo si i
 
 instance (?lc :: LLVMContext) => Eq StructInfo where
   x == y = (structPacked x, siFieldTypes x)
@@ -526,8 +529,6 @@ type TypeAliasMap = Map L.Ident SymType
 
 data LLVMContext = LLVMContext
   { llvmDataLayout :: ParsedDataLayout
-  , llvmPtrSize       :: Size -- Pointer width in bytes
-  , llvmPtrAlign      :: Alignment -- pointer alignment, in bytes
   , llvmTypeAliasMap  :: TypeAliasMap
   }
 
@@ -536,6 +537,13 @@ instance Show LLVMContext where
     "LC: PtrSize = " ++ show (llvmPtrSize lc)
        ++ ", Ptralign = " ++ show (llvmPtrAlign lc)
 
+-- | Size of pointer in bytes.
+llvmPtrSize :: LLVMContext -> Size
+llvmPtrSize = pdlPtrSize . llvmDataLayout
+
+-- | Pointer alignment, in bytes
+llvmPtrAlign :: LLVMContext -> Alignment
+llvmPtrAlign = pdlPtrAlign . llvmDataLayout
 
 llvmAddrWidthBits :: LLVMContext -> BitWidth
 llvmAddrWidthBits lc = 8 * fromIntegral (llvmPtrSize lc)
@@ -586,8 +594,6 @@ buildLLVMContext decls dl = (tcsErrors tcs, lc)
     (tam,tcs) = runState (traverse go tps) tcs0
     lc = LLVMContext
          { llvmDataLayout = pdl
-         , llvmPtrSize      = pdlPtrSize pdl
-         , llvmPtrAlign     = pdlPtrAlign pdl
          , llvmTypeAliasMap = Map.fromList tam
          }
 

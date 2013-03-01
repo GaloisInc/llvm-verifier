@@ -15,7 +15,6 @@ module Verifier.LLVM.Backend
   , BitWidth
   , IntArithOp(..)
   , TypedExpr(..)
-  , GEPOffset(..)
   ) where
 
 import           Data.Bits (testBit)

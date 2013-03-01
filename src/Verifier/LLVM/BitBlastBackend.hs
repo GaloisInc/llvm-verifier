@@ -1597,13 +1597,10 @@ applyIntArithOp op = vf
           | V.length x == n && V.length y == n = VecTerm <$> V.zipWithM (ef be) x y
         vf Just{} _ _ _ = badArgs
         vf Nothing be x y = ef be x y
-
         ef be (IntTerm x) (IntTerm y) = IntTerm <$> f be x y
         ef _ _ _ = badArgs
-
         badArgs = error $ show $ text "applyIntArithOp" <+> ppIntArithOp op
                              <+> text "given invalid arguments."
-
         f = case op of
               Add _ _ -> beAddInt
               Sub _ _ -> beSubInt
@@ -1643,10 +1640,6 @@ sbeBitBlast lc mm = sbe
     retMV Just{} f (VecTerm t) = return (VecTerm (f <$> t))
     retMV _ _ _ = illegalArgs "retMV"
 
-    expectIntArg :: (LV.Vector l -> a) -> BitTerm l -> a
-    expectIntArg f (IntTerm x) = f x
-    expectIntArg _ _ = error "expectIntArg given illegal argument"
-
     expectPtrArg :: (LV.Vector l -> a) -> BitTerm l -> a
     expectPtrArg f (PtrTerm x) = f x
     expectPtrArg _ _ = error "expectPtrArg given illegal argument"
@@ -1655,7 +1648,7 @@ sbeBitBlast lc mm = sbe
           => Maybe Int
           -> (LV.Vector l -> LV.Vector l)
           -> BitTerm l -> IO (BitTerm l)
-    retIntMV mn f t = retMV mn (IntTerm . expectIntArg f) t
+    retIntMV mn f t = retMV mn (IntTerm . f . asIntTerm) t
             
     sbe = SBE
           { sbeTruePred      = beLitFromBool be True
@@ -1698,26 +1691,14 @@ sbeBitBlast lc mm = sbe
                 SExt   mn _ t rw  -> retIntMV mn (beSext  be rw) t
                 PtrToInt mn _ t w -> retMV mn (IntTerm . expectPtrArg f) t
                   where f = beZeroIntCoerce be w
-                IntToPtr mn _ t _ -> retMV mn (PtrTerm . expectIntArg f) t
+                IntToPtr mn _ t _ -> retMV mn (PtrTerm . f . asIntTerm) t
                   where f = beZeroIntCoerce be ptrWidth
                 Select Nothing c _ t f -> (fail Arrow.||| return) (muxTerm (asInt1 c) t f)
                 Select (Just n) (VecTerm cv) _ (VecTerm tv) (VecTerm fv)
                     | V.length cv == n ->
                        (fail Arrow.||| (return .VecTerm)) rv
                   where rv = sequenceOf traverse $ V.zipWith3 muxTerm (asInt1 <$> cv) tv fv
-                Select{} -> illegalArgs "Select"
-                GEP _ (PtrTerm t) offsets _ ->
-                    PtrTerm <$> foldlM deref t offsets
-                  where deref p (StructField si idx) =
-                            beAddIntConstant be p (toInteger o)
-                          where Just o = siFieldOffset si idx
-                        deref p (ArrayElement tp _ idx) =
-                            beAddInt be p =<< beMulInt be szv idx'
-                          where sz = memTypeSize pdl tp
-                                szv = beVectorFromInt be ptrWidth (toInteger sz)
-                                idx' = beZeroIntCoerce be ptrWidth (asIntTerm idx)
-                                       
-                GEP{} -> illegalArgs "GEP"
+                Select{} -> illegalArgs "Select"                                       
                 GetStructField _ (StructTerm t) i -> return $ t V.! i
                 GetStructField{} -> illegalArgs "GetStructField"
                 GetConstArrayElt _ _ (ArrayTerm t) i -> return $ t V.! i
@@ -1736,7 +1717,7 @@ sbeBitBlast lc mm = sbe
               (LV.! 0) <$> beEvalAigV be (LV.fromList inps) (LV.singleton p)
           , asUnsignedInteger = 
               let fn t = (LV.length t,) <$> lGetUnsigned t
-               in liftIntFn "asUnsignedInteger" fn
+               in fn . asIntTerm
           , memDump          = BitIO `c2` mmDump mm True
           , memLoad          = BitIO `c3` loadTerm pdl mm
           , memStore         = BitIO `c4` storeTerm pdl mm
@@ -1778,10 +1759,6 @@ liftBinIntRel :: (LV.Storable l)
               -> BitTerm l -> BitTerm l -> IO (BitTerm l)
 liftBinIntRel f (IntTerm x) (IntTerm y) = IntTerm . LV.singleton <$> f x y
 liftBinIntRel _ _ _ = error "Illegal arguments to liftBinIntRel"
-
-liftIntFn :: String -> (LV.Vector l -> a) -> BitTerm l -> a
-liftIntFn _ f (IntTerm v) = f v
-liftIntFn nm _ _ = error $ "Unexpected non-interger argument to " ++ nm
 
 asInt1 :: (LV.Storable l) => BitTerm l -> l
 asInt1 (IntTerm x) = assert (LV.length x == 1) $ x LV.! 0

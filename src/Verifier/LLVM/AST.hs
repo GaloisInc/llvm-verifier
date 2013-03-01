@@ -26,7 +26,6 @@ module Verifier.LLVM.AST
   , TypedExpr(..)
   , StructInfo(..)
   , Int32
-  , GEPOffset(..)
   , SymExpr(..)
   , SymCond(..)
   , MergeLocation
@@ -106,20 +105,6 @@ symBlockLabel _                = Nothing
 ppSymBlockID :: SymBlockID -> Doc
 ppSymBlockID InitBlock = text "init"
 ppSymBlockID (NamedBlock b n) = L.ppLabel b <> char '.' <> int n
-
--- | Offset in GEP address calculation.
-data GEPOffset v
-     -- | Returns the address of a field in a struct.
-   = StructField StructInfo Int
-     -- | @ArrayElement etp w i@ denotes the ith value in an array with
-     -- elements of type @etp@.  The value @i@ has @w@ bits.
-   | ArrayElement MemType BitWidth v
-  deriving (Functor, Foldable, Traversable)
-
-ppGEPOffset :: (v -> Doc) -> GEPOffset v -> Doc
-ppGEPOffset _ (StructField _ i) = text "i32" <+> int i 
-ppGEPOffset pp (ArrayElement _ w v) =
-  ppIntType w <> integer (toInteger w) <+> pp v
 
 -- | NUW flag used with addition, subtraction, multiplication, and left shift to
 -- indicates that unsigned overflow is undefined.
@@ -205,8 +190,6 @@ data TypedExpr v
     -- @y@ if @c@ evaluates to @0@.   @c@ must have type @i1@ and @x@ and @y@ have type
     -- @tp@.  The function is extended pairwise to vectors if @mn@ holds an integer. 
   | Select OptVectorLength v MemType v v
-    -- | GEP instruction
-  | GEP Bool v [GEPOffset v] MemType
     -- | Return a field out of a struct 
   | GetStructField StructInfo v Int
     -- | Return a specific element of an array.
@@ -253,8 +236,6 @@ ppTypedExpr ppConv ppValue tpExpr =
       Select mn c tp t f -> text "select" <+> ppMIntType mn 1 <+> ppValue  c
                                  <> comma <+> ppMMemType mn tp <+> ppValue t
                                  <> comma <+> ppValue f
-      GEP ib ptr idxl _ -> text "getelementptr" <+> L.opt ib (text "inbounds")
-          <+> commas (ppValue ptr : (ppGEPOffset ppValue <$> idxl))
       GetStructField _ v i -> text "extractfield" <+> ppValue v <+> text (show i)
       GetConstArrayElt _ _ v i -> text "arrayelt" <+> ppValue v <+> text (show i)
       SValInteger _ i -> integer i
