@@ -16,10 +16,8 @@ module Tests.Aggregates (aggTests) where
 import           Control.Applicative
 import           Test.QuickCheck
 import           Tests.Common
-import qualified Text.LLVM        as L
 
 import           Verifier.LLVM.Backend
-import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator
 
 aggTests :: [(Args, Property)]
@@ -48,7 +46,7 @@ aggTests =
     arrayMat4x4 v         = t2 v "matrix_mul_4x4" (RV 304)
     t1                    = mkNullaryTest "test-arrays.bc"
     t2                    = mkNullaryTest "test-mat4x4.bc"
-    mkNullaryTest bc v nm = psk v . chkNullaryCInt32Fn v (commonCB bc) (L.Symbol nm)
+    mkNullaryTest bc v nm = psk v . chkNullaryCInt32Fn v (commonCB bc) (Symbol nm)
     runStruct v           = \(f :: AllMemModelTest) ->
                               runAllMemModelTest v (commonCB "test-structs.bc") f
 
@@ -56,7 +54,7 @@ structInitAccessImpl :: AllMemModelTest
 structInitAccessImpl = do
   dl <- withDL id
   let si = mkStructInfo dl False [i32, i8]
-  callDefine_ (L.Symbol "struct_test") (Just (StructType si)) []
+  callDefine_ (Symbol "struct_test") (Just (StructType si)) []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
@@ -71,7 +69,7 @@ structInitAccessImpl = do
 
 structArrayImpl :: AllMemModelTest
 structArrayImpl = do
-  callDefine_ (L.Symbol "struct_test_two") (Just i32) []
+  callDefine_ (Symbol "struct_test_two") (Just i32) []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False

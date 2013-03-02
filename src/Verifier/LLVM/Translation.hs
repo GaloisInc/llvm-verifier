@@ -494,7 +494,7 @@ liftBB lti phiMap bb = do
                        text "Missing terminal instruction in block" <+>
                        int idx <+>
                        text "after generating the following statements:" $$
-                       (nest 2 . vcat . map ppSymStmt $ il)
+                       (nest 2 . vcat $ ppStmt <$> il)
       impl [stmt@(Effect (L.Ret tpv) _)] idx il = do
         symStmt <- 
           case liftTypedValue tpv of

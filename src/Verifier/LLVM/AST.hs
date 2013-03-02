@@ -14,6 +14,10 @@ module Verifier.LLVM.AST
   ( FuncID
   , SymBlockID
   , sValString
+  , L.Symbol(..)
+  , L.ppSymbol
+  , L.Ident(..)
+  , L.ppIdent
   , TypedSymValue(..)
   , ppTypedSymValue
   , BitWidth
@@ -41,7 +45,7 @@ module Verifier.LLVM.AST
   , ppSymCond
   , ppSymDefine
   , ppSymExpr
-  , ppSymStmt
+  , ppStmt
   , symBlockID
   , symBlockLabel
   , module Verifier.LLVM.LLVMContext
@@ -329,24 +333,24 @@ data SymStmt
   -- | An LLVM statement that could not be translated.
   | BadSymStmt L.Stmt
 
-ppSymStmt :: SymStmt -> Doc
-ppSymStmt (PushCallFrame fn args res retTgt)
+ppStmt :: SymStmt -> Doc
+ppStmt (PushCallFrame fn args res retTgt)
   = text "pushCallFrame" <+> ppTypedSymValue fn
   <> parens (commas (map ppTypedSymValue args))
   <+> maybe (text "void") (\(tp,v) -> ppMemType tp <+> L.ppIdent v) res
   <+> text "returns to" <+> ppSymBlockID retTgt
-ppSymStmt (Return mv) = text "return" <+> maybe empty ppTypedSymValue mv
-ppSymStmt (PushPendingExecution b c ml rest) =
+ppStmt (Return mv) = text "return" <+> maybe empty ppTypedSymValue mv
+ppStmt (PushPendingExecution b c ml rest) =
     text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
-      $+$ vcat (fmap ppSymStmt rest)
+      $+$ vcat (fmap ppStmt rest)
   where loc = maybe (text "return") ppSymBlockID ml
-ppSymStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
-ppSymStmt (Assign v _ e) = L.ppIdent v <+> char '=' <+> ppSymExpr e
-ppSymStmt (Store tp v addr malign) =
+ppStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
+ppStmt (Assign v _ e) = L.ppIdent v <+> char '=' <+> ppSymExpr e
+ppStmt (Store tp v addr malign) =
   text "store" <+> ppMemType tp <+> ppTypedSymValue v <> comma
                <+> ppTypedSymValue addr <> L.ppAlign malign
-ppSymStmt Unreachable = text "unreachable"
-ppSymStmt (BadSymStmt s) = L.ppStmt s
+ppStmt Unreachable = text "unreachable"
+ppStmt (BadSymStmt s) = L.ppStmt s
 
 data SymBlock = SymBlock {
          sbId :: SymBlockID -- ^ Identifier for block (unique within definition).
@@ -354,7 +358,7 @@ data SymBlock = SymBlock {
        }
 
 ppSymBlock :: SymBlock -> Doc
-ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (map ppSymStmt (sbStmts sb)))
+ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (ppStmt <$> sbStmts sb))
 
 -- | Symbolically lifted version of a LLVM definition.
 data SymDefine = SymDefine {

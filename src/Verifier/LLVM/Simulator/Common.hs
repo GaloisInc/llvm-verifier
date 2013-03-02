@@ -89,7 +89,6 @@ import Control.Monad.Error
 import Control.Monad.State hiding (State)
 import qualified Data.Map  as M
 import Text.PrettyPrint.HughesPJ
-import qualified Text.LLVM                 as L
 
 import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
@@ -107,9 +106,9 @@ newtype Simulator sbe m a =
     )
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
-type GlobalMap sbe = M.Map L.Symbol (SBETerm sbe)
+type GlobalMap sbe = M.Map Symbol (SBETerm sbe)
 --type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
-type OvrMap sbe m  = M.Map L.Symbol (Override sbe m, Bool {- user override? -})
+type OvrMap sbe m  = M.Map Symbol (Override sbe m, Bool {- user override? -})
 
 -- | Symbolic simulator options
 data LSSOpts = LSSOpts {
@@ -150,7 +149,7 @@ data BranchAction sbe
                     (Path sbe) -- ^ Completed true path
 
 data MergeInfo
-  = ReturnInfo Int (Maybe L.Ident)
+  = ReturnInfo Int (Maybe Ident)
     -- | Contains the 
   | PostdomInfo Int SymBlockID
 
@@ -209,9 +208,9 @@ modifyCurrentPathM cs f =
        run csfn = fmap (A.second csfn) . f
 
 pushCallFrame :: SBE sbe
-              -> L.Symbol -- ^ Function we are jumping to. 
+              -> Symbol -- ^ Function we are jumping to. 
               -> SymBlockID -- ^ Block to return to.
-              -> Maybe (MemType, L.Ident) -- ^ Where to write return value to (if any).
+              -> Maybe (MemType, Ident) -- ^ Where to write return value to (if any).
               -> CS sbe -- ^ Current control stack
               -> Maybe (CS sbe)
 pushCallFrame sbe calleeSym returnBlock retReg cs =
@@ -385,29 +384,29 @@ markCurrentPathAsError _ CompletedCS{} = fail "Path is completed"
 markCurrentPathAsError sbe (ActiveCS _ (BranchHandler mi a h)) = Just (branchError sbe mi a h)
 markCurrentPathAsError _ (ActiveCS _ StopHandler) = Just (return (CompletedCS Nothing))
 
-type RegMap term = M.Map L.Ident (term, MemType)
+type RegMap term = M.Map Ident (term, MemType)
 
-setReturnValue :: String -> Maybe (MemType, L.Ident) -> Maybe t
+setReturnValue :: String -> Maybe (MemType, Ident) -> Maybe t
                ->  RegMap t -> RegMap t
 setReturnValue _n (Just (tp, r)) (Just rv) rm = M.insert r (rv, tp) rm
 setReturnValue _n Nothing   Nothing   rm = rm
 setReturnValue nm Nothing   (Just _) _  =
   error $ nm ++ ": Return value where non expected"
 setReturnValue nm (Just (_,tr)) Nothing   _  =
-  error $ nm ++ ": Missing return value for "  ++ show (L.ppIdent tr)
+  error $ nm ++ ": Missing return value for "  ++ show (ppIdent tr)
 
 -- | A Call frame for returning.
-data CallFrame sbe = CallFrame { cfFuncSym :: L.Symbol
+data CallFrame sbe = CallFrame { cfFuncSym :: Symbol
                                , cfReturnBlock :: Maybe SymBlockID
                                , cfRegs :: RegMap (SBETerm sbe)
-                               , cfRetReg :: Maybe (MemType, L.Ident)
+                               , cfRetReg :: Maybe (MemType, Ident)
                                , cfAssertions :: SBEPred sbe
                                }
 
 -- | Captures all symbolic execution state for a unique control-flow path (as
 -- specified by the recorded path constraints)
 data Path sbe = Path
-  { pathFuncSym      :: !L.Symbol
+  { pathFuncSym      :: !Symbol
   , pathCB           :: !(Maybe SymBlockID) -- ^ The currently-executing basic
                                          -- block along this path, if any.
   , pathName         :: !(Integer)       -- ^ A unique name for this path
@@ -460,8 +459,8 @@ data SEH sbe m = SEH
 -- argument so that one function can potentially be used to override multiple
 -- symbols.
 type OverrideHandler sbe m
-  =  L.Symbol              -- ^ Callee symbol
-  -> Maybe (MemType, L.Ident)     -- ^ Callee return register
+  =  Symbol              -- ^ Callee symbol
+  -> Maybe (MemType, Ident)     -- ^ Callee return register
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m (Maybe (SBETerm sbe))
 
@@ -469,7 +468,7 @@ type OverrideHandler sbe m
 -- or alternatively a symbol to look up and execute in its place.
 data Override sbe m
   = Override (OverrideHandler sbe m)
-  | Redirect L.Symbol
+  | Redirect Symbol
 
 --------------------------------------------------------------------------------
 -- Misc typeclass instances
@@ -498,7 +497,7 @@ ppCtrlStk sbe (ActiveCS p h) =
 
 ppMergeInfo :: MergeInfo -> Doc
 ppMergeInfo (ReturnInfo n mr) = text "return" <> parens (int n <+> reg)
-  where reg = maybe empty L.ppIdent mr
+  where reg = maybe empty ppIdent mr
 ppMergeInfo (PostdomInfo n b) =
     text "postdom" <> parens (int n <+> ppSymBlockID b)
 
@@ -523,7 +522,7 @@ ppPath :: SBE sbe -> Path sbe -> Doc
 ppPath sbe p =
   text "Path #"
   <>  integer (pathName p)
-  <>  brackets ( text (show $ L.ppSymbol $ pathFuncSym p)
+  <>  brackets ( text (show $ ppSymbol $ pathFuncSym p)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
@@ -536,7 +535,7 @@ ppPathLoc :: SBE sbe -> Path sbe -> Doc
 ppPathLoc _ p =
   text "Path #"
   <>  integer (pathName p)
-  <>  brackets ( text (show $ L.ppSymbol $ pathFuncSym p)
+  <>  brackets ( text (show $ ppSymbol $ pathFuncSym p)
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
@@ -545,11 +544,11 @@ ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
 ppRegMap sbe mp =
     vcat [ ppIdentAssoc r <> prettyTermD sbe v | (r,(v,_)) <- as ]
     where
-      ppIdentAssoc r = L.ppIdent r
+      ppIdentAssoc r = ppIdent r
                        <> text (replicate (maxLen - identLen r) ' ')
                        <> text " => "
       maxLen         = foldr max 0 $ map (identLen . fst) as
-      identLen       = length . show . L.ppIdent
+      identLen       = length . show . ppIdent
       as             = M.toList mp
 
 ppTuple :: [Doc] -> Doc
