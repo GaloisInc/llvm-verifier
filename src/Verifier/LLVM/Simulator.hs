@@ -35,7 +35,9 @@ Point-of-contact : jstanley
 {-# LANGUAGE OverloadedStrings     #-}
 
 module Verifier.LLVM.Simulator
-  ( Simulator (SM)
+  ( module Verifier.LLVM.AST
+  , module Verifier.LLVM.Codebase
+  , Simulator (SM)
   , State(..)
   , SEH(..)
   , callDefine
@@ -60,7 +62,6 @@ module Verifier.LLVM.Simulator
   -- for testing
   , dbugM
   , dbugTerm
-  , dbugTypedTerm
   , dumpMem
   , getMem
   , setSEH
@@ -75,23 +76,18 @@ where
 
 import           Control.Applicative
 import qualified Control.Exception         as CE
-import Control.Lens hiding (act,from)
-import           Control.Monad.Error hiding (mapM, sequence)
-import           Control.Monad.State       hiding (State, mapM, sequence)
-import           Data.Int
-import           Data.List                 hiding (union)
+import           Control.Lens hiding (act,from)
+import           Control.Monad.Error
+import           Control.Monad.State       hiding (State)
+import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Map                  as M
 import           Data.Maybe
 import           Data.String
-import           Data.Traversable
 import qualified Data.Vector               as V
 import           Numeric                   (showHex)
 import           System.Exit
 import           System.IO
-import           Text.LLVM                 (Typed(..))
-import qualified Text.LLVM                 as L
-import           Text.PrettyPrint.HughesPJ
-import Prelude   hiding (mapM, sequence)
+import           Text.PrettyPrint
 
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
@@ -181,7 +177,7 @@ callDefine_ ::
   , Functor m
   , Functor sbe
   )
-  => L.Symbol     -- ^ Callee symbol
+  => Symbol     -- ^ Callee symbol
   -> RetType      -- ^ Callee return type
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m ()
@@ -196,7 +192,7 @@ callDefine ::
   , Functor m
   , Functor sbe
   )
-  => L.Symbol     -- ^ Callee symbol
+  => Symbol     -- ^ Callee symbol
   -> RetType       -- ^ Callee return type
   -> [SBETerm sbe] -- ^ Callee argument generator
   -> Simulator sbe m [SBETerm sbe]
@@ -209,7 +205,7 @@ callDefine calleeSym t args = do
     dbugM $ show $
       text "Warning: callDefine given incorrect return type of"
               <+> ppRetType t
-              <+>  text "for" <+> L.ppSymbol calleeSym <+> text "when actual type is"
+              <+>  text "for" <+> ppSymbol calleeSym <+> text "when actual type is"
               <+> ppRetType (sdRetType def) <> text "."
   r <- callDefine' False entryRetNormalID calleeSym retReg args
   r <$ run
@@ -238,11 +234,11 @@ callDefine' ::
   )
   => Bool                                         -- ^ Is this a redirected call?
   -> SymBlockID                                   -- ^ Normal call return block id
-  -> L.Symbol                                     -- ^ Callee symbol
-  -> Maybe (MemType, L.Ident)                        -- ^ Callee return type and result register
+  -> Symbol                                     -- ^ Callee symbol
+  -> Maybe (MemType, Ident)                        -- ^ Callee return type and result register
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m [SBETerm sbe]
-callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg args = do
+callDefine' isRedirected normalRetID calleeSym@(Symbol calleeName) mreg args = do
   -- NB: Check overrides before anything else so we catch overriden intrinsics
   override <- M.lookup calleeSym <$> gets fnOverrides
   case override of
@@ -267,14 +263,14 @@ callDefine' isRedirected normalRetID calleeSym@(L.Symbol calleeName) mreg args =
 
 -- | Return symbol definition with given name or fail.
 lookupSymbolDef :: (Functor m, MonadIO m, Functor sbe)
-                => L.Symbol -> Simulator sbe m SymDefine
+                => Symbol -> Simulator sbe m SymDefine
 lookupSymbolDef sym = do
   mdef <- lookupDefine sym <$> gets codebase
   case mdef of
     Just def -> return def
     Nothing  -> do
       errorPath $ FailRsn $ "Failed to find definition for symbol "
-                        ++ show (L.ppSymbol sym) ++ " in codebase."
+                        ++ show (ppSymbol sym) ++ " in codebase."
 
 runNormalSymbol ::
   ( MonadIO m
@@ -282,8 +278,8 @@ runNormalSymbol ::
   , Functor sbe
   )
   => SymBlockID            -- ^ Normal call return block id
-  -> L.Symbol              -- ^ Callee symbol
-  -> Maybe (MemType, L.Ident)     -- ^ Callee return type and result register
+  -> Symbol              -- ^ Callee symbol
+  -> Maybe (MemType, Ident)     -- ^ Callee return type and result register
   -> [SBETerm sbe] -- ^ Callee arguments
   -> Simulator sbe m [SBETerm sbe]
 runNormalSymbol normalRetID calleeSym mreg args = do
@@ -291,7 +287,7 @@ runNormalSymbol normalRetID calleeSym mreg args = do
   sbe <- gets symBE
   tryModifyCS "runNormalSymbol" $
     pushCallFrame sbe calleeSym normalRetID mreg
-  dbugM' 5 $ "callDefine': callee " ++ show (L.ppSymbol calleeSym)
+  dbugM' 5 $ "callDefine': callee " ++ show (ppSymbol calleeSym)
   modifyPathRegs $ \_ -> bindArgs (sdArgs def) args
   -- Push stack frame in current process memory.
   do Just m <- getMem
@@ -316,7 +312,7 @@ intrinsic ::
   , Functor m
   , Functor sbe
   )
-  => String -> Maybe (MemType, L.Ident) -> [SBETerm sbe]
+  => String -> Maybe (MemType, Ident) -> [SBETerm sbe]
   -> Simulator sbe m ()
 intrinsic intr mreg args0 =
   case (intr, mreg, args0) of
@@ -503,7 +499,7 @@ run = do
 -- LLVM-Sym operations
 
 assignReg :: (Functor m, MonadIO m)
-       => L.Ident -> MemType -> SBETerm sbe -> Simulator sbe m ()
+       => Ident -> MemType -> SBETerm sbe -> Simulator sbe m ()
 assignReg reg tp v = modifyPathRegs $ at reg ?~ (v,tp)
 
 
@@ -559,7 +555,7 @@ getTypedTerm' ec tsv =
           case regs^.at i of
             Just (x,_)  -> return x
             Nothing -> illegal $ "getTypedTerm' could not find register: "
-                         ++ show (L.ppIdent i) ++ " in " ++ show (M.keys regs)
+                         ++ show (ppIdent i) ++ " in " ++ show (M.keys regs)
         Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec
                       ++ " with missing frame."
     SValSymbol sym ->
@@ -567,7 +563,7 @@ getTypedTerm' ec tsv =
         case (evalGlobalTerms ec)^.at sym of
           Just t -> t
           Nothing ->
-            error $ "Failed to find symbol: " ++ show (L.ppSymbol sym)
+            error $ "Failed to find symbol: " ++ show (ppSymbol sym)
     SValExpr te -> do
       tv <- traverse (getTypedTerm' ec) te
       let sbe = evalSBE ec
@@ -579,7 +575,7 @@ insertGlobalTerm ::
   , Functor sbe
   )
   => String
-  -> L.Symbol
+  -> Symbol
   -> SymType
   -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
   -> Simulator sbe m ()
@@ -624,7 +620,7 @@ step (PushCallFrame callee args mres retTgt) = do
 
 step (Return mtv) = do
   sbe <- gets symBE
-  mrv <- mapM (getBackendValue "mergeReturn") mtv
+  mrv <- traverse (getBackendValue "mergeReturn") mtv
   tryModifyCSIO "Return" $ returnCurrentPath sbe mrv
 
 step (PushPendingExecution bid cond ml elseStmts) = do
@@ -677,7 +673,7 @@ step (Store valType val addr _malign) = do
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
 
-step (BadSymStmt s) = unimpl (show (L.ppStmt s))
+step s@BadSymStmt{} = unimpl (show (ppStmt s))
 
 --------------------------------------------------------------------------------
 -- Symbolic expression evaluation
@@ -768,7 +764,6 @@ alloca ty szw sztm malign = do
       let fr = memFailRsn sbe ("Failed alloca allocation of type " ++ show (ppMemType ty)) []
       processMemCond fr c
       return t
---TODO: return (Typed (L.PtrTo ty) t)
 
 malloc ::
   ( MonadIO m
@@ -867,8 +862,8 @@ runStmts ::
   => [SymStmt] -> Simulator sbe m ()
 runStmts = mapM_ dbugStep
 
-entryRsltReg :: L.Ident
-entryRsltReg = L.Ident "__galois_final_rslt"
+entryRsltReg :: Ident
+entryRsltReg = Ident "__galois_final_rslt"
 
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
 -- that the control stack is empty or the top entry of the control stack has no
@@ -889,7 +884,7 @@ type StdOvd m sbe =
   => Override sbe m
 
 checkTypeCompat :: Monad m
-                => L.Symbol
+                => Symbol
                 -> FunDecl -- ^ Declaration of function to be overriden.
                 -> String -- ^ Name of override function
                 -> FunDecl -- ^ Type of override function
@@ -897,7 +892,7 @@ checkTypeCompat :: Monad m
 checkTypeCompat fnm (FunDecl frtn fargs fva) tnm (FunDecl trtn targs tva) = do
   lc <- gets (cbLLVMContext . codebase)
   let ?lc = lc
-  let nm = show . L.ppSymbol
+  let nm = show . ppSymbol
   let e rsn = error $ "Attempt to replace " ++ nm fnm
                      ++ " with function " ++ tnm ++ " that " ++ rsn
   let ppTypes :: [MemType] -> String
@@ -918,7 +913,7 @@ registerOverride ::
   , Functor sbe
   , MonadIO m
   )
-  => L.Symbol
+  => Symbol
   -> FunDecl 
   -> Override sbe m
   -> Simulator sbe m ()
@@ -989,17 +984,17 @@ dbugStep ::
 dbugStep stmt = do
   mp <- getPath
   case mp of
-    Nothing -> dbugM' 2 $ "Executing: (no current path): " ++ show (ppSymStmt stmt)
+    Nothing -> dbugM' 2 $ "Executing: (no current path): " ++ show (ppStmt stmt)
     Just p  -> do
       dbugM' 2 $ "Executing ("
                  ++ "#" ++ show (pathName p) ++ "): "
-                 ++ show (L.ppSymbol (pathFuncSym p))
+                 ++ show (ppSymbol (pathFuncSym p))
                  ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
                  ++ ": " ++
                  case stmt of
                    PushPendingExecution{} -> "\n"
                    _ -> ""
-                 ++ show (ppSymStmt stmt)
+                 ++ show (ppStmt stmt)
 --  repl
   cb1 onPreStep stmt
   step stmt
@@ -1032,14 +1027,9 @@ repl = do
 dbugTerm :: (MonadIO m, Functor m) => String -> SBETerm sbe -> Simulator sbe m ()
 dbugTerm desc t = dbugM =<< ((++) (desc ++ ": ")) . render <$> prettyTermSBE t
 
-dbugTypedTerm :: (MonadIO m, Functor m) => String -> Typed (SBETerm sbe) -> Simulator sbe m ()
-dbugTypedTerm desc (Typed ty t) =
-  dbugTerm (desc ++ "(" ++ show (L.ppType ty) ++ ")") t
-
 _nowarn_unused :: a
 _nowarn_unused = undefined
   (dbugTerm undefined undefined :: Simulator IO IO ())
-  (dbugTypedTerm undefined undefined :: Simulator IO IO ())
   (repl :: Simulator IO IO ())
 
 --------------------------------------------------------------------------------
@@ -1056,7 +1046,7 @@ warning msg = do
                       Nothing -> " at " ++ fn
                       Just cb -> " at " ++ fn ++ ":" ++ cbid
                         where cbid = show (ppSymBlockID cb)
-            where fn = show $ L.ppSymbol $ pathFuncSym p
+            where fn = show $ ppSymbol $ pathFuncSym p
   liftIO $ putStrLn $ "Warning" ++ prefix ++ ". " ++ msg
 
 -- | Load a null-termianted string at given address.
@@ -1435,16 +1425,16 @@ overrideIntrinsic = Override $ \_sym _rty args ->
     e = errorPath . FailRsn
 
 userRedirectTo :: MonadIO m
-  => L.Symbol -> L.Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
+  => Symbol -> Symbol -> Simulator sbe m (Maybe (SBETerm sbe))
 userRedirectTo src tgt = do
   cb <- gets codebase
-  let nameOf = show . L.ppSymbol 
+  let nameOf = show . ppSymbol 
   --TODO: Add better error messages.
   case (cb^.cbFunctionType src, cb^.cbFunctionType tgt) of
     (Nothing,_) -> error $ "Could not find symbol " ++ nameOf src ++ "."
     (_,Nothing) -> error $ "Could not find symbol " ++ nameOf tgt ++ "."  
     (Just fd, Just td) -> do
-      checkTypeCompat src fd (show (L.ppSymbol tgt)) td
+      checkTypeCompat src fd (show (ppSymbol tgt)) td
       modify $ \s ->
         s{ fnOverrides = M.insert src (Redirect tgt, True) (fnOverrides s) }
       return Nothing
@@ -1484,7 +1474,7 @@ overrideResetAll = Override $ \_sym _rty args ->
   where
     e = errorPath . FailRsn
 
-type OverrideEntry sbe m = (L.Symbol, FunDecl, Override sbe m)
+type OverrideEntry sbe m = (Symbol, FunDecl, Override sbe m)
 
 registerLibcOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
 registerLibcOverrides = do
@@ -1495,8 +1485,6 @@ registerLibcOverrides = do
   case cb^.cbFunctionType "malloc" of
     Nothing -> return ()
     Just d -> do
-      --unless (L.decArgs d == [sizeT] && not (L.decVarArgs d)) $ do
-      --  error "malloc has unexpected arguments."
       case fdRetType d of
         Just _ ->
           registerOverride "malloc" d $

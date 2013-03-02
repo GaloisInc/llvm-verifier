@@ -83,7 +83,6 @@ cbFunctionType sym = cbFunctionTypes . at sym
 lookupFunctionType :: L.Symbol -> Codebase -> Maybe FunDecl
 lookupFunctionType sym = view (cbFunctionType sym)
 
-
 -- | Returns definitions in codebase.
 cbDefs :: Codebase -> [SymDefine]
 cbDefs = toListOf (folded . _Right) . view cbGlobalNameMap
