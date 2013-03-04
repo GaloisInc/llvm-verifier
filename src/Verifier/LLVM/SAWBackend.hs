@@ -39,9 +39,9 @@ createSAWBackend _lc _mg = do
   let ?sc = sc
   t <- scApplyPreludeTrue sc
   let nyi nm = error $ "Not yet implemented: " ++ show nm
-  let _sbeInt w v = do
-        wt <- scNat (toInteger w)
-        scBitvector wt v
+--  let _sbeInt w v = do
+--        wt <- scNat sc (toInteger w)
+--        scBitvector sc wt v
   let sbe = SBE { sbeTruePred = t
                 , applyIEq = nyi "applyIEq"
                 , applyAnd = nyi "applyAnd"
@@ -55,6 +55,7 @@ createSAWBackend _lc _mg = do
                 , prettyTermD = nyi "prettyTermD"
                 , prettyPredD = nyi "prettyPredD"
                 , asUnsignedInteger = nyi "asUnsignedInteger"
+                , asConcretePtr = nyi "asConcretePtr"
                 , memDump = nyi "memDump"
                 , memLoad = nyi "memLoad"
                 , memStore = nyi "memStore"

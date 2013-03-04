@@ -430,6 +430,11 @@ liftStmt stmt = do
                 go _ _ _ = fail "non-composite type in extractvalue"
         _ -> fail "Unsupported instruction"
 
+liftArgValue :: (?lc :: LLVMContext) => L.Typed L.Value -> Maybe (MemType, TypedSymValue)
+liftArgValue (Typed tp val) = do
+  mtp <- liftMemType tp
+  (mtp,) <$> liftValue mtp val
+
 -- Lift LLVM basic block to symbolic block {{{1
 --
 -- Invariants assumed by block:
@@ -516,9 +521,9 @@ liftBB lti phiMap bb = do
         -- likely need to support varargs more explicitly
         -- later. TODO.
         let mstmt = do
-              mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType tp 
+              mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType tp
               sv <- liftValue mtp v
-              svl <- traverse liftTypedValue tpvl
+              svl <- traverse liftArgValue tpvl
               return $ PushCallFrame sv svl (Just (rty, reg)) (blockName (idx + 1))
         symStmt <- maybe (unsupportedStmt stmt) return mstmt
         defineBlock (blockName idx) $ reverse (symStmt:il)
@@ -528,7 +533,7 @@ liftBB lti phiMap bb = do
         let mstmt = do
               mtp <- liftMemType tp
               sv <- liftValue mtp v
-              svl <- traverse liftTypedValue tpvl
+              svl <- traverse liftArgValue tpvl
               return $ PushCallFrame sv svl Nothing (blockName (idx+1))
         symStmt <- maybe (unsupportedStmt stmt) return mstmt
         defineBlock (blockName idx) $ reverse (symStmt:il)
@@ -611,10 +616,9 @@ liftDefine d
                                               [ (sbId b,b) | b <- initSymBlock : symBlocks ]
                                  }
          Nothing -> Left (text "Unsupported type for function" <+> symd <> char '.')
-  where mfd = liftA3 FunDecl
-                     (liftRetType (L.defRetType d))
-                     (traverse liftMemType (L.typedType <$> L.defArgs d))
-                     (return False) 
+  where mfd = FunDecl <$> liftRetType (L.defRetType d)
+                      <*> traverse liftMemType (L.typedType <$> L.defArgs d)
+                      <*> pure False 
         symd = L.ppSymbol (L.defName d)
 
 -- Test code {{{1

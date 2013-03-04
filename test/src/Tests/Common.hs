@@ -3,6 +3,7 @@
 {-# LANGUAGE ImplicitParams       #-}
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE ViewPatterns         #-}
 module Tests.Common 
@@ -16,6 +17,7 @@ import           Control.Applicative
 import           Control.Arrow
 import           Control.Lens hiding (act, (<.>))
 import           Control.Monad 
+import           Control.Monad.State (gets)
 import           Data.Int
 import           System.FilePath
 import qualified Text.LLVM                     as L
@@ -73,8 +75,8 @@ runTests tests = do
     then putStrLn "All tests successful."
     else putStrLn "One or more tests failed."
 
-constTermEq :: Maybe (Int,Integer) -> Integer -> Bool
-constTermEq (Just (_,v)) = (==v)
+constTermEq :: Maybe Integer -> Integer -> Bool
+constTermEq (Just v) = (==v)
 constTermEq _ = const False
 
 type AllMemModelTest =
@@ -236,10 +238,11 @@ runCInt32Fn v getCB sym cargs erv = do
   void $ forAllMemModels v cb $ \s m -> do
     run $ do
       runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
-        args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-        callDefine_ sym (Just i32) args
-        let fn rv = withSBE' $ \sbe -> snd <$> asSignedInteger sbe rv
-        mrv <- traverse fn =<< getProgramReturnValue
+        sbe <- gets symBE
+        args <- forM cargs $ \x -> liftSBE $ termInt sbe 32 $ fromIntegral x
+        callDefine_ sym (Just i32) ((IntType 32,) <$> args)
+        let fn rv = asSignedInteger sbe 32 rv
+        mrv <- fmap fn <$> getProgramReturnValue
         case erv of
           RV chk ->
             case mrv of
@@ -264,8 +267,9 @@ runVoidFn v getCB sym cargs = do
   cb <- getCB
   _ <- forAllMemModels v cb $ \s m -> run $ do
     runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
-      args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-      callDefine_ sym Nothing args
+      sbe <- gets symBE
+      args <- forM cargs $ \x -> liftSBE $ termInt sbe 32 $ fromIntegral x
+      callDefine_ sym Nothing ((IntType 32,) <$> args)
   return ()
 
 -- possibly skip a test

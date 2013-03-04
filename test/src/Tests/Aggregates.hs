@@ -14,6 +14,7 @@ Point-of-contact : jstanley
 module Tests.Aggregates (aggTests) where
 
 import           Control.Applicative
+import           Control.Monad.State
 import           Test.QuickCheck
 import           Tests.Common
 
@@ -59,10 +60,11 @@ structInitAccessImpl = do
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
     Just rv -> do
-      bx <- withSBE $ \sbe -> applyTypedExpr sbe (GetStructField si rv 0)
-      by <- withSBE $ \sbe -> applyTypedExpr sbe (GetStructField si rv 1)
-      bxc <- withSBE' $ \s -> asSignedInteger s bx
-      byc <- withSBE' $ \s -> asSignedInteger s by
+      sbe <- gets symBE
+      bx <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 0)
+      by <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 1)
+      let bxc = asSignedInteger sbe 32 bx
+          byc = asSignedInteger sbe  8 by
       return $ bxc `constTermEq` 42
                &&
                byc `constTermEq` fromIntegral (fromEnum 'z')
@@ -73,7 +75,7 @@ structArrayImpl = do
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
-    Just rv -> (`constTermEq` 1) <$> withSBE' (\s -> asSignedInteger s rv)
+    Just rv -> (`constTermEq` 1) <$> withSBE' (\s -> asSignedInteger s 32 rv)
 
 --------------------------------------------------------------------------------
 -- Scratch

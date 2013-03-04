@@ -19,33 +19,26 @@ module Verifier.LLVM.Simulator.Common
   , LSSOpts(LSSOpts, optsErrorPathDetails)
   , defaultLSSOpts
 
-  , State(State)
-  , codebase
-  , symBE
-  , liftSymBE
+  , State(..)
   , ctrlStk
   , globalTerms
   , fnOverrides
-  , verbosity
   , evHandlers
   , errorPaths
-  , lssOpts
   , pathCounter
   , aigOutputs
-  , modifyCS
 
-  , CS
+  , CS(..)
+  , ActiveCS
+  , activePath
   , initialCtrlStk
-  , isFinished
-  , getCurrentPath
-  , modifyPath
+  , currentPath
   , modifyCurrentPathM
   , pushCallFrame
   , addCtrlBranch
   , jumpCurrentPath
   , returnCurrentPath
   , markCurrentPathAsError
-
 
   , SymBlockID
 
@@ -84,7 +77,7 @@ module Verifier.LLVM.Simulator.Common
 import Control.Applicative hiding (empty)
 import qualified Control.Arrow as A
 import Control.Exception (assert)
-import Control.Lens hiding (act, set)
+import Control.Lens hiding (act)
 import Control.Monad.Error
 import Control.Monad.State hiding (State)
 import qualified Data.Map  as M
@@ -124,21 +117,38 @@ data State sbe m = State
   { codebase     :: Codebase        -- ^ LLVM code, post-transformation to sym ast
   , symBE        :: SBE sbe         -- ^ Symbolic backend interface
   , liftSymBE    :: LiftSBE sbe m   -- ^ Lift SBE operations into the Simulator monad
-  , ctrlStk      :: CS sbe          -- ^ Control stack for tracking merge points
-  , globalTerms  :: GlobalMap sbe   -- ^ Global ptr terms
-  , fnOverrides  :: OvrMap sbe m    -- ^ Function override table
+  , _ctrlStk     :: !(Maybe (CS sbe))  -- ^ Control stack for controlling simulator.
+  , _globalTerms :: GlobalMap sbe   -- ^ Global ptr terms
+  , _fnOverrides  :: OvrMap sbe m    -- ^ Function override table
   , verbosity    :: Int             -- ^ Verbosity level
-  , evHandlers   :: SEH sbe m       -- ^ Simulation event handlers
-  , errorPaths   :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
+  , _evHandlers   :: SEH sbe m       -- ^ Simulation event handlers
+  , _errorPaths   :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
   , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
-  , pathCounter  :: Integer         -- ^ Name supply for paths
-  , aigOutputs   :: [SBETerm sbe]   -- ^ Current list of AIG outputs, discharged
-                                    -- via lss_write_aiger() sym api calls
+  , _pathCounter  :: Integer         -- ^ Name supply for paths
+  , _aigOutputs   :: [SBETerm sbe]   -- ^ Current list of AIG outputs, discharged
+                                     -- via lss_write_aiger() sym api calls
   }
 
--- | Manipulate the control stack
-modifyCS :: (CS sbe -> CS sbe) -> (State sbe m -> State sbe m)
-modifyCS f s = s { ctrlStk = f (ctrlStk s) }
+ctrlStk :: Simple Lens (State sbe m) (Maybe (CS sbe))
+ctrlStk f s = (\v -> s { _ctrlStk = v }) <$> f (_ctrlStk s)
+
+globalTerms :: Simple Lens (State sbe m) (GlobalMap sbe)
+globalTerms f s = (\v -> s { _globalTerms = v }) <$> f (_globalTerms s)
+
+fnOverrides :: Simple Lens (State sbe m) (OvrMap sbe m)
+fnOverrides f s = (\v -> s { _fnOverrides = v }) <$> f (_fnOverrides s)
+
+evHandlers :: Simple Lens (State sbe m) (SEH sbe m)
+evHandlers f s = (\v -> s { _evHandlers = v }) <$> f (_evHandlers s)
+
+errorPaths :: Simple Lens (State sbe m) [ErrorPath sbe]
+errorPaths f s = (\v -> s { _errorPaths = v }) <$> f (_errorPaths s)
+
+pathCounter :: Simple Lens (State sbe m) Integer
+pathCounter f s = (\v -> s { _pathCounter = v }) <$> f (_pathCounter s)
+
+aigOutputs :: Simple Lens (State sbe m) [SBETerm sbe]
+aigOutputs f s = (\v -> s { _aigOutputs = v }) <$> f (_aigOutputs s)
 
 -- | Action to perform when branch.
 data BranchAction sbe
@@ -160,14 +170,22 @@ data PathHandler sbe
                   (PathHandler sbe) -- ^ Handler once this handler is done.
   | StopHandler
 
+-- | A control stack that is still active.
+data ActiveCS sbe = ACS (Path sbe) (PathHandler sbe)
+
+activePath :: Simple Lens (ActiveCS sbe) (Path sbe)
+activePath f (ACS p h) = flip ACS h <$> f p
+
 data CS sbe
-  = CompletedCS (Maybe (Path sbe))
-    -- | An active control stack.
-  | ActiveCS (Path sbe) -- ^ Current path
-             (PathHandler sbe) -- ^ Handler that describes response once execution finishes.
+  = FinishedCS (Path sbe)
+  | ActiveCS (ActiveCS sbe)
+
+currentPath :: Simple Lens (CS sbe) (Path sbe)
+currentPath f (FinishedCS p) = FinishedCS <$> f p
+currentPath f (ActiveCS acs) = ActiveCS <$> activePath f acs
 
 initialCtrlStk :: SBE sbe -> SBEMemory sbe -> CS sbe
-initialCtrlStk sbe mem = CompletedCS (Just p)
+initialCtrlStk sbe mem = FinishedCS p
   where p = Path { pathFuncSym = entrySymbol
                  , pathCB = Nothing
                  , pathName = 0
@@ -178,47 +196,25 @@ initialCtrlStk sbe mem = CompletedCS (Just p)
                  , pathStack = []
                  }
 
--- | Return true if all paths in control stack have no more work.
-isFinished :: CS sbe -> Bool
-isFinished CompletedCS{} = True
-isFinished _ = False
-
-getCurrentPath :: CS sbe -> Maybe (Path sbe)
-getCurrentPath (CompletedCS mp) = mp
-getCurrentPath (ActiveCS p _) = Just p
-
-modifyPath :: (Path sbe -> Path sbe) -> CS sbe -> Maybe (CS sbe)
-modifyPath f cs = 
-  case cs of
-    CompletedCS mp -> (CompletedCS . Just . f) <$> mp
-    ActiveCS p h -> Just (ActiveCS (f p) h)
- 
 -- | Modify current path in control stack.
 modifyCurrentPathM :: forall m sbe a .
                       Functor m
                    => CS sbe
                    -> (Path sbe -> m (a,Path sbe))
-                   -> Maybe (m (a,CS sbe))
-modifyCurrentPathM cs f =
-  case cs of
-    CompletedCS mp -> (run (CompletedCS . Just)) <$> mp
-    ActiveCS p h -> Just (run fn p)
-      where fn p' = ActiveCS p' h
- where run :: (Path sbe -> CS sbe) -> Path sbe -> m (a, CS sbe) 
-       run csfn = fmap (A.second csfn) . f
+                   -> m (a,CS sbe)
+modifyCurrentPathM cs f = 
+  over _2 (\p -> set currentPath p cs) <$> f (cs^.currentPath)
 
 pushCallFrame :: SBE sbe
               -> Symbol -- ^ Function we are jumping to. 
               -> SymBlockID -- ^ Block to return to.
               -> Maybe (MemType, Ident) -- ^ Where to write return value to (if any).
               -> CS sbe -- ^ Current control stack
-              -> Maybe (CS sbe)
+              -> ActiveCS sbe
 pushCallFrame sbe calleeSym returnBlock retReg cs =
     case cs of
-      CompletedCS Nothing -> fail "All paths failed"
-      CompletedCS (Just p) -> do
-        return $ ActiveCS (newPath p) StopHandler
-      ActiveCS p h -> Just $ ActiveCS (newPath p) h
+      FinishedCS p       -> ACS (newPath p) StopHandler
+      ActiveCS (ACS p h) -> ACS (newPath p) h
   where newPath p = p'
           where cf = CallFrame { cfFuncSym = pathFuncSym p
                                , cfReturnBlock = Just returnBlock
@@ -241,13 +237,11 @@ addCtrlBranch :: SBE sbe
               -> SymBlockID -- ^ Location for newly branched paused path to start at.
               -> Integer -- ^ Name of path
               -> MergeLocation -- ^ Control point to merge at.
-              -> CS sbe -- ^  Current control stack.
-              -> Maybe (IO (CS sbe)) 
-addCtrlBranch _ _ _ _ _ CompletedCS{} =
-  fail "Path is completed"
-addCtrlBranch sbe c nb nm ml (ActiveCS p h) = Just $ do
+              -> ActiveCS sbe -- ^  Current control stack.
+              -> IO (ActiveCS sbe)
+addCtrlBranch sbe c nb nm ml (ACS p h) = do
     fmap fn $ sbeRunIO sbe $ memBranch sbe (p^.pathMem)
-  where fn mem = ActiveCS pf $ BranchHandler info (BARunFalse c pt) h
+  where fn mem = ACS pf $ BranchHandler info (BARunFalse c pt) h
           where pf = p & pathMem .~ mem
                        & pathAssertions .~ sbeTruePred sbe
                 pt = p { pathCB = Just nb
@@ -261,14 +255,14 @@ addCtrlBranch sbe c nb nm ml (ActiveCS p h) = Just $ do
 postdomMerge :: SBE sbe
              -> Path sbe
              -> PathHandler sbe
-             -> IO (CS sbe)
+             -> IO (ActiveCS sbe)
 postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
    | n == pathStackHt p && Just b == pathCB p =
   case act of
     BARunFalse c tp -> do
       let tp' = tp & pathAssertions .~ sbeTruePred sbe
       let act' = BAFalseComplete (tp^.pathAssertions) c p
-      return $ ActiveCS tp' (BranchHandler info act' h)
+      return $ ACS tp' (BranchHandler info act' h)
     BAFalseComplete a c pf -> do
       -- TODO: Collect and print merge errors.
       let mergeTyped (tt,tp) (ft,_) =
@@ -288,12 +282,11 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
                  & pathAssertions .~ a'
       -- Recurse to check if more merges should be performed.
       postdomMerge sbe p' h
-postdomMerge _ p h = return (ActiveCS p h)
+postdomMerge _ p h = return (ACS p h)
 
 -- | Move current path to target block.
-jumpCurrentPath :: SBE sbe -> SymBlockID -> CS sbe -> Maybe (IO (CS sbe))
-jumpCurrentPath _ _ CompletedCS{} = fail "Path is completed"
-jumpCurrentPath sbe b (ActiveCS p h) = Just $ postdomMerge sbe p { pathCB = Just b } h
+jumpCurrentPath :: SBE sbe -> SymBlockID -> ActiveCS sbe -> IO (ActiveCS sbe)
+jumpCurrentPath sbe b (ACS p h) = postdomMerge sbe p { pathCB = Just b } h
 
 -- | Handle merge of paths.
 -- The first element of the return pair contains a mesage if error(s) occured
@@ -302,14 +295,13 @@ returnMerge :: SBE sbe
             -> Path sbe
             -> PathHandler sbe
             -> IO ([String], CS sbe)
-returnMerge _ p StopHandler | pathStackHt p == 0 =
-  return ([], CompletedCS (Just p))
+returnMerge _ p StopHandler | pathStackHt p == 0 = return ([], FinishedCS p)
 returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackHt p =
   case act of
     BARunFalse c tp -> do
       let tp' = tp & pathAssertions .~ sbeTruePred sbe
       let act' = BAFalseComplete (tp^.pathAssertions) c p
-      return $ ([], ActiveCS tp' (BranchHandler info act' h))
+      return $ ([], ActiveCS (ACS tp' (BranchHandler info act' h)))
     BAFalseComplete a c pf -> do
       -- Merge return value
       (errs, mergedRegs) <-
@@ -332,12 +324,11 @@ returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackH
                  & pathMem .~ mergedMemory
                  & pathAssertions .~ a'
       A.first (errs ++) <$> returnMerge sbe p' h
-returnMerge _ p h = return ([], ActiveCS p h)
+returnMerge _ p h = return ([], ActiveCS (ACS p h))
 
 -- | Return from current path
-returnCurrentPath :: SBE sbe -> Maybe (SBETerm sbe) -> CS sbe -> Maybe (IO (CS sbe))
-returnCurrentPath _ _ CompletedCS{} = fail "Path is completed"
-returnCurrentPath sbe rt (ActiveCS p h) = Just $ do
+returnCurrentPath :: SBE sbe -> Maybe (SBETerm sbe) -> ActiveCS sbe -> IO (CS sbe)
+returnCurrentPath sbe rt (ACS p h) = do
   let cf : cfs = pathStack p
   m <- sbeRunIO sbe $ stackPopFrame sbe (p^.pathMem)
   let p' = Path { pathFuncSym = cfFuncSym cf
@@ -361,7 +352,7 @@ branchError sbe _ (BARunFalse c pt) h = do
   mem' <- sbeRunIO sbe $ memBranchAbort sbe (pt^.pathMem)
   let pt' = pt & pathMem .~ mem'
                & pathAssertions .~ a2
-  return $ ActiveCS pt' h
+  return $ ActiveCS $ ACS pt' h
 branchError sbe mi (BAFalseComplete a c pf) h = do
   -- Update assertions on current path
   a1   <- sbeRunIO sbe $ applyAnd sbe a (pf^.pathAssertions)
@@ -375,14 +366,14 @@ branchError sbe mi (BAFalseComplete a c pf) h = do
     ( ReturnInfo n _, BranchHandler (ReturnInfo pn _) _ _) | n == pn ->
       snd <$> returnMerge sbe pf' h
     ( PostdomInfo n _, BranchHandler (PostdomInfo pn _) _ _) | n == pn ->
-      postdomMerge sbe pf' h
-    _ -> return (ActiveCS pf' h)
+      ActiveCS <$> postdomMerge sbe pf' h
+    _ -> return $ ActiveCS $ ACS pf' h
 
 -- | Mark the current path as an error path.
-markCurrentPathAsError :: SBE sbe -> CS sbe -> Maybe (IO (CS sbe))
-markCurrentPathAsError _ CompletedCS{} = fail "Path is completed"
-markCurrentPathAsError sbe (ActiveCS _ (BranchHandler mi a h)) = Just (branchError sbe mi a h)
-markCurrentPathAsError _ (ActiveCS _ StopHandler) = Just (return (CompletedCS Nothing))
+markCurrentPathAsError :: SBE sbe -> ActiveCS sbe -> IO (Maybe (CS sbe))
+markCurrentPathAsError sbe (ACS _ (BranchHandler mi a h)) =
+  Just <$> branchError sbe mi a h
+markCurrentPathAsError _ (ACS _ StopHandler) = return Nothing
 
 type RegMap term = M.Map Ident (term, MemType)
 
@@ -461,7 +452,7 @@ data SEH sbe m = SEH
 type OverrideHandler sbe m
   =  Symbol              -- ^ Callee symbol
   -> Maybe (MemType, Ident)     -- ^ Callee return register
-  -> [SBETerm sbe] -- ^ Callee arguments
+  -> [(MemType,SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m (Maybe (SBETerm sbe))
 
 -- | An override may specify a function to run within the simulator,
@@ -487,10 +478,10 @@ instance (Monad m, Functor m) => Applicative (Simulator sbe m) where
 ppFailRsn :: FailRsn -> Doc
 ppFailRsn (FailRsn msg) = text msg
 
-ppCtrlStk :: SBE sbe -> CS sbe -> Doc
-ppCtrlStk sbe (CompletedCS mp) =
-  maybe (text "All paths failed") (ppPath sbe) mp
-ppCtrlStk sbe (ActiveCS p h) =
+ppCtrlStk :: SBE sbe -> Maybe (CS sbe) -> Doc
+ppCtrlStk _ Nothing = text "All paths failed"
+ppCtrlStk sbe (Just (FinishedCS p)) = ppPath sbe p
+ppCtrlStk sbe (Just (ActiveCS (ACS p h))) =
   text "Active path:" $$
   ppPath sbe p $$
   ppPathHandler sbe h
@@ -559,5 +550,5 @@ ppTuple = parens . hcat . punctuate comma
 
 dumpCtrlStk :: (MonadIO m) => Simulator sbe m ()
 dumpCtrlStk = do
-  (sbe, cs) <- gets (symBE A.&&& ctrlStk)
+  (sbe, cs) <- gets (symBE A.&&& view ctrlStk)
   banners $ show $ ppCtrlStk sbe cs

@@ -14,6 +14,7 @@ module Tests.AES (aesTests) where
 
 import           Control.Applicative
 import           Control.Monad (forM)
+import           Control.Monad.State (gets)
 import           Data.Maybe
 import           Test.QuickCheck
 import           Tests.Common
@@ -41,8 +42,8 @@ aes128ConcreteImpl = do
   let aw = 8
   one <- withSBE $ \sbe -> termInt sbe aw 1
   ctptr  <- alloca arrayTy aw one (Just 4)
-  let args :: [SBETerm sbe]
-      args = [ptptr, keyptr, ctptr]
+  let args :: [(MemType, SBETerm sbe)]
+      args = [ptptr, keyptr, (IntType aw, ctptr)]
   [_, _, ctRawPtr] <-
     callDefine (L.Symbol "aes128BlockEncrypt") Nothing args
   Just mem <- getProgramFinalMem
@@ -52,16 +53,17 @@ aes128ConcreteImpl = do
   return (ctVals == ctChks)
   where
     getVal :: SBE sbe -> SBETerm sbe -> Integer
-    getVal s v = snd $ fromJust $ asUnsignedInteger s v
-    initArr :: [Integer] -> Simulator sbe IO (SBETerm sbe)
+    getVal s v = fromJust $ asUnsignedInteger s 32 v
+    initArr :: [Integer] -> Simulator sbe IO (MemType,SBETerm sbe)
     initArr xs = do
-       arrElts <- mapM (withSBE . \x s -> termInt s 32 x) xs
-       arr <- withSBE $ \sbe -> termArray sbe i32 arrElts
+       sbe <- gets symBE
+       arrElts <- mapM (liftSBE . termInt sbe 32) xs
+       arr <- liftSBE $ termArray sbe i32 arrElts
        let aw = 8
-       one <- withSBE $ \sbe -> termInt sbe aw 1
+       one <- liftSBE $ termInt sbe aw 1
        p   <- alloca arrayTy aw one (Just 4)
        store arrayTy arr p
-       return p
+       return (i32p, p)
 
     arrayTy = ArrayType 4 i32
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]

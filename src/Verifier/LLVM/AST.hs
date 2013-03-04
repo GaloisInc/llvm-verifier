@@ -18,6 +18,8 @@ module Verifier.LLVM.AST
   , L.ppSymbol
   , L.Ident(..)
   , L.ppIdent
+  , L.BlockLabel
+  , L.ICmpOp(..)
   , TypedSymValue(..)
   , ppTypedSymValue
   , BitWidth
@@ -313,7 +315,7 @@ data SymStmt
   -- | @PushCallFrame fn args res retTarget@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@, and store the result in @res@ if the function
   -- returns normally.  The calling function will resume execution at retTarget.
-  = PushCallFrame TypedSymValue [TypedSymValue] (Maybe (MemType, L.Ident)) SymBlockID
+  = PushCallFrame TypedSymValue [(MemType,TypedSymValue)] (Maybe (MemType, L.Ident)) SymBlockID
   -- | @Return@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
   | Return (Maybe TypedSymValue)
@@ -336,7 +338,7 @@ data SymStmt
 ppStmt :: SymStmt -> Doc
 ppStmt (PushCallFrame fn args res retTgt)
   = text "pushCallFrame" <+> ppTypedSymValue fn
-  <> parens (commas (map ppTypedSymValue args))
+  <> parens (commas (ppTypedSymValue . snd <$> args))
   <+> maybe (text "void") (\(tp,v) -> ppMemType tp <+> L.ppIdent v) res
   <+> text "returns to" <+> ppSymBlockID retTgt
 ppStmt (Return mv) = text "return" <+> maybe empty ppTypedSymValue mv

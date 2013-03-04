@@ -105,8 +105,8 @@ primOpTests =
     primU v nm mg f = psk v $ chkUnaryCInt32Fn mg v (commonCB "test-primops.bc") (L.Symbol nm) f
     primB v nm mg f = psk v $ chkBinCInt32Fn   mg v (commonCB "test-primops.bc") (L.Symbol nm) f
 
-chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a) =>
-                       Int -> Bool -> IntArithOp -> (a -> a -> a)
+chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a)
+                    => BitWidth -> Bool -> IntArithOp -> (a -> a -> a)
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
   be <- run createBitEngine
@@ -122,7 +122,7 @@ chkArithBitEngineFn w s op fn = do
     x' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral x)
     y' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral y)
     r' <- run . liftSBEBitBlast $ applyTypedExpr sbe (IntArith op Nothing w x' y')
-    assert ((snd <$> proj sbe r') == Just (fromIntegral r))
+    assert (proj sbe w r' == Just (fromIntegral r))
 
 testSetupPtrArgImpl ::
   ( Functor sbe
@@ -133,7 +133,7 @@ testSetupPtrArgImpl = do
   let w = 1
   one <- withSBE $ \sbe -> termInt sbe w 1
   p <- alloca i32 w one (Just $ fromIntegral a) 
-  callDefine_ (L.Symbol "ptrarg") Nothing [p]
+  callDefine_ (L.Symbol "ptrarg") Nothing [(i32p, p)]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()
   mm  <- getProgramFinalMem
@@ -141,7 +141,7 @@ testSetupPtrArgImpl = do
     Nothing  -> return False
     Just mem -> do
       (_,r) <- withSBE (\sbe -> memLoad sbe mem i32 p)
-      (`constTermEq` 42) <$> withSBE' (\s -> asUnsignedInteger s r)
+      (`constTermEq` 42) <$> withSBE' (\s -> asUnsignedInteger s 32 r)
 
 --------------------------------------------------------------------------------
 -- Scratch

@@ -1709,9 +1709,8 @@ sbeBitBlast dl mm = sbe
           , asBool           = beAsBool
           , evalPred = \inps p -> BitIO $ do
               (LV.! 0) <$> beEvalAigV be (LV.fromList inps) (LV.singleton p)
-          , asUnsignedInteger = 
-              let fn t = (LV.length t,) <$> lGetUnsigned t
-               in fn . asIntTerm
+          , asUnsignedInteger = \_ -> lGetUnsigned . asIntTerm
+          , asConcretePtr     = lGetUnsigned . asPtrTerm
           , memDump          = BitIO `c2` mmDump mm True
           , memLoad          = BitIO `c3` loadTerm dl mm
           , memStore         = BitIO `c4` storeTerm dl mm
@@ -1761,6 +1760,10 @@ asInt1 _ = error "Illegal arguments to asInt1"
 asIntTerm :: BitTerm l -> LV.Vector l
 asIntTerm (IntTerm x) = x
 asIntTerm _ = illegalArgs "asIntTerm"
+
+asPtrTerm :: BitTerm l -> LV.Vector l
+asPtrTerm (PtrTerm x) = x
+asPtrTerm _ = illegalArgs "asIntTerm"
 
 -- | Return if then else of terms.
 muxTerm :: (Eq l, LV.Storable l, ?be :: BitEngine l)
