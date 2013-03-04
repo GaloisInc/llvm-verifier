@@ -99,6 +99,7 @@ executable lss
   build-depends:
       base >= 4
     , cmdargs >= 0.8
+    , lens
     , llvm-pretty >= 0.1.1.0
     , llvm-verifier
     , mtl

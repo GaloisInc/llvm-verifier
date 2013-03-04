@@ -17,6 +17,8 @@ Point-of-contact : jhendrix
 
 module LSSImpl where
 
+import           Control.Applicative ((<$>))
+import           Control.Lens
 import           Control.Monad.State
 import           Data.Char
 import           Data.Int
@@ -72,11 +74,10 @@ lssImpl :: Functor sbe
         -> LSS
         -> IO (ExecRslt sbe Integer)
 lssImpl sbe mem cb argv0 args = do
-  mainDef <- case lookupDefine (L.Symbol "main") cb of
-               Nothing -> error "Provided bitcode does not contain main()."
-               Just mainDef -> do
-                 when (null (sdArgs mainDef) && length argv' > 1) warnNoArgv
-                 return mainDef
+  let mainDef =
+        case lookupDefine (L.Symbol "main") cb of
+          Nothing -> error "Provided bitcode does not contain main()."
+          Just md -> md
   runBitBlast sbe mem cb mg argv' args mainDef
   where
     argv' = "lss" : argv0
@@ -102,49 +103,57 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
       dbugM $ "Code range  : " ++ sr (mgCode mg)
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
-    argsv <- if mainHasArgv then buildArgv numArgs argv' else return []
     let mainSymbol = L.Symbol "main"
-    mainSymDef <- lookupSymbolDef mainSymbol
+    argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
     --TODO: Verify main has expected signature.
-    callDefine_ mainSymbol (sdRetType mainSymDef) argsv
+    callDefine_ mainSymbol (sdRetType mainDef) argsv
     mrv <- getProgramReturnValue
     mm  <- getProgramFinalMem
-    eps <- gets errorPaths
+    eps <- use errorPaths
     case mrv of
       Nothing -> return (NoMainRV eps mm)
       Just rv -> do
-        let mval = asUnsignedInteger sbe rv
-        return $ maybe (SymRV eps mm rv) (\(_,x) -> (ConcRV eps mm x)) mval
+        let mval = asUnsignedInteger sbe undefined rv
+        return $ maybe (SymRV eps mm rv) (\x -> (ConcRV eps mm x)) mval
   where
     opts        = Just $ LSSOpts (errpaths args)
     seh'        = defaultSEH
-    mainHasArgv = not $ null $ sdArgs mainDef
-    numArgs     = fromIntegral (length argv') :: Int32
 
 buildArgv ::
   ( MonadIO m
   , Functor sbe
   , Functor m
   )
-  => Int32 -> [String] -> Simulator sbe m [SBETerm sbe]
-buildArgv numArgs argv' = do
-  argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
-  ec <- getEvalContext "buildArgv" Nothing
+  => [MemType] -- ^ Types of arguments expected by main.
+  -> [String] -- ^ Arguments
+  -> Simulator sbe m [(MemType,SBETerm sbe)]
+buildArgv [] argv' = do
+  liftIO $ when (length argv' > 1) $ do
+    putStrLn $ "WARNING: main() takes no argv; ignoring provided arguments:\n" ++ show argv'
+  return []
+buildArgv [IntType argcw, ptype@PtrType{}] argv' | length argv' < 2^argcw = do
+  sbe <- gets symBE
+  argc     <- liftSBE $ termInt sbe argcw (toInteger (length argv'))
+  let ec = EvalContext { evalContextName = "buildArgv"
+                       , evalRegs = Nothing
+                       }
   aw <- withDL ptrBitwidth
-  one <- withSBE $ \sbe -> termInt sbe aw 1
+  one <- liftSBE $ termInt sbe aw 1
   strPtrs  <- forM argv' $ \str -> do
      let len = length str + 1
      let tp = ArrayType len (IntType 8)
-     v <- getTypedTerm' ec (sValString (str ++ [chr 0]))
+     v <- evalExpr' ec (sValString (str ++ [chr 0]))
      p <- alloca tp aw one Nothing
      store tp v p
      return p
-  num <- withSBE $ \sbe -> termInt sbe aw (toInteger numArgs)
-  argvBase <- alloca i8p aw num Nothing
-  argvArr  <- withSBE (\s -> termArray s i8p strPtrs)
+  argvBase <- alloca i8p argcw argc Nothing
+  argvArr  <- liftSBE $ termArray sbe i8p strPtrs
   -- Write argument string data and argument string pointers
-  store (ArrayType (fromIntegral numArgs) i8p) argvArr argvBase
-  return [argc, argvBase]
+  store (ArrayType (length argv') i8p) argvArr argvBase
+  return [ (IntType argcw, argc)
+         , (ptype, argvBase)
+         ]
+buildArgv _ _ = error "main() has an unsupported type."
 
 warnNoArgv :: IO ()
 warnNoArgv = putStrLn "WARNING: main() takes no argv; ignoring provided arguments."

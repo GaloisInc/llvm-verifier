@@ -46,11 +46,11 @@ module Verifier.LLVM.Simulator
   , lookupSymbolDef
   , getProgramReturnValue
   , getProgramFinalMem
-  , EvalContext
-  , getEvalContext
-  , getTypedTerm'
+  , EvalContext(..)
+  , evalExpr'
   , prettyTermSBE
   , runSimulator
+  , liftSBE
   , withSBE
   , withSBE'
   -- * Memory operations
@@ -71,6 +71,7 @@ module Verifier.LLVM.Simulator
   , i32
   , i64
   , i8p
+  , i32p
   )
 where
 
@@ -96,7 +97,46 @@ import           Verifier.LLVM.Simulator.Common
 import           Verifier.LLVM.Simulator.SimUtils
 import           Verifier.LLVM.Utils
 
+-- Utility functions
 
+withActiveCS :: (MonadIO m)
+             => (ActiveCS sbe -> IO (CS sbe))
+             -> Simulator sbe m ()
+withActiveCS f = do
+  Just (ActiveCS cs) <- use ctrlStk
+  cs' <- liftIO (f cs)
+  ctrlStk ?= cs'
+
+-- | Traversal for current path of simulator state.
+currentPathOfState :: Simple Traversal (State sbe m) (Path sbe)
+currentPathOfState = ctrlStk . _Just . currentPath
+
+-- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
+-- that the control stack is empty or the top entry of the control stack has no
+-- pending paths recorded.
+getPath :: (Functor m, Monad m)
+        => Simulator sbe m (Maybe (Path sbe))
+getPath = preuse currentPathOfState
+
+modifyPathRegs :: (Functor m, Monad m)
+                => (RegMap (SBETerm sbe) -> RegMap (SBETerm sbe)) -> Simulator sbe m ()
+modifyPathRegs f = do
+  Just p <- preuse currentPathOfState
+  currentPathOfState .= over pathRegs f p
+
+-- | Traversal for current path memory if any.
+currentPathMem :: Simple Traversal (State sbe m) (SBEMemory sbe)
+currentPathMem = currentPathOfState . pathMem
+
+-- @getMem@ yields the memory model of the current path if any.
+getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
+getMem = preuse currentPathMem
+
+-- @setMem@ sets the memory model in the current path, which must exist.
+setMem :: (Functor m, Monad m) => SBEMemory sbe -> Simulator sbe m ()
+setMem mem = currentPathMem .= mem
+
+-- | Run simulator in given context.
 runSimulator :: forall sbe a .
   ( Functor sbe
   )
@@ -106,7 +146,7 @@ runSimulator :: forall sbe a .
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
   -> SEH sbe IO            -- ^ Simulation event handlers (use defaultSEH if no
                            -- event handling is needed)
-  -> Maybe LSSOpts         -- Simulation options
+  -> Maybe LSSOpts         -- ^ Simulation options
   -> Simulator sbe IO a     -- ^ Simulator action to perform
   -> IO a
 runSimulator cb sbe mem seh mopts m = do
@@ -115,15 +155,15 @@ runSimulator cb sbe mem seh mopts m = do
   let newSt = State { codebase     = cb
                     , symBE        = sbe
                     , liftSymBE    = lifter
-                    , ctrlStk      = initialCtrlStk sbe mem
-                    , globalTerms  = M.empty
-                    , fnOverrides  = M.empty
                     , verbosity    = 6
-                    , evHandlers   = seh
-                    , errorPaths   = []
                     , lssOpts      = fromMaybe defaultLSSOpts mopts
-                    , pathCounter  = 1
-                    , aigOutputs   = []
+                    , _ctrlStk     = Just $ initialCtrlStk sbe mem
+                    , _globalTerms = M.empty
+                    , _fnOverrides = M.empty
+                    , _evHandlers  = seh
+                    , _errorPaths  = []
+                    , _pathCounter = 1
+                    , _aigOutputs  = []
                     }
   ea <- flip evalStateT newSt $ runErrorT $ runSM $ do
     initGlobals
@@ -162,10 +202,10 @@ initGlobals = do
        insertGlobalTerm errMsg sym (FunType d) $ \s m -> memAddDefine s m sym []
   -- Initialize global data
   do let globals = [ g | (_,Left g) <- M.toList nms]
-     ec <- getEvalContext "adGlobal" Nothing
+     let ec = EvalContext "addGlobal" Nothing
      forM_ globals $ \g -> do
        cb1 onMkGlobTerm g
-       cdata <- getTypedTerm' ec (globalValue g)
+       cdata <- evalExpr' ec (globalValue g)
        cb2 onPreGlobInit g cdata
        let noDataSpc = "Not enough space in data segment to allocate new global."
        insertGlobalTerm noDataSpc (globalSym g) (MemType (globalType g)) $ \s m ->
@@ -179,7 +219,7 @@ callDefine_ ::
   )
   => Symbol     -- ^ Callee symbol
   -> RetType      -- ^ Callee return type
-  -> [SBETerm sbe] -- ^ Callee arguments
+  -> [(MemType, SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m ()
 callDefine_ c t ag = void $ callDefine c t ag
 
@@ -194,7 +234,7 @@ callDefine ::
   )
   => Symbol     -- ^ Callee symbol
   -> RetType       -- ^ Callee return type
-  -> [SBETerm sbe] -- ^ Callee argument generator
+  -> [(MemType,SBETerm sbe)] -- ^ Callee argument generator
   -> Simulator sbe m [SBETerm sbe]
 callDefine calleeSym t args = do
   def <- lookupSymbolDef calleeSym
@@ -210,37 +250,25 @@ callDefine calleeSym t args = do
   r <- callDefine' False entryRetNormalID calleeSym retReg args
   r <$ run
 
-tryModifyCS :: Monad m => String -> (CS sbe -> Maybe (CS sbe)) -> Simulator sbe m ()
-tryModifyCS ctx f = modify $ modifyCS fn
-  where fn = fromMaybe (error err) . f
-          where err = "internal: tryModifyCS " ++ show ctx
-
-tryModifyCSIO :: MonadIO m => String -> (CS sbe -> Maybe (IO (CS sbe))) -> Simulator sbe m ()
-tryModifyCSIO ctx f = do
-  let err = "internal: tryModifyCSIO " ++ show ctx
-  s <- get
-  cs <- liftIO $ fromMaybe (error err) $ f (ctrlStk s)
-  put s { ctrlStk = cs }
-
 setCurrentBlock :: MonadIO m => SymBlockID -> Simulator sbe m ()
 setCurrentBlock b = do
   sbe <- gets symBE
-  tryModifyCSIO "setCurrentBlock" $ jumpCurrentPath sbe b
+  withActiveCS $ \cs -> ActiveCS <$> jumpCurrentPath sbe b cs
 
 callDefine' ::
   ( MonadIO m
   , Functor m
   , Functor sbe
   )
-  => Bool                                         -- ^ Is this a redirected call?
-  -> SymBlockID                                   -- ^ Normal call return block id
-  -> Symbol                                     -- ^ Callee symbol
-  -> Maybe (MemType, Ident)                        -- ^ Callee return type and result register
-  -> [SBETerm sbe] -- ^ Callee arguments
+  => Bool                    -- ^ Is this a redirected call?
+  -> SymBlockID              -- ^ Normal call return block id
+  -> Symbol                  -- ^ Callee symbol
+  -> Maybe (MemType, Ident)  -- ^ Callee return type and result register
+  -> [(MemType,SBETerm sbe)]           -- ^ Callee arguments
   -> Simulator sbe m [SBETerm sbe]
 callDefine' isRedirected normalRetID calleeSym@(Symbol calleeName) mreg args = do
   -- NB: Check overrides before anything else so we catch overriden intrinsics
-  override <- M.lookup calleeSym <$> gets fnOverrides
+  override <- use (fnOverrides . at calleeSym)
   case override of
     Nothing -> normal
     Just (Redirect calleeSym', _)
@@ -255,11 +283,11 @@ callDefine' isRedirected normalRetID calleeSym@(Symbol calleeName) mreg args = d
   where
     normal
       | isPrefixOf "llvm." calleeName = do
-          intrinsic calleeName mreg args
+          intrinsic calleeName mreg (snd <$> args)
           setCurrentBlock normalRetID
           return []
       | otherwise = do
-          runNormalSymbol normalRetID calleeSym mreg args
+          runNormalSymbol normalRetID calleeSym mreg (snd <$> args)
 
 -- | Return symbol definition with given name or fail.
 lookupSymbolDef :: (Functor m, MonadIO m, Functor sbe)
@@ -285,14 +313,15 @@ runNormalSymbol ::
 runNormalSymbol normalRetID calleeSym mreg args = do
   def <- lookupSymbolDef calleeSym
   sbe <- gets symBE
-  tryModifyCS "runNormalSymbol" $
-    pushCallFrame sbe calleeSym normalRetID mreg
   dbugM' 5 $ "callDefine': callee " ++ show (ppSymbol calleeSym)
-  modifyPathRegs $ \_ -> bindArgs (sdArgs def) args
-  -- Push stack frame in current process memory.
-  do Just m <- getMem
+  do Just cs <- use ctrlStk
+     let m = cs^.currentPath^.pathMem
      (c,m') <- withSBE $ \s -> stackPushFrame s m
-     setMem m'
+     let cs' = cs & pushCallFrame sbe calleeSym normalRetID mreg
+                  & activePath . pathRegs .~ bindArgs (sdArgs def) args
+                  & activePath . pathMem  .~ m'
+     ctrlStk ?= ActiveCS cs'
+     -- Push stack frame in current process memory.
      let fr = FailRsn "Stack push frame failure: insufficient stack space"
      processMemCond fr c
   return args
@@ -331,9 +360,9 @@ intrinsic intr mreg args0 =
       tellUser $ "Warning: skipping unsupported LLVM intrinsic " ++ show intr     
   where
     memcpy dst src len align = do
-      Just m <- getMem
+      Just m <- preuse currentPathMem
       (c,m') <- withSBE $ \sbe -> memCopy sbe m dst src len align
-      setMem m'
+      currentPathMem .= m'
       sbe <- gets symBE
       let pts = map (prettyTermD sbe) [dst,src,len]
       let fr = FailRsn $
@@ -344,7 +373,8 @@ intrinsic intr mreg args0 =
       where fn sbe = applyTypedExpr sbe (UAddWithOverflow w x y)
     objSz w (tp,reg) = do
       let [_ptr, maxOrMin] = args0
-      mval <- withSBE' $ \s -> snd <$> asUnsignedInteger s maxOrMin
+      sbe <- gets symBE
+      let mval = asUnsignedInteger sbe 1 maxOrMin
       case mval of
         Nothing -> errorPath $ FailRsn $ "llvm.objectsize.i{32,64} expects concrete 2nd parameter"
         Just v  -> assignReg reg tp =<< withSBE (\s -> termInt s w tv)
@@ -360,41 +390,28 @@ memSet :: ( Functor m, MonadIO m
        -> SBETerm sbe -- Alignment (i32)
        -> Simulator sbe m ()
 memSet dst val lenWidth len align = do
-  lenVal <- withSBE' $ \s -> snd <$> asUnsignedInteger s len
+  sbe <- gets symBE
+  let lenVal = asUnsignedInteger sbe undefined len
   case lenVal of
     Just 0 -> return ()
     _ -> do
       store i8 val dst
-      negone   <- withSBE  $ \s -> termInt s lenWidth (-1)
+      negone   <- liftSBE  $ termInt sbe lenWidth (-1)
       dst'     <- ptrInc dst
       len'     <- termAdd lenWidth len negone
       memSet dst' val lenWidth len' align
 
-
--- | Return value of this path.
-pathRetVal :: Path sbe -> Maybe (SBETerm sbe)
-pathRetVal p = p^.pathRegs^.at entryRsltReg & fmap fst
+finalRetValOfPath :: Simple Traversal (Path sbe) (SBETerm sbe)
+finalRetValOfPath = pathRegs . at entryRsltReg . _Just . _1
 
 getProgramReturnValue :: (Monad m, Functor m)
                       => Simulator sbe m (Maybe (SBETerm sbe))
-getProgramReturnValue = (pathRetVal <=< getCurrentPath) <$> gets ctrlStk
+getProgramReturnValue = preuse $ currentPathOfState . finalRetValOfPath
 
 getProgramFinalMem :: (Monad m, Functor m)
                    => Simulator sbe m (Maybe (SBEMemory sbe))
-getProgramFinalMem = (fmap (view pathMem) . getCurrentPath) <$> gets ctrlStk
+getProgramFinalMem = preuse currentPathMem
 
-withCurrentPath :: (Functor m, Monad m)
-                => String
-                -> (Path sbe -> Simulator sbe m (a, Path sbe))
-                -> Simulator sbe m a
-withCurrentPath nm fn = do
-  s <- get
-  case modifyCurrentPathM (ctrlStk s) fn of
-    Nothing -> error $ "internal: withCurrentPath had no path " ++ show nm 
-    Just mr -> do
-      (r,cs) <- mr
-      r <$ put s { ctrlStk = cs }
-  
 -- Handle a condition returned by the memory model
 processMemCond ::
   ( Functor m
@@ -408,17 +425,18 @@ processMemCond rsn cond = do
   case asBool sbe cond of
     Just True  -> return ()
     Just False -> errorPath rsn
-    _ ->
-      withCurrentPath "processMemCond" $ \p -> do
-        -- TODO: provide more detail here?
-        whenVerbosity (>= 6) $ do
-          tellUser $ "Warning: Obtained symbolic validity result from memory model."
-          tellUser $ "This means that certain memory accesses were valid only on some paths."
-          tellUser $ "In this case, the symbolic validity result was encountered at:"
-          tellUser $ show $ ppPathLoc sbe p
-          tellUser ""
-        p' <- liftSBE $ p & pathAssertions (applyAnd sbe cond)
-        return ((), p')
+    _ -> do
+      Just cs <- use ctrlStk
+      let p = cs^.currentPath
+      -- TODO: provide more detail here?
+      whenVerbosity (>= 6) $ do
+        tellUser $ "Warning: Obtained symbolic validity result from memory model."
+        tellUser $ "This means that certain memory accesses were valid only on some paths."
+        tellUser $ "In this case, the symbolic validity result was encountered at:"
+        tellUser $ show $ ppPathLoc sbe p
+        tellUser ""
+      p' <- liftSBE $ pathAssertions (applyAnd sbe cond) p
+      ctrlStk ?= set currentPath p' cs 
 
 -- | Return true if the path has asserted false to be true, and therefore we
 -- can call errorPath on it.
@@ -432,45 +450,44 @@ run ::
   )
   => Simulator sbe m ()
 run = do
-  cs <- gets ctrlStk
-  if isFinished cs then
-    case getCurrentPath cs of
-      Just p -> do
-        -- Normal program termination on at least one path.
-        -- Report termination info at appropriate verbosity levels; also,
-        -- inform user about error paths when present and optionally dump
-        -- them.
-        whenVerbosity (>=5) $ dumpCtrlStk
-        whenVerbosity (>=2) $ do
-          dbugM "run terminating normally: found valid exit frame"
-          case pathRetVal p of
-            Nothing -> dbugM "Program had no return value."
-            Just rv -> dbugTerm "Program returned value" rv
-          numErrs <- length <$> gets errorPaths
-          showEPs <- optsErrorPathDetails <$> gets lssOpts
-          when (numErrs > 0 && not showEPs) $
-            tellUser "Warning: Some paths yielded errors. To see details, use --errpaths."
-          when (numErrs > 0 && showEPs) $ do
-            dbugM $ showErrCnt numErrs
-            dumpErrorPaths
-      Nothing -> do
-        -- All paths ended in errors.
-        showEPs <- gets (optsErrorPathDetails . lssOpts)
-        if showEPs then
-          tellUser "All paths yielded errors!" >> dumpErrorPaths
-        else
-          tellUser "All paths yielded errors! To see details, use --errpaths."
-  else do
-    let Just p = getCurrentPath cs
-    flip catchError handleError $ do
-      let Just pcb = pathCB p
-      sbe <- gets symBE
-      when (pathAssertedFalse sbe p) $
-        errorPath $ FailRsn $ "This path is infeasible"
-      let sym = pathFuncSym p
-      Just def <- lookupDefine sym <$> gets codebase
-      runStmts $ sbStmts $ lookupSymBlock def pcb
-    run
+  mcs <- use ctrlStk
+  case mcs of
+    Nothing -> do
+      -- All paths ended in errors.
+      showEPs <- gets (optsErrorPathDetails . lssOpts)
+      if showEPs then
+        tellUser "All paths yielded errors!" >> dumpErrorPaths
+      else
+        tellUser "All paths yielded errors! To see details, use --errpaths."
+    Just (FinishedCS p) -> do
+      -- Normal program termination on at least one path.
+      -- Report termination info at appropriate verbosity levels; also,
+      -- inform user about error paths when present and optionally dump
+      -- them.
+      whenVerbosity (>=5) $ dumpCtrlStk
+      whenVerbosity (>=2) $ do
+        dbugM "run terminating normally: found valid exit frame"        
+        case p ^? finalRetValOfPath of
+          Nothing -> dbugM "Program had no return value."
+          Just rv -> dbugTerm "Program returned value" rv
+        numErrs <- length <$> use errorPaths
+        showEPs <- optsErrorPathDetails <$> gets lssOpts
+        when (numErrs > 0 && not showEPs) $
+          tellUser "Warning: Some paths yielded errors. To see details, use --errpaths."
+        when (numErrs > 0 && showEPs) $ do
+          dbugM $ showErrCnt numErrs
+          dumpErrorPaths
+    Just (ActiveCS cs) -> do
+      flip catchError handleError $ do
+        let p = cs^.activePath
+        let Just pcb = pathCB p
+        sbe <- gets symBE
+        when (pathAssertedFalse sbe p) $
+          errorPath $ FailRsn $ "This path is infeasible"
+        let sym = pathFuncSym p
+        Just def <- lookupDefine sym <$> gets codebase
+        runStmts $ sbStmts $ lookupSymBlock def pcb
+      run
   where
     handleError (ErrorPathExc _rsn s) = do
       -- errorPath ensures that the simulator state provided in the
@@ -483,15 +500,15 @@ run = do
       | otherwise = "Encountered errors on " ++ show x ++ " paths.  Details below."
     dumpErrorPaths = do
         dbugM $ replicate 80 '-'
-        eps <- gets errorPaths
+        eps <- use errorPaths
+        sbe <- gets symBE
         forM_ eps $ \ep -> do
           let p = epPath ep
-          sbe <- gets symBE
           dbugM $ "Error reason        : " ++ show (ppFailRsn (epRsn ep))
           dbugM $ "Error path state    :\n" ++ show (nest 2 $ ppPath sbe p)
           whenVerbosity (>= 3) $ do
             dbugM "Error path memory: "
-          withSBE (\s -> memDump s (p^.pathMem) Nothing)
+          withSBE $ \s -> memDump s (p^.pathMem) Nothing
           when (length eps > 1) $ dbugM "--"
         dbugM $ replicate 80 '-'
 
@@ -502,71 +519,51 @@ assignReg :: (Functor m, MonadIO m)
        => Ident -> MemType -> SBETerm sbe -> Simulator sbe m ()
 assignReg reg tp v = modifyPathRegs $ at reg ?~ (v,tp)
 
-
 -- | Evaluate condition in current path.
 evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBEPred sbe)
 evalCond (HasConstValue t w i) = do
-  v <- getBackendValue "evalCond" t
+  v <- evalExpr "evalCond" t
   sbe <- gets symBE
   iv <- liftSBE $ termInt sbe w i
   liftSBE $ applyIEq sbe w v iv
 
 data EvalContext sbe = EvalContext {
        evalContextName :: String
-     , evalGlobalTerms :: GlobalMap sbe
      , evalRegs :: Maybe (RegMap (SBETerm sbe))
-     , evalSBE :: SBE sbe
      }
 
-getEvalContext :: Monad m 
-               => String
-               -> Maybe (RegMap (SBETerm sbe))
-               -> Simulator sbe m (EvalContext sbe)
-getEvalContext nm mrm = do
-  gt <- gets globalTerms
-  sbe <- gets symBE
-  return EvalContext { evalContextName = nm
-                     , evalGlobalTerms = gt
-                     , evalRegs = mrm
-                     , evalSBE = sbe
-                     }
-
 getCurrentEvalContext :: (Functor m, Monad m) => String -> Simulator sbe m (EvalContext sbe)
-getCurrentEvalContext nm = do
-  getEvalContext nm . fmap (view pathRegs) =<< getPath
+getCurrentEvalContext nm = EvalContext nm . fmap (view pathRegs) <$> getPath
 
-getBackendValue :: (Functor m, MonadIO m, Functor sbe) 
-                => String -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
-getBackendValue nm symValue = do
+evalExpr :: (Functor m, MonadIO m, Functor sbe) 
+         => String -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
+evalExpr nm symValue = do
   ec <- getCurrentEvalContext nm
-  getTypedTerm' ec symValue
+  evalExpr' ec symValue
 
-getTypedTerm' ::
+evalExpr' ::
   ( Functor m
   , MonadIO m
   , Functor sbe
   )
   => EvalContext sbe -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
-getTypedTerm' ec tsv =
+evalExpr' ec tsv =
   case tsv of
     SValIdent i -> 
       case evalRegs ec of
         Just regs ->
           case regs^.at i of
             Just (x,_)  -> return x
-            Nothing -> illegal $ "getTypedTerm' could not find register: "
+            Nothing -> illegal $ "evalExpr' could not find register: "
                          ++ show (ppIdent i) ++ " in " ++ show (M.keys regs)
-        Nothing -> error $ "getTypedTerm' called by " ++ evalContextName ec
+        Nothing -> error $ "evalExpr' called by " ++ evalContextName ec
                       ++ " with missing frame."
-    SValSymbol sym ->
-      return $ 
-        case (evalGlobalTerms ec)^.at sym of
-          Just t -> t
-          Nothing ->
-            error $ "Failed to find symbol: " ++ show (ppSymbol sym)
+    SValSymbol sym -> do
+      Just t <- use (globalTerms . at sym)
+      return t
     SValExpr te -> do
-      tv <- traverse (getTypedTerm' ec) te
-      let sbe = evalSBE ec
+      tv <- traverse (evalExpr' ec) te
+      sbe <- gets symBE
       liftSBE $ applyTypedExpr sbe tv
 
 insertGlobalTerm ::
@@ -580,13 +577,13 @@ insertGlobalTerm ::
   -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
   -> Simulator sbe m ()
 insertGlobalTerm errMsg sym _ act = do
-  Just m <- getMem
+  Just m <- preuse currentPathMem
   mr <- withSBE $ \s -> act s m
   case mr of
     Nothing -> errorPath (FailRsn errMsg)
     Just (r,m')  -> do
-      setMem m'
-      modify $ \s -> s{ globalTerms = M.insert sym r (globalTerms s) }
+      currentPathMem .= m'
+      globalTerms . at sym ?= r
 
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
@@ -601,12 +598,12 @@ step ::
 
 step (PushCallFrame callee args mres retTgt) = do
   ec <- getCurrentEvalContext "PushCallFrame"
-  argTerms <- mapM (getTypedTerm' ec) args
+  argTerms <- (traverse. _2) (evalExpr' ec) args
   calleeSym <- 
     case callee of
       SValSymbol sym -> return sym
       _ -> do
-        fp <- getTypedTerm' ec callee
+        fp <- evalExpr' ec callee
         r <- resolveFunPtrTerm fp
         case r of
           Result sym -> return sym
@@ -620,8 +617,8 @@ step (PushCallFrame callee args mres retTgt) = do
 
 step (Return mtv) = do
   sbe <- gets symBE
-  mrv <- traverse (getBackendValue "mergeReturn") mtv
-  tryModifyCSIO "Return" $ returnCurrentPath sbe mrv
+  mrv <- traverse (evalExpr "mergeReturn") mtv
+  withActiveCS (returnCurrentPath sbe mrv)
 
 step (PushPendingExecution bid cond ml elseStmts) = do
   sbe <- gets symBE
@@ -632,31 +629,31 @@ step (PushPendingExecution bid cond ml elseStmts) = do
    -- Don't bother with pending path as condition is false.
    Just False -> runStmts elseStmts
    Nothing -> do
-     s <- get
-     let nm = pathCounter s
-     put s { pathCounter = nm + 1 }
-     tryModifyCSIO "PushPendingExecution" $
-       addCtrlBranch (symBE s) c bid nm ml
+     nm <- use pathCounter
+     pathCounter += 1
+     withActiveCS $ \cs ->
+       ActiveCS <$> addCtrlBranch sbe c bid nm ml cs
      runStmts elseStmts
 
 step (SetCurrentBlock bid) = setCurrentBlock bid
 
 step (Assign reg tp (Val tv)) = do
-  assignReg reg tp =<< getBackendValue "eval@Val" tv
+  assignReg reg tp =<< evalExpr "eval@Val" tv
 
 step (Assign reg tp (Alloca ty msztv malign)) = do
   assignReg reg tp =<<
     case msztv of
       Just (w,v) -> do
-        sizeTm <- getBackendValue "alloca" v
+        sizeTm <- evalExpr "alloca" v
         alloca ty w sizeTm malign
       Nothing -> do
         aw <- withDL ptrBitwidth
-        sizeTm <- withSBE $ \sbe -> termInt sbe aw 1
+        sbe <- gets symBE
+        sizeTm <- liftSBE $ termInt sbe aw 1
         alloca ty aw sizeTm malign
 
 step (Assign reg tp (Load v ty _malign)) = do
-  addrTerm <- getBackendValue "load" v
+  addrTerm <- evalExpr "load" v
   dumpMem 6 "load pre"
   val <- load ty addrTerm
   dumpMem 6 "load post"
@@ -665,8 +662,8 @@ step (Assign reg tp (Load v ty _malign)) = do
 step (Store valType val addr _malign) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
   ec <- getCurrentEvalContext "store"
-  valTerm  <- getTypedTerm' ec val
-  addrTerm <- getTypedTerm' ec addr
+  valTerm  <- evalExpr' ec val
+  addrTerm <- evalExpr' ec addr
   store valType valTerm addrTerm
   whenVerbosity (<=6) $ dumpMem 6 "store post"
 
@@ -684,9 +681,10 @@ step s@BadSymStmt{} = unimpl (show (ppStmt s))
 ptrInc :: (Functor m, MonadIO m)
         => SBETerm sbe -> Simulator sbe m (SBETerm sbe)
 ptrInc x = do
+  sbe <- gets symBE
   w <- withDL ptrBitwidth
-  y <- withSBE  $ \s -> termInt s w 1
-  withSBE $ \sbe -> applyTypedExpr sbe (PtrAdd x y)
+  y <- liftSBE $ termInt sbe w 1
+  liftSBE $ applyTypedExpr sbe (PtrAdd x y)
 
 termAdd :: (Functor m, Monad m)
         => BitWidth -> SBETerm sbe -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
@@ -704,14 +702,6 @@ withSBE f = gets symBE >>= \sbe -> liftSBE (f sbe)
 withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
 withSBE' f = gets symBE >>= \sbe -> return (f sbe)
 
--- @getMem@ yields the memory model of the current path, which must exist.
-getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
-getMem = fmap (view pathMem <$>) getPath
-
--- @setMem@ sets the memory model in the current path, which must exist.
-setMem :: (Functor m, Monad m) => SBEMemory sbe -> Simulator sbe m ()
-setMem mem = tryModifyCS "setMem" $ modifyPath $ set pathMem mem
-
 getDL :: Monad m => Simulator sbe m DataLayout
 getDL = gets (cbDataLayout . codebase)
 
@@ -723,11 +713,11 @@ withDL f = f <$> getDL
 
 cb1 :: (Functor m, Monad m)
   => (SEH sbe m -> a -> Simulator sbe m ()) -> a -> Simulator sbe m ()
-cb1 f x   = join $ gets (f . evHandlers) <*> pure x
+cb1 f x   = join $ gets (f . view evHandlers) <*> pure x
 
 cb2 :: (Functor m, Monad m)
   => (SEH sbe m -> a -> b -> Simulator sbe m ()) -> a -> b -> Simulator sbe m ()
-cb2 f x y = join $ gets (f . evHandlers) <*> pure x <*> pure y
+cb2 f x y = join $ gets (f . view evHandlers) <*> pure x <*> pure y
 
 defaultSEH :: Monad m => SEH sbe m
 defaultSEH = SEH
@@ -752,7 +742,7 @@ alloca ::
   -> Maybe Int
   -> Simulator sbe m (SBETerm sbe)
 alloca ty szw sztm malign = do
-  Just m <- getMem
+  Just m <- preuse currentPathMem
   sbe <- gets symBE
   rslt <- liftSBE $ stackAlloc sbe m ty szw sztm (maybe 0 lg malign)
   case rslt of
@@ -760,7 +750,7 @@ alloca ty szw sztm malign = do
       "Stack allocation only supports a concrete element count "
         ++ "(try a different memory model?)"
     AResult c t m' -> do
-      setMem m'
+      currentPathMem .= m'
       let fr = memFailRsn sbe ("Failed alloca allocation of type " ++ show (ppMemType ty)) []
       processMemCond fr c
       return t
@@ -776,10 +766,9 @@ malloc ::
   -> Maybe Int -- ^ Alignment
   -> Simulator sbe m (SBETerm sbe)
 malloc ty szw sztm malign  = do
-  Just m        <- getMem
-  rslt          <- withSBE $ \s -> 
-    heapAlloc s m ty szw sztm (maybe 0 lg malign)
   sbe <- gets symBE
+  Just m <- preuse currentPathMem
+  rslt <- liftSBE $ heapAlloc sbe m ty szw sztm (maybe 0 lg malign)
   case rslt of
     ASymbolicCountUnsupported -> errorPath $ FailRsn $
       "malloc only supports concrete element count "
@@ -798,7 +787,7 @@ load ::
   => MemType -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
 load tp addr = do
   sbe <- gets symBE
-  Just mem <- getMem
+  Just mem <- preuse currentPathMem
   (cond, v) <- liftSBE $ memLoad sbe mem tp addr
   let fr = memFailRsn sbe "Invalid load address" [addr]
   processMemCond fr cond
@@ -811,24 +800,25 @@ store ::
   )
   => MemType -> SBETerm sbe -> SBETerm sbe -> Simulator sbe m ()
 store tp val dst = do
-  Just m <- getMem
   sbe <- gets symBE
+
+  Just m <- preuse currentPathMem
   (c, m') <- liftSBE $ memStore sbe m dst tp val
-  setMem m'
+  currentPathMem .= m'
+
   let fr = memFailRsn sbe "Invalid store address: " [dst]
   processMemCond fr c
 
 memFailRsn :: SBE sbe -> String -> [SBETerm sbe] -> FailRsn
-memFailRsn sbe desc terms = do
+memFailRsn sbe desc terms = FailRsn $ show $ text desc <+> ppTuple pts
   --TODO: See if we can get a reasonable location for the failure.
-  let pts = map (prettyTermD sbe) terms
-   in FailRsn $ show $ text desc <+> ppTuple pts
+  where pts = map (prettyTermD sbe) terms
 
 --------------------------------------------------------------------------------
 -- Misc utility functions
 
 setSEH :: Monad m => SEH sbe m -> Simulator sbe m ()
-setSEH seh = modify $ \s -> s { evHandlers = seh }
+setSEH seh = evHandlers .= seh
 
 unlessQuiet :: MonadIO m => Simulator sbe m () -> Simulator sbe m ()
 unlessQuiet act = getVerbosity >>= \v -> unless (v == 0) act
@@ -851,7 +841,7 @@ resolveFunPtrTerm ::
   )
   => SBETerm sbe -> Simulator sbe m LookupSymbolResult
 resolveFunPtrTerm fp = do
-  Just m <- getMem
+  Just m <- preuse currentPathMem
   withSBE $ \s -> codeLookupSymbol s m fp
 
 runStmts ::
@@ -864,17 +854,6 @@ runStmts = mapM_ dbugStep
 
 entryRsltReg :: Ident
 entryRsltReg = Ident "__galois_final_rslt"
-
--- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
--- that the control stack is empty or the top entry of the control stack has no
--- pending paths recorded.
-getPath :: (Functor m, Monad m)
-        => Simulator sbe m (Maybe (Path sbe))
-getPath = gets (getCurrentPath . ctrlStk)
-
-modifyPathRegs :: (Functor m, Monad m)
-                => (RegMap (SBETerm sbe) -> RegMap (SBETerm sbe)) -> Simulator sbe m ()
-modifyPathRegs rmf = tryModifyCS "modifyPathRegs" $ modifyPath $ over pathRegs rmf
 
 type StdOvd m sbe =
   ( Functor m
@@ -906,8 +885,6 @@ checkTypeCompat fnm (FunDecl frtn fargs fva) tnm (FunDecl trtn targs tva) = do
   when (fva && not tva) $ e $ "does not accept varargs.\n"
   when (not fva && tva) $ e $ "allows varargs.\n"
 
-  
-
 registerOverride ::
   ( Functor m
   , Functor sbe
@@ -923,9 +900,7 @@ registerOverride sym decl handler = do
     Nothing -> return ()
     Just fd -> do
       checkTypeCompat sym fd "override" decl -- (FunDecl retTy argTys)
-      modify $ \s ->
-        s { fnOverrides = M.insert sym (handler, False) (fnOverrides s)
-          }
+      fnOverrides . at sym ?= (handler, False)
 
 --------------------------------------------------------------------------------
 -- Error handling
@@ -945,16 +920,15 @@ errorPath ::
 errorPath rsn = do
   s <- get
   let sbe = symBE s
-  let Just p = getCurrentPath (ctrlStk s)
+  let Just (ActiveCS cs) = s^.ctrlStk
+  let p = cs^.activePath
   -- Log error path  
   whenVerbosity (>=3) $ do
     dbugM $ "Error path encountered: " ++ show (ppFailRsn rsn)
     dbugM $ show $ ppPath sbe p
-  let Just mkCS = markCurrentPathAsError sbe (ctrlStk s)
-  cs <- liftIO mkCS
-  let s' = s { ctrlStk = cs
-             , errorPaths = EP rsn p : errorPaths s 
-             }
+  mcs <- liftIO $ markCurrentPathAsError sbe cs
+  let s' = s & ctrlStk .~ mcs
+             & errorPaths %~ (EP rsn p:)
   -- Merge negation of assumptions in current path into conditions on merge frame.
   -- NB: Since we've set up the control stack for the next invocation of
   -- run, and explicitly captured the error path, we need to be sure to
@@ -972,7 +946,7 @@ dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
 dumpMem v msg =
   whenVerbosity (>=v) $ do
     dbugM $ msg ++ ":"
-    Just m <- getMem
+    Just m <- preuse currentPathMem
     withSBE (\s -> memDump s m Nothing)
 
 dbugStep ::
@@ -1064,9 +1038,9 @@ loadString nm ptr = do
     return $ map (toEnum . fromEnum) $ cs
   where go addr = do
           t <- load i8 addr
-          c <- withSBE' $ \s -> snd <$> asUnsignedInteger s t
+          sbe <- gets symBE
           addr' <- ptrInc addr
-          case c of
+          case asUnsignedInteger sbe undefined t of
             Nothing -> do
               errorPath $ FailRsn $
                  "Encountered a symbolic byte in " ++ nm ++ "."
@@ -1081,42 +1055,63 @@ data PrintfFlags = PrintfFlags {
     zeroPad :: Bool
   }
 
-printfToString :: (Functor sbe, Functor m, MonadIO m)
-               => String -> [SBETerm sbe] -> Simulator sbe m String
-printfToString fmt args = procString fmt 0 []
-  where vargs = V.fromList args
-        valueAt p | 0 <= p && p < V.length vargs = vargs V.! p
-                  | otherwise = error $ "Could not get argument at position " ++ show p
-        defaultFlags = PrintfFlags { zeroPad = False }
-        procString ('%':r) p rs = procArg r defaultFlags p rs
+printfToString :: forall sbe m . (Functor sbe, Functor m, MonadIO m)
+               => String -> [(MemType,SBETerm sbe)] -> Simulator sbe m String
+printfToString fmt args = do
+    let vargs = V.fromList args
+
+    let e = errorPath . FailRsn
+    let valueAt :: Int -> Simulator sbe m (MemType,SBETerm sbe)
+        valueAt p = maybe (e msg) return (vargs V.!? p)
+          where msg = "Could not get argument at position " ++ show p
+    sbe <- gets symBE
+    let badArg p = e $ "printf given bad argument at position " ++ show p
+    let pr :: ((MemType, SBETerm sbe) -> Maybe String)
+           -> Int -> Simulator sbe m String
+        pr f p = maybe (badArg p) return . f =<< valueAt p
+    let fmtSigned (IntType w, v) = Just $
+          case asSignedInteger sbe w v of
+            Just cv  -> show cv
+            Nothing -> show (prettyTermD sbe v)
+        fmtSigned _ = Nothing
+    let fmtUnsigned (IntType w, v) = Just $
+          case asUnsignedInteger sbe w v of
+            Just cv -> show cv
+            Nothing -> show (prettyTermD sbe v)
+        fmtUnsigned _ = Nothing
+    let fmtPointer (PtrType{}, v) = Just $
+          case asConcretePtr sbe v of
+            Just cv  -> "0x" ++ showHex cv ""
+            Nothing -> show (prettyTermD sbe v)
+        fmtPointer _ = Nothing
+    let printString p = do
+          mv <- valueAt p
+          case mv of
+            (PtrType{}, v) -> loadString "printToString" v
+            _ -> badArg p
+    let procString ('%':r) p rs = procArg r defaultFlags p rs
+          where defaultFlags = PrintfFlags { zeroPad = False }
         procString (c:r) p rs = procString r p (c:rs)
         procString [] _ rs = return (reverse rs)
-        procArg ('d':r) _ p rs = procRest r (p+1) rs =<< printSigned (valueAt p)
-        procArg ('i':r) _ p rs = procRest r (p+1) rs =<< printSigned (valueAt p)
-        procArg ('p':r) _ p rs = procRest r (p+1) rs =<< printPointer (valueAt p)
-        procArg ('u':r) _ p rs = procRest r (p+1) rs =<< printUnsigned (valueAt p)
-        procArg ('s':r) _ p rs = procRest r (p+1) rs =<< printString (valueAt p)
-        procArg r       _ _ _  = error $ "Unsupported format string " ++ show r
+
+        procArg ('d':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
+        procArg ('i':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
+        procArg ('p':r) _ p rs = procRest r (p+1) rs =<< pr fmtPointer p
+        procArg ('u':r) _ p rs = procRest r (p+1) rs =<< pr fmtUnsigned p
+        procArg ('s':r) _ p rs = procRest r (p+1) rs =<< printString p
+        procArg r       _ _ _  = e $ "Unsupported format string " ++ show r
+
         procRest r p rs s = procString r p (reverse s ++ rs)
-        printSigned val = withSBE' $ \sbe ->
-          case asSignedInteger sbe val of
-            Just (_,v) -> show v
-            Nothing -> show (prettyTermD sbe val)
-        printUnsigned val = withSBE' $ \sbe ->
-          case asSignedInteger sbe val of
-            Just (_,v) -> show v
-            Nothing -> show (prettyTermD sbe val)
-        printPointer val = withSBE' $ \sbe ->
-          case asUnsignedInteger sbe val of
-            Just (_,v) -> "0x" ++ showHex v ""
-            Nothing -> show (prettyTermD sbe val)
-        printString val = loadString "printToString" val
+    procString fmt 0 []
+
+
+
 
 
 printfHandler :: StdOvd sbe m
 printfHandler = Override $ \_sym _rty args ->
   case args of
-    (fmtPtr : rest) -> do
+    ((_,fmtPtr) : rest) -> do
       fmtStr <- loadString "printf format string" fmtPtr
       --isSym <- withSBE' isSymbolic
       --ptrWidth <- withLC llvmAddrWidthBits
@@ -1130,7 +1125,7 @@ printfHandler = Override $ \_sym _rty args ->
 printSymbolic :: StdOvd sbe m
 printSymbolic = Override $ \_sym _rty args ->
   case args of
-    [ptr] -> do
+    [(_,ptr)] -> do
       v <- load i8 ptr
       d <- withSBE' $ \sbe -> prettyTermD sbe v
       liftIO $ print d
@@ -1147,7 +1142,7 @@ allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe)
              -> Override sbe m
 allocHandler aw fn = Override $ \_sym _rty args ->
   case args of
-    [sizeTm] -> Just <$> fn i8 aw sizeTm Nothing
+    [(_,sizeTm)] -> Just <$> fn i8 aw sizeTm Nothing
     _ -> e "alloca: wrong number of arguments"
   where
     e = errorPath . FailRsn
@@ -1155,7 +1150,7 @@ allocHandler aw fn = Override $ \_sym _rty args ->
 abortHandler :: StdOvd sbe m
 abortHandler = Override $ \_sym _rty args -> do
   case args of
-    [tv] -> do
+    [(_,tv)] -> do
       msg <- loadString "abort message" tv
       e $ "lss_abort(): " ++ msg
     _ -> e "Incorrect number of parameters passed to lss_abort()"
@@ -1177,14 +1172,11 @@ showMemOverride = Override $ \_sym _rty _args -> do
 userSetVebosityOverride :: StdOvd sbe m
 userSetVebosityOverride = Override $ \_sym _rty args -> do
   case args of
-    [v] -> do
-      v' <- withSBE' $ \s -> snd <$> asUnsignedInteger s v
-      case v' of
-        Nothing  ->
-          e "symbolic verbosity is illegal"
-        Just v'' -> do
-          setVerbosity (fromIntegral v'')
-          return Nothing
+    [(_,v)] -> do
+      sbe <- gets symBE
+      case asUnsignedInteger sbe 32 v of
+        Nothing  -> e "symbolic verbosity is illegal"
+        Just v'' -> Nothing <$ setVerbosity (fromIntegral v'')
     _ -> e "Incorrect number of parameters passed to lss_set_verbosity"
   where
     e = errorPath . FailRsn
@@ -1192,10 +1184,11 @@ userSetVebosityOverride = Override $ \_sym _rty args -> do
 assertHandler__assert_rtn :: StdOvd sbe m
 assertHandler__assert_rtn = Override $ \_sym _rty args -> do
   case args of
-    [v1, v2, v3, v4] -> do
+    [(_,v1), (_,v2), (_,v3), (_,v4)] -> do
           fname     <- loadString "assert function" v1
           file      <- loadString "assert filename" v2
-          Just line <- withSBE' (\s -> snd <$> asSignedInteger s v3)
+          sbe <- gets symBE
+          let Just line = asSignedInteger sbe undefined v3
           err       <- loadString "assert error message" v4
           e $ unwords [ "__assert_rtn:"
                       , file ++ ":" ++ show line ++ ":" ++ fname ++ ":"
@@ -1213,16 +1206,16 @@ freshInt' n = Override $ \_ _ _ -> Just <$> withSBE (flip freshInt n)
 freshIntArray :: Int -> StdOvd sbe m
 freshIntArray n = Override $ \_sym _rty args ->
   case args of
-    [sizeTm, _, _] -> do
-      msize <- withSBE' $ \s -> snd <$> asUnsignedInteger s sizeTm
-      case msize of
+    [(_, sizeTm), _, _] -> do
+      sbe <- gets symBE
+      case asUnsignedInteger sbe 32 sizeTm of
         Just size -> do
           let sz = fromIntegral size
               ety = IntType n
               ty = ArrayType (fromIntegral size) ety
           arrPtr <- alloca ety 32 sizeTm Nothing
           elts <- replicateM sz (withSBE $ flip freshInt n)
-          arrTm <- withSBE $ \sbe -> termArray sbe ety elts
+          arrTm <- liftSBE $ termArray sbe ety elts
           store ty arrTm arrPtr
           return (Just arrPtr)
         Nothing -> e "lss_fresh_array_uint called with symbolic size"
@@ -1245,7 +1238,7 @@ checkAigFile filename = do
 writeIntAiger :: StdOvd sbe m
 writeIntAiger = Override $ \_sym _rty args ->
   case args of
-    [t, fptr] -> do
+    [(_,t), (_,fptr)] -> do
       file <- loadString "lss_write_aiger_uint file" fptr
       checkAigFile file
       withSBE $ \s -> writeAiger s file [t]
@@ -1256,26 +1249,21 @@ writeIntAiger = Override $ \_sym _rty args ->
 addAigOutput :: StdOvd sbe m
 addAigOutput = Override $ \_sym _rty args ->
   case args of
-    [t] -> do
-      modify $ \s -> s{ aigOutputs = t : aigOutputs s }
-      return Nothing
-    _   -> errorPath
-           $ FailRsn "lss_aiger_add_output: wrong number of arguments"
+    [(_,t)] -> Nothing <$ (aigOutputs %= (t:))
+    _   -> errorPath $ FailRsn "lss_aiger_add_output: wrong number of arguments"
 
 addAigArrayOutput :: MemType -- ^ Type of value target points to.
                   -> StdOvd sbe m
 addAigArrayOutput tgtTy = Override $ \_sym _rty args ->
   case args of
-    [tptr, sizeTm] -> do
-      msize <- withSBE' $ \s -> snd <$> asUnsignedInteger s sizeTm
-      case msize of
+    [(_,tptr), (_, sizeTm)] -> do
+      sbe <- gets symBE
+      case asUnsignedInteger sbe 32 sizeTm of
         Just size -> do
           elems <- loadArray tptr tgtTy size
-          arrTm <- withSBE $ \sbe -> termArray sbe tgtTy elems
-          modify $ \s -> s{ aigOutputs = arrTm : aigOutputs s }
-          return Nothing
-        Nothing ->
-          e "lss_aiger_add_output_array called with symbolic size"
+          arrTm <- liftSBE $ termArray sbe tgtTy elems
+          Nothing <$ (aigOutputs %= (arrTm:))
+        Nothing -> e "lss_aiger_add_output_array called with symbolic size"
     _ -> e "lss_aiger_add_output_array: wrong number of arguments"
   where
     e = errorPath . FailRsn
@@ -1283,15 +1271,14 @@ addAigArrayOutput tgtTy = Override $ \_sym _rty args ->
 writeCollectedAigerOutputs :: StdOvd sbe m
 writeCollectedAigerOutputs = Override $ \_sym _rty args ->
   case args of
-    [fptr] -> do
-      outputTerms <- reverse <$> gets aigOutputs
-      if null outputTerms
-        then e "lss_write_aiger: no AIG outputs have been collected"
-        else do
-          file <- loadString "lss_write_aiger file" fptr
-          withSBE $ \s -> writeAiger s file outputTerms
-          modify $ \s -> s{ aigOutputs = [] }
-          return Nothing
+    [(_,fptr)] -> do
+      outputTerms <- reverse <$> use aigOutputs
+      if null outputTerms then
+        e "lss_write_aiger: no AIG outputs have been collected"
+      else do
+        file <- loadString "lss_write_aiger file" fptr
+        withSBE $ \s -> writeAiger s file outputTerms
+        Nothing <$ (aigOutputs .= [])
     _ -> e "lss_write_aiger: wrong number of arguments"
   where
     e = errorPath . FailRsn
@@ -1299,12 +1286,12 @@ writeCollectedAigerOutputs = Override $ \_sym _rty args ->
 writeIntArrayAiger :: MemType -> StdOvd sbe m
 writeIntArrayAiger ety = Override $ \_sym _rty args ->
   case args of
-    [tptr, sizeTm, fptr] -> do
-      msize <- withSBE' $ \s -> snd <$> asUnsignedInteger s sizeTm
-      case msize of
+    [(PtrType{}, tptr), (IntType sizeW, sizeTm), (PtrType{},fptr)] -> do
+      sbe <- gets symBE
+      case asUnsignedInteger sbe sizeW sizeTm of
         Just size -> do
           elems <- loadArray tptr ety size
-          arrTm <- withSBE $ \sbe -> termArray sbe ety elems
+          arrTm <- liftSBE $ termArray sbe ety elems
           file <- loadString "lss_write_aiger_array_uint" fptr
           checkAigFile file
           withSBE $ \s -> writeAiger s file [arrTm]
@@ -1318,7 +1305,7 @@ writeIntArrayAiger ety = Override $ \_sym _rty args ->
 writeCNF :: StdOvd sbe m
 writeCNF = Override $ \_sym _rty args ->
   case args of
-    [t, fptr] -> do
+    [(IntType{}, t), (PtrType{},fptr)] -> do
       file <- loadString "lss_write_cnf" fptr
       _ <- withSBE $ \s -> writeCnf s file t
       return Nothing
@@ -1335,30 +1322,42 @@ loadArray ::
   -> MemType -- Element type
   -> Integer -- Count
   -> Simulator sbe m [SBETerm sbe]
-loadArray ptr tp count = go 0 =<< load (ArrayType (fromInteger count) tp) ptr
-  where c = fromInteger count
-        go i a 
-          | i == c = return []
+loadArray ptr tp count = do
+    sbe <- gets symBE
+    let go i r a 
+          | i == 0 = return r
           | otherwise = do
-             v <- withSBE $ \s ->
-               applyTypedExpr s (GetConstArrayElt c tp a i)
-             (v:) <$> go (i+1) a
+             v <- liftSBE $ applyTypedExpr sbe (GetConstArrayElt c tp a (i-1))
+             go (i-1) (v:r) a
+    go c [] =<< load (ArrayType (fromInteger count) tp) ptr
+  where c = fromInteger count
 
-evalAigerOverride :: MemType -> StdOvd m sbe
-evalAigerOverride ety =
+-- | Attempts to read an array of boolean values from a pointer with the given number
+-- of elements.
+getEvalInputs :: (Functor m, MonadIO m, Functor sbe)
+               => String -- ^ Name of function calling this for error purposes.
+              -> SBETerm sbe -- ^ Pointer to input values (should be an i8p).
+              -> SBETerm sbe -- ^ Size of array of inputs (should be an int32).
+              -> Simulator sbe m [Bool]
+getEvalInputs nm p sz = do
+  sbe <- gets symBE
+  let e = errorPath . FailRsn
+  case asUnsignedInteger sbe 32 sz of
+    Just csz -> do
+      elems <- loadArray p i8 csz
+      case traverse (asUnsignedInteger sbe 8) elems of
+        Just ints -> return $ (/= 0) <$> ints
+        Nothing -> e $ nm ++ ": symbolc inputs not supported."
+    Nothing -> e $ nm ++ ": symbolic size not supported."
+
+evalAigerOverride :: StdOvd m sbe
+evalAigerOverride =
   Override $ \_sym _rty args ->
     case args of
-      [tm, p, szTm] -> do
-        msz <- withSBE' $ \s -> snd <$> asUnsignedInteger s szTm
-        case msz of
-          Just sz -> do
-            elems <- loadArray p ety sz
-            ints <- mapM
-                    (\t -> withSBE' $ \s -> snd <$> asUnsignedInteger s t)
-                    elems
-            let bools = map (not . (== 0)) $ catMaybes ints
-            Just <$> (withSBE $ \s -> evalAiger s bools tm)
-          Nothing -> e "lss_eval_aiger: symbolic size not supported"
+      [(_,tm), (PtrType{}, p), (IntType 32,szTm)] -> do
+        sbe <- gets symBE
+        bools <- getEvalInputs "lss_eval_aiger" p szTm
+        Just <$> liftSBE (evalAiger sbe bools tm)
       _ -> e "lss_eval_aiger: wrong number of arguments"
   where
     e = errorPath . FailRsn
@@ -1368,18 +1367,18 @@ evalAigerArray :: MemType -- Type of first argument pointer.
 evalAigerArray ty =
   Override $ \_sym _rty args ->
     case args of
-      [sym, dst, szTm, input, inputSz] -> do
-        msz <- withSBE' $ \s -> snd <$> asUnsignedInteger s szTm
-        misz <- withSBE' $ \s -> snd <$> asUnsignedInteger s inputSz
-        case (msz, misz) of
-          (Just sz, Just isz) -> do
-            inputs <- loadArray input (IntType 8) isz
-            ints <- mapM
-                    (\t -> withSBE' $ \s -> snd <$> asUnsignedInteger s t)
-                    inputs
-            let bools = map (not . (== 0)) $ catMaybes ints
+      [ (PtrType{}, sym)
+       ,(PtrType{}, dst)
+       ,(IntType szw, szTm)
+       ,(PtrType{},  input)
+       ,(IntType 32, inputSz)
+       ] -> do
+        sbe <- gets symBE
+        case asUnsignedInteger sbe szw szTm of
+          Just sz -> do
+            bools <- getEvalInputs "lss_eval_aiger_array" input inputSz
             tm <- load (ArrayType (fromInteger sz) ty) sym
-            res <- withSBE $ \s -> evalAiger s bools tm
+            res <- liftSBE $ evalAiger sbe bools tm
             store (ArrayType (fromInteger sz) ty) dst res
             return Nothing
           _ -> e "lss_eval_aiger_array: symbolic sizes not supported"
@@ -1390,7 +1389,7 @@ evalAigerArray ty =
 overrideByName :: StdOvd sbe m
 overrideByName = Override $ \_sym _rty args ->
   case args of
-    [fromNamePtr, toNamePtr] -> do
+    [(PtrType{}, fromNamePtr), (PtrType{}, toNamePtr)] -> do
       src <- fromString <$> loadString "lss_override_function_by_name from" fromNamePtr
       tgt <- fromString <$> loadString "lss_override_function_by_name to" toNamePtr
       src `userRedirectTo` tgt
@@ -1400,9 +1399,9 @@ overrideByName = Override $ \_sym _rty args ->
 overrideByAddr :: StdOvd sbe m
 overrideByAddr = Override $ \_sym _rty args ->
   case args of
-    [_, _] -> do
-      [mfromSym, mtoSym] <- mapM resolveFunPtrTerm args
-      case (mfromSym, mtoSym) of
+    [(PtrType{}, fromPtr), (PtrType{}, toPtr)] -> do
+      syms <- both resolveFunPtrTerm (fromPtr, toPtr)
+      case syms of
         (Result src, Result tgt) -> src `userRedirectTo` tgt
         _                    -> resolveErr
     _ -> argsErr
@@ -1414,7 +1413,7 @@ overrideByAddr = Override $ \_sym _rty args ->
 overrideIntrinsic :: StdOvd sbe m
 overrideIntrinsic = Override $ \_sym _rty args ->
   case args of
-    [nmPtr, fp] -> do
+    [(PtrType{}, nmPtr), (PtrType{}, fp)] -> do
       nm  <- fromString <$> loadString "lss_override_llvm_intrinsic" nmPtr
       msym <- resolveFunPtrTerm fp
       case msym of
@@ -1435,23 +1434,21 @@ userRedirectTo src tgt = do
     (_,Nothing) -> error $ "Could not find symbol " ++ nameOf tgt ++ "."  
     (Just fd, Just td) -> do
       checkTypeCompat src fd (show (ppSymbol tgt)) td
-      modify $ \s ->
-        s{ fnOverrides = M.insert src (Redirect tgt, True) (fnOverrides s) }
+      fnOverrides . at src ?= (Redirect tgt, True)
       return Nothing
 
 overrideResetByName :: StdOvd sbe m
 overrideResetByName = Override $ \_sym _rty args ->
   case args of
-    [fnNamePtr] -> do
+    [(PtrType{}, fnNamePtr)] -> do
       fnSym <- fromString <$> loadString "lss_override_reset_by_name" fnNamePtr
       fnSym `userRedirectTo` fnSym
-    _ -> errorPath
-         $ FailRsn "lss_override_reset_by_name: wrong number of arguments"
+    _ -> errorPath $ FailRsn "lss_override_reset_by_name: wrong number of arguments"
 
 overrideResetByAddr :: StdOvd sbe m
 overrideResetByAddr = Override $ \_sym _rty args ->
   case args of
-    [fp] -> do
+    [(PtrType{},fp)] -> do
       msym <- resolveFunPtrTerm fp
       case msym of
         Result sym -> sym `userRedirectTo` sym
@@ -1465,10 +1462,10 @@ overrideResetByAddr = Override $ \_sym _rty args ->
 overrideResetAll :: StdOvd sbe m
 overrideResetAll = Override $ \_sym _rty args ->
   case args of
-    [] -> do ovds <- gets fnOverrides
+    [] -> do ovds <- use fnOverrides
              forM_ (M.assocs ovds) $ \(sym, (_, userOvd)) ->
-               when userOvd $ modify $ \s ->
-                 s{ fnOverrides = M.delete sym (fnOverrides s)}
+               when userOvd $ do
+                 fnOverrides . at sym .= Nothing
              return Nothing
     _ -> e "lss_override_reset_all: wrong number of arguments"
   where
@@ -1547,10 +1544,10 @@ registerLSSOverrides = registerOverrides
   , ("lss_write_aiger_array_uint16", voidFunDecl [i16p, i32, strTy], writeIntArrayAiger i16)
   , ("lss_write_aiger_array_uint32", voidFunDecl [i32p, i32, strTy], writeIntArrayAiger i32)
   , ("lss_write_aiger_array_uint64", voidFunDecl [i64p, i32, strTy], writeIntArrayAiger i64)
-  , ("lss_eval_aiger_uint8",  funDecl  i8 [ i8, i8p, i32], evalAigerOverride i8)
-  , ("lss_eval_aiger_uint16", funDecl i16 [i16, i8p, i32], evalAigerOverride i8)
-  , ("lss_eval_aiger_uint32", funDecl i32 [i32, i8p, i32], evalAigerOverride i8)
-  , ("lss_eval_aiger_uint64", funDecl i64 [i64, i8p, i32], evalAigerOverride i8)
+  , ("lss_eval_aiger_uint8",  funDecl  i8 [ i8, i8p, i32], evalAigerOverride)
+  , ("lss_eval_aiger_uint16", funDecl i16 [i16, i8p, i32], evalAigerOverride)
+  , ("lss_eval_aiger_uint32", funDecl i32 [i32, i8p, i32], evalAigerOverride)
+  , ("lss_eval_aiger_uint64", funDecl i64 [i64, i8p, i32], evalAigerOverride)
   , ("lss_eval_aiger_array_uint8",  voidFunDecl [i8p,  i8p,  i32, i8p, i32], evalAigerArray i8)
   , ("lss_eval_aiger_array_uint16", voidFunDecl [i16p, i16p, i32, i8p, i32], evalAigerArray i16)
   , ("lss_eval_aiger_array_uint32", voidFunDecl [i32p, i32p, i32, i8p, i32], evalAigerArray i32)

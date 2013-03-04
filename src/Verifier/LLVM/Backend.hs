@@ -17,9 +17,9 @@ module Verifier.LLVM.Backend
   , TypedExpr(..)
   ) where
 
+import           Control.Applicative ((<$>))
 import           Data.Bits (testBit)
 import qualified Data.Vector as V
-import qualified Text.LLVM.AST   as L
 import           Text.PrettyPrint.HughesPJ
 
 import Verifier.LLVM.AST
@@ -46,7 +46,7 @@ type SBEPartialResult m r  = (SBEPred m, r)
 -- | Represents a partial result of trying to obtain a concrete value from
 -- a symbolic term.
 data LookupSymbolResult
-  = Result L.Symbol -- ^ The definition associated with the address.
+  = Result Symbol -- ^ The definition associated with the address.
   | Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed, because it had an invalid value.
   deriving Show
@@ -73,7 +73,7 @@ data SBE m = SBE
     sbeTruePred :: SBEPred m
     -- | Return predicate indicating if two integer terms are equal.
   , applyIEq :: BitWidth -> SBETerm m -> SBETerm m -> m (SBEPred m)
-    -- applyIEq sbe w x y = applyTypedExpr sbe (IntCmp L.Ieq Nothing w x y)
+    -- applyIEq sbe w x y = applyTypedExpr sbe (IntCmp Ieq Nothing w x y)
     -- | Return conjunction of two predicates.
   , applyAnd :: SBEPred m -> SBEPred m -> m (SBEPred m)
     -- applyAnd sbe x y = applyTypedExpr sbe (IntArith And Nothing 1 x y)
@@ -105,7 +105,10 @@ data SBE m = SBE
 
     -- | Interpret the term as a concrete unsigned integer if it can be.
     -- The first int is the bitwidth.
-  , asUnsignedInteger :: SBETerm m -> Maybe (Int,Integer)
+  , asUnsignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
+
+    -- | Interpret a pointer as an unsigned integer.
+  , asConcretePtr :: SBETerm m -> Maybe Integer
 
   , prettyTermD :: SBETerm m -> Doc
 
@@ -141,8 +144,8 @@ data SBE m = SBE
     -- It is undefined to call this function with a symbol that has already
     -- been defined in the memory.
   , memAddDefine :: SBEMemory m
-                 -> L.Symbol
-                 -> [L.BlockLabel]
+                 -> Symbol
+                 -> [BlockLabel]
                  -> m (Maybe (SBETerm m, SBEMemory m))
     -- | @memInitGlobal mem tp data@ attempts to write @data@ to a newly
     -- allocated region of memory in address space for globals.  If
@@ -155,7 +158,7 @@ data SBE m = SBE
 
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
-  , codeBlockAddress :: SBEMemory m -> L.Symbol -> L.BlockLabel -> m (SBETerm m)
+  , codeBlockAddress :: SBEMemory m -> Symbol -> BlockLabel -> m (SBETerm m)
 
     -- | @codeLookupSymbol mem ptr@ returns the symbol at the given address
     -- in mem.  Lookup may fail if the pointer does not point to a symbol, or
@@ -235,14 +238,15 @@ applySub :: SBE m -> OptVectorLength -> BitWidth -> SBETerm m -> SBETerm m -> m 
 applySub sbe mn w x y = applyTypedExpr sbe (IntArith (Sub False False) mn w x y)
  
 applyIne :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applyIne sbe w x y = applyTypedExpr sbe (IntCmp L.Ine Nothing w x y)
+applyIne sbe w x y = applyTypedExpr sbe (IntCmp Ine Nothing w x y)
 
 -- | Interpret the term as a concrete signed integer if it can be.
-asSignedInteger :: SBE m -> SBETerm m -> Maybe (Int,Integer)
-asSignedInteger sbe t = s2u `fmap` (asUnsignedInteger sbe t :: Maybe (Int, Integer))
-  where s2u (0,v) = (0,v)  
-        s2u (w,v) | v `testBit` (w-1) = (w,v - 2^w) 
-                  | otherwise = (w,v)
+asSignedInteger :: SBE m -> BitWidth -> SBETerm m -> Maybe Integer
+asSignedInteger sbe w t 
+    | w == 0 = error "Bad bitwidth"
+    | otherwise = s2u <$> asUnsignedInteger sbe w t
+  where s2u v | v `testBit` (w-1) = v - 2^w 
+              | otherwise = v
 
 -- | @applySExt iw rw t@ assumes that @iw < rw@, and sign extends an
 -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
