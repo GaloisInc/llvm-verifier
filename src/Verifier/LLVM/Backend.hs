@@ -49,7 +49,7 @@ data LookupSymbolResult
   = Result Symbol -- ^ The definition associated with the address.
   | Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed, because it had an invalid value.
-  deriving Show
+    deriving Show
 
 -- | Result returned by @stackAlloca@ (defined below).
 data AllocResult sbe
@@ -81,7 +81,8 @@ data SBE m = SBE
   , applyBNot :: SBEPred m -> m (SBEPred m)
     -- | @applyPredIte a b c@ creates an if-then-else term
   , applyPredIte :: SBEPred m -> SBEPred m -> SBEPred m -> m (SBEPred m)
-    -- | @applyIte a b c@ creates an if-then-else term
+    -- | @applyIte a b c@ creates an if-then-else term.  Or returns error
+    -- if terms cannot be merged.
   , applyIte :: MemType
              -> SBEPred m
              -> SBETerm m

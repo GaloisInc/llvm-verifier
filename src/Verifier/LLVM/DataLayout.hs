@@ -25,6 +25,7 @@ module Verifier.LLVM.DataLayout
     -- ** Struct type information.
   , StructInfo(..)
   , FieldInfo(..)
+  , siFieldCount
   , siFieldInfo
   , siFieldTypes
   , siFieldOffset
@@ -152,6 +153,9 @@ data FieldInfo = FieldInfo { fiOffset :: !Offset
 
 siFieldTypes :: StructInfo -> Vector MemType
 siFieldTypes si = fiType <$> siFields si
+
+siFieldCount :: StructInfo -> Int
+siFieldCount = V.length . siFields
 
 siFieldInfo :: StructInfo -> Int -> Maybe FieldInfo
 siFieldInfo si i = siFields si V.!? i

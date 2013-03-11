@@ -158,11 +158,23 @@ ppIntArithOp Xor           = text "xor"
 type OptVectorLength = Maybe Int
 
 data TypedExpr v
+    -- | Integer width and value.
+  = SValInteger BitWidth Integer
+  | SValFloat  Float
+  | SValDouble Double
+    -- | Null pointer value with the type of element that it points to.
+  | SValNull SymType
+    -- | Array of values (strings are mapped to 8-bit integer arrays).
+  | SValArray MemType (Vector v)
+    -- | Vector element with given values.
+  | SValVector MemType (Vector v)
+    -- | Create a struct with the given field values.
+  | SValStruct StructInfo (Vector v)
     -- | @IntArith op mn w x y@ performs the operation @op@ on @x@ and @y@.
     -- If @mn@ is @Nothing@, then @x@ and @y@ are integers with length @w@.  Otherwise
     -- @x@ and @y@ are vectors with integer elements of length @w@, and @mn@ contains the
     -- number of elements.
-  = IntArith IntArithOp OptVectorLength BitWidth v v
+  | IntArith IntArithOp OptVectorLength BitWidth v v
     -- | @PtrAdd p i@ increments the value of the pointer @p@ by @i@ bytes.  @p@ must
     -- be a pointer, and @i@ must be an integer with the same width as a pointer.
     -- Addition uses standard two's complement rules.
@@ -202,18 +214,6 @@ data TypedExpr v
     -- Arguments are: number of elements, element type, array, and index.
   | GetConstArrayElt Int MemType v Int
 
-    -- | Integer width and value.
-  | SValInteger BitWidth Integer
-  | SValFloat  Float
-  | SValDouble Double
-    -- | Null pointer value with the type of element that it points to.
-  | SValNull SymType
-    -- | Array of values (strings are mapped to 8-bit integer arrays).
-  | SValArray MemType (Vector v)
-    -- | Vector element with given values.
-  | SValVector MemType (Vector v)
-    -- | Create a struct with the given field values.
-  | SValStruct StructInfo (Vector v)
  deriving (Functor, Foldable, Traversable)
 
 -- | Pretty print a typed expression.
