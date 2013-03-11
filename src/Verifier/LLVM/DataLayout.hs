@@ -32,6 +32,7 @@ module Verifier.LLVM.DataLayout
 
     -- * Data layout declarations.
   , DataLayout
+  , maxAlignment
   , ptrSize
   , ptrAlign
   , ptrBitwidth
@@ -46,10 +47,11 @@ import Control.Applicative ((<$>))
 import Control.Lens
 import Control.Monad.State.Strict
 import qualified Data.FingerTree as FT
+import Data.Maybe
 import Data.Monoid (Monoid(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as V
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
 import qualified Text.LLVM as L
 import Text.PrettyPrint
 import Verifier.LLVM.Utils
@@ -59,7 +61,9 @@ type Size = Word64
 
 type Offset = Word64
 
-type Alignment = Word64
+-- | Alignment's must be a power of two, so we just store the exponent.
+-- e.g., alignment value of 3 indicates the pointer must align on 2^3-byte boundaries.
+type Alignment = Word32
 
 -- | Type supported by symbolic simulator.
 data SymType
@@ -178,7 +182,7 @@ instance Monoid BW where
 data AlignSpec =
   AlignSpec { -- Size in bits
               asBitWidth :: Int
-              -- Alignment in bytes (this is the ABI value not the "preferred")
+              -- Alignment in bytes (this is the ABI value).
             , asAlign    :: Alignment
             }
 
@@ -209,6 +213,10 @@ findIntMatch w (AT t) =
          _ FT.:> e -> Just (asAlign e)
          FT.EmptyR -> Nothing
   where (lt, mge) = FT.split (>= fromIntegral w) t
+
+-- | Return maximum alignment constriant stored in tree.
+maxAlignmentInTree :: AlignTree -> Alignment
+maxAlignmentInTree (AT t) = foldrOf folded (max . asAlign) 0 t
 
 -- | Update alignment tree
 updateAlign :: Int
@@ -245,6 +253,8 @@ data DataLayout
         , _aggInfo     :: !AlignTree
            -- | Layout constraints on a stack object with the given size.
         , _stackInfo   :: !AlignTree
+          -- | Layout specs that could not be parsed.
+        , _layoutWarnings :: [L.LayoutSpec]
         }
 
 makeLenses ''DataLayout
@@ -254,14 +264,16 @@ ptrBitwidth pdl = 8 * fromIntegral (pdl^.ptrSize)
 
 -- | Reduce the bit level alignment to a byte value, and error if it is not
 -- a multiple of 8.
-fromBits :: Int -> Alignment
-fromBits a | r == 0 = w
-           | otherwise = error $ "Alignment specification must occupy a byte boundary."
-  where (w,r) = fromIntegral a `divMod` 8
+fromBits :: Int -> Either String Alignment
+fromBits a | w <= 0 = Left $ "Alignment must be a positive number."
+           | r /= 0 = Left $ "Alignment specification must occupy a byte boundary."
+           | not (isPow2 w) = Left $ "Alignment must be a power of two."
+           | otherwise = Right $ fromIntegral (lg w)
+  where (w,r) = toInteger a `divMod` 8
 
 -- | Insert alignment into spec.
-setAt :: Simple Lens DataLayout AlignTree -> Int -> Int -> State DataLayout ()
-setAt f sz a = f . at sz ?= fromBits a
+setAt :: Simple Lens DataLayout AlignTree -> Int -> Alignment -> State DataLayout ()
+setAt f sz a = f . at sz ?= a
 
 -- | Get default data layout if no spec is defined.
 defaultDataLayout :: DataLayout
@@ -275,24 +287,51 @@ defaultDataLayout = execState defaults dl
                 , _vectorInfo  = emptyAlignTree
                 , _aggInfo     = emptyAlignTree
                 , _stackInfo   = emptyAlignTree
+                , _layoutWarnings = []
                 }
         defaults = do
           -- Default integer alignments
-          setAt integerInfo  1 1 -- 1-bit values aligned on byte addresses.
-          setAt integerInfo  8 1 -- 8-bit values aligned on byte addresses.
-          setAt integerInfo 16 2 -- 16-bit values aligned on 2 byte addresses.
-          setAt integerInfo 32 4 -- 32-bit values aligned on 4 byte addresses.
-          setAt integerInfo 64 4 -- 64-bit balues aligned on 4 byte addresses.
+          setAt integerInfo  1 0 -- 1-bit values aligned on byte addresses.
+          setAt integerInfo  8 0 -- 8-bit values aligned on byte addresses.
+          setAt integerInfo 16 1 -- 16-bit values aligned on 2 byte addresses.
+          setAt integerInfo 32 2 -- 32-bit values aligned on 4 byte addresses.
+          setAt integerInfo 64 2 -- 64-bit balues aligned on 4 byte addresses.
           -- Default float alignments
-          setAt floatInfo  16  2
-          setAt floatInfo  32  4
-          setAt floatInfo  64  8
-          setAt floatInfo 128 16
+          setAt floatInfo  16 1 -- Half is aligned on 2 byte addresses.
+          setAt floatInfo  32 2 -- Float is aligned on 4 byte addresses.
+          setAt floatInfo  64 3 -- Double is aligned on 8 byte addresses.
+          setAt floatInfo 128 4 -- Quad is aligned on 16 byte addresses.
           -- Default vector alignments.
-          setAt vectorInfo  64 8
-          setAt vectorInfo 128 16
+          setAt vectorInfo  64 3 -- 64-bit vector is 8 byte aligned.
+          setAt vectorInfo 128 4  -- 128-bit vector is 16 byte aligned.
           -- Default aggregate alignments.
-          setAt aggInfo  0 1
+          setAt aggInfo  0 3  -- Aggregates are 8 byte aligned.
+
+-- | Maximum aligment for any type (used by malloc).
+maxAlignment :: DataLayout -> Alignment
+maxAlignment dl =
+  maximum [ dl^.stackAlignment
+          , dl^.ptrAlign
+          , maxAlignmentInTree (dl^.integerInfo)
+          , maxAlignmentInTree (dl^.vectorInfo)
+          , maxAlignmentInTree (dl^.floatInfo)
+          , maxAlignmentInTree (dl^.aggInfo)
+          , maxAlignmentInTree (dl^.stackInfo)
+          ]
+
+-- | Insert alignment into spec.
+setAtBits :: Simple Lens DataLayout AlignTree -> L.LayoutSpec -> Int -> Int -> State DataLayout ()
+setAtBits f spec sz a = 
+  case fromBits a of
+    Left{} -> layoutWarnings %= (spec:)
+    Right w -> f . at sz .= Just w
+
+-- | Insert alignment into spec.
+setBits :: Simple Lens DataLayout Alignment -> L.LayoutSpec -> Int -> State DataLayout ()
+setBits f spec a = 
+  case fromBits a of
+    Left{} -> layoutWarnings %= (spec:)
+    Right w -> f .= w
 
 -- | Add information from layout spec into parsed data layout.
 addLayoutSpec :: L.LayoutSpec -> State DataLayout ()
@@ -301,18 +340,19 @@ addLayoutSpec ls =
     case ls of
       L.BigEndian    -> intLayout .= BigEndian
       L.LittleEndian -> intLayout .= LittleEndian
-      L.PointerSize     sz a _ 
-         | r  /= 0 -> error $ "Pointers must occupy an even number of bytes."
-         | otherwise -> do ptrSize .= w;
-                           ptrAlign .= fromBits a
+      L.PointerSize     sz a _ ->
+         case fromBits a of
+           Right a' | r == 0 -> do ptrSize .= w
+                                   ptrAlign .= a'
+           _ -> layoutWarnings %= (ls:)
        where (w,r) = fromIntegral sz `divMod` 8
-      L.IntegerSize    sz a _ -> setAt integerInfo sz a
-      L.VectorSize     sz a _ -> setAt vectorInfo  sz a
-      L.FloatSize      sz a _ -> setAt floatInfo   sz a
-      L.AggregateSize  sz a _ -> setAt aggInfo     sz a
-      L.StackObjSize   sz a _ -> setAt stackInfo   sz a
+      L.IntegerSize    sz a _ -> setAtBits integerInfo ls sz a
+      L.VectorSize     sz a _ -> setAtBits vectorInfo  ls sz a
+      L.FloatSize      sz a _ -> setAtBits floatInfo   ls sz a
+      L.AggregateSize  sz a _ -> setAtBits aggInfo     ls sz a
+      L.StackObjSize   sz a _ -> setAtBits stackInfo   ls sz a
       L.NativeIntSize _ -> return ()
-      L.StackAlign a    -> stackAlignment .= fromBits a
+      L.StackAlign a    -> setBits stackAlignment ls a
 
 -- | Create parsed data layout from layout spec AST.
 parseDataLayout :: L.DataLayout -> DataLayout
@@ -331,6 +371,9 @@ memTypeSize dl mtp =
     VecType n tp -> fromIntegral n * memTypeSize dl tp
     StructType si -> structSize si
 
+memTypeSizeInBits :: DataLayout -> MemType -> BitWidth
+memTypeSizeInBits dl tp = fromIntegral $ 8 * memTypeSize dl tp
+
 -- | Returns ABI byte alignment constraint in bytes.
 memTypeAlign :: DataLayout -> MemType -> Alignment
 memTypeAlign dl mtp =
@@ -343,16 +386,22 @@ memTypeAlign dl mtp =
       where Just a = findExact 64 (dl ^. floatInfo)
     PtrType{} -> dl ^. ptrAlign
     ArrayType _ tp -> memTypeAlign dl tp
-    VecType _ tp   -> memTypeAlign dl tp
+    VecType n tp   -> 
+      case findExact (memTypeSizeInBits dl tp) (dl^.vectorInfo) of
+        Just a -> a
+        Nothing -> fromIntegral (lgCeil n) + memTypeAlign dl tp
     StructType si  -> structAlign si
 
 -- | Constructs a function for obtaining target-specific size/alignment
 -- information about structs.  The function produced corresponds to the
 -- StructLayout object constructor in TargetData.cpp.
 mkStructInfo :: DataLayout -> Bool -> [MemType] -> StructInfo
-mkStructInfo dl packed tps0 = go [] 0 (nextAlign 1 tps0) tps0 
-  where -- Aligment of next type if any.
+mkStructInfo dl packed tps0 = go [] 0 (max a0 (nextAlign a0 tps0)) tps0 
+  where a0 | packed = 0
+           | otherwise = fromMaybe 1 (findExact 0 (dl^.aggInfo))
+        -- Aligment of next type if any.
         nextAlign :: Alignment -> [MemType] -> Alignment
+        nextAlign _ _ | packed = 0
         nextAlign a [] = a
         nextAlign _ (tp:_) = memTypeAlign dl tp
         -- Process fields
@@ -374,4 +423,4 @@ mkStructInfo dl packed tps0 = go [] 0 (nextAlign 1 tps0) tps0
                 -- Alignment of next field
                 a' = nextAlign a tpl
                 -- Size of field at alignment for next thing.
-                sz' = nextMultiple a' e
+                sz' = nextPow2Multiple e (fromIntegral a')

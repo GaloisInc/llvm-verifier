@@ -285,18 +285,20 @@ data SymExpr
   = Val TypedSymValue
   -- | @Alloca tp sz align@  allocates a new pointer to @sz@ elements of type
   -- @tp@ with alignment @align@.
-  | Alloca MemType (Maybe (BitWidth, TypedSymValue)) (Maybe Int)
-    -- @Load ptr tp malign@ tp is type to load.
-  | Load TypedSymValue MemType (Maybe L.Align)
+  | Alloca MemType (Maybe (BitWidth, TypedSymValue)) Alignment
+    -- @Load ptr tp align@ tp is type to load.
+  | Load TypedSymValue MemType Alignment
+
+ppAlign :: Alignment -> Doc
+ppAlign a = text (", align " ++ show a)
 
 -- | Pretty print symbolic expression.
 ppSymExpr :: SymExpr -> Doc
 ppSymExpr (Val v) = ppTypedSymValue v
-ppSymExpr (Alloca ty mbLen mbAlign) = text "alloca" <+> ppMemType ty <> len <> align
+ppSymExpr (Alloca ty mbLen a) = text "alloca" <+> ppMemType ty <> len <> ppAlign a
   where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppTypedSymValue l) mbLen
-        align = maybe empty (\a -> comma <+> text "align" <+> int a) mbAlign
-ppSymExpr (Load ptr tp malign) =
-  text "load" <+> ppPtrType (ppMemType tp) <+> ppTypedSymValue ptr <> L.ppAlign malign
+ppSymExpr (Load ptr tp a) =
+  text "load" <+> ppPtrType (ppMemType tp) <+> ppTypedSymValue ptr <> ppAlign a
 
 -- | Predicates in symbolic simulator context.
 data SymCond
@@ -329,7 +331,7 @@ data SymStmt
   -- | Assign result of instruction to register.
   | Assign L.Ident MemType SymExpr
   -- | @Store v addr@ stores value @v@ in @addr@.
-  | Store MemType TypedSymValue TypedSymValue (Maybe L.Align)
+  | Store MemType TypedSymValue TypedSymValue Alignment
   -- | Print out an error message if we reach an unreachable.
   | Unreachable
   -- | An LLVM statement that could not be translated.
@@ -348,9 +350,9 @@ ppStmt (PushPendingExecution b c ml rest) =
   where loc = maybe (text "return") ppSymBlockID ml
 ppStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
 ppStmt (Assign v _ e) = L.ppIdent v <+> char '=' <+> ppSymExpr e
-ppStmt (Store tp v addr malign) =
+ppStmt (Store tp v addr a) =
   text "store" <+> ppMemType tp <+> ppTypedSymValue v <> comma
-               <+> ppTypedSymValue addr <> L.ppAlign malign
+               <+> ppTypedSymValue addr <> ppAlign a
 ppStmt Unreachable = text "unreachable"
 ppStmt (BadSymStmt s) = L.ppStmt s
 

@@ -292,15 +292,20 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
           go (mergeAdd args val) (fiType fi) r
         goStruct _ _ _ = gepFailure
 
+-- | Lift a maybe alignment constraint to the alignment for the tpye.
+liftAlign :: (?lc :: LLVMContext) => MemType -> Maybe L.Align -> Alignment
+liftAlign _ (Just a) | a /= 0 = fromIntegral a
+liftAlign tp _ = memTypeAlign (llvmDataLayout ?lc) tp
+
 liftStmt :: (?lc :: LLVMContext) => L.Stmt -> BlockGenerator SymStmt
 liftStmt stmt = do
   case stmt of
-    Effect (L.Store (L.Typed tp0 v) addr malign) _ ->
+    Effect (L.Store (L.Typed tp0 v) addr a) _ ->
       trySymStmt stmt $ do
         tp <- liftMemType tp0
         tptr <- liftValue tp v
         taddr <- liftTypedValue addr 
-        return $ Store tp tptr taddr malign
+        return $ Store tp tptr taddr (liftAlign tp a)
     Effect{} -> unsupportedStmt stmt
     Result r app _ -> trySymStmt stmt $ do
       -- Return an assignemnt statement for the value.
@@ -373,7 +378,7 @@ liftStmt stmt = do
             L.BitCast -> do
               retExpr rtp . Val =<< liftBitcast itp sv rtp
             _ -> fail "Unsupported conversion operator"
-        L.Alloca tp0 msz mi -> do
+        L.Alloca tp0 msz a -> do
           tp <- liftMemType tp0
           ssz <- case msz of
                    Nothing -> return Nothing
@@ -381,12 +386,12 @@ liftStmt stmt = do
                      IntType w <- liftMemType szTp0
                      v <- liftValue (IntType w) sz
                      return (Just (w,v))
-          retExpr (PtrType (MemType tp)) $ Alloca tp ssz mi 
+          retExpr (PtrType (MemType tp)) $ Alloca tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) malign -> do
           tp@(PtrType etp0) <- liftMemType tp0
           etp <- asMemType (llvmAliasMap ?lc) etp0
           v <- liftValue tp ptr
-          retExpr etp (Load v etp malign)
+          retExpr etp (Load v etp (liftAlign etp malign))
         L.ICmp op (L.Typed tp0 u) v -> do
           tp <- liftMemType tp0
           x <- liftValue tp u

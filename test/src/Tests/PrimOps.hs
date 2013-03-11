@@ -132,7 +132,7 @@ testSetupPtrArgImpl = do
   a <- withDL (view ptrAlign)
   let w = 1
   one <- withSBE $ \sbe -> termInt sbe w 1
-  p <- alloca i32 w one (Just $ fromIntegral a) 
+  p <- alloca i32 w one a
   callDefine_ (L.Symbol "ptrarg") Nothing [(i32p, p)]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()
@@ -140,7 +140,7 @@ testSetupPtrArgImpl = do
   case mm of
     Nothing  -> return False
     Just mem -> do
-      (_,r) <- withSBE (\sbe -> memLoad sbe mem i32 p)
+      (_,r) <- withSBE (\sbe -> memLoad sbe mem i32 p a)
       (`constTermEq` 42) <$> withSBE' (\s -> asUnsignedInteger s 32 r)
 
 --------------------------------------------------------------------------------

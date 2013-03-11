@@ -41,13 +41,13 @@ aes128ConcreteImpl = do
   keyptr <- initArr keyVals
   let aw = 8
   one <- withSBE $ \sbe -> termInt sbe aw 1
-  ctptr  <- alloca arrayTy aw one (Just 4)
+  ctptr  <- alloca arrayTy aw one 2
   let args :: [(MemType, SBETerm sbe)]
       args = [ptptr, keyptr, (IntType aw, ctptr)]
   [_, _, ctRawPtr] <-
     callDefine (L.Symbol "aes128BlockEncrypt") Nothing args
   Just mem <- getProgramFinalMem
-  ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr
+  ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr 2
   ctVals <- forM [0..3] $ \i ->
     withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt 4 i32 ctarr i)
   return (ctVals == ctChks)
@@ -61,8 +61,8 @@ aes128ConcreteImpl = do
        arr <- liftSBE $ termArray sbe i32 arrElts
        let aw = 8
        one <- liftSBE $ termInt sbe aw 1
-       p   <- alloca arrayTy aw one (Just 4)
-       store arrayTy arr p
+       p   <- alloca arrayTy aw one 2
+       store arrayTy arr p 2
        return (i32p, p)
 
     arrayTy = ArrayType 4 i32

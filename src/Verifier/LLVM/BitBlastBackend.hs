@@ -117,15 +117,15 @@ joinN = LV.concat . V.toList
 
 -- | @alignUp addr i@ returns the smallest multiple of @2^i@ that it
 -- at least @addr@.
-alignUp :: Addr -> Int -> Addr
+alignUp :: Addr -> Alignment -> Addr
 alignUp addr i = (addr + mask) .&. complement mask
- where mask = (setBit 0 i) - 1
+ where mask = setBit 0 (fromIntegral i) - 1
 
 -- | @alignDn addr i@ returns the largest multiple of @2^i@ that it
 -- at most @addr@.
-alignDn :: Addr -> Int -> Addr
+alignDn :: Addr -> Alignment -> Addr
 alignDn addr i = addr .&. complement mask
- where mask = (setBit 0 i) - 1
+ where mask = setBit 0 (fromIntegral i) - 1
 
 lvAnd :: (?be :: BitEngine l, LV.Storable l)
       => LV.Vector l -> LV.Vector l -> LV.Vector l
@@ -136,15 +136,15 @@ lvSetBits n pr = LV.generate n (lFromBool . pr)
 
 -- | @lAlignUp addr i@ returns pair @(c,v)@ where @v@ is the smallest multiple of @2^i@
 -- not smaller than @addr@, and @c@ is set if computation overflowed.
-lAlignUp :: (?be :: BitEngine l, LV.Storable l) => LV.Vector l -> Int -> (l,LV.Vector l)
-lAlignUp addr i = (c, s `lvAnd` lvSetBits n (>= i))
+lAlignUp :: (?be :: BitEngine l, LV.Storable l) => LV.Vector l -> Alignment -> (l,LV.Vector l)
+lAlignUp addr i = (c, s `lvAnd` lvSetBits n (>= fromIntegral i))
   where n = LV.length addr
-        (c,s) = addr `lFullAdd` lvSetBits n (< i)
+        (c,s) = addr `lFullAdd` lvSetBits n (< fromIntegral i)
 
 -- | @lAlignDown addr i@ returns pair @(c,v)@ where @v@ is the largest multiple of @2^i@
 -- not larger than @addr@, and @c@ is set if computation overflowed.
-lAlignDn :: (?be :: BitEngine l, LV.Storable l) => LV.Vector l -> Int -> LV.Vector l
-lAlignDn addr i = addr `lvAnd` lvSetBits (LV.length addr) (>= i)
+lAlignDn :: (?be :: BitEngine l, LV.Storable l) => LV.Vector l -> Alignment -> LV.Vector l
+lAlignDn addr i = addr `lvAnd` lvSetBits (LV.length addr) (>= fromIntegral i)
 
 bmError :: String -> a
 bmError = error
@@ -353,11 +353,16 @@ termToBytes lc be tp (BitTerm val) =
 
 data MemModel sbe bytes = MemModel {
     mmDump :: Bool -> SBEMemory sbe -> Maybe [Range Addr] -> IO ()
-  , mmLoad :: SBEMemory sbe -> SBETerm sbe -> Size -> IO (SBEPred sbe, bytes)
+  , mmLoad :: SBEMemory sbe
+           -> SBETerm sbe
+           -> Size
+           -> Alignment
+           -> IO (SBEPred sbe, bytes)
     -- | @mmStore mem value addr@
   , mmStore :: SBEMemory sbe
             -> SBETerm sbe
             -> bytes
+            -> Alignment
             -> IO (SBEPred sbe, SBEMemory sbe)
   , mmInitGlobal :: SBEMemory sbe
                  -> bytes
@@ -372,14 +377,14 @@ data MemModel sbe bytes = MemModel {
   , mmStackAlloc :: SBEMemory sbe -- ^ Memory
                  -> Size          -- ^ Size of each element
                  -> SBETerm sbe   -- ^ Number of elements
-                 -> Int           -- ^ Log-base 2 of alignment
+                 -> Alignment     -- ^ Alignment constraint in bytes.
                  -> IO (AllocResult sbe)
   , mmStackPush :: SBEMemory sbe -> IO (SBEPred sbe, SBEMemory sbe)
   , mmStackPop  :: SBEMemory sbe -> IO (SBEMemory sbe)
   , mmHeapAlloc :: SBEMemory sbe
                 -> Size
                 -> SBETerm sbe
-                -> Int
+                -> Alignment
                 -> IO (AllocResult sbe)
   , mmMemCopy :: SBEMemory sbe
               -> SBETerm sbe            -- ^ Destination pointer
@@ -407,9 +412,10 @@ loadTerm :: (?be :: BitEngine l, Eq l, LV.Storable l)
          -> m
          -> MemType -- ^ Type to read
          -> BitTerm l -- ^ Pointer to load
+         -> Alignment
          -> IO (l, BitTerm l)
-loadTerm dl mm bm tp ptr = do
-  (c,v) <- mmLoad mm bm ptr (memTypeSize dl tp)
+loadTerm dl mm bm tp ptr a = do
+  (c,v) <- mmLoad mm bm ptr (memTypeSize dl tp) a
   case bytesToTerm dl tp v of
     Just t -> return (c,t)
     Nothing -> fail "Backend asked to read symblic floating point number."
@@ -422,10 +428,11 @@ storeTerm :: (?be :: BitEngine l, Eq l, LV.Storable l)
           -> BitTerm l
           -> MemType
           -> BitTerm l
+          -> Alignment
           -> IO (SBEPred (BitIO m l), SBEMemory (BitIO m l))
-storeTerm dl mm m ptr tp v
+storeTerm dl mm m ptr tp v a
   | LV.length bytes == 0 = return (lTrue, m)
-  | otherwise = mmStore mm m ptr bytes
+  | otherwise = mmStore mm m ptr bytes a
   where bytes = termToBytes dl tp v
 
 -- BasicBlockMap {{{1
@@ -550,15 +557,16 @@ loadBytes :: (?be :: BitEngine l, Eq l, LV.Storable l)
           => (LV.Vector l -> IO (l, LV.Vector l))
           -> BitTerm l
           -> Size
+          -> Alignment
           -> IO (l, LV.Vector l)
-loadBytes byteLoader (PtrTerm ptr) sz =
+loadBytes byteLoader (PtrTerm ptr) sz _ =
     impl [] lTrue (toInteger sz)
   where impl l c 0 = return (c, LV.concat l)
         impl l c i = do
           (bc, bv) <- byteLoader =<< beAddIntConstant ?be ptr (i-1)
           c' <- beAnd ?be c bc
           impl (bv:l) c' (i-1)
-loadBytes _ _ _ = illegalArgs "loadBytes"
+loadBytes _ _ _ _ = illegalArgs "loadBytes"
 
 -- | Returns condition under which store is permitted.
 storeByteCond :: (Eq l, LV.Storable l) => BitEngine l -> Storage l -> LV.Vector l -> IO l
@@ -594,8 +602,9 @@ storeBytes :: (Eq l, LV.Storable l)
            -> Storage l      -- ^ Base storage
            -> LV.Vector l    -- ^ Address to store value in
            -> LV.Vector l    -- ^ Value to store
+           -> Alignment
            -> IO (l, Storage l) -- ^ Condition for address to be valid, and updated storage.
-storeBytes be mem ptr value = impl 0 (beTrue be) mem
+storeBytes be mem ptr value _ = impl 0 (beTrue be) mem
   where bv = sliceIntoBytes value
         impl i c m
           | i == byteSize value = return (c,m)
@@ -776,7 +785,7 @@ bmInitGlobalBytes be ptrWidth m bytes
   | otherwise = do
       let ptrv = beVectorFromInt be ptrWidth dataAddr
           mem  = uninitRegion be ptrWidth dataAddr newDataAddr (bmStorage m)
-      (c,newStorage) <- storeBytes be mem ptrv bytes
+      (c,newStorage) <- storeBytes be mem ptrv bytes 0
       assert (c == beTrue be) $
         return $ Just ( PtrTerm ptrv
                       , m { bmStorage = newStorage, bmDataAddr = newDataAddr })
@@ -830,7 +839,7 @@ bmStackAlloc :: (Eq l, LV.Storable l)
              -> BitMemory l
              -> Size      -- ^ Element size
              -> BitTerm l -- ^ Number of elements
-             -> Int       -- ^ Alignment constraint
+             -> Alignment -- ^ Alignment constraint
              -> AllocResult (BitIO (BitMemory l) l)
 bmStackAlloc be ptrWidth bm eltSize (IntTerm cntVector) a =
   case beVectorToMaybeInt be cntVector of
@@ -881,7 +890,7 @@ bmHeapAlloc :: (Eq l, LV.Storable l)
             -> BitMemory l
             -> Size      -- ^ Element size
             -> BitTerm l -- ^ Number of elements
-            -> Int       -- ^ Alignment constraint
+            -> Alignment -- ^ Alignment constraint
             -> AllocResult (BitIO (BitMemory l) l)
 bmHeapAlloc be ptrWidth bm eltSize (IntTerm cntVector) a =
   case beVectorToMaybeInt be cntVector of
@@ -916,17 +925,18 @@ bmMemCopy :: (Eq l, LV.Storable l)
           -> BitTerm l   -- ^ Length value
           -> BitTerm l   -- ^ Alignment in bytes
           -> IO (l, BitMemory l)
-bmMemCopy be m (PtrTerm dst) src (IntTerm len0) (IntTerm _align) = do
+bmMemCopy be m (PtrTerm dst) src (IntTerm len0) (IntTerm _align0) = do
   -- TODO: Alignment and overlap checks?
   let ?be = be
-  (cr, bytes) <- loadBytes (bmLoadByte be m) src len
-  (cw, newStorage) <- storeBytes be (bmStorage m) dst bytes
+  (cr, bytes) <- loadBytes (bmLoadByte be m) src len 0
+  (cw, newStorage) <- storeBytes be (bmStorage m) dst bytes 0
   c <- beAnd be cr cw
   return (c, m { bmStorage = newStorage })
   where
     len = case beVectorToMaybeInt be len0 of
             Nothing    -> bmError $ "Symbolic memcpy len not supported"
             Just (_,x) -> fromInteger x
+
 bmMemCopy _ _ _ _ _ _ = illegalArgs "bmMemCopy"
 
 -- | Memory model for explicit buddy allocation scheme.
@@ -940,9 +950,9 @@ buddyMemModel dl be = mm
                 mmDump = bmDump be
               , mmLoad = \m ->
                  let ?be = be in loadBytes (bmLoadByte be m)
-              , mmStore = \m (PtrTerm ptr) bytes -> do
+              , mmStore = \m (PtrTerm ptr) bytes a -> do
                  Arrow.second (\s -> m { bmStorage = s }) <$>
-                   storeBytes be (bmStorage m) ptr bytes
+                   storeBytes be (bmStorage m) ptr bytes a
               , mmInitGlobal = bmInitGlobalBytes be ptrWidth
               , mmAddDefine = return `c3` bmAddDefine be ptrWidth
               , mmBlockAddress = blockAddress . bmBasicBlockMap
@@ -1128,14 +1138,15 @@ dmLoadBytes :: (?be :: BitEngine l, Ord l, LV.Storable l)
             => DagMemory l
             -> BitTerm l
             -> Size
+            -> Alignment
             -> IO (l, LV.Vector l)
-dmLoadBytes _ (PtrTerm _) 0 = return (lTrue, LV.empty)
-dmLoadBytes mem (PtrTerm ptr) sz = do
+dmLoadBytes _ (PtrTerm _) 0 _ = return (lTrue, LV.empty)
+dmLoadBytes mem (PtrTerm ptr) sz _ = do
   let ptrOffset i = snd $ ptr `lFullAdd` lVectorFromInt (LV.length ptr) (toInteger i)
   return ( dmIsInitialized mem (ptr,ptrOffset sz)
          , LV.concat [ dmLoadByte mem (ptrOffset (i-1)) | i <- [1..sz] ]
          )
-dmLoadBytes _ _ _ = illegalArgs "dmLoadBytes"
+dmLoadBytes _ _ _ _ = illegalArgs "dmLoadBytes"
 
 -- | Returns node with given app, creating it if necessary.  The function passed
 -- in gives the opportunity to modify the node before it is cached.
@@ -1199,8 +1210,9 @@ dmStoreBytes :: (?be :: BitEngine l, Ord l, LV.Storable l)
              -> DagMemory l
              -> BitTerm l
              -> LV.Vector l
+             -> Alignment
              -> IO (l, DagMemory l)
-dmStoreBytes ref mem (PtrTerm ptr) flatBytes
+dmStoreBytes ref mem (PtrTerm ptr) flatBytes _
   | byteCount == 0 = return (lTrue, mem)
   | otherwise = do
     --TODO: Figure out how to handle possibility that ptrEnd addition overflows.
@@ -1209,7 +1221,7 @@ dmStoreBytes ref mem (PtrTerm ptr) flatBytes
     return (dmIsAllocated mem (ptr,ptrEnd), m)
  where newBytes = sliceIntoBytes flatBytes
        byteCount = V.length newBytes
-dmStoreBytes _ _ _ _ = illegalArgs "dmStoreBytes"
+dmStoreBytes _ _ _ _ _ = illegalArgs "dmStoreBytes"
 
 -- | Initialize global data memory.
 dmInitGlobal :: (?be :: BitEngine l, Ord l, LV.Storable l)
@@ -1295,7 +1307,7 @@ dmStackAlloc :: (?be :: BitEngine l, Ord l, LV.Storable l)
               -> DagMemory l
               -> Size
               -> BitTerm l
-              -> Int
+              -> Alignment
               -> IO (AllocResult (BitIO (DagMemory l) l))
 dmStackAlloc ptrWidth stackGrowsUp stackEnd ref mem eltSize (IntTerm eltCount) align = do
   let stack = dmsStack (dmState mem)
@@ -1388,7 +1400,7 @@ dmHeapAlloc :: (?be :: BitEngine l, Ord l, LV.Storable l)
             -> DagMemory l -- ^ Memory
             -> Size        -- ^ Size of elements
             -> BitTerm l   -- ^ Number of elements
-            -> Int         -- ^ Alignment
+            -> Alignment         -- ^ Alignment
             -> IO (AllocResult (BitIO (DagMemory l) l))
 dmHeapAlloc ptrWidth heapEnd ref mem eltSize (IntTerm eltCount) _align =
     AResult c (PtrTerm heap) <$> mmem
@@ -1712,8 +1724,8 @@ sbeBitBlast dl mm = sbe
           , asUnsignedInteger = \_ -> lGetUnsigned . asIntTerm
           , asConcretePtr     = lGetUnsigned . asPtrTerm
           , memDump          = BitIO `c2` mmDump mm True
-          , memLoad          = BitIO `c3` loadTerm dl mm
-          , memStore         = BitIO `c4` storeTerm dl mm
+          , memLoad          = BitIO `c4` loadTerm dl mm
+          , memStore         = BitIO `c5` storeTerm dl mm
           , memBranch  = BitIO . mmRecordBranch mm
           , memBranchAbort   = BitIO . mmBranchAbort mm
           , memMerge         = BitIO `c3` mmMux mm
@@ -1726,8 +1738,8 @@ sbeBitBlast dl mm = sbe
               mmStackAlloc mm m (memTypeSize dl eltTp) cnt a
           , stackPushFrame   = BitIO . mmStackPush mm
           , stackPopFrame    = BitIO . mmStackPop mm
-          , heapAlloc        = \m eltTp _ cnt ->
-              BitIO . mmHeapAlloc mm m (memTypeSize dl eltTp) cnt
+          , heapAlloc        = \m eltTp _ cnt a ->
+              BitIO $ mmHeapAlloc mm m (memTypeSize dl eltTp) cnt a
           , memCopy          = BitIO `c5` mmMemCopy mm
           , writeAiger       = \f ts ->
               BitIO $ beWriteAigerV be f $ flattenTerm <$> ts
