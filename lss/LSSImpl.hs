@@ -143,13 +143,13 @@ buildArgv [IntType argcw, ptype@PtrType{}] argv' | length argv' < 2^argcw = do
      let len = length str + 1
      let tp = ArrayType len (IntType 8)
      v <- evalExpr' ec (sValString (str ++ [chr 0]))
-     p <- alloca tp aw one Nothing
-     store tp v p
+     p <- alloca tp aw one 0
+     store tp v p 0
      return p
-  argvBase <- alloca i8p argcw argc Nothing
+  argvBase <- alloca i8p argcw argc 0
   argvArr  <- liftSBE $ termArray sbe i8p strPtrs
   -- Write argument string data and argument string pointers
-  store (ArrayType (length argv') i8p) argvArr argvBase
+  store (ArrayType (length argv') i8p) argvArr argvBase 0
   return [ (IntType argcw, argc)
          , (ptype, argvBase)
          ]

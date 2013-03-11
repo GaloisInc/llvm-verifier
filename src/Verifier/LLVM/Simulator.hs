@@ -95,7 +95,6 @@ import           Verifier.LLVM.Backend
 import           Verifier.LLVM.Codebase
 import           Verifier.LLVM.Simulator.Common
 import           Verifier.LLVM.Simulator.SimUtils
-import           Verifier.LLVM.Utils
 
 -- Utility functions
 
@@ -395,7 +394,7 @@ memSet dst val lenWidth len align = do
   case lenVal of
     Just 0 -> return ()
     _ -> do
-      store i8 val dst
+      store i8 val dst 0
       negone   <- liftSBE  $ termInt sbe lenWidth (-1)
       dst'     <- ptrInc dst
       len'     <- termAdd lenWidth len negone
@@ -640,31 +639,31 @@ step (SetCurrentBlock bid) = setCurrentBlock bid
 step (Assign reg tp (Val tv)) = do
   assignReg reg tp =<< evalExpr "eval@Val" tv
 
-step (Assign reg tp (Alloca ty msztv malign)) = do
+step (Assign reg tp (Alloca ty msztv a)) = do
   assignReg reg tp =<<
     case msztv of
       Just (w,v) -> do
         sizeTm <- evalExpr "alloca" v
-        alloca ty w sizeTm malign
+        alloca ty w sizeTm a
       Nothing -> do
         aw <- withDL ptrBitwidth
         sbe <- gets symBE
         sizeTm <- liftSBE $ termInt sbe aw 1
-        alloca ty aw sizeTm malign
+        alloca ty aw sizeTm a
 
-step (Assign reg tp (Load v ty _malign)) = do
+step (Assign reg tp (Load v ty a)) = do
   addrTerm <- evalExpr "load" v
   dumpMem 6 "load pre"
-  val <- load ty addrTerm
+  val <- load ty addrTerm a
   dumpMem 6 "load post"
   assignReg reg tp val
 
-step (Store valType val addr _malign) = do
+step (Store valType val addr a) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
   ec <- getCurrentEvalContext "store"
   valTerm  <- evalExpr' ec val
   addrTerm <- evalExpr' ec addr
-  store valType valTerm addrTerm
+  store valType valTerm addrTerm a
   whenVerbosity (<=6) $ dumpMem 6 "store post"
 
 step Unreachable
@@ -739,12 +738,12 @@ alloca ::
   => MemType
   -> BitWidth
   -> SBETerm sbe
-  -> Maybe Int
+  -> Alignment
   -> Simulator sbe m (SBETerm sbe)
-alloca ty szw sztm malign = do
+alloca ty szw sztm a = do
   Just m <- preuse currentPathMem
   sbe <- gets symBE
-  rslt <- liftSBE $ stackAlloc sbe m ty szw sztm (maybe 0 lg malign)
+  rslt <- liftSBE $ stackAlloc sbe m ty szw sztm a
   case rslt of
     ASymbolicCountUnsupported  -> errorPath $ FailRsn $
       "Stack allocation only supports a concrete element count "
@@ -763,12 +762,11 @@ malloc ::
   => MemType
   -> BitWidth -- ^ Width of size
   -> SBETerm sbe -- ^ Size
-  -> Maybe Int -- ^ Alignment
   -> Simulator sbe m (SBETerm sbe)
-malloc ty szw sztm malign  = do
+malloc ty szw sztm = do
   sbe <- gets symBE
   Just m <- preuse currentPathMem
-  rslt <- liftSBE $ heapAlloc sbe m ty szw sztm (maybe 0 lg malign)
+  rslt <- liftSBE $ heapAlloc sbe m ty szw sztm 0
   case rslt of
     ASymbolicCountUnsupported -> errorPath $ FailRsn $
       "malloc only supports concrete element count "
@@ -784,11 +782,11 @@ load ::
   , MonadIO m
   , Functor sbe
   )
-  => MemType -> SBETerm sbe -> Simulator sbe m (SBETerm sbe)
-load tp addr = do
+  => MemType -> SBETerm sbe -> Alignment -> Simulator sbe m (SBETerm sbe)
+load tp addr a = do
   sbe <- gets symBE
   Just mem <- preuse currentPathMem
-  (cond, v) <- liftSBE $ memLoad sbe mem tp addr
+  (cond, v) <- liftSBE $ memLoad sbe mem tp addr a
   let fr = memFailRsn sbe "Invalid load address" [addr]
   processMemCond fr cond
   return v
@@ -798,12 +796,12 @@ store ::
   , MonadIO m
   , Functor sbe
   )
-  => MemType -> SBETerm sbe -> SBETerm sbe -> Simulator sbe m ()
-store tp val dst = do
+  => MemType -> SBETerm sbe -> SBETerm sbe -> Alignment -> Simulator sbe m ()
+store tp val dst a = do
   sbe <- gets symBE
 
   Just m <- preuse currentPathMem
-  (c, m') <- liftSBE $ memStore sbe m dst tp val
+  (c, m') <- liftSBE $ memStore sbe m dst tp val a
   currentPathMem .= m'
 
   let fr = memFailRsn sbe "Invalid store address: " [dst]
@@ -1037,7 +1035,7 @@ loadString nm ptr = do
     cs <- go ptr
     return $ map (toEnum . fromEnum) $ cs
   where go addr = do
-          t <- load i8 addr
+          t <- load i8 addr 0
           sbe <- gets symBE
           addr' <- ptrInc addr
           case asUnsignedInteger sbe undefined t of
@@ -1104,10 +1102,6 @@ printfToString fmt args = do
         procRest r p rs s = procString r p (reverse s ++ rs)
     procString fmt 0 []
 
-
-
-
-
 printfHandler :: StdOvd sbe m
 printfHandler = Override $ \_sym _rty args ->
   case args of
@@ -1126,23 +1120,27 @@ printSymbolic :: StdOvd sbe m
 printSymbolic = Override $ \_sym _rty args ->
   case args of
     [(_,ptr)] -> do
-      v <- load i8 ptr
+      v <- load i8 ptr 0
       d <- withSBE' $ \sbe -> prettyTermD sbe v
       liftIO $ print d
       return Nothing
     _ -> errorPath $ FailRsn "lss_print_symbolic: wrong number of arguments"
 
-allocHandler :: (Functor m, Monad m, MonadIO m, Functor sbe)
-             => BitWidth
-             -> (MemType
-                   -> BitWidth
-                   -> SBETerm sbe
-                   -> Maybe Int
-                   -> Simulator sbe m (SBETerm sbe))
-             -> Override sbe m
-allocHandler aw fn = Override $ \_sym _rty args ->
+
+mallocHandler :: (Functor m, MonadIO m, Functor sbe)
+              => BitWidth -> Override sbe m
+mallocHandler aw = Override $ \_sym _rty args ->
   case args of
-    [(_,sizeTm)] -> Just <$> fn i8 aw sizeTm Nothing
+    [(_,sizeTm)] -> Just <$> malloc i8 aw sizeTm
+    _ -> errorPath $ FailRsn "malloc: wrong number of arguments"
+
+
+allocaHandler :: (Functor m, Monad m, MonadIO m, Functor sbe)
+             => BitWidth
+             -> Override sbe m
+allocaHandler aw = Override $ \_sym _rty args ->
+  case args of
+    [(_,sizeTm)] -> Just <$> alloca i8 aw sizeTm 0
     _ -> e "alloca: wrong number of arguments"
   where
     e = errorPath . FailRsn
@@ -1213,10 +1211,10 @@ freshIntArray n = Override $ \_sym _rty args ->
           let sz = fromIntegral size
               ety = IntType n
               ty = ArrayType (fromIntegral size) ety
-          arrPtr <- alloca ety 32 sizeTm Nothing
+          arrPtr <- alloca ety 32 sizeTm 0
           elts <- replicateM sz (withSBE $ flip freshInt n)
           arrTm <- liftSBE $ termArray sbe ety elts
-          store ty arrTm arrPtr
+          store ty arrTm arrPtr 0
           return (Just arrPtr)
         Nothing -> e "lss_fresh_array_uint called with symbolic size"
     _ -> e "lss_fresh_array_uint: wrong number of arguments"
@@ -1329,7 +1327,7 @@ loadArray ptr tp count = do
           | otherwise = do
              v <- liftSBE $ applyTypedExpr sbe (GetConstArrayElt c tp a (i-1))
              go (i-1) (v:r) a
-    go c [] =<< load (ArrayType (fromInteger count) tp) ptr
+    go c [] =<< load (ArrayType (fromInteger count) tp) ptr 0
   where c = fromInteger count
 
 -- | Attempts to read an array of boolean values from a pointer with the given number
@@ -1377,9 +1375,9 @@ evalAigerArray ty =
         case asUnsignedInteger sbe szw szTm of
           Just sz -> do
             bools <- getEvalInputs "lss_eval_aiger_array" input inputSz
-            tm <- load (ArrayType (fromInteger sz) ty) sym
+            tm <- load (ArrayType (fromInteger sz) ty) sym 0
             res <- liftSBE $ evalAiger sbe bools tm
-            store (ArrayType (fromInteger sz) ty) dst res
+            store (ArrayType (fromInteger sz) ty) dst res 0
             return Nothing
           _ -> e "lss_eval_aiger_array: symbolic sizes not supported"
       _ -> e "lss_eval_aiger_array: wrong number of arguments"
@@ -1484,13 +1482,12 @@ registerLibcOverrides = do
     Just d -> do
       case fdRetType d of
         Just _ ->
-          registerOverride "malloc" d $
-            allocHandler (fromIntegral aw) malloc
+          registerOverride "malloc" d $ mallocHandler aw
         _ -> error "malloc has unexpected return type."
   registerOverrides
     [ ("__assert_rtn", voidFunDecl [i8p, i8p, i32, i8p], assertHandler__assert_rtn)
     --, ("exit", voidTy, [i32], False, exitHandler)
-    , ("alloca", funDecl voidPtr [sizeT], allocHandler (fromIntegral aw) alloca)
+    , ("alloca", funDecl voidPtr [sizeT], allocaHandler aw)
     , ("free", voidFunDecl [voidPtr],
        -- TODO: stub! Does this need to be implemented?
        Override $ \_sym _rty _args -> return Nothing)

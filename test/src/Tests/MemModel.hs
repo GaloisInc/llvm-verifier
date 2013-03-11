@@ -68,12 +68,12 @@ memModelTests =
          AResult c0' _ _ <- run $ mmStackAlloc m1 1 fill 1
          assert =<< runSBE (evalPred [False] c0')
       -- Test store to concrete address succeeds.
-      (c1, m2) <- run $ mmStore m1 ptr bytes
+      (c1, m2) <- run $ mmStore m1 ptr bytes 0
       do assert =<< runSBE (evalPred [True] c1)
       -- Test symbolic load succeeds under appropiate conditions.
       do cntExt <- runSBE $ applyTypedExpr (SExt Nothing 1 cnt ptrWidth)
          rptr <- runSBE $ applyTypedExpr (PtrAdd ptr cntExt)
-         (c2, _) <- run $ mmLoad m2 rptr 1 
+         (c2, _) <- run $ mmLoad m2 rptr 1 0 
          assert =<< runSBE (evalPred [False] c2)
   , mmTest "mergeTest" 1 $ \_lc be sbe@SBE { .. } MemModel { .. } m0 -> do
       let ?be = be
@@ -85,16 +85,16 @@ memModelTests =
       assert (c0 == tTrue)
       -- Store bytes
       let lvi = lVectorFromInt
-      (ct, mt) <- run $ mmStore m1 ptr (lvi 8 1)
+      (ct, mt) <- run $ mmStore m1 ptr (lvi 8 1) 0
       assert =<< runSBE (evalPred [] ct)
-      (cf, mf) <- run $ mmStore m1 ptr (lvi 8 0)
+      (cf, mf) <- run $ mmStore m1 ptr (lvi 8 0) 0
       assert =<< runSBE (evalPred [] cf)
       -- Merge
       cond0 <- runSBE $ freshInt 1
       cond <- runSBE $ applyIEq 1 cond0 =<< termInt sbe 1 1
       m2 <- run $ mmMux cond mt mf
       -- Check result of merge
-      (c2, v) <- run $ mmLoad m2 ptr 1 
+      (c2, v) <- run $ mmLoad m2 ptr 1 0 
       assert (c2 == tTrue)
       v1 <- run $ lEvalAig (LV.fromList [False]) v
       v2 <- run $ lEvalAig (LV.fromList [True ]) v

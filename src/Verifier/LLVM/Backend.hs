@@ -120,15 +120,16 @@ data SBE m = SBE
     -- parameter optionally constrains address ranges.
   , memDump :: SBEMemory m -> Maybe [(Integer, Integer)] -> m ()
 
-    -- | @memLoad m tp p@ returns a pair @(c,v)@ where @v@ denotes the value at
+    -- | @memLoad m tp p a@ returns a pair @(c,v)@ where @v@ denotes the value at
     -- address @p@ in memory @m@, and @c@ denotes an additional path constraint
     -- that ensures the address @p@ is a valid memory location in @m@.
     -- In other words, @p@ is a valid memory location if @c@ is true.
   , memLoad :: SBEMemory m
             -> MemType
             -> SBETerm m
+            -> Alignment
             -> m (SBEPartialResult m (SBETerm m))
-    -- | @memStore m p tp v@ returns a pair @(c,m')@ where @m'@ denotes the memory
+    -- | @memStore m p tp v a@ returns a pair @(c,m')@ where @m'@ denotes the memory
     -- obtained by storing value @v@ with type @tp@ at address @p@, and @c@ denotes an
     -- additional path constraint that ensures the address @p@ is a valid memory
     -- location in @m@.
@@ -136,6 +137,7 @@ data SBE m = SBE
              -> SBETerm m -- ^ Address to store value at. 
              -> MemType   -- ^ Type of value
              -> SBETerm m -- ^ Value to store
+             -> Alignment
              -> m (SBEPartialResult m (SBEMemory m))
 
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
@@ -173,7 +175,7 @@ data SBE m = SBE
                -> MemType
                -> BitWidth
                -> SBETerm m
-               -> Int
+               -> Alignment -- ^ Alignment required for allocation
                -> m (AllocResult m)
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
     -- stack frame to @mem@.
@@ -182,14 +184,14 @@ data SBE m = SBE
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
 
-    -- | @heapAlloc h tp i align@ allocates memory @h@ in the heap for
+    -- | @heapAlloc m tp iw i a@ allocates memory in the heap for @m@ for
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
   , heapAlloc :: SBEMemory m
               -> MemType
               -> BitWidth
               -> SBETerm m
-              -> Int
+              -> Alignment
               -> m (AllocResult m)
 
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
