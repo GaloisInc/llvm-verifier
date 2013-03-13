@@ -51,7 +51,7 @@ symTests =
                      \r0 r1 -> r0 == Just 0 && r1 == Just 1
     trivSymRd  v = psk v $ runSimple v $ trivBranchImpl "sym_read" $
                      \r0 r1 -> r0 == Just 99 && r1 == Just 42
-    runSimple v  = runAllMemModelTest v (commonCB "test-sym-simple.bc")
+    runSimple v  = runAllMemModelTest v "test-sym-simple.bc"
 
 evalClosed :: (Functor sbe)
   => SBE sbe -> BitWidth -> SBETerm sbe -> [Bool] -> sbe (Maybe Integer)

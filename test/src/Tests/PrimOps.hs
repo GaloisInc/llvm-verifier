@@ -86,7 +86,7 @@ primOpTests =
     testArith v       = runMain v "test-arith.bc" (RV 0)
     testBranch v      = runMain v "test-branch.bc" (RV 0)
     testCallVR v      = runMainVoid v "test-call-voidrty.bc"
-    testSetupPtrArg v = psk v $ runAllMemModelTest v (commonCB "test-primops.bc")
+    testSetupPtrArg v = psk v $ runAllMemModelTest v "test-primops.bc"
                                   testSetupPtrArgImpl
     testCallExit v    = runMain' True v "test-call-exit.bc" AllPathsErr
 
@@ -102,8 +102,8 @@ primOpTests =
     fact 0            = 1
     fact x            = x * fact (x-1)
 
-    primU v nm mg f = psk v $ chkUnaryCInt32Fn mg v (commonCB "test-primops.bc") (L.Symbol nm) f
-    primB v nm mg f = psk v $ chkBinCInt32Fn   mg v (commonCB "test-primops.bc") (L.Symbol nm) f
+    primU v nm mg f = psk v $ chkUnaryCInt32Fn mg v "test-primops.bc" (L.Symbol nm) f
+    primB v nm mg f = psk v $ chkBinCInt32Fn   mg v "test-primops.bc" (L.Symbol nm) f
 
 chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a)
                     => BitWidth -> Bool -> IntArithOp -> (a -> a -> a)

@@ -22,6 +22,7 @@ module Verifier.LLVM.Simulator.Common
   , State(..)
   , ctrlStk
   , globalTerms
+  , blockPtrs
   , fnOverrides
   , evHandlers
   , errorPaths
@@ -100,7 +101,7 @@ newtype Simulator sbe m a =
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
 type GlobalMap sbe = M.Map Symbol (SBETerm sbe)
---type MF sbe        = MergeFrame (SBETerm sbe) (SBEMemory sbe)
+type BlockMap sbe = M.Map (Symbol, BlockLabel) (SBETerm sbe)
 type OvrMap sbe m  = M.Map Symbol (Override sbe m, Bool {- user override? -})
 
 -- | Symbolic simulator options
@@ -114,11 +115,12 @@ defaultLSSOpts = LSSOpts False
 
 -- | Symbolic simulator state
 data State sbe m = State
-  { codebase     :: Codebase        -- ^ LLVM code, post-transformation to sym ast
+  { codebase     :: Codebase sbe    -- ^ LLVM code, post-transformation to sym ast
   , symBE        :: SBE sbe         -- ^ Symbolic backend interface
   , liftSymBE    :: LiftSBE sbe m   -- ^ Lift SBE operations into the Simulator monad
   , _ctrlStk     :: !(Maybe (CS sbe))  -- ^ Control stack for controlling simulator.
   , _globalTerms :: GlobalMap sbe   -- ^ Global ptr terms
+  , _blockPtrs   :: BlockMap sbe
   , _fnOverrides  :: OvrMap sbe m    -- ^ Function override table
   , verbosity    :: Int             -- ^ Verbosity level
   , _evHandlers   :: SEH sbe m       -- ^ Simulation event handlers
@@ -134,6 +136,9 @@ ctrlStk f s = (\v -> s { _ctrlStk = v }) <$> f (_ctrlStk s)
 
 globalTerms :: Simple Lens (State sbe m) (GlobalMap sbe)
 globalTerms f s = (\v -> s { _globalTerms = v }) <$> f (_globalTerms s)
+
+blockPtrs :: Simple Lens (State sbe m) (BlockMap sbe)
+blockPtrs f s = (\v -> s { _blockPtrs = v }) <$> f (_blockPtrs s)
 
 fnOverrides :: Simple Lens (State sbe m) (OvrMap sbe m)
 fnOverrides f s = (\v -> s { _fnOverrides = v }) <$> f (_fnOverrides s)
@@ -420,6 +425,10 @@ pathAssertions = lens _pathAssertions (\p r -> p { _pathAssertions = r })
 data FailRsn       = FailRsn String deriving (Show)
 data ErrorPath sbe = EP { epRsn :: FailRsn, epPath :: Path sbe }
 
+instance Error FailRsn where
+  noMsg  = FailRsn ""
+  strMsg = FailRsn
+
 -- | The exception type for errors that are both thrown and caught within the
 -- simulator.
 data InternalExc sbe m
@@ -435,15 +444,15 @@ data SEH sbe m = SEH
     -- | Invoked after function overrides have been registered
     onPostOverrideReg :: Simulator sbe m ()
     -- | Invoked before each instruction executes
-  , onPreStep         :: SymStmt  -> Simulator sbe m ()
+  , onPreStep         :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked after each instruction executes
-  , onPostStep        :: SymStmt  -> Simulator sbe m ()
+  , onPostStep        :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked before construction of a global term value
-  , onMkGlobTerm      :: Global -> Simulator sbe m ()
+  , onMkGlobTerm      :: Global (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked before memory model initialization of global data
-  , onPreGlobInit     :: Global -> SBETerm sbe -> Simulator sbe m ()
+  , onPreGlobInit     :: Global (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
     -- | Invoked after memory model initialization of global data
-  , onPostGlobInit    :: Global -> SBETerm sbe -> Simulator sbe m ()
+  , onPostGlobInit    :: Global (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
   }
 
 -- | A handler for a function override. This gets the function symbol as an
