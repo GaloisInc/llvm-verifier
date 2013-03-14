@@ -9,6 +9,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE Rank2Types                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TypeFamilies               #-}
@@ -69,7 +70,7 @@ type ExecRsltHndlr sbe crt a =
 lssImpl :: Functor sbe
         => SBE sbe
         -> SBEMemory sbe
-        -> Codebase
+        -> Codebase sbe
         -> [String]
         -> LSS
         -> IO (ExecRslt sbe Integer)
@@ -87,11 +88,11 @@ lssImpl sbe mem cb argv0 args = do
 runBitBlast :: Functor sbe
             => SBE sbe -- ^ SBE to use
             -> SBEMemory sbe     -- ^ SBEMemory to use
-            -> Codebase
+            -> Codebase sbe
             -> MemGeom
             -> [String]          -- ^ argv
             -> LSS               -- ^ LSS command-line arguments
-            -> SymDefine         -- ^ Define of main()
+            -> SymDefine (SBETerm sbe) -- ^ Define of main()
             -> IO (ExecRslt sbe Integer)
 runBitBlast sbe mem cb mg argv' args mainDef = do
   runSimulator cb sbe mem seh' opts $ do
@@ -134,15 +135,14 @@ buildArgv [] argv' = do
 buildArgv [IntType argcw, ptype@PtrType{}] argv' | length argv' < 2^argcw = do
   sbe <- gets symBE
   argc     <- liftSBE $ termInt sbe argcw (toInteger (length argv'))
-  let ec = EvalContext { evalContextName = "buildArgv"
-                       , evalRegs = Nothing
-                       }
   aw <- withDL ptrBitwidth
   one <- liftSBE $ termInt sbe aw 1
   strPtrs  <- forM argv' $ \str -> do
      let len = length str + 1
      let tp = ArrayType len (IntType 8)
-     v <- evalExpr' ec (sValString (str ++ [chr 0]))
+     let ?sbe = sbe
+     sv <- liftIO $ liftStringValue (str ++ [chr 0])
+     v <- evalExpr "buildArgv" sv
      p <- alloca tp aw one 0
      store tp v p 0
      return p

@@ -4,10 +4,8 @@ Description      : The interface to a symbolic backend
 Stability        : provisional
 Point-of-contact : jstanley
 -}
-
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ImplicitParams   #-}
-{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE Rank2Types       #-}
 {-# LANGUAGE TypeFamilies     #-}
 
 module Verifier.LLVM.Backend
@@ -45,7 +43,7 @@ type SBEPartialResult m r  = (SBEPred m, r)
 -- | Represents a partial result of trying to obtain a concrete value from
 -- a symbolic term.
 data LookupSymbolResult
-  = Result Symbol -- ^ The definition associated with the address.
+  = LookupResult Symbol -- ^ The definition associated with the address.
   | Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed, because it had an invalid value.
     deriving Show
@@ -95,10 +93,12 @@ data SBE m = SBE
   , evalPred :: [Bool] -> SBEPred m -> m Bool
 
     -- | @freshInt w@ creates a term representing a symbolic @w@-bit value
-  , freshInt :: Int -> m (SBETerm m)
+  , freshInt :: BitWidth -> m (SBETerm m)
 
     ----------------------------------------------------------------------------
     -- Term operator application
+
+  , typedExprEval :: forall v . TypedExpr v -> IO (ExprEvalFn v (SBETerm m))
 
     -- | Evaluate a typed expression.
   , applyTypedExpr :: TypedExpr (SBETerm m) -> m (SBETerm m)
@@ -141,14 +141,14 @@ data SBE m = SBE
 
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
     -- labels @blocks@ to the memory @mem@ and returns a pointer to
-    -- the definition, and updated memory if space is available.  If space
-    -- is unavailable, then this returns nothing.
+    -- the definition, the blocks, and updated memory if space is available.
+    -- If space is unavailable, then this returns nothing.
     -- It is undefined to call this function with a symbol that has already
     -- been defined in the memory.
   , memAddDefine :: SBEMemory m
                  -> Symbol
                  -> [BlockLabel]
-                 -> m (Maybe (SBETerm m, SBEMemory m))
+                 -> m (Maybe (SBETerm m, [SBETerm m], SBEMemory m))
     -- | @memInitGlobal mem tp data@ attempts to write @data@ to a newly
     -- allocated region of memory in address space for globals.  If
     -- space is available, returns a pointer to the region
@@ -158,10 +158,6 @@ data SBE m = SBE
                   -> SBETerm m
                   -> m (Maybe (SBETerm m, SBEMemory m))
 
-    -- | @codeBlockAddress mem d l@ returns the address of basic block with
-    -- label @l@ in definition @d@.
-  , codeBlockAddress :: SBEMemory m -> Symbol -> BlockLabel -> m (SBETerm m)
-
     -- | @codeLookupSymbol mem ptr@ returns the symbol at the given address
     -- in mem.  Lookup may fail if the pointer does not point to a symbol, or
     -- if the pointer is a symbolic value without a clear meaning.
@@ -170,11 +166,11 @@ data SBE m = SBE
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
-  , stackAlloc :: SBEMemory m
-               -> MemType
-               -> BitWidth
-               -> SBETerm m
-               -> Alignment -- ^ Alignment required for allocation
+  , stackAlloc :: SBEMemory m -- ^ Memory to allocate within.
+               -> MemType     -- ^ Type of elements to allocate.
+               -> BitWidth    -- ^ Width of count in bits. 
+               -> SBETerm m   -- ^ Count
+               -> Alignment   -- ^ Alignment required for allocation
                -> m (AllocResult m)
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
     -- stack frame to @mem@.
@@ -186,11 +182,11 @@ data SBE m = SBE
     -- | @heapAlloc m tp iw i a@ allocates memory in the heap for @m@ for
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
-  , heapAlloc :: SBEMemory m
-              -> MemType
-              -> BitWidth
-              -> SBETerm m
-              -> Alignment
+  , heapAlloc :: SBEMemory m -- ^ Memory to allocate from.
+              -> MemType     -- ^ Type of value to allocate.
+              -> BitWidth    -- ^ Bitwidth of umber of elements to allocate.
+              -> SBETerm m   -- ^ Number of elements to allocate.
+              -> Alignment   -- ^ Alginment constraint.
               -> m (AllocResult m)
 
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
@@ -199,8 +195,9 @@ data SBE m = SBE
   , memCopy :: SBEMemory m
             -> SBETerm m -- ^ Destination pointer
             -> SBETerm m -- ^ Source pointer
-            -> SBETerm m -- ^ Number of bytes to copy
-            -> SBETerm m -- ^ Alignment in bytes
+            -> BitWidth  -- ^ Bitwidth for counting number of bits.
+            -> SBETerm m -- ^ Number of bytes to copy (should have
+            -> SBETerm m -- ^ Alignment in bytes (should have 32-bit bits)
             -> m (SBEPartialResult m (SBEMemory m))
 
     -- | @memBranch mem@ records that this memory is for a path that is
@@ -274,6 +271,6 @@ termDouble sbe v = applyTypedExpr sbe (SValDouble v)
 termArray :: SBE m -> MemType -> [SBETerm m] -> m (SBETerm m)
 termArray sbe tp l = applyTypedExpr sbe (SValArray tp (V.fromList l))
 
--- | Create an struct of terms, which may have different types.
-termStruct :: (?sbe :: SBE m) => StructInfo -> [SBETerm m] -> m (SBETerm m)
-termStruct si l = applyTypedExpr ?sbe $ SValStruct si (V.fromList l)
+-- | Represents some SBE backend and the initial memory.
+data SBEPair where 
+   SBEPair :: Functor sbe => SBE sbe -> SBEMemory sbe -> SBEPair

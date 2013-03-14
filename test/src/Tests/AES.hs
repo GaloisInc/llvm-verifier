@@ -32,7 +32,7 @@ aesTests =
   ]
   where
     aes128Concrete v = psk v $ runAES v aes128ConcreteImpl
-    runAES v         = runAllMemModelTest v (commonCB "aes128BlockEncrypt.bc")
+    runAES v         = runAllMemModelTest v "aes128BlockEncrypt.bc"
 
 aes128ConcreteImpl :: forall sbe . Functor sbe => Simulator sbe IO Bool
 aes128ConcreteImpl = do

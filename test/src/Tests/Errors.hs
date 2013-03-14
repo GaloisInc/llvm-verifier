@@ -16,9 +16,9 @@ import           Tests.Common
 errorTests :: [(Args, Property)]
 errorTests =
   [
-    lssTest 0 "ctests/test-error-paths-all" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 2) Nothing
-      runTestLSSDag v cb []   $ chkLSS (Just 2) Nothing
+    lssTest 0 "ctests/test-error-paths-all" $ \v mdl -> do
+      runTestLSSBuddy v mdl [] $ chkLSS (Just 2) Nothing
+      runTestLSSDag v mdl []   $ chkLSS (Just 2) Nothing
 
   , lssTest 0 "ctests/test-error-paths-some" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS (Just 1) (Just 0)
