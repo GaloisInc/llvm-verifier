@@ -10,14 +10,12 @@ Point-of-contact : jstanley
 {-# LANGUAGE ViewPatterns     #-}
 module Tests.Symbolic (symTests) where
 
-import           Control.Monad
+import           Control.Applicative
 import           Test.QuickCheck
 import           Tests.Common
-import qualified Text.LLVM              as L
 
 import           Verifier.LLVM.BitBlastBackend
 import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Utils
 
 symTests :: [(Args, Property)]
 symTests =
@@ -56,22 +54,20 @@ symTests =
     runSimple v  = runAllMemModelTest v (commonCB "test-sym-simple.bc")
 
 evalClosed :: (Functor sbe)
-  => SBE sbe -> SBETerm sbe -> [Bool] -> sbe (Maybe Integer)
-evalClosed sbe v = fmap (\t -> fmap snd $ asSignedInteger sbe t) 
-                 . flip (evalAiger sbe) v
+  => SBE sbe -> BitWidth -> SBETerm sbe -> [Bool] -> sbe (Maybe Integer)
+evalClosed sbe w v i = asSignedInteger sbe w <$> evalAiger sbe i v
 
 trivBranchImpl :: String -> (Maybe Integer -> Maybe Integer -> Bool) -> AllMemModelTest
 trivBranchImpl symName chk = do
   b <- withSBE $ \sbe -> freshInt sbe 32
-  callDefine_ (L.Symbol symName) i32 [b]
+  callDefine_ (Symbol symName) (Just i32) [(IntType 32, b)]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
-    Just rv -> do
-      let inps0 = replicate 32 False
-          inps1 = replicate 31 False ++ [True]
-          f x   = withSBE $ \s -> evalClosed s rv x
-      liftM2 chk (f inps0) (f inps1)
+    Just rv -> chk <$> f inps0 <*> f inps1
+      where inps0 = replicate 32 False
+            inps1 = replicate 31 False ++ [True]
+            f x   = withSBE $ \s -> evalClosed s 32 rv x
 
 --------------------------------------------------------------------------------
 -- Scratch

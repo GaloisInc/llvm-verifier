@@ -3,47 +3,45 @@
 {-# LANGUAGE ImplicitParams       #-}
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE ViewPatterns         #-}
 module Tests.Common 
   ( module Tests.Common
   , ExecRsltHndlr
   , PropertyM
+  , view
   ) where
 
 import           Control.Applicative
 import           Control.Arrow
-import           Control.Monad hiding (mapM)
+import           Control.Lens hiding (act, (<.>))
+import           Control.Monad 
+import           Control.Monad.State (gets)
 import           Data.Int
-import           Data.Traversable (mapM)
-import           LSSImpl
 import           System.FilePath
+import qualified Text.LLVM                     as L
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
-
-import           Text.LLVM                     ((=:))
+import qualified Test.QuickCheck.Test          as T
 import           Verinf.Symbolic               (Lit, createBitEngine)
 import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
-import qualified Test.QuickCheck.Test          as T
-import qualified Text.LLVM                     as L
-import Prelude hiding (mapM)
+
+import           LSSImpl
 
 import           Verifier.LLVM.BitBlastBackend
 import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.SAWBackend
 import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Simulator.Common
 import           Verifier.LLVM.Simulator.SimUtils
-import           Verifier.LLVM.Utils
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
 
 newtype FailMsg = FailMsg String
 instance Show FailMsg where show (FailMsg s) = s
 
-padTy :: Int -> L.Type
-padTy bytes = L.Array (fromIntegral bytes) i8
+padTy :: Int -> MemType
+padTy bytes = ArrayType (fromIntegral bytes) i8
 
 supportDir :: FilePath
 supportDir = "test" </> "src" </> "support"
@@ -77,20 +75,9 @@ runTests tests = do
     then putStrLn "All tests successful."
     else putStrLn "One or more tests failed."
 
-chkRslt :: L.Symbol -> ExpectedRV Integer -> Maybe (Maybe Integer) -> PropertyM IO ()
-chkRslt _ (RV chk) (Just (Just v))
-  | v == chk  = assert True
-  | otherwise = assertMsg False $ "Expected " ++ show chk ++ ", got " ++ show v
-chkRslt _ VoidRV Nothing
-  = assert True
-chkRslt _ AllPathsErr Nothing
-  = assert True
-chkRslt sym _ _
-  = assertMsg False $ show (L.ppSymbol sym) ++ ": unexpected return value"
-
-constTermEq :: Maybe (Int,Integer) -> Integer -> Bool
-constTermEq (Just (_,v)) = (==v)
-constTermEq _                   = const False
+constTermEq :: Maybe Integer -> Integer -> Bool
+constTermEq (Just v) = (==v)
+constTermEq _ = const False
 
 type AllMemModelTest =
   (Functor sbe)
@@ -105,7 +92,7 @@ runAllMemModelTest v getCB act = do
         Nothing (withVerbosity v act)
 
 type CreateSBEFn sbe =
-       BitEngine Lit -> LLVMContext -> MemGeom
+       BitEngine Lit -> DataLayout -> MemGeom
                      -> IO (SBE sbe, SBEMemory sbe)
 
 runTestLSSCommon :: Functor sbe
@@ -116,10 +103,10 @@ runTestLSSCommon nm createFn v cb argv' hndlr = do
    when (v >= 2) $ run $ putStrLn nm
    assert =<< run m
   where m = do be <- createBitEngine
-               (sbe, mem) <- createFn be (lc cb) (defaultMemGeom (lc cb))
+               (sbe, mem) <- createFn be dl (defaultMemGeom dl)
                rslt       <- lssImpl sbe mem cb argv' cmdLineOpts
                hndlr sbe mem rslt
-        lc          = cbLLVMCtx
+        dl          = cbDataLayout cb
         dbugLvl     = DbugLvl (fromIntegral v)
         cmdLineOpts = LSS { dbug = dbugLvl
                           , argv = "" 
@@ -153,8 +140,8 @@ lssTestAll :: Int
            -> [String]
            -> (forall sbe . ExecRsltHndlr sbe Integer Bool)
            -> (Args,Property)
-lssTestAll vi nm args hndlr =
-  lssTest vi nm $ \v cb -> do
+lssTestAll v nm args hndlr =
+  lssTest v nm $ \_ cb -> do
     runTestLSSBuddy v cb args hndlr
     runTestLSSDag v cb args hndlr
     --runTestSAWBackend v cb args hndlr
@@ -197,7 +184,7 @@ type SBEPropM a =
   -> PropertyM IO a
 
 type MemCreator mem =
-  LLVMContext -> BitEngine Lit -> MemGeom -> IO (BitBlastMemModel mem Lit, mem)
+  DataLayout -> BitEngine Lit -> MemGeom -> IO (BitBlastMemModel mem Lit, mem)
 
 forAllMemModels :: forall a. Int -> Codebase -> SBEPropM a -> PropertyM IO [a]
 forAllMemModels _v cb testProp = do
@@ -210,11 +197,11 @@ forAllMemModels _v cb testProp = do
     runMemTest _lbl act = do
 --       run $ putStrLn $ "forAllMemModels: " ++ lbl
       be         <- run createBitEngine
-      (sbe, mem) <- first (let ?be = be in sbeBitBlast lc) <$> run (act lc be mg)
+      (sbe, mem) <- first (let ?be = be in sbeBitBlast dl) <$> run (act dl be mg)
       testProp sbe mem
       where
-        lc = cbLLVMCtx cb
-        mg = defaultMemGeom lc
+        dl = cbDataLayout cb
+        mg = defaultMemGeom dl
 
 chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
                -> Int
@@ -224,8 +211,7 @@ chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
                -> PropertyM IO ()
 chkBinCInt32Fn mgen v getCB sym chkOp = do
   forAllM (maybe arbitrary id mgen) $ \(x,y) -> do
-    mapM_ (chkRslt sym (fromIntegral <$> x `chkOp` y))
-      =<< runCInt32Fn v getCB sym [x, y]
+    runCInt32Fn v getCB sym [x, y] (fromIntegral <$> x `chkOp` y)
 
 chkUnaryCInt32Fn :: Maybe (Gen Int32)
                  -> Int
@@ -235,30 +221,55 @@ chkUnaryCInt32Fn :: Maybe (Gen Int32)
                  -> PropertyM IO ()
 chkUnaryCInt32Fn mgen v getCB sym chkOp =
   forAllM (maybe arbitrary id mgen) $ \x -> do
-    mapM_ (chkRslt sym (fromIntegral <$> chkOp x))
-      =<< runCInt32Fn v getCB sym [x]
+    runCInt32Fn v getCB sym [x] (fromIntegral <$> chkOp x)
 
 chkNullaryCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> ExpectedRV Int32 -> PropertyM IO ()
 chkNullaryCInt32Fn v getCB sym chkVal =
-  mapM_ (chkRslt sym (fromIntegral <$> chkVal)) =<< runCInt32Fn v getCB sym []
+  runCInt32Fn v getCB sym [] (fromIntegral <$> chkVal)
 
-runCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM IO [Maybe (Maybe Integer)]
-runCInt32Fn v getCB sym cargs = do
+runCInt32Fn :: Int
+            -> PropertyM IO Codebase
+            -> L.Symbol
+            -> [Int32]
+            -> ExpectedRV Integer
+            -> PropertyM IO ()
+runCInt32Fn v getCB sym cargs erv = do
   cb <- getCB
-  forAllMemModels v cb $ \s m -> run $ do
-    runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
-      args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-      callDefine_ sym i32 args
-      let fn rv = withSBE' $ \sbe -> snd <$> asSignedInteger sbe rv
-      mapM fn =<< getProgramReturnValue
+  void $ forAllMemModels v cb $ \s m -> do
+    run $ do
+      runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
+        sbe <- gets symBE
+        args <- forM cargs $ \x -> liftSBE $ termInt sbe 32 $ fromIntegral x
+        callDefine_ sym (Just i32) ((IntType 32,) <$> args)
+        let fn rv = asSignedInteger sbe 32 rv
+        mrv <- fmap fn <$> getProgramReturnValue
+        case erv of
+          RV chk ->
+            case mrv of
+              Nothing -> fail "Missing return value"
+              Just Nothing -> 
+                fail "Symbolic return value when constant expected."
+              Just (Just val)
+                | val == chk -> return ()
+                | otherwise -> 
+                  fail $ "Expected " ++ show chk ++ ", got " ++ show val
+          VoidRV ->
+            case mrv of
+              Nothing -> return ()
+              Just{} -> fail $ "Received return value when none expected."
+          AllPathsErr ->
+            case mrv of
+              Nothing -> return ()
+              Just{} -> fail "Received return value when all paths were expected to error."
 
 runVoidFn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM IO ()
 runVoidFn v getCB sym cargs = do
   cb <- getCB
   _ <- forAllMemModels v cb $ \s m -> run $ do
     runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
-      args <- forM cargs $ \x -> withSBE (\sbe -> termInt sbe 32 $ fromIntegral x)
-      callDefine_ sym voidTy args
+      sbe <- gets symBE
+      args <- forM cargs $ \x -> liftSBE $ termInt sbe 32 $ fromIntegral x
+      callDefine_ sym Nothing ((IntType 32,) <$> args)
   return ()
 
 -- possibly skip a test

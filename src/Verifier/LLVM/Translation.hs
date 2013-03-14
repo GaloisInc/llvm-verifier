@@ -1,6 +1,8 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 -- | This module defines the translation from LLVM IR to Symbolic IR.
 --
@@ -23,17 +25,13 @@
 module Verifier.LLVM.Translation
   ( module Verifier.LLVM.AST
   , liftDefine
-  , liftTypedValue
   , liftValue
-  , MaybeVectorType(..)
-  , asMaybePtrVectorType
-  , asMaybeIntVectorType
   ) where
 
-import Control.Applicative ((<$>))
+import Control.Applicative
+import Control.Lens hiding (op)
 import Control.Monad (unless, zipWithM_)
 import Control.Monad.State.Strict (State, execState, modify)
-import           Data.Traversable
 import qualified Data.LLVM.CFG              as CFG
 import           Data.Map                   (Map)
 import qualified Data.Map                   as Map
@@ -42,14 +40,7 @@ import qualified Text.LLVM                  as L
 import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
 import           Text.PrettyPrint.HughesPJ
 
-import Prelude hiding (mapM)
-
-
 import           Verifier.LLVM.AST
-import           Verifier.LLVM.LLVMContext
-import           Verifier.LLVM.Utils
-
-import Debug.Trace
 
 -- Utility {{{1
 
@@ -137,69 +128,17 @@ blockPhiMap blocks =
     [ (l, parsePhiStmts sl)
     | L.BasicBlock { L.bbLabel = (_bbid, l), L.bbStmts = sl } <- blocks ]
 
-data MaybeVectorType v = ScalarType v
-                       | VectorType Int v
-                       | NotMaybeVector
-  deriving (Functor)
-
-lookupAlias :: (?lc :: LLVMContext) => L.Ident -> Maybe L.Type
-lookupAlias i = Map.lookup i (llvmTypeAliasMap ?lc)
-
-addrWidth :: (?lc :: LLVMContext) => BitWidth
-addrWidth = llvmAddrWidthBits ?lc
-
-asPtrType :: (?lc :: LLVMContext) => L.Type -> Maybe L.Type
-asPtrType = go
-  where go (L.Alias a)  = go =<< lookupAlias a
-        go (L.PtrTo tp) = return tp
-        go _ = Nothing
-
-asIntType :: (?lc :: LLVMContext) => L.Type -> Maybe BitWidth
-asIntType = go
-  where go (L.Alias a)  = go =<< lookupAlias a
-        go (L.PrimType (L.Integer w)) = return (fromIntegral w)
-        go _ = Nothing
-
-asMaybeVectorType :: (?lc :: LLVMContext)
-                  => (L.Type -> Maybe a)
-                  -> L.Type
-                  -> MaybeVectorType a
-asMaybeVectorType fn = go
-  where lkup f a = maybe NotMaybeVector f (lookupAlias a)
-        go (L.Alias a)  = lkup go a
-        go (L.Vector n (L.Alias a))  = lkup (go . L.Vector n) a
-        go (L.Vector n tp) =
-          maybe NotMaybeVector (VectorType (fromIntegral n)) (fn tp)
-        go tp = maybe NotMaybeVector ScalarType (fn tp)
-
-asMaybePtrVectorType :: (?lc :: LLVMContext) => L.Type -> MaybeVectorType L.Type
-asMaybePtrVectorType = asMaybeVectorType asPtrType
-
-asMaybeIntVectorType :: (?lc :: LLVMContext) => L.Type -> MaybeVectorType BitWidth
-asMaybeIntVectorType = asMaybeVectorType asIntType
-
--- | Check that two types are equal, returning simplied type if they are
--- and nothing otherwise.
-typesEq :: (?lc :: LLVMContext) => L.Type -> L.Type -> Maybe L.Type
-typesEq ltp _ = return ltp
-
 liftTypedValue :: (?lc :: LLVMContext) => L.Typed L.Value -> Maybe TypedSymValue
-liftTypedValue (L.Typed tp v) = liftValue tp v
+liftTypedValue (L.Typed tp v) = flip liftValue v =<< liftMemType tp
 
-returnTypedValue :: (?lc :: LLVMContext) => L.Typed L.Value -> Maybe (L.Typed TypedSymValue)
-returnTypedValue (L.Typed tp v) = L.Typed tp <$> liftValue tp v
-
-liftValue :: (?lc :: LLVMContext) => L.Type -> L.Value -> Maybe TypedSymValue
-liftValue (L.Alias i) v = do
-  tp <- lookupAlias i
-  liftValue tp v
-liftValue (L.PrimType (L.Integer w)) (L.ValInteger x) =
-  return $ SValExpr $ SValInteger (fromIntegral w) x
-liftValue (L.PrimType (L.Integer 1)) (L.ValBool x) =
+liftValue :: (?lc :: LLVMContext) => MemType -> L.Value -> Maybe TypedSymValue
+liftValue (IntType w) (L.ValInteger x) =
+  return $ SValExpr $ SValInteger w x
+liftValue (IntType 1) (L.ValBool x) =
   return $ SValExpr $ SValInteger 1 (if x then 1 else 0)
-liftValue _ (L.ValFloat x) =
+liftValue FloatType  (L.ValFloat x) =
   return $ SValExpr $ SValFloat x
-liftValue (L.PrimType (L.FloatType L.Double)) (L.ValDouble d) =
+liftValue DoubleType (L.ValDouble d) =
   return $ SValExpr $ SValDouble d
 -- TODO: Figure out how to check ident types.
 liftValue _ (L.ValIdent i) =
@@ -207,75 +146,79 @@ liftValue _ (L.ValIdent i) =
 -- TODO: Figure out how to check symbol types.
 liftValue _ (L.ValSymbol sym) =
   return $ SValSymbol sym
-liftValue (L.PtrTo etp) L.ValNull =
-  return $ SValExpr $ SValNull (llvmAddrWidthBits ?lc) etp
-liftValue (L.Array len _) (L.ValArray vtp el0)
+liftValue (PtrType etp) L.ValNull =
+  return $ SValExpr $ SValNull etp
+liftValue (ArrayType len etp) (L.ValArray _ el0)
     | fromIntegral len == V.length el
-    = SValExpr . SValArray vtp <$> mapM (liftValue vtp) el
+    = SValExpr . SValArray etp <$> traverse (liftValue etp) el
   where el = V.fromList el0
-liftValue (L.Vector len _) (L.ValVector vtp el0)
+liftValue (VecType len etp) (L.ValVector _ el0)
     | fromIntegral len == V.length el
-    = SValExpr . SValArray vtp <$> mapM (liftValue vtp) el
+    = SValExpr . SValVector etp <$> traverse (liftValue etp) el
   where el = V.fromList el0
-liftValue _ (L.ValStruct fldvs) =
-    SValExpr . SValStruct si <$> mapM liftTypedValue (V.fromList fldvs)
-  where si = mkStructInfo False (typedType <$> fldvs)
-liftValue _ (L.ValPackedStruct fldvs) =
-    SValExpr . SValStruct si <$> mapM liftTypedValue (V.fromList fldvs)
-  where si = mkStructInfo True (typedType <$> fldvs)
-liftValue (L.Array len (L.PrimType (L.Integer 8))) (L.ValString str) = do
+liftValue (StructType si) (L.ValStruct fldvs) =
+    SValExpr . SValStruct si <$> traverse liftTypedValue (V.fromList fldvs)
+liftValue (StructType si) (L.ValPackedStruct fldvs) =
+    SValExpr . SValStruct si <$> traverse liftTypedValue (V.fromList fldvs)
+liftValue (ArrayType len (IntType 8)) (L.ValString str) = do
   unless (fromIntegral len == length str) $ fail "Incompatible types"
   return (sValString str)
-liftValue tp (L.ValConstExpr ce)  =
-  case (tp,ce) of
-    (_, L.ConstGEP inbounds (base:il)) -> do
+liftValue rtp (L.ValConstExpr ce)  =
+  case ce of
+    L.ConstGEP inbounds (base:il) -> do
       SValExpr . snd <$> liftGEP inbounds base il
-    --  evalGEP (GEP inbounds ptr idxs)
-    (tp0, L.ConstConv op (L.Typed itp t) tp1) -> do
-      rtp <- typesEq tp0 tp1
+    L.ConstConv op (L.Typed itp0 t) _tp1 -> do
+      itp <- liftMemType itp0
       v <- liftValue itp t
-      case op of
-        L.PtrToInt -> do
-          ptrType <- asPtrType itp
-          w <- asIntType rtp
+      case (op,itp,rtp) of
+        (L.PtrToInt, PtrType ptrType, IntType w) -> do
           return $ SValExpr (PtrToInt Nothing ptrType v w)
-        L.IntToPtr -> do
-          w <- asIntType itp
-          ptrType <- asPtrType rtp
+        (L.IntToPtr, IntType w, PtrType ptrType) -> do
           return $ SValExpr (IntToPtr Nothing w v ptrType)
-        L.BitCast ->
-          return $ SValExpr (Bitcast itp v rtp)
+        (L.BitCast,_,_) -> liftBitcast itp v rtp
         _ -> fail "Could not interpret constant expression"
     _ -> fail "Could not interpret constant expression"
-liftValue tp L.ValUndef = zeroValue tp
+liftValue tp L.ValUndef = return $ zeroValue tp
 liftValue _ L.ValLabel{} = fail "Could not interpret label"
-liftValue tp L.ValZeroInit = zeroValue tp
+liftValue tp L.ValZeroInit = return $ zeroValue tp
 liftValue _ L.ValAsm{} = fail "Could not interpret asm."
 liftValue _ L.ValMd{} = fail "Could not interpret metadata."
 liftValue _ _ = fail "Could not interpret LLVM value"
 
-zeroValue :: (?lc :: LLVMContext) => L.Type -> Maybe TypedSymValue
-zeroValue = fmap SValExpr . zeroExpr
 
-zeroExpr :: (?lc :: LLVMContext) => L.Type -> Maybe (TypedExpr TypedSymValue)
+-- | Lift a bitcast expression.
+liftBitcast :: (?lc :: LLVMContext)
+            => MemType -- ^ Input argument type
+            -> TypedSymValue -- ^ Input argument expression.
+            -> MemType -- ^ Result argument type
+            -> Maybe TypedSymValue
+liftBitcast PtrType{} v PtrType{} = return v
+liftBitcast itp v rtp | itp == rtp = return v
+{-
+liftBitcast itp v (ArrayType rc rtp) =
+    SValExpr . SValArray rtp <$> generateM rc fn
+  where fn i =
+          case itp of
+            ArrayType ic itp ->
+              where cc = gcd ic rc
+                    rm = rc `div` cc
+-}
+
+liftBitcast _ _ _ = fail "Symbolic simulator does not support bitcast."
+
+zeroValue :: MemType -> TypedSymValue
+zeroValue = SValExpr . zeroExpr
+
+zeroExpr :: MemType -> (TypedExpr TypedSymValue)
 zeroExpr tp0 =
   case tp0 of
-    L.PrimType pt -> 
-      case pt of
-        L.Integer w -> return $ SValInteger (fromIntegral w) 0
-        L.FloatType L.Float -> return $ SValFloat 0
-        L.FloatType L.Double -> return $ SValDouble 0
-        _ -> fail "Bad prim type"
-    L.Alias i -> zeroExpr =<< lookupAlias i
-    L.Array n tp -> SValArray tp . V.replicate (fromIntegral n) <$> zeroValue tp
-    L.FunTy{} -> fail "Bad function type"
-    L.PtrTo tp -> return $ SValNull addrWidth tp
-    L.Struct l -> SValStruct si <$> mapM zeroValue (V.fromList l)
-      where si = mkStructInfo False l
-    L.PackedStruct l -> SValStruct si <$> mapM zeroValue (V.fromList l)
-      where si = mkStructInfo True l
-    L.Vector n tp -> SValVector tp . V.replicate (fromIntegral n) <$> zeroValue tp
-    L.Opaque -> fail "Opaque"
+    IntType w  -> SValInteger (fromIntegral w) 0
+    FloatType  -> SValFloat 0
+    DoubleType -> SValDouble 0
+    PtrType tp -> SValNull tp
+    ArrayType n tp -> SValArray tp $ V.replicate (fromIntegral n) $ zeroValue tp
+    VecType n tp  -> SValVector tp $ V.replicate (fromIntegral n) $ zeroValue tp
+    StructType si -> SValStruct si $ zeroValue <$> siFieldTypes si
 
 unsupportedStmt :: L.Stmt -> BlockGenerator SymStmt
 unsupportedStmt stmt = do
@@ -294,70 +237,90 @@ liftGEP :: (?lc :: LLVMContext)
         => Bool 
         -> L.Typed L.Value
         -> [L.Typed L.Value]
-        -> Maybe (L.Type, TypedExpr TypedSymValue)
-liftGEP inbounds (Typed initType initValue) = go [] initType
-  where gepFailure tp = trace ("GEPFailure: " ++ tp) fail "Could not parse GEP Value"
-        go :: [GEPOffset TypedSymValue]
-           -> L.Type
-           -> [L.Typed L.Value]
-           -> Maybe (L.Type, TypedExpr TypedSymValue)
+        -> Maybe (MemType, TypedExpr TypedSymValue)
+liftGEP _inbounds (Typed initType0 initValue) args0 = do
+     rtp <- liftMemType initType0
+     let fn (L.Typed tp v) = (,v) <$> liftMemType tp
+     go (SValExpr (SValInteger aw 0)) rtp =<< traverse fn args0
+  where gepFailure = fail "Could not parse GEP Value"
+        pdl = llvmDataLayout ?lc
+        aw :: BitWidth
+        aw = ptrBitwidth pdl 
+        mn = Nothing
+       
+        go :: TypedSymValue
+           -> MemType
+           -> [(MemType, L.Value)]
+           -> Maybe (MemType, TypedExpr TypedSymValue)
         go args tp [] = do
+          initType <- liftMemType initType0
           sv <- liftValue initType initValue
-          return $ (tp, GEP inbounds sv (reverse args) tp)
-        go args (L.Alias a) l = do
-           tp <- lookupAlias a
-           go args tp l
-        go args (L.Array _ etp) r = goArray args etp r
-        go args (L.PtrTo etp) r   = goArray args etp r
-        go args (L.Struct tpl) r      = goStruct args (mkStructInfo False tpl) r
-        go args (L.PackedStruct tpl) r = goStruct args (mkStructInfo True tpl) r
-        go _ tp _ = gepFailure ("go " ++ show tp)
-        goArray args etp (tv : r)= do
-          w <- asIntType (typedType tv)
-          sv <- liftTypedValue tv
-          let sz = llvmStoreSizeOf ?lc etp
-          go (ArrayElement sz w sv:args) etp r
-        goArray _ _ _ = gepFailure "goArray"
-        goStruct args
-                 si 
-                 (L.Typed (L.PrimType (L.Integer 32)) (L.ValInteger i) : r) = do       
-          let idx = fromIntegral i
-          unless (0 <= idx && idx < V.length (structFields si)) $
-            gepFailure "idxRange"
-          let (tp,_) = structFields si V.! idx
-          go (StructField si idx:args) tp r
-        goStruct _ _ _ = gepFailure "goStruct"
-        
+          return (tp, PtrAdd sv args)
+        go args (ArrayType _ etp) r = goArray args etp r
+        go args (PtrType tp) r = do
+          mtp <- asMemType (llvmAliasMap ?lc) tp
+          goArray args mtp r
+        go args (StructType si) r = goStruct args si r
+        go _ _ _ = gepFailure
 
-intLType :: BitWidth -> L.Type
-intLType w = L.PrimType (L.Integer (fromIntegral w))
+        mergeAdd (SValExpr (SValInteger _ 0)) y = y
+        mergeAdd x (SValExpr (SValInteger _ 0)) = x
+        mergeAdd (SValExpr (SValInteger _ i)) (SValExpr (SValInteger _ j)) =
+          SValExpr (SValInteger aw (i+j))
+        mergeAdd x y = SValExpr (IntArith (Add False False) mn aw x y)
 
-vecLType :: Int -> L.Type -> L.Type
-vecLType = L.Vector . fromIntegral
+        goArray args etp ((IntType w, v0) : r)= do
+          v1 <- liftValue (IntType w) v0
+          let v2 | SValExpr (SValInteger _ i) <- v1 = SValExpr (SValInteger aw i)
+                 | aw == w   = v1
+                 | aw >  w   = SValExpr $ ZExt  mn w v1 aw
+                 | otherwise = SValExpr $ Trunc mn w v1 aw
+          let sz = fromIntegral $ memTypeSize pdl etp
+          let v3 | SValExpr (SValInteger _ i) <- v2 = SValExpr (SValInteger aw (sz*i))
+                 | sz == 1 = v2
+                 | otherwise = SValExpr $ IntArith (Mul False False) 
+                                                   mn
+                                                   aw
+                                                   (SValExpr (SValInteger aw sz))
+                                                   v2
+          go (mergeAdd args v3) etp r
+        goArray _ _ _ = gepFailure
+
+        goStruct args si  ((IntType 32, L.ValInteger i) : r) = do       
+          fi <- siFieldInfo si (fromIntegral i)
+          let val = SValExpr (SValInteger aw (toInteger (fiOffset fi)))
+          go (mergeAdd args val) (fiType fi) r
+        goStruct _ _ _ = gepFailure
+
+-- | Lift a maybe alignment constraint to the alignment for the tpye.
+liftAlign :: (?lc :: LLVMContext) => MemType -> Maybe L.Align -> Alignment
+liftAlign _ (Just a) | a /= 0 = fromIntegral a
+liftAlign tp _ = memTypeAlign (llvmDataLayout ?lc) tp
 
 liftStmt :: (?lc :: LLVMContext) => L.Stmt -> BlockGenerator SymStmt
 liftStmt stmt = do
   case stmt of
-    Effect (L.Store ptr addr malign) _ ->
+    Effect (L.Store (L.Typed tp0 v) addr a) _ ->
       trySymStmt stmt $ do
-        tptr <- returnTypedValue ptr
+        tp <- liftMemType tp0
+        tptr <- liftValue tp v
         taddr <- liftTypedValue addr 
-        return (Store tptr taddr malign)
+        return $ Store tp tptr taddr (liftAlign tp a)
     Effect{} -> unsupportedStmt stmt
     Result r app _ -> trySymStmt stmt $ do
       -- Return an assignemnt statement for the value.
-      let retExpr :: Monad m => L.Type -> SymExpr -> m SymStmt
-          retExpr tp e = return (Assign (L.Typed tp r) e)
-      let retTExpr :: Monad m => L.Type -> TypedExpr TypedSymValue -> m SymStmt
+      let retExpr :: Monad m => MemType -> SymExpr -> m SymStmt
+          retExpr tp e = return (Assign r tp e)
+      let retTExpr :: Monad m => MemType -> TypedExpr TypedSymValue -> m SymStmt
           retTExpr tp v = retExpr tp (Val (SValExpr v))
-      let retIntArith op tp u v = do
+      let retIntArith :: IntArithOp -> L.Type -> L.Value -> L.Value -> Maybe SymStmt
+          retIntArith op tp0 u v = do
+            tp <- liftMemType tp0 
             x <- liftValue tp u
             y <- liftValue tp v
-            case asMaybeIntVectorType tp of
-              ScalarType w   -> retTExpr rtp (IntArith op Nothing w x y)
-                where rtp = intLType w
-              VectorType n w -> retTExpr rtp (IntArith op (Just n) w x y)
-                where rtp = vecLType n (intLType w)
+            case tp of
+              IntType w   -> retTExpr tp (IntArith op Nothing w x y)
+              VecType n (IntType w) -> retTExpr tp (IntArith op (Just n) w x y)
               _ -> fail "Could not parse argument type"
       case app of
         L.Arith llvmOp (L.Typed tp u) v -> do
@@ -379,90 +342,103 @@ liftStmt stmt = do
                        L.And -> And
                        L.Or  -> Or
                        L.Xor -> Xor
-        L.Conv op (L.Typed itp e) rtp -> do
+        L.Conv op (L.Typed itp0 e) rtp0 -> do
+          itp <- liftMemType itp0 
+          rtp <- liftMemType rtp0
           sv <- liftValue itp e
           let intConv :: (BitWidth -> BitWidth -> Bool)
                       -> (Maybe Int -> BitWidth -> TypedSymValue -> BitWidth
                                     -> TypedExpr TypedSymValue)
                       -> Maybe SymStmt
               intConv cond fn =
-                case (asMaybeIntVectorType itp, asMaybeIntVectorType rtp) of
-                  (ScalarType iw, ScalarType rw) | cond iw rw ->
-                    retTExpr (intLType rw) (fn Nothing iw sv rw)
-                  (VectorType n iw, VectorType nr rw) | n == nr && cond iw rw ->
-                    retTExpr (vecLType n (intLType rw)) (fn (Just n) iw sv rw)
+                case (itp, rtp) of
+                  (IntType iw, IntType rw) | cond iw rw ->
+                    retTExpr rtp (fn Nothing iw sv rw)
+                  (VecType n (IntType iw), VecType nr (IntType rw)) | n == nr && cond iw rw ->
+                    retTExpr rtp (fn (Just n) iw sv rw)
                   _ -> fail "Could not parse conversion types"
           case op of
             L.Trunc -> intConv (\iw rw -> iw > rw) Trunc
             L.ZExt -> intConv (\iw rw -> iw < rw) ZExt
             L.SExt -> intConv (\iw rw -> iw < rw) SExt
             L.PtrToInt ->
-              case (asMaybePtrVectorType itp, asMaybeIntVectorType rtp) of
-                (ScalarType ptr, ScalarType w) ->
-                  retTExpr (intLType w)  (PtrToInt Nothing ptr sv w)
-                (VectorType n ptr, VectorType nr w) | n == nr ->
-                  retTExpr (vecLType n (intLType w))  (PtrToInt (Just n) ptr sv w)
+              case (itp, rtp) of
+                (PtrType ptr, IntType w) ->
+                  retTExpr rtp (PtrToInt Nothing ptr sv w)
+                ( VecType n (PtrType ptr), VecType nr (IntType w)) | n == nr ->
+                  retTExpr rtp (PtrToInt (Just n) ptr sv w)
                 _ -> fail "Could not parse conversion types"
             L.IntToPtr ->
-              case (asMaybeIntVectorType itp, asMaybePtrVectorType rtp) of
-                (ScalarType w, ScalarType ptr) ->
-                  retTExpr (L.PtrTo ptr) (IntToPtr Nothing w sv ptr)
-                (VectorType n w, VectorType nr ptr) | n == nr ->
-                  retTExpr (vecLType n (L.PtrTo ptr)) (IntToPtr (Just n) w sv ptr)
+              case (itp, rtp) of
+                ( IntType w, PtrType ptr) ->
+                  retTExpr rtp (IntToPtr Nothing w sv ptr)
+                ( VecType n (IntType w), VecType nr (PtrType ptr)) | n == nr ->
+                  retTExpr rtp (IntToPtr (Just n) w sv ptr)
                 _ -> fail "Could not parse conversion types"
-            L.BitCast -> retTExpr rtp (Bitcast itp sv rtp)
+            L.BitCast -> do
+              retExpr rtp . Val =<< liftBitcast itp sv rtp
             _ -> fail "Unsupported conversion operator"
-        L.Alloca tp Nothing mi -> retExpr (L.PtrTo tp) $ Alloca tp Nothing mi
-        L.Alloca tp (Just (L.Typed szTp sz)) mi -> do
-          w <- asIntType szTp
-          v <- liftValue szTp sz
-          retExpr (L.PtrTo tp) $ Alloca tp (Just (w,v)) mi 
-        L.Load (L.Typed tp ptr) malign -> do
-          etp <- asPtrType tp
+        L.Alloca tp0 msz a -> do
+          tp <- liftMemType tp0
+          ssz <- case msz of
+                   Nothing -> return Nothing
+                   Just (L.Typed szTp0 sz) -> do
+                     IntType w <- liftMemType szTp0
+                     v <- liftValue (IntType w) sz
+                     return (Just (w,v))
+          retExpr (PtrType (MemType tp)) $ Alloca tp ssz (liftAlign tp a)
+        L.Load (L.Typed tp0 ptr) malign -> do
+          tp@(PtrType etp0) <- liftMemType tp0
+          etp <- asMemType (llvmAliasMap ?lc) etp0
           v <- liftValue tp ptr
-          retExpr etp (Load v etp malign)
-        L.ICmp op (L.Typed tp u) v -> do
+          retExpr etp (Load v etp (liftAlign etp malign))
+        L.ICmp op (L.Typed tp0 u) v -> do
+          tp <- liftMemType tp0
           x <- liftValue tp u
           y <- liftValue tp v
-          case asMaybeIntVectorType tp of
-            ScalarType w -> retTExpr i1 (IntCmp op Nothing w x y)
-            VectorType n w -> retTExpr (vecLType n i1) (IntCmp op (Just n) w x y)
+          case tp of
+            IntType w ->
+              retTExpr (IntType 1) (IntCmp op Nothing w x y)
+            VecType n (IntType w) ->
+              retTExpr (VecType n (IntType 1)) (IntCmp op (Just n) w x y)
             _ -> fail "Could not parse argument type"
         L.GEP ib tp tpvl     -> uncurry retTExpr =<< liftGEP ib tp tpvl
-        L.Select (L.Typed tpc c') (L.Typed tpv v1') v2' -> do
+        L.Select (L.Typed tpc0 c') (L.Typed tpv0 v1') v2' -> do
+          tpc <- liftMemType tpc0
+          tpv <- liftMemType tpv0
           c <- liftValue tpc c'
           v1 <- liftValue tpv v1'
           v2 <- liftValue tpv v2'
-          case (asMaybeIntVectorType tpc, asMaybeVectorType Just tpv) of
-            (ScalarType w,_) | w == 1 ->
+          case (tpc, tpv) of
+            (IntType w,_) | w == 1 ->
               retTExpr tpv $ Select Nothing c tpv v1 v2
-            (VectorType n w, VectorType nr tpe) | w == 1 && n == nr ->
-              retTExpr (vecLType n tpe) $ Select (Just n) c tpe v1 v2
+            (VecType n (IntType w), VecType nr tpe) | w == 1 && n == nr ->
+              retTExpr tpv $ Select (Just n) c tpe v1 v2
             _  -> fail "Could not parse select intruction."
-        L.ExtractValue (L.Typed vtp v) il -> go vtp il =<< liftValue vtp v
-          where go :: L.Type
+        L.ExtractValue (L.Typed vtp v) il -> do
+            vmtp <- liftMemType vtp
+            go vmtp il =<< liftValue vmtp v
+          where go :: MemType
                    -> [Int32]
                    -> TypedSymValue
                    -> Maybe SymStmt
                 go tp [] sv = retExpr tp (Val sv)
-                go (L.Alias a) l sv = lookupAlias a >>= \t -> go t l sv
-                go (L.Struct ftys) (i0 : is) sv
-                   | 0 <= i && i < length ftys =
-                       go (ftys !! i) is (SValExpr (GetStructField si sv i))
-                   | otherwise = fail "Illegal index"
+                go (StructType si) (i0 : is) sv =
+                    case fiType <$> siFieldInfo si i of
+                      Nothing -> fail "Illegal index"
+                      Just tp -> go tp is (SValExpr (GetStructField si sv i))
                   where i = fromIntegral i0
-                        si = mkStructInfo False ftys
-                go (L.PackedStruct ftys) (i0 : is) sv
-                    | 0 <= i && i < length ftys =
-                       go (ftys !! i) is (SValExpr (GetStructField si sv i))
+                go (ArrayType n tp) (i : is) sv
+                    | 0 <= i && i < fromIntegral n = go tp is (SValExpr expr)
                     | otherwise = fail "Illegal index"
-                  where i = fromIntegral i0
-                        si = mkStructInfo True ftys
-                go (L.Array n tp) (i : is) sv
-                    | 0 <= i && i < n = go tp is (SValExpr (GetConstArrayElt tp sv i))
-                    | otherwise = fail "Illegal index"
+                  where expr = GetConstArrayElt (fromIntegral n) tp sv (fromIntegral i)
                 go _ _ _ = fail "non-composite type in extractvalue"
         _ -> fail "Unsupported instruction"
+
+liftArgValue :: (?lc :: LLVMContext) => L.Typed L.Value -> Maybe (MemType, TypedSymValue)
+liftArgValue (Typed tp val) = do
+  mtp <- liftMemType tp
+  (mtp,) <$> liftValue mtp val
 
 -- Lift LLVM basic block to symbolic block {{{1
 --
@@ -486,11 +462,15 @@ liftBB lti phiMap bb = do
       -- instructions.
       phiInstrs :: L.BlockLabel -> [SymStmt]
       phiInstrs tgt =
-          [ Assign (L.Typed tp r) val
-            | (r, tp, valMap) <- case Map.lookup tgt phiMap of
-                Nothing -> error "AST xlate: missing tgt entry in phiMap"
-                Just x  -> x
-            , let val = case liftValue tp =<< Map.lookup llvmId valMap of
+          [ Assign r (undefined tp) val
+            | (r, tp, valMap) <-
+                case Map.lookup tgt phiMap of
+                  Nothing -> error "AST xlate: missing tgt entry in phiMap"
+                  Just x  -> x
+            , let mval = do mtp <- liftMemType tp
+                            v <- Map.lookup llvmId valMap
+                            liftValue mtp v
+            , let val = case mval of
                           Nothing -> error $
                             "AST xlate: expected to find "
                             ++ show (L.ppLabel llvmId)
@@ -524,7 +504,7 @@ liftBB lti phiMap bb = do
                        text "Missing terminal instruction in block" <+>
                        int idx <+>
                        text "after generating the following statements:" $$
-                       (nest 2 . vcat . map ppSymStmt $ il)
+                       (nest 2 . vcat $ ppStmt <$> il)
       impl [stmt@(Effect (L.Ret tpv) _)] idx il = do
         symStmt <- 
           case liftTypedValue tpv of
@@ -546,19 +526,19 @@ liftBB lti phiMap bb = do
         -- likely need to support varargs more explicitly
         -- later. TODO.
         let mstmt = do
-              sv <- liftValue tp v
-              L.FunTy rty _args _va <- asPtrType tp
-              svl <- mapM liftTypedValue tpvl
-              let res = Typed { typedType = rty, typedValue = reg }
-              return $ PushCallFrame sv svl (Just res) (blockName (idx + 1))
+              mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType tp
+              sv <- liftValue mtp v
+              svl <- traverse liftArgValue tpvl
+              return $ PushCallFrame sv svl (Just (rty, reg)) (blockName (idx + 1))
         symStmt <- maybe (unsupportedStmt stmt) return mstmt
         defineBlock (blockName idx) $ reverse (symStmt:il)
         impl r (idx+1) []
       -- Function call that does not return a value (see comment for other call case).
       impl (stmt@(Effect (L.Call _b tp v tpvl) _):r) idx il = do
         let mstmt = do
-              sv <- liftValue tp v
-              svl <- mapM liftTypedValue tpvl
+              mtp <- liftMemType tp
+              sv <- liftValue mtp v
+              svl <- traverse liftArgValue tpvl
               return $ PushCallFrame sv svl Nothing (blockName (idx+1))
         symStmt <- maybe (unsupportedStmt stmt) return mstmt
         defineBlock (blockName idx) $ reverse (symStmt:il)
@@ -567,12 +547,15 @@ liftBB lti phiMap bb = do
         defineBlock (blockName idx) $
           reverse il ++ brSymInstrs tgt
       impl [stmt@(Effect (L.Switch (Typed tp v) def cases) _)] idx il = do
-          case (asIntType tp, liftValue tp v) of
-            (Just w, Just tsv) -> do
-              let mkCase (cv, bid) rest =
-                    [ PushPendingExecution bid (HasConstValue tsv w cv) pd rest ]
-              let symbolicCases = foldr mkCase (brSymInstrs def)
-                                $ zip consts caseBlockIds
+         let mcases = do
+               mtp@(IntType w) <- liftMemType tp
+               tsv <- liftValue mtp v
+               let mkCase (cv, bid) rest =
+                     [ PushPendingExecution bid (HasConstValue tsv w cv) pd rest ]
+               return $ foldr mkCase (brSymInstrs def)
+                      $ zip consts caseBlockIds
+         case mcases of
+            Just symbolicCases -> do
               defineBlock (blockName idx) $ reverse il ++ symbolicCases
               zipWithM_ defineBlock caseBlockIds (brSymInstrs <$> targets)
             _ -> do
@@ -581,9 +564,12 @@ liftBB lti phiMap bb = do
         where -- Get values and targets
               (consts,targets) = unzip cases
               caseBlockIds     = blockName <$> [(idx + 1)..(idx + length cases)]
-      impl [stmt@(Effect (L.Br (Typed tp c) tgt1 tgt2) _)] idx il =
-        case liftValue tp c of
-          Just tc | tp == i1 -> do
+      impl [stmt@(Effect (L.Br (Typed tp c) tgt1 tgt2) _)] idx il = do
+        let mres = do 
+              IntType 1 <- liftMemType tp
+              liftValue (IntType 1) c
+        case mres of
+          Just tc -> do
             let suspendSymBlockID = blockName (idx + 1)
             defineBlock (blockName idx) $ reverse il ++
               [ PushPendingExecution suspendSymBlockID
@@ -608,27 +594,37 @@ liftBB lti phiMap bb = do
         impl rest idx (s' : il)
    in impl (L.bbStmts bb) 0 []
 
+
+
 -- Lift LLVM definition to symbolic definition {{{1
-liftDefine :: LLVMContext -> L.Define -> ([TranslationWarning], SymDefine)
-liftDefine lc d = (warnings,sd)
-  where cfg            = CFG.buildCFG (L.defBody d)
-        lti            = mkLTI cfg
-        blocks         = ltiBlocks lti
-        initBlock      = CFG.bbById cfg (CFG.entryId cfg)
-        initBlockLabel = CFG.blockName initBlock
-        initSymBlock =
-          mkSymBlock initSymBlockID
-                     [SetCurrentBlock (symBlockID initBlockLabel 0)]
-        phiMap = blockPhiMap blocks
-        (warnings,symBlocks) = runBlockGenerator (mapM_ (liftBB lti phiMap) blocks)
-          where ?lc = lc
-        sd = SymDefine { sdName = L.defName d
-                       , sdArgs = L.defArgs d
-                       , sdVarArgs = L.defVarArgs d
-                       , sdRetType = L.defRetType d
-                       , sdBody = Map.fromList
-                                    [ (sbId b,b) | b <- initSymBlock : symBlocks ]
-                       }
+liftDefine :: (?lc :: LLVMContext) => L.Define -> Either Doc ([TranslationWarning], SymDefine)
+liftDefine d
+    | L.defVarArgs d =
+       Left (text "Unsupported var args function" <+> symd <> char '.')
+    | otherwise =
+       case mfd of
+         Just (FunDecl rtp args _) -> Right (warnings, sd)
+            where cfg            = CFG.buildCFG (L.defBody d)
+                  lti            = mkLTI cfg
+                  blocks         = ltiBlocks lti
+                  initBlock      = CFG.bbById cfg (CFG.entryId cfg)
+                  initBlockLabel = CFG.blockName initBlock
+                  initSymBlock =
+                    mkSymBlock initSymBlockID
+                      [SetCurrentBlock (symBlockID initBlockLabel 0)]
+                  phiMap = blockPhiMap blocks
+                  (warnings,symBlocks) = runBlockGenerator (mapM_ (liftBB lti phiMap) blocks)
+                  sd = SymDefine { sdName = L.defName d
+                                 , sdArgs = zip (L.typedValue <$> L.defArgs d) args
+                                 , sdRetType = rtp
+                                 , sdBody = Map.fromList
+                                              [ (sbId b,b) | b <- initSymBlock : symBlocks ]
+                                 }
+         Nothing -> Left (text "Unsupported type for function" <+> symd <> char '.')
+  where mfd = FunDecl <$> liftRetType (L.defRetType d)
+                      <*> traverse liftMemType (L.typedType <$> L.defArgs d)
+                      <*> pure False 
+        symd = L.ppSymbol (L.defName d)
 
 -- Test code {{{1
 {-

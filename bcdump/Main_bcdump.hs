@@ -1,5 +1,6 @@
 -- Dead simple llvm-dis/parser/AST translation inspection utility
 
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
@@ -38,16 +39,18 @@ main = do
       putStrLn dis
       removeFile tmpll
 
-  cb <- loadCodebase bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
-  let mdl = origModule cb
+  mdl <- loadModule bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
+  cb <- mkCodebase mdl
   banners $ "llvm-pretty module"
   putStrLn $ show (LLVM.ppModule mdl)
   putStrLn ""
   sdl <- forM (LLVM.modDefines mdl) $ \d -> do
-    let (warnings,sd) = liftDefine (cbLLVMCtx cb) d
-    mapM_ (putStrLn . show) warnings
-    return sd
+    let ?lc = cbLLVMContext cb
+    case liftDefine d of
+      Left ed -> do putStrLn $ show ed
+                    return empty
+      Right (warnings,sd) -> do
+        mapM_ (putStrLn . show) warnings
+        return $ ppSymDefine sd
   banners $ "translated module"
-  putStr $ unlines
-         $ map (show . ppSymDefine)
-         $ sdl
+  putStr $ unlines $ fmap show sdl

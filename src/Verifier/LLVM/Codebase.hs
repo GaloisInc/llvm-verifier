@@ -5,31 +5,43 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
+{-# LANGUAGE ImplicitParams      #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-unused-do-bind #-}
 
 module Verifier.LLVM.Codebase
-  ( Codebase(..)
+  ( module Verifier.LLVM.LLVMContext
+  , Global(..)
+  , Codebase
+  , cbLLVMContext
+  , cbDataLayout
+  , cbGlobalNameMap
+  , cbFunctionType
+  , cbDefs
+  , cbUndefinedFns
   , dumpSymDefine
+  , loadModule
+  , mkCodebase
   , loadCodebase
-  , lookupAlias
-  , lookupAlias'
   , lookupDefine
   , lookupSym
-  , TypeAliasMap
+  , lookupFunctionType
   )
 
 where
 
+import           Control.Applicative
+import Control.Lens
 import           Control.Monad
-import           Control.Monad.Trans
+import Control.Monad.State
 import           Text.PrettyPrint.HughesPJ
 import qualified Control.Exception              as CE
 import qualified Data.ByteString                as BS
 import qualified Data.LLVM.BitCode              as BC
 import qualified Data.Map                       as M
 import qualified Text.LLVM                      as LLVM
+import qualified Text.LLVM                      as L
 
 import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.AST
@@ -39,76 +51,119 @@ import           Verifier.LLVM.Translation
 -- or not we invoke the llvm linker ourselves in order to do this is something
 -- that we can resolve later).
 
-type GlobalNameMap = M.Map LLVM.Symbol (Either LLVM.Global SymDefine)
+data Global = Global { globalSym :: !L.Symbol
+                     , globalType :: !MemType
+                     , globalValue :: TypedSymValue
+                     }
+
+type GlobalNameMap = M.Map L.Symbol (Either Global SymDefine)
 
 data Codebase = Codebase {
-    cbGlobalNameMap :: GlobalNameMap
-  , cbLLVMCtx       :: LLVMContext
-  , cbDeclareMap    :: M.Map LLVM.Symbol LLVM.Declare   
-  , origModule      :: LLVM.Module
+    cbDataLayout :: DataLayout
+  , cbAliasMap :: AliasMap
+  , _cbGlobalNameMap :: GlobalNameMap
+  , _cbFunctionTypes :: M.Map L.Symbol FunDecl
   }
 
--- For now, only take a single bytecode file argument and assume that the world
--- is linked together a priori.
-loadCodebase :: FilePath -> IO Codebase
-loadCodebase bcFile = do
+-- | Return llvm context within codebase.
+cbLLVMContext :: Codebase -> LLVMContext
+cbLLVMContext cb = mkLLVMContext (cbDataLayout cb) (cbAliasMap cb)
+
+cbGlobalNameMap :: Simple Lens Codebase GlobalNameMap
+cbGlobalNameMap = lens _cbGlobalNameMap sfn
+  where sfn v m = v { _cbGlobalNameMap = m }
+
+cbFunctionTypes :: Simple Lens Codebase (M.Map L.Symbol FunDecl)
+cbFunctionTypes = lens _cbFunctionTypes sfn
+  where sfn v m = v { _cbFunctionTypes = m }
+
+cbFunctionType :: L.Symbol -> Simple Lens Codebase (Maybe FunDecl)
+cbFunctionType sym = cbFunctionTypes . at sym
+
+lookupFunctionType :: L.Symbol -> Codebase -> Maybe FunDecl
+lookupFunctionType sym = view (cbFunctionType sym)
+
+-- | Returns definitions in codebase.
+cbDefs :: Codebase -> [SymDefine]
+cbDefs = toListOf (folded . _Right) . view cbGlobalNameMap
+
+-- | Return all functions that are declared, but not defined.
+cbUndefinedFns :: Codebase -> [(L.Symbol,FunDecl)]
+cbUndefinedFns cb =
+  toListOf (folded . filtered (not . ((cb^.cbGlobalNameMap) ^.) . contains . fst))
+           (M.toList (cb^.cbFunctionTypes))
+
+cbGlobalName :: L.Symbol -> Simple Lens Codebase (Maybe (Either Global SymDefine))
+cbGlobalName sym = cbGlobalNameMap . at sym
+
+-- | Returns the global variable or symbolic definition associated with the
+-- given symbol.
+lookupSym :: LLVM.Symbol -> Codebase -> Maybe (Either Global SymDefine)
+lookupSym sym cb = cb^.cbGlobalName sym
+
+lookupDefine :: LLVM.Symbol -> Codebase -> Maybe SymDefine
+lookupDefine sym = lookupSym sym >=> (^? _Right)
+
+loadModule :: FilePath -> IO L.Module
+loadModule bcFile = do
   eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
   case eab of
     Left msg  -> err (BC.formatError msg)
-    Right mdl -> do
-      let ins2 d = M.insert (LLVM.typeName d) (LLVM.typeValue d)
-          tam     = foldr ins2 M.empty (LLVM.modTypes mdl)
-          lc = buildLLVMContext tam (LLVM.modDataLayout mdl)
-      let ins0 m d = do
-            let (wl,sd) = liftDefine lc d
-            forM_ wl $ \w -> do
-              putStrLn $ "Warning while reading bitcode in " ++ bcFile ++ ":\n"      
-                ++ show (nest 2 w)
-            return $ M.insert (LLVM.defName d) (Right sd) m
-      m1 <- foldM ins0 M.empty (LLVM.modDefines mdl)
-      let ins1 g = M.insert (LLVM.globalSym g) (Left g)
-          m2     = foldr ins1 m1 (LLVM.modGlobals mdl)
-          declareFromDefine d = LLVM.Declare { LLVM.decName = LLVM.defName d
-                                             , LLVM.decArgs = map LLVM.typedType (LLVM.defArgs d)
-                                             , LLVM.decVarArgs = LLVM.defVarArgs d
-                                             , LLVM.decRetType = LLVM.defRetType d
-                                             }
-          cb     = Codebase { cbGlobalNameMap = m2
-                            , cbDeclareMap = M.fromList $
-                               [ (LLVM.defName d, declareFromDefine d)
-                                 | d <- LLVM.modDefines mdl ]        
-                               ++ [ (LLVM.decName d, d) | d <- LLVM.modDeclares mdl ]            
-                            , cbLLVMCtx       = lc
-                            , origModule      = mdl
-                            }
-
-      when (null $ LLVM.modDataLayout mdl) $
-        putStrLn "Warning: No target data layout found; will use defaults."
-
---       putStrLn $ "Target data layout: " ++ show (LLVM.modDataLayout mdl)
---       putStrLn $ "LLVMCtx:" ++ show (cbLLVMCtx cb)
-
-      return cb
-  where
+    Right mdl -> return mdl
+ where
     parse = BS.readFile >=> BC.parseBitCode
     err msg = error $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
               ++ show (nest 2 (vcat $ map text $ lines msg))
 
-lookupDefine :: LLVM.Symbol -> Codebase -> Maybe SymDefine
-lookupDefine sym cb = case M.lookup sym (cbGlobalNameMap cb) of
-  Just (Right sd) -> Just sd
-  _               -> Nothing
+mkCodebase :: L.Module -> IO Codebase
+mkCodebase mdl = do
+  when (null $ LLVM.modDataLayout mdl) $
+    warn $ text "No target data layout found; will use defaults."
+  mapM_ warn err0
+  execStateT go cb0
+ where warn msg = putStrLn $ show $ text "Warning:" <+> msg
+       dl = parseDataLayout $ L.modDataLayout mdl
+       (err0, am) = mkAliasMap dl (L.modTypes mdl)
+       cb0 = Codebase { cbDataLayout = dl
+                      , cbAliasMap = am
+                      , _cbGlobalNameMap = M.empty
+                      , _cbFunctionTypes = M.empty
+                      }
+       go = do
+         let ?lc = mkLLVMContext dl am
+         -- Add definitions
+         forM_ (L.modDefines mdl) $ \d ->
+           case liftDefine d of
+             Left emsg -> liftIO $ warn emsg
+             Right (msgs,sd) -> do
+               mapM_ (liftIO . warn) msgs
+               let nm = sdName sd
+               cbGlobalNameMap . at nm ?= Right sd
+               cbFunctionType  nm ?= FunDecl (sdRetType sd) (snd <$> sdArgs sd) False
+         -- Add declarations
+         forM_ (L.modDeclares mdl) $ \d -> do
+           let mtp = FunDecl <$> liftRetType (L.decRetType d)
+                             <*> mapM liftMemType (L.decArgs d)
+                             <*> pure (L.decVarArgs d)
+           case mtp of
+             Nothing -> liftIO $ warn $ text "Skipping import of" <+> L.ppSymbol (L.decName d)
+                          <> text "; Unsupported type."
+             Just tp -> cbFunctionType (L.decName d) ?= tp
+         -- Add globals
+         forM_ (L.modGlobals mdl) $ \lg -> do
+           let sym = L.globalSym lg
+           let mg = do tp <- liftMemType (L.globalType lg)
+                       Global sym tp <$> liftValue tp (L.globalValue lg)
+           case mg of
+             Nothing -> liftIO $ warn $ text "Skipping definition of" <+> L.ppSymbol sym
+                          <> text "; Unsupported type."
+             Just g -> modify $ cbGlobalNameMap . at sym ?~ Left g
 
--- | Returns the global variable or symbolic definition associated with the
--- given symbol.
-lookupSym :: LLVM.Symbol -> Codebase -> Maybe (Either LLVM.Global SymDefine)
-lookupSym sym = M.lookup sym . cbGlobalNameMap
-
-lookupAlias :: LLVM.Ident -> Codebase -> LLVM.Type
-lookupAlias ident cb = llvmLookupAlias (cbLLVMCtx cb) ident
-
-lookupAlias' :: LLVM.Ident -> Codebase -> Maybe (LLVM.Type)
-lookupAlias' ident cb = llvmLookupAlias' (cbLLVMCtx cb) ident
+    
+-- For now, only take a single bytecode file argument and assume that the world
+-- is linked together a priori.
+loadCodebase :: FilePath -> IO Codebase
+loadCodebase bcFile = mkCodebase =<< loadModule bcFile
 
 dumpSymDefine :: MonadIO m => m Codebase -> String -> m ()
 dumpSymDefine getCB sym = getCB >>= \cb ->

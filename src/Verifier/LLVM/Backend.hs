@@ -15,13 +15,11 @@ module Verifier.LLVM.Backend
   , BitWidth
   , IntArithOp(..)
   , TypedExpr(..)
-  , structFieldOffset
-  , GEPOffset(..)
   ) where
 
+import           Control.Applicative ((<$>))
 import           Data.Bits (testBit)
 import qualified Data.Vector as V
-import qualified Text.LLVM.AST   as L
 import           Text.PrettyPrint.HughesPJ
 
 import Verifier.LLVM.AST
@@ -47,36 +45,22 @@ type SBEPartialResult m r  = (SBEPred m, r)
 -- | Represents a partial result of trying to obtain a concrete value from
 -- a symbolic term.
 data LookupSymbolResult
-  = Result L.Symbol -- ^ The definition associated with the address.
+  = Result Symbol -- ^ The definition associated with the address.
   | Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed, because it had an invalid value.
-  deriving Show
+    deriving Show
 
 -- | Result returned by @stackAlloca@ (defined below).
-data StackAllocaResult sbe
+data AllocResult sbe
   -- | @SAResult c p m@ is returned when allocation succeeded. @c@ is a symbolic
   -- path constraint that the allocation must satisfy for allocation to have
   -- succeeded, @m@ is the new memory state, and @p@ is a @ptr@ to the newly
   -- allocated space.  @c@ is false if the allocation failed due to
   -- insufficient space.
-  = SAResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
+  = AResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
   -- | Returned if stackAlloca given a symbolic length and the implementation
   -- does not support this.
-  | SASymbolicCountUnsupported
-
--- | Result returned by @heapAlloc@ (defined below). Currently
--- isomorphic to StackAllocResult, but that might change.
-data HeapAllocResult sbe
-  -- | @HAResult c p m@ is returned when allocation succeeded. @c@
-  -- is a symbolic path constraint that the allocation must satisfy
-  -- for allocation to have succeeded, @m@ is the new memory state,
-  -- and @p@ is a @ptr@ to the newly
-  -- allocated space. @c@ is false if the allocation failed due to
-  -- insufficient space.
-  = HAResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
-  -- | Returned if heapAlloc given a symbolic length and the
-  -- implementation does not support this.
-  | HASymbolicCountUnsupported
+  | ASymbolicCountUnsupported
 
 data SBE m = SBE
   {
@@ -88,7 +72,7 @@ data SBE m = SBE
     sbeTruePred :: SBEPred m
     -- | Return predicate indicating if two integer terms are equal.
   , applyIEq :: BitWidth -> SBETerm m -> SBETerm m -> m (SBEPred m)
-    -- applyIEq sbe w x y = applyTypedExpr sbe (IntCmp L.Ieq Nothing w x y)
+    -- applyIEq sbe w x y = applyTypedExpr sbe (IntCmp Ieq Nothing w x y)
     -- | Return conjunction of two predicates.
   , applyAnd :: SBEPred m -> SBEPred m -> m (SBEPred m)
     -- applyAnd sbe x y = applyTypedExpr sbe (IntArith And Nothing 1 x y)
@@ -96,8 +80,13 @@ data SBE m = SBE
   , applyBNot :: SBEPred m -> m (SBEPred m)
     -- | @applyPredIte a b c@ creates an if-then-else term
   , applyPredIte :: SBEPred m -> SBEPred m -> SBEPred m -> m (SBEPred m)
-    -- | @applyIte a b c@ creates an if-then-else term
-  , applyIte     :: L.Type -> SBEPred m -> SBETerm m -> SBETerm m -> m (SBETerm m)
+    -- | @applyIte a b c@ creates an if-then-else term.  Or returns error
+    -- if terms cannot be merged.
+  , applyIte :: MemType
+             -> SBEPred m
+             -> SBETerm m
+             -> SBETerm m
+             -> m (Either String (SBETerm m))
     -- | Interpret the term as a concrete boolean if it can be.
   , asBool :: SBEPred m -> Maybe Bool
   , prettyPredD :: SBEPred m -> Doc
@@ -116,7 +105,10 @@ data SBE m = SBE
 
     -- | Interpret the term as a concrete unsigned integer if it can be.
     -- The first int is the bitwidth.
-  , asUnsignedInteger :: SBETerm m -> Maybe (Int,Integer)
+  , asUnsignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
+
+    -- | Interpret a pointer as an unsigned integer.
+  , asConcretePtr :: SBETerm m -> Maybe Integer
 
   , prettyTermD :: SBETerm m -> Doc
 
@@ -127,21 +119,26 @@ data SBE m = SBE
     -- parameter optionally constrains address ranges.
   , memDump :: SBEMemory m -> Maybe [(Integer, Integer)] -> m ()
 
-    -- | @memLoad m p@ returns a pair @(c,v)@ where @v@ denotes the value at
+    -- | @memLoad m tp p a@ returns a pair @(c,v)@ where @v@ denotes the value at
     -- address @p@ in memory @m@, and @c@ denotes an additional path constraint
     -- that ensures the address @p@ is a valid memory location in @m@.
     -- In other words, @p@ is a valid memory location if @c@ is true.
   , memLoad :: SBEMemory m
-            -> L.Typed (SBETerm m)
+            -> MemType
+            -> SBETerm m
+            -> Alignment
             -> m (SBEPartialResult m (SBETerm m))
-    -- | @memStore m v p@ returns a pair @(c,m')@ where @m'@ denotes the memory
-    -- obtained by storing value @v@ at address @p@, and @c@ denotes an
+    -- | @memStore m p tp v a@ returns a pair @(c,m')@ where @m'@ denotes the memory
+    -- obtained by storing value @v@ with type @tp@ at address @p@, and @c@ denotes an
     -- additional path constraint that ensures the address @p@ is a valid memory
     -- location in @m@.
   , memStore :: SBEMemory m
-             -> L.Typed (SBETerm m)
-             -> SBETerm m
+             -> SBETerm m -- ^ Address to store value at. 
+             -> MemType   -- ^ Type of value
+             -> SBETerm m -- ^ Value to store
+             -> Alignment
              -> m (SBEPartialResult m (SBEMemory m))
+
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
     -- labels @blocks@ to the memory @mem@ and returns a pointer to
     -- the definition, and updated memory if space is available.  If space
@@ -149,46 +146,53 @@ data SBE m = SBE
     -- It is undefined to call this function with a symbol that has already
     -- been defined in the memory.
   , memAddDefine :: SBEMemory m
-                 -> L.Symbol
-                 -> [L.BlockLabel]
+                 -> Symbol
+                 -> [BlockLabel]
                  -> m (Maybe (SBETerm m, SBEMemory m))
-    -- | @memInitGlobal mem data@ attempts to write @data@ to a newly
+    -- | @memInitGlobal mem tp data@ attempts to write @data@ to a newly
     -- allocated region of memory in address space for globals.  If
     -- space is available, returns a pointer to the region
     -- and updated memory.  Otherwise returns @Nothing@.
   , memInitGlobal :: SBEMemory m
-                  -> L.Typed (SBETerm m)
+                  -> MemType 
+                  -> SBETerm m
                   -> m (Maybe (SBETerm m, SBEMemory m))
+
     -- | @codeBlockAddress mem d l@ returns the address of basic block with
     -- label @l@ in definition @d@.
-  , codeBlockAddress :: SBEMemory m -> L.Symbol -> L.BlockLabel -> m (SBETerm m)
-    -- | @codeLookupSymbol ptr@ returns the symbol at the given address.
-    -- Lookup may fail if the pointer does not point to a symbol, or if
-    -- the pointer is a symbolic value without a clear meaning.
-    -- TODO: Consider moving this function to the symbolic simulator.
+  , codeBlockAddress :: SBEMemory m -> Symbol -> BlockLabel -> m (SBETerm m)
+
+    -- | @codeLookupSymbol mem ptr@ returns the symbol at the given address
+    -- in mem.  Lookup may fail if the pointer does not point to a symbol, or
+    -- if the pointer is a symbolic value without a clear meaning.
   , codeLookupSymbol :: SBEMemory m -> SBETerm m -> m LookupSymbolResult
+
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
-  , stackAlloca :: SBEMemory m
-                -> L.Type
-                -> L.Typed (SBETerm m)
-                -> Int
-                -> m (StackAllocaResult m)
+  , stackAlloc :: SBEMemory m
+               -> MemType
+               -> BitWidth
+               -> SBETerm m
+               -> Alignment -- ^ Alignment required for allocation
+               -> m (AllocResult m)
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
     -- stack frame to @mem@.
   , stackPushFrame :: SBEMemory m -> m (SBEPartialResult m (SBEMemory m))
     -- | @stackPushFrame mem@ returns the memory obtained by popping a new
     -- stack frame from @mem@.
   , stackPopFrame :: SBEMemory m -> m (SBEMemory m)
-    -- | @heapAlloc h tp i align@ allocates memory in the heap for the given
+
+    -- | @heapAlloc m tp iw i a@ allocates memory in the heap for @m@ for
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
   , heapAlloc :: SBEMemory m
-              -> L.Type
-              -> L.Typed (SBETerm m)
-              -> Int
-              -> m (HeapAllocResult m)
+              -> MemType
+              -> BitWidth
+              -> SBETerm m
+              -> Alignment
+              -> m (AllocResult m)
+
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
     -- both of which must be aligned according to @align@ and must refer to
     -- non-overlapping regions.
@@ -241,14 +245,15 @@ applySub :: SBE m -> OptVectorLength -> BitWidth -> SBETerm m -> SBETerm m -> m 
 applySub sbe mn w x y = applyTypedExpr sbe (IntArith (Sub False False) mn w x y)
  
 applyIne :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applyIne sbe w x y = applyTypedExpr sbe (IntCmp L.Ine Nothing w x y)
+applyIne sbe w x y = applyTypedExpr sbe (IntCmp Ine Nothing w x y)
 
 -- | Interpret the term as a concrete signed integer if it can be.
-asSignedInteger :: SBE m -> SBETerm m -> Maybe (Int,Integer)
-asSignedInteger sbe t = s2u `fmap` (asUnsignedInteger sbe t :: Maybe (Int, Integer))
-  where s2u (0,v) = (0,v)  
-        s2u (w,v) | v `testBit` (w-1) = (w,v - 2^w) 
-                  | otherwise = (w,v)
+asSignedInteger :: SBE m -> BitWidth -> SBETerm m -> Maybe Integer
+asSignedInteger sbe w t 
+    | w == 0 = error "Bad bitwidth"
+    | otherwise = s2u <$> asUnsignedInteger sbe w t
+  where s2u v | v `testBit` (w-1) = v - 2^w 
+              | otherwise = v
 
 -- | @applySExt iw rw t@ assumes that @iw < rw@, and sign extends an
 -- integer @t@ with @iw@ bits to an integer with @rw@ bits.
@@ -266,7 +271,7 @@ termDouble sbe v = applyTypedExpr sbe (SValDouble v)
 
 -- | @termArray tp ts@ creates a term representing an array with element terms
 -- @ts@ (which must be nonempty).  Each element must have type tp.  
-termArray :: SBE m -> L.Type -> [SBETerm m] -> m (SBETerm m)
+termArray :: SBE m -> MemType -> [SBETerm m] -> m (SBETerm m)
 termArray sbe tp l = applyTypedExpr sbe (SValArray tp (V.fromList l))
 
 -- | Create an struct of terms, which may have different types.
