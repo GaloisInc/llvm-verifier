@@ -61,6 +61,8 @@ module Verifier.LLVM.Simulator.Common
   , ppFailRsn
 
   , Override(Override, Redirect)
+  , VoidOverrideHandler
+  , voidOverride
 
   , ErrorPath(EP, epRsn, epPath)
   , InternalExc(ErrorPathExc, UnknownExc)
@@ -127,7 +129,7 @@ data State sbe m = State
   , _errorPaths   :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
   , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
   , _pathCounter  :: Integer         -- ^ Name supply for paths
-  , _aigOutputs   :: [SBETerm sbe]   -- ^ Current list of AIG outputs, discharged
+  , _aigOutputs   :: [(MemType,SBETerm sbe)]   -- ^ Current list of AIG outputs, discharged
                                      -- via lss_write_aiger() sym api calls
   }
 
@@ -152,7 +154,7 @@ errorPaths f s = (\v -> s { _errorPaths = v }) <$> f (_errorPaths s)
 pathCounter :: Simple Lens (State sbe m) Integer
 pathCounter f s = (\v -> s { _pathCounter = v }) <$> f (_pathCounter s)
 
-aigOutputs :: Simple Lens (State sbe m) [SBETerm sbe]
+aigOutputs :: Simple Lens (State sbe m) [(MemType,SBETerm sbe)]
 aigOutputs f s = (\v -> s { _aigOutputs = v }) <$> f (_aigOutputs s)
 
 -- | Action to perform when branch.
@@ -469,6 +471,15 @@ type OverrideHandler sbe m
 data Override sbe m
   = Override (OverrideHandler sbe m)
   | Redirect Symbol
+
+type VoidOverrideHandler sbe m
+  =  Symbol              -- ^ Callee symbol
+  -> Maybe (MemType, Ident)     -- ^ Callee return register
+  -> [(MemType,SBETerm sbe)] -- ^ Callee arguments
+  -> Simulator sbe m ()
+
+voidOverride :: Functor m => VoidOverrideHandler sbe m -> Override sbe m
+voidOverride f = Override (\s r a -> Nothing <$ f s r a)
 
 --------------------------------------------------------------------------------
 -- Misc typeclass instances

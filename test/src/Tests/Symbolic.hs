@@ -55,7 +55,7 @@ symTests =
 
 evalClosed :: (Functor sbe)
   => SBE sbe -> BitWidth -> SBETerm sbe -> [Bool] -> sbe (Maybe Integer)
-evalClosed sbe w v i = asSignedInteger sbe w <$> evalAiger sbe i v
+evalClosed sbe w v i = asSignedInteger sbe w <$> evalAiger sbe i (IntType w) v
 
 trivBranchImpl :: String -> (Maybe Integer -> Maybe Integer -> Bool) -> AllMemModelTest
 trivBranchImpl symName chk = do
