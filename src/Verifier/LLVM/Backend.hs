@@ -235,11 +235,11 @@ data SBE m = SBE
 
     -- | @writeCnf f t@ writes a CNF representation of @t /= 0@ into
     -- file @f@.
-  , writeCnf :: String -> SBETerm m -> m [Int]
+  , writeCnf :: String -> BitWidth -> SBETerm m -> m [Int]
 
-    -- | @evalAiger inps t@ evaluates an AIG with the given concrete inputs;
-    -- result is always a concrete term.
-  , evalAiger :: [Bool] -> SBETerm m -> m (SBETerm m)
+    -- | @evalAiger inps tp t@ evaluates an AIG with the given concrete inputs;
+    -- result is always a concrete term.  The term @t@ has type @tp@.
+  , evalAiger :: [Bool] -> MemType -> SBETerm m -> m (SBETerm m)
 
     -- | Run sbe computation in IO.
   , sbeRunIO :: forall v . m v -> IO v 

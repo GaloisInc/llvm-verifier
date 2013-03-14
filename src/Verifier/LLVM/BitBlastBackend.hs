@@ -116,9 +116,6 @@ sliceN n v = assert (n > 0 && r == 0) $
 joinN :: LV.Storable l => V.Vector (LV.Vector l) -> LV.Vector l
 joinN = LV.concat . V.toList
 
-{-
--}
-
 -- | @alignUp addr i@ returns the smallest multiple of @2^i@ that it
 -- at least @addr@.
 alignUp :: Addr -> Alignment -> Addr
@@ -1544,12 +1541,10 @@ createDagAll be dl mg = do
 
 -- Aiger operations {{{1
 
-evalAigerImpl :: (LV.Storable l, Eq l) =>
-                 BitEngine l -> [Bool] -> BitTerm l
-              -> IO (BitTerm l)
-evalAigerImpl be inps (IntTerm t) = IntTerm <$>
-  LV.map (beLitFromBool be) <$> beEvalAigV be (LV.fromList inps) t
-evalAigerImpl _ _ _ = illegalArgs "evalAigerImpl"
+evalAigerImpl :: (?be :: BitEngine l, Eq l, LV.Storable l)
+              => DataLayout -> [Bool] -> MemType -> BitTerm l -> IO (BitTerm l)
+evalAigerImpl dl inps tp t = do
+  unflattenTerm dl tp <$> beEvalAigV ?be (LV.fromList inps) (flattenTerm t)
 
 --  SBE Definition {{{1
 
@@ -1725,8 +1720,8 @@ sbeBitBlast dl mm = sbe
           , memCopy          = BitIO `c6` mmMemCopy mm
           , writeAiger       = \f ts ->
               BitIO $ beWriteAigerV be f $ flattenTerm . snd <$> ts
-          , evalAiger        = BitIO `c2` evalAigerImpl be
-          , writeCnf         = \f t -> BitIO $ do
+          , evalAiger        = BitIO `c3` evalAigerImpl dl
+          , writeCnf         = \f _ t -> BitIO $ do
               let ?be = be in
                 LV.toList `liftM` beWriteCNF be f [] (lIsZero (flattenTerm t))
           , sbeRunIO = liftSBEBitBlast 
@@ -1794,3 +1789,55 @@ flattenTerm t0 =
     ArrayTerm v  -> joinN (flattenTerm <$> v)
     VecTerm v    -> joinN (flattenTerm <$> v)
     StructTerm v -> joinN (flattenTerm <$> v)
+
+-- | Returns minimum number of bits to encode type.
+memTypeBitsize :: DataLayout -> MemType -> Int
+memTypeBitsize dl tp0 =
+  case tp0 of
+    IntType w  -> w
+    FloatType  -> 32
+    DoubleType -> 64
+    PtrType{}  -> ptrBitwidth dl
+    ArrayType n etp -> n * memTypeBitsize dl etp
+    VecType n etp   -> n * memTypeBitsize dl etp
+    StructType si   -> V.sum $ memTypeBitsize dl <$> siFieldTypes si
+
+
+vecToBits :: (Bits a, Num a) => LV.Vector Bool -> a
+vecToBits v = impl 0 0 
+  where impl i r 
+          | i == LV.length v = r
+          | v LV.! i  = impl (i+1) (r `setBit` i)
+          | otherwise = impl (i+1) r
+
+-- | Converts from flat lit vector to bitterm based on type.
+unflattenTerm :: (?be ::BitEngine l, LV.Storable l)
+              => DataLayout -> MemType -> LV.Vector Bool -> BitTerm l
+unflattenTerm dl tp0 v =
+  case tp0 of
+    IntType w
+      | LV.length v == w ->
+          IntTerm (LV.map lFromBool v)
+      | otherwise -> badVec $ "integer"
+    FloatType
+      | LV.length v == 32 ->
+          FloatTerm  $ wordToFloat $ vecToBits v
+      | otherwise -> badVec "float"
+    DoubleType
+      | LV.length v == 64 ->
+          DoubleTerm $ wordToDouble $ vecToBits v
+      | otherwise -> badVec "double"
+    PtrType{}
+      | ptrBitwidth dl == fromIntegral (LV.length v) ->
+        PtrTerm (LV.map lFromBool v)
+      | otherwise -> badVec "ptr"
+    ArrayType n etp -> ArrayTerm  $ unflattenTerm dl etp <$> sliceN n v
+    VecType n etp   -> VecTerm    $ unflattenTerm dl etp <$> sliceN n v
+    StructType si   -> StructTerm $ V.zipWith (unflattenTerm dl) flv vv
+      where flv = siFieldTypes si
+            szv = memTypeBitsize dl <$> flv
+            ofv = V.prescanl (+) 0 szv
+            vv = V.zipWith (\i o-> LV.slice i o v) ofv szv
+ where badVec nm = error $
+        "internalError: unflattern given incorrect number of bits for "
+        ++ nm ++ "."
