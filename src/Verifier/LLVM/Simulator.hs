@@ -1291,9 +1291,9 @@ writeIntArrayAiger ety = voidOverride $ \_sym _rty args ->
 writeCNF :: StdOvd sbe m
 writeCNF = voidOverride $ \_sym _rty args ->
   case args of
-    [(IntType{}, t), (PtrType{},fptr)] -> do
+    [(IntType w, t), (PtrType{},fptr)] | w == 32 -> do
       file <- loadString "lss_write_cnf" fptr
-      void $ withSBE $ \s -> writeCnf s file t
+      void $ withSBE $ \s -> writeCnf s file 32 t
     _ -> wrongArguments "lss_write_cnf"
 
 -- | Return list of elements in an array.
@@ -1331,14 +1331,15 @@ getEvalInputs nm p sz = do
         Nothing -> errorPath $ nm ++ ": symbolc inputs not supported."
     Nothing -> errorPath $ nm ++ ": symbolic size not supported."
 
-evalAigerOverride :: StdOvd m sbe
-evalAigerOverride =
-  Override $ \_sym _rty args ->
+-- | Eval aiger override the argument is the type of the first argument.
+evalAigerOverride :: MemType -> StdOvd m sbe
+evalAigerOverride tp =
+  Override $ \_sym _rty args -> Just <$>
     case args of
       [(_,tm), (PtrType{}, p), (IntType 32,szTm)] -> do
-        sbe <- gets symBE
         bools <- getEvalInputs "lss_eval_aiger" p szTm
-        Just <$> liftSBE (evalAiger sbe bools tm)
+        sbe <- gets symBE
+        liftSBE $ evalAiger sbe bools tp tm
       _ -> wrongArguments "lss_eval_aiger"
 
 evalAigerArray :: MemType -- Type of first argument pointer.
@@ -1355,9 +1356,10 @@ evalAigerArray ty = voidOverride $ \_sym _rty args ->
         case asUnsignedInteger sbe szw szTm of
           Just sz -> do
             bools <- getEvalInputs "lss_eval_aiger_array" input inputSz
-            tm <- load (ArrayType (fromInteger sz) ty) sym 0
-            res <- liftSBE $ evalAiger sbe bools tm
-            store (ArrayType (fromInteger sz) ty) dst res 0
+            let tp = ArrayType (fromInteger sz) ty
+            tm <- load tp sym 0
+            res <- liftSBE $ evalAiger sbe bools tp tm
+            store tp dst res 0
           _ -> errorPath "lss_eval_aiger_array: symbolic sizes not supported"
       _ -> wrongArguments "lss_eval_aiger_array"
 
@@ -1505,10 +1507,10 @@ registerLSSOverrides = registerOverrides
   , ("lss_write_aiger_array_uint16", voidFunDecl [i16p, i32, strTy], writeIntArrayAiger i16)
   , ("lss_write_aiger_array_uint32", voidFunDecl [i32p, i32, strTy], writeIntArrayAiger i32)
   , ("lss_write_aiger_array_uint64", voidFunDecl [i64p, i32, strTy], writeIntArrayAiger i64)
-  , ("lss_eval_aiger_uint8",  funDecl  i8 [ i8, i8p, i32], evalAigerOverride)
-  , ("lss_eval_aiger_uint16", funDecl i16 [i16, i8p, i32], evalAigerOverride)
-  , ("lss_eval_aiger_uint32", funDecl i32 [i32, i8p, i32], evalAigerOverride)
-  , ("lss_eval_aiger_uint64", funDecl i64 [i64, i8p, i32], evalAigerOverride)
+  , ("lss_eval_aiger_uint8",  funDecl  i8 [ i8, i8p, i32], evalAigerOverride  i8)
+  , ("lss_eval_aiger_uint16", funDecl i16 [i16, i8p, i32], evalAigerOverride i16)
+  , ("lss_eval_aiger_uint32", funDecl i32 [i32, i8p, i32], evalAigerOverride i32)
+  , ("lss_eval_aiger_uint64", funDecl i64 [i64, i8p, i32], evalAigerOverride i64)
   , ("lss_eval_aiger_array_uint8",  voidFunDecl [i8p,  i8p,  i32, i8p, i32], evalAigerArray i8)
   , ("lss_eval_aiger_array_uint16", voidFunDecl [i16p, i16p, i32, i8p, i32], evalAigerArray i16)
   , ("lss_eval_aiger_array_uint32", voidFunDecl [i32p, i32p, i32, i8p, i32], evalAigerArray i32)
