@@ -1724,7 +1724,7 @@ sbeBitBlast dl mm = sbe
               BitIO $ mmHeapAlloc mm m (memTypeSize dl eltTp) cnt a
           , memCopy          = BitIO `c6` mmMemCopy mm
           , writeAiger       = \f ts ->
-              BitIO $ beWriteAigerV be f $ flattenTerm <$> ts
+              BitIO $ beWriteAigerV be f $ flattenTerm . snd <$> ts
           , evalAiger        = BitIO `c2` evalAigerImpl be
           , writeCnf         = \f t -> BitIO $ do
               let ?be = be in

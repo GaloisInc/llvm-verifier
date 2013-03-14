@@ -9,10 +9,21 @@ Point-of-contact : jstanley
 {-# LANGUAGE TypeFamilies     #-}
 
 module Verifier.LLVM.Backend
-  ( module Verifier.LLVM.Backend
-  , BitWidth
+  ( BitWidth
   , IntArithOp(..)
   , TypedExpr(..)
+  , SBE(..)
+  , SBETerm
+  , SBEPred
+  , SBEMemory
+  , SBEPair(..)
+  , AllocResult(..)
+  , LookupSymbolResult(..)
+  , SBEPartialResult
+  , termArray
+  , termInt
+  , termAdd
+  , asSignedInteger
   ) where
 
 import           Control.Applicative ((<$>))
@@ -220,7 +231,7 @@ data SBE m = SBE
 
     -- | @writeAiger f ts@ writes an AIG reprsentation of (juxtaposed) @ts@ into
     -- file @f@ in the Aiger format.
-  , writeAiger :: String -> [SBETerm m] -> m ()
+  , writeAiger :: String -> [(MemType,SBETerm m)] -> m ()
 
     -- | @writeCnf f t@ writes a CNF representation of @t /= 0@ into
     -- file @f@.
@@ -234,12 +245,6 @@ data SBE m = SBE
   , sbeRunIO :: forall v . m v -> IO v 
   }
 
-applySub :: SBE m -> OptVectorLength -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applySub sbe mn w x y = applyTypedExpr sbe (IntArith (Sub False False) mn w x y)
- 
-applyIne :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
-applyIne sbe w x y = applyTypedExpr sbe (IntCmp Ine Nothing w x y)
-
 -- | Interpret the term as a concrete signed integer if it can be.
 asSignedInteger :: SBE m -> BitWidth -> SBETerm m -> Maybe Integer
 asSignedInteger sbe w t 
@@ -248,24 +253,18 @@ asSignedInteger sbe w t
   where s2u v | v `testBit` (w-1) = v - 2^w 
               | otherwise = v
 
--- | @applySExt iw rw t@ assumes that @iw < rw@, and sign extends an
--- integer @t@ with @iw@ bits to an integer with @rw@ bits.
-applySExt :: SBE m -> BitWidth -> BitWidth -> SBETerm m -> m (SBETerm m)
-applySExt sbe iw rw t = applyTypedExpr sbe (SExt Nothing iw t rw)
-
 -- | @termInt w n@ creates a term representing the constant @w@-bit
 -- value @n@
 termInt  :: SBE m -> BitWidth -> Integer -> m (SBETerm m)
 termInt sbe w v = applyTypedExpr sbe (SValInteger w v)
 
--- | Create an SBE term for the given concrete floating point value.
-termDouble :: SBE m -> Double -> m (SBETerm m)
-termDouble sbe v = applyTypedExpr sbe (SValDouble v)
-
 -- | @termArray tp ts@ creates a term representing an array with element terms
 -- @ts@ (which must be nonempty).  Each element must have type tp.  
 termArray :: SBE m -> MemType -> [SBETerm m] -> m (SBETerm m)
 termArray sbe tp l = applyTypedExpr sbe (SValArray tp (V.fromList l))
+
+termAdd :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
+termAdd sbe w x y = applyTypedExpr sbe (IntArith (Add False False) Nothing w x y)
 
 -- | Represents some SBE backend and the initial memory.
 data SBEPair where 
