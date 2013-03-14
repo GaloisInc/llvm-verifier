@@ -14,7 +14,6 @@ module Tests.Common
   ) where
 
 import           Control.Applicative
-import           Control.Arrow
 import           Control.Lens hiding (act, (<.>))
 import           Control.Monad 
 import           Control.Monad.State (gets)
@@ -25,7 +24,6 @@ import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import qualified Test.QuickCheck.Test          as T
 import           Verinf.Symbolic               (Lit, createBitEngine)
-import           Verinf.Symbolic.Lit.DataTypes (BitEngine)
 
 import           LSSImpl
 
@@ -49,11 +47,8 @@ supportDir = "test" </> "src" </> "support"
 testsDir :: FilePath
 testsDir = supportDir
 
-commonCB :: FilePath -> PropertyM IO Codebase
-commonCB bcFile = run $ loadCodebase $ supportDir </> bcFile
-
-testCB :: FilePath -> PropertyM IO Codebase
-testCB bcFile = run $ loadCodebase $ testsDir </> bcFile
+testMDL :: FilePath -> PropertyM IO L.Module
+testMDL bcFile = run $ loadModule $ testsDir </> bcFile
 
 assertMsg :: Bool -> String -> PropertyM IO ()
 assertMsg b s = when (not b) (run $ putStrLn s) >> assert b
@@ -83,30 +78,32 @@ type AllMemModelTest =
   (Functor sbe)
   => Simulator sbe IO Bool
 
-runAllMemModelTest :: Int -> PropertyM IO Codebase -> AllMemModelTest -> PropertyM IO ()
-runAllMemModelTest v getCB act = do
-  cb <- getCB
+runAllMemModelTest :: Int -> FilePath -> AllMemModelTest -> PropertyM IO ()
+runAllMemModelTest v bcFile act = do
+  mdl <- run $ loadModule $ testsDir </> bcFile
   assert . and =<< do
-    forAllMemModels v cb $ \s m -> run $
+    forAllMemModels v mdl $ \s m cb -> run $ do
       runSimulator cb s m defaultSEH
         Nothing (withVerbosity v act)
 
-type CreateSBEFn sbe =
-       BitEngine Lit -> DataLayout -> MemGeom
-                     -> IO (SBE sbe, SBEMemory sbe)
+type RunLSSTest sbe = Int
+                    -> L.Module
+                    -> [String]
+                    -> ExecRsltHndlr sbe Integer Bool
+                    -> PropertyM IO ()
 
 runTestLSSCommon :: Functor sbe
                  => String
-                 -> CreateSBEFn sbe
+                 -> (DataLayout -> IO (SBE sbe, SBEMemory sbe))
                  -> RunLSSTest sbe
-runTestLSSCommon nm createFn v cb argv' hndlr = do
+runTestLSSCommon nm createFn v mdl argv' hndlr = do
    when (v >= 2) $ run $ putStrLn nm
    assert =<< run m
-  where m = do be <- createBitEngine
-               (sbe, mem) <- createFn be dl (defaultMemGeom dl)
-               rslt       <- lssImpl sbe mem cb argv' cmdLineOpts
+  where m = do let dl = parseDataLayout (L.modDataLayout mdl)
+               (sbe, mem) <- createFn dl
+               cb <- mkCodebase sbe dl mdl
+               rslt <- lssImpl sbe mem cb argv' cmdLineOpts
                hndlr sbe mem rslt
-        dl          = cbDataLayout cb
         dbugLvl     = DbugLvl (fromIntegral v)
         cmdLineOpts = LSS { dbug = dbugLvl
                           , argv = "" 
@@ -116,23 +113,31 @@ runTestLSSCommon nm createFn v cb argv' hndlr = do
                           , mname = Nothing
                           }
 
-type RunLSSTest sbe = Int
-                    -> Codebase
-                    -> [String]
-                    -> ExecRsltHndlr sbe Integer Bool
-                    -> PropertyM IO ()
 
 runTestLSSBuddy :: RunLSSTest (BitIO (BitMemory Lit) Lit)
-runTestLSSBuddy = runTestLSSCommon "runTestLSSBuddy" createBuddyAll 
+runTestLSSBuddy =
+  runTestLSSCommon "runTestLSSBuddy" $ \dl -> do
+    be <- createBitEngine
+    let sbe = let ?be = be in sbeBitBlast dl (buddyMemModel dl be)
+        mem = buddyInitMemory (defaultMemGeom dl)
+    return (sbe,mem)
+
 
 runTestLSSDag :: RunLSSTest (BitIO (DagMemory Lit) Lit)
-runTestLSSDag = runTestLSSCommon "runTestLSSDag" createDagAll
+runTestLSSDag =
+  runTestLSSCommon "runTestLSSDag" $ \dl -> do
+    be <- createBitEngine
+    (mm,mem) <- createDagMemModel dl be (defaultMemGeom dl)
+    let sbe = let ?be = be in sbeBitBlast dl mm
+    return (sbe,mem)
 
 runTestSAWBackend :: RunLSSTest (SAWBackend s)
-runTestSAWBackend = runTestLSSCommon "runTestLSSDag" (\_ -> createSAWBackend)
+runTestSAWBackend =
+  runTestLSSCommon "runTestLSSDag" $ \dl -> do
+    createSAWBackend dl (defaultMemGeom dl)
 
-lssTest :: Int -> String -> (Int -> Codebase -> PropertyM IO ()) -> (Args, Property)
-lssTest v bc act = test 1 False bc $ act v =<< testCB (bc <.> "bc")
+lssTest :: Int -> FilePath -> (Int -> L.Module -> PropertyM IO ()) -> (Args, Property)
+lssTest v bc act = test 1 False bc $ act v =<< testMDL (bc <.> "bc")
 
 -- | Run test on all backends
 lssTestAll :: Int
@@ -141,10 +146,10 @@ lssTestAll :: Int
            -> (forall sbe . ExecRsltHndlr sbe Integer Bool)
            -> (Args,Property)
 lssTestAll v nm args hndlr =
-  lssTest v nm $ \_ cb -> do
-    runTestLSSBuddy v cb args hndlr
-    runTestLSSDag v cb args hndlr
-    --runTestSAWBackend v cb args hndlr
+  lssTest v nm $ \_ mdl -> do
+    runTestLSSBuddy v mdl args hndlr
+    runTestLSSDag v mdl args hndlr
+    --runTestSAWBackend v mdl args hndlr
 
 -- TODO: At some point we may want to inspect error paths and ensure
 -- that they are the /right/ error paths, rather just checking the
@@ -177,65 +182,64 @@ chkLSS mepsLen mexpectedRV _ _ execRslt = do
   return True
 
 
-type SBEPropM a =
-  forall mem.
-  SBE (BitIO mem Lit)          -- ^ SBE used for the given prop
-  -> SBEMemory (BitIO mem Lit) -- ^ Initial memory for prop
-  -> PropertyM IO a
+type SBEPropM a = forall sbe . Functor sbe => 
+  SBE sbe -> SBEMemory sbe -> Codebase sbe -> PropertyM IO a
 
-type MemCreator mem =
-  DataLayout -> BitEngine Lit -> MemGeom -> IO (BitBlastMemModel mem Lit, mem)
-
-forAllMemModels :: forall a. Int -> Codebase -> SBEPropM a -> PropertyM IO [a]
-forAllMemModels _v cb testProp = do
+forAllMemModels :: forall a. Int -> L.Module -> SBEPropM a -> PropertyM IO [a]
+forAllMemModels _v mdl testProp = do
   sequence
-    [ runMemTest "buddy" createBuddyMemModel
-    , runMemTest "dag"   createDagMemModel
+    [ do be <- run createBitEngine
+         let pair = createBuddyAll be dl (defaultMemGeom dl)
+         runTest pair
+    , do pair <- run $ do
+           be <- createBitEngine
+           createDagAll be dl (defaultMemGeom dl)
+         runTest pair
     ]
-  where
-    runMemTest :: String -> MemCreator mem -> PropertyM IO a
-    runMemTest _lbl act = do
---       run $ putStrLn $ "forAllMemModels: " ++ lbl
-      be         <- run createBitEngine
-      (sbe, mem) <- first (let ?be = be in sbeBitBlast dl) <$> run (act dl be mg)
-      testProp sbe mem
-      where
-        dl = cbDataLayout cb
-        mg = defaultMemGeom dl
+ where dl = parseDataLayout (L.modDataLayout mdl)
+       runTest (SBEPair sbe mem) = do
+         cb <- run $ mkCodebase sbe dl mdl
+         testProp sbe mem cb
+
 
 chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
                -> Int
-               -> PropertyM IO Codebase
+               -> FilePath
                -> L.Symbol
                -> (Int32 -> Int32 -> ExpectedRV Int32)
                -> PropertyM IO ()
-chkBinCInt32Fn mgen v getCB sym chkOp = do
+chkBinCInt32Fn mgen v bc sym chkOp = do
   forAllM (maybe arbitrary id mgen) $ \(x,y) -> do
-    runCInt32Fn v getCB sym [x, y] (fromIntegral <$> x `chkOp` y)
+    runCInt32Fn v bc sym [x, y] (fromIntegral <$> x `chkOp` y)
 
 chkUnaryCInt32Fn :: Maybe (Gen Int32)
                  -> Int
-                 -> PropertyM IO Codebase
+                 -> FilePath
                  -> L.Symbol
                  -> (Int32 -> ExpectedRV Int32)
                  -> PropertyM IO ()
-chkUnaryCInt32Fn mgen v getCB sym chkOp =
+chkUnaryCInt32Fn mgen v bc sym chkOp =
   forAllM (maybe arbitrary id mgen) $ \x -> do
-    runCInt32Fn v getCB sym [x] (fromIntegral <$> chkOp x)
+    runCInt32Fn v bc sym [x] (fromIntegral <$> chkOp x)
 
-chkNullaryCInt32Fn :: Int -> PropertyM IO Codebase -> L.Symbol -> ExpectedRV Int32 -> PropertyM IO ()
-chkNullaryCInt32Fn v getCB sym chkVal =
-  runCInt32Fn v getCB sym [] (fromIntegral <$> chkVal)
+chkNullaryCInt32Fn :: Int
+                   -> FilePath
+                   -> L.Symbol
+                   -> ExpectedRV Int32
+                   -> PropertyM IO ()
+chkNullaryCInt32Fn v bc sym chkVal =
+  runCInt32Fn v bc sym [] (fromIntegral <$> chkVal)
+
 
 runCInt32Fn :: Int
-            -> PropertyM IO Codebase
+            -> FilePath
             -> L.Symbol
             -> [Int32]
             -> ExpectedRV Integer
             -> PropertyM IO ()
-runCInt32Fn v getCB sym cargs erv = do
-  cb <- getCB
-  void $ forAllMemModels v cb $ \s m -> do
+runCInt32Fn v bcFile sym cargs erv = do
+  mdl <- run $ loadModule $ testsDir </> bcFile
+  void $ forAllMemModels v mdl $ \s m cb -> do
     run $ do
       runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
         sbe <- gets symBE
@@ -262,16 +266,6 @@ runCInt32Fn v getCB sym cargs erv = do
               Nothing -> return ()
               Just{} -> fail "Received return value when all paths were expected to error."
 
-runVoidFn :: Int -> PropertyM IO Codebase -> L.Symbol -> [Int32] -> PropertyM IO ()
-runVoidFn v getCB sym cargs = do
-  cb <- getCB
-  _ <- forAllMemModels v cb $ \s m -> run $ do
-    runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
-      sbe <- gets symBE
-      args <- forM cargs $ \x -> liftSBE $ termInt sbe 32 $ fromIntegral x
-      callDefine_ sym Nothing ((IntType 32,) <$> args)
-  return ()
-
 -- possibly skip a test
 psk :: Int -> PropertyM IO () -> PropertyM IO ()
 psk v act = if (v > 0) then act else disabled
@@ -291,7 +285,11 @@ runMain = runMain' False
 
 runMain' :: Bool -> Int -> FilePath -> ExpectedRV Int32 -> PropertyM IO ()
 runMain' quiet v bc erv = do
-  psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) (commonCB bc) (L.Symbol "main") erv
+  psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) bc (L.Symbol "main") erv
 
 runMainVoid :: Int -> FilePath -> PropertyM IO ()
-runMainVoid v bc = psk v $ runVoidFn 0 (commonCB bc) (L.Symbol "main") []
+runMainVoid v bc = psk v $ do
+  mdl <- run $ loadModule $ testsDir </> bc
+  void $ forAllMemModels 0 mdl $ \s m cb -> run $ do
+    runSimulator cb s m defaultSEH Nothing $ withVerbosity 0 $ do
+      callDefine_ (L.Symbol "main") Nothing []

@@ -40,14 +40,13 @@ module Verifier.LLVM.Simulator
   , Simulator (SM)
   , State(..)
   , SEH(..)
-  , calldefine
-  , calldefine_
+  , callDefine
+  , callDefine_
   , defaultSEH
   , lookupSymbolDef
   , getProgramReturnValue
   , getProgramFinalMem
-  , EvalContext(..)
-  , evalExpr'
+  , evalExpr
   , prettyTermSBE
   , runSimulator
   , liftSBE
@@ -57,7 +56,7 @@ module Verifier.LLVM.Simulator
   , alloca
   , load
   , store
-  , sizeof
+--  , sizeof
   , processMemCond
   -- for testing
   , dbugM
@@ -139,7 +138,7 @@ setMem mem = currentPathMem .= mem
 runSimulator :: forall sbe a .
   ( Functor sbe
   )
-  => Codebase              -- ^ Post-transform LLVM code, memory alignment, and
+  => Codebase sbe          -- ^ Post-transform LLVM code, memory alignment, and
                            -- type aliasing info
   -> SBE sbe               -- ^ A symbolic backend
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
@@ -158,6 +157,7 @@ runSimulator cb sbe mem seh mopts m = do
                     , lssOpts      = fromMaybe defaultLSSOpts mopts
                     , _ctrlStk     = Just $ initialCtrlStk sbe mem
                     , _globalTerms = M.empty
+                    , _blockPtrs = M.empty
                     , _fnOverrides = M.empty
                     , _evHandlers  = seh
                     , _errorPaths  = []
@@ -188,23 +188,17 @@ initGlobals = do
   -- Register all function definitions.
   do let defines = [ d | (_,Right d) <- M.toList nms]
      forM_ defines $ \d -> do
-       let argTys    = snd <$> sdArgs d
-           sym       = sdName d
-           fty       = FunType $ FunDecl (sdRetType d) argTys False
-           idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody d)
-           noCodeSpc = "Not enough space in code memory to allocate new definition."
-       insertGlobalTerm noCodeSpc sym fty $ \s m -> memAddDefine s m sym idl
+       let idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody d)
+       insertGlobalFn (sdName d) idl
   -- Add symbol for declarations.
   do declares <- cbUndefinedFns . codebase <$> get
-     forM_ declares $ \(sym,d) -> do
-       let errMsg = "Insufficient space for new declaration."
-       insertGlobalTerm errMsg sym (FunType d) $ \s m -> memAddDefine s m sym []
+     forM_ declares $ \(sym,_) -> do
+       insertGlobalFn sym []
   -- Initialize global data
   do let globals = [ g | (_,Left g) <- M.toList nms]
-     let ec = EvalContext "addGlobal" Nothing
      forM_ globals $ \g -> do
        cb1 onMkGlobTerm g
-       cdata <- evalExpr' ec (globalValue g)
+       cdata <- evalExpr "addGlobal" (globalValue g)
        cb2 onPreGlobInit g cdata
        let noDataSpc = "Not enough space in data segment to allocate new global."
        insertGlobalTerm noDataSpc (globalSym g) (MemType (globalType g)) $ \s m ->
@@ -290,7 +284,7 @@ callDefine' isRedirected normalRetID calleeSym@(Symbol calleeName) mreg args = d
 
 -- | Return symbol definition with given name or fail.
 lookupSymbolDef :: (Functor m, MonadIO m, Functor sbe)
-                => Symbol -> Simulator sbe m SymDefine
+                => Symbol -> Simulator sbe m (SymDefine (SBETerm sbe))
 lookupSymbolDef sym = do
   mdef <- lookupDefine sym <$> gets codebase
   case mdef of
@@ -344,8 +338,10 @@ intrinsic ::
   -> Simulator sbe m ()
 intrinsic intr mreg args0 =
   case (intr, mreg, args0) of
+    ("llvm.memcpy.p0i8.p0i8.i32", Nothing, [dst, src, len, align, _isvol]) ->
+      memcpy 32 dst src len align
     ("llvm.memcpy.p0i8.p0i8.i64", Nothing, [dst, src, len, align, _isvol]) ->
-      memcpy dst src len align
+      memcpy 64 dst src len align
     ("llvm.memset.p0i8.i64", Nothing, [dst, val, len, align, _]) ->
       memSet dst val 64 len align
     ("llvm.uadd.with.overflow.i64", Just reg, [x, y]) ->
@@ -358,9 +354,9 @@ intrinsic intr mreg args0 =
     _ -> whenVerbosity (>= 1) $ do --TODO: Give option of stopping on warnings like this.
       tellUser $ "Warning: skipping unsupported LLVM intrinsic " ++ show intr     
   where
-    memcpy dst src len align = do
+    memcpy w dst src len align = do
       Just m <- preuse currentPathMem
-      (c,m') <- withSBE $ \sbe -> memCopy sbe m dst src len align
+      (c,m') <- withSBE $ \sbe -> memCopy sbe m dst src w len align
       currentPathMem .= m'
       sbe <- gets symBE
       let pts = map (prettyTermD sbe) [dst,src,len]
@@ -519,7 +515,8 @@ assignReg :: (Functor m, MonadIO m)
 assignReg reg tp v = modifyPathRegs $ at reg ?~ (v,tp)
 
 -- | Evaluate condition in current path.
-evalCond :: (Functor sbe, Functor m, MonadIO m) => SymCond -> Simulator sbe m (SBEPred sbe)
+evalCond :: (Functor sbe, Functor m, MonadIO m)
+         => SymCond (SBETerm sbe) -> Simulator sbe m (SBEPred sbe)
 evalCond (HasConstValue t w i) = do
   v <- evalExpr "evalCond" t
   sbe <- gets symBE
@@ -528,42 +525,74 @@ evalCond (HasConstValue t w i) = do
 
 data EvalContext sbe = EvalContext {
        evalContextName :: String
+     , evalGlobals :: GlobalMap sbe
      , evalRegs :: Maybe (RegMap (SBETerm sbe))
      }
 
 getCurrentEvalContext :: (Functor m, Monad m) => String -> Simulator sbe m (EvalContext sbe)
-getCurrentEvalContext nm = EvalContext nm . fmap (view pathRegs) <$> getPath
+getCurrentEvalContext nm =do
+  gm <- use globalTerms
+  mr <- preuse (currentPathOfState . pathRegs)
+  return EvalContext { evalContextName = nm
+                     , evalGlobals = gm
+                     , evalRegs = mr
+                     }           
 
 evalExpr :: (Functor m, MonadIO m, Functor sbe) 
-         => String -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
-evalExpr nm symValue = do
+         => String -> SymValue (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
+evalExpr nm sv = do
   ec <- getCurrentEvalContext nm
-  evalExpr' ec symValue
+  evalExpr' ec sv
 
 evalExpr' ::
   ( Functor m
   , MonadIO m
   , Functor sbe
   )
-  => EvalContext sbe -> TypedSymValue -> Simulator sbe m (SBETerm sbe)
-evalExpr' ec tsv =
-  case tsv of
+  => EvalContext sbe -> SymValue (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
+evalExpr' ec sv = do
+  mr <- liftIO $ runErrorT $ evalExprImpl ec sv
+  case mr of
+    Left fr -> errorPath fr
+    Right v -> return v
+
+evalExprImpl :: EvalContext sbe -> SymValue (SBETerm sbe) -> ErrorT FailRsn IO (SBETerm sbe)
+evalExprImpl ec sv =
+  case sv of
     SValIdent i -> 
       case evalRegs ec of
         Just regs ->
           case regs^.at i of
             Just (x,_)  -> return x
-            Nothing -> illegal $ "evalExpr' could not find register: "
-                         ++ show (ppIdent i) ++ " in " ++ show (M.keys regs)
-        Nothing -> error $ "evalExpr' called by " ++ evalContextName ec
-                      ++ " with missing frame."
+            Nothing -> throwError $ FailRsn $
+               "ILLEGAL: evalExpr' could not find register: "
+                ++ show (ppIdent i) ++ " in " ++ show (M.keys regs)
+        Nothing -> error $ "evalExpr' called by " ++ evalContextName ec ++ " with missing frame."
     SValSymbol sym -> do
-      Just t <- use (globalTerms . at sym)
-      return t
-    SValExpr te -> do
-      tv <- traverse (evalExpr' ec) te
-      sbe <- gets symBE
-      liftSBE $ applyTypedExpr sbe tv
+      case evalGlobals ec ^. at sym of
+        Just t -> return t
+        Nothing -> error "evalExp' called with missing global symbol."
+    SValExpr _ (ExprEvalFn fn) -> fn (evalExprImpl ec)
+
+insertGlobalFn ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => Symbol
+  -> [BlockLabel]
+  -> Simulator sbe m ()
+insertGlobalFn sym blocks = do
+  let errMsg = "Insufficient space for new function"
+  Just m <- preuse currentPathMem
+  mr <- withSBE $ \s -> memAddDefine s m sym blocks
+  case mr of
+    Nothing -> errorPath (FailRsn errMsg)
+    Just (r,bptrs, m')  -> do
+      currentPathMem .= m'
+      globalTerms . at sym ?= r
+      forOf_ folded (blocks `zip` bptrs) $ \(l,p) -> do
+        blockPtrs . at (sym,l) ?= p
 
 insertGlobalTerm ::
   ( Functor m
@@ -593,7 +622,7 @@ step ::
   , Functor m
   , Functor sbe
   )
-  => SymStmt -> Simulator sbe m ()
+  => SymStmt (SBETerm sbe) -> Simulator sbe m ()
 
 step (PushCallFrame callee args mres retTgt) = do
   ec <- getCurrentEvalContext "PushCallFrame"
@@ -605,11 +634,11 @@ step (PushCallFrame callee args mres retTgt) = do
         fp <- evalExpr' ec callee
         r <- resolveFunPtrTerm fp
         case r of
-          Result sym -> return sym
+          LookupResult sym -> return sym
           _ -> do
             sbe <- gets symBE
             errorPath $ FailRsn $ "PushCallFrame: Failed to resolve callee function pointer: "
-                        ++ show (ppTypedSymValue callee) ++ "\n"
+                        ++ show (ppSymValue callee) ++ "\n"
                         ++ show r ++ "\n"
                         ++ show (prettyTermD sbe fp)
   void $ callDefine' False retTgt calleeSym mres argTerms
@@ -825,12 +854,14 @@ unlessQuiet act = getVerbosity >>= \v -> unless (v == 0) act
 tellUser :: (MonadIO m) => String -> Simulator sbe m ()
 tellUser msg = unlessQuiet $ dbugM msg
 
+{-
 -- | Returns the a term representing the target-specific number of bytes
 -- required to store a value of the given type.
 -- The result has width llvmAddrWidthBits
-sizeof :: (MonadIO m, Functor m) => MemType -> Simulator sbe m TypedSymValue
+sizeof :: (MonadIO m, Functor m) => MemType -> Simulator sbe m (SymValue (SBETerm sbe))
 sizeof ty = withDL $ \dl ->
   SValExpr $ SValInteger (ptrBitwidth dl) (toInteger (memTypeSize dl ty))
+-}
 
 resolveFunPtrTerm ::
   ( MonadIO m
@@ -847,7 +878,7 @@ runStmts ::
   , MonadIO m
   , Functor sbe
   )
-  => [SymStmt] -> Simulator sbe m ()
+  => [SymStmt (SBETerm sbe)] -> Simulator sbe m ()
 runStmts = mapM_ dbugStep
 
 entryRsltReg :: Ident
@@ -906,9 +937,6 @@ registerOverride sym decl handler = do
 unimpl :: (MonadIO m, Functor m, Functor sbe) => String -> Simulator sbe m a
 unimpl msg  = errorPath $ FailRsn $ "UN{SUPPORTED,IMPLEMENTED}: " ++ msg
 
-illegal :: (MonadIO m, Functor m, Functor sbe) => String -> Simulator sbe m a
-illegal msg = errorPath $ FailRsn $ "ILLEGAL: " ++ msg
-
 errorPath ::
   ( MonadIO m
   , Functor m
@@ -952,7 +980,7 @@ dbugStep ::
   , Functor m
   , Functor sbe
   )
-  => SymStmt -> Simulator sbe m ()
+  => SymStmt (SBETerm sbe) -> Simulator sbe m ()
 dbugStep stmt = do
   mp <- getPath
   case mp of
@@ -1400,7 +1428,7 @@ overrideByAddr = Override $ \_sym _rty args ->
     [(PtrType{}, fromPtr), (PtrType{}, toPtr)] -> do
       syms <- both resolveFunPtrTerm (fromPtr, toPtr)
       case syms of
-        (Result src, Result tgt) -> src `userRedirectTo` tgt
+        (LookupResult src, LookupResult tgt) -> src `userRedirectTo` tgt
         _                    -> resolveErr
     _ -> argsErr
   where
@@ -1415,7 +1443,7 @@ overrideIntrinsic = Override $ \_sym _rty args ->
       nm  <- fromString <$> loadString "lss_override_llvm_intrinsic" nmPtr
       msym <- resolveFunPtrTerm fp
       case msym of
-        Result sym -> nm `userRedirectTo` sym
+        LookupResult sym -> nm `userRedirectTo` sym
         _ -> e "overrideIntrinsic: Failed to resolve function pointer"
     _ -> e "lss_override_llvm_intrinsic: wrong number of arguments"
   where
@@ -1449,7 +1477,7 @@ overrideResetByAddr = Override $ \_sym _rty args ->
     [(PtrType{},fp)] -> do
       msym <- resolveFunPtrTerm fp
       case msym of
-        Result sym -> sym `userRedirectTo` sym
+        LookupResult sym -> sym `userRedirectTo` sym
         _        -> e "overrideResetByAddr: Failed to resolve function pointer"
     _ -> e "lss_override_reset_by_addr: wrong number of arguments"
   where

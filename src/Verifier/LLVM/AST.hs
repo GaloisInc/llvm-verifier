@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE RankNTypes #-}
 -- | This module defines the main data types for the AST used directly by the symbolic
 -- simulator.  This AST data type is the interface between the symbolic execution and
 -- the LLVM lifting operating.
@@ -13,15 +14,15 @@
 module Verifier.LLVM.AST
   ( FuncID
   , SymBlockID
-  , sValString
+  , ExprEvalFn(..)
   , L.Symbol(..)
   , L.ppSymbol
   , L.Ident(..)
   , L.ppIdent
   , L.BlockLabel
   , L.ICmpOp(..)
-  , TypedSymValue(..)
-  , ppTypedSymValue
+  , SymValue(..)
+  , ppSymValue
   , BitWidth
   , NUWFlag
   , NSWFlag
@@ -54,8 +55,9 @@ module Verifier.LLVM.AST
   , L.commas
   ) where
 
-import Control.Applicative ((<$>))
+import Control.Applicative (Applicative, (<$>))
 import Control.Lens hiding (op)
+import Control.Monad.IO.Class
 import Data.Foldable
 import Data.Int
 import Data.List (intersperse)
@@ -257,93 +259,94 @@ ppTypedExpr ppConv ppValue tpExpr =
         ppMMemType mn tp = maybe id ppVectorType mn (ppMemType tp)
         ppMSymType mn tp = maybe id ppVectorType mn (ppSymType tp)
 
+-- | Represents a function for evaluating expressions.
+newtype ExprEvalFn v t
+  = ExprEvalFn (forall m . (Applicative m, MonadIO m) => (v -> m t) -> m t)
+
+
 -- | Represents a value in the symbolic simulator.
-data TypedSymValue
+data SymValue t
     -- | Register identifier.
   = SValIdent L.Ident 
      -- | Symbol 
   | SValSymbol L.Symbol
-  | SValExpr (TypedExpr TypedSymValue)
+  | SValExpr (TypedExpr (SymValue t)) (ExprEvalFn (SymValue t) t)
 
-sValString :: String -> TypedSymValue
-sValString s = SValExpr $ SValArray tp (toChar <$> V.fromList s)
- where tp = IntType 8
-       toChar c = SValExpr $ SValInteger 8 (toInteger (fromEnum c))
 
-ppTypedSymValue :: TypedSymValue -> Doc
-ppTypedSymValue = go
+ppSymValue :: SymValue t -> Doc
+ppSymValue = go
   where ppConv nm itp v rtp = text nm <+> parens (itp <+> go v <+> text "to" <+> rtp) 
         go (SValIdent i) = L.ppIdent i
         go (SValSymbol s) = L.ppSymbol s
-        go (SValExpr te) = ppTypedExpr ppConv go te
+        go (SValExpr te _) = ppTypedExpr ppConv go te
 
 -- | Expression in Symbolic instruction set.
 -- | TODO: Make this data-type strict.
-data SymExpr
+data SymExpr t
   -- | Statement for type-checked operations.
   -- = TypedExpr (TypedExpr TypedSymValue)
-  = Val TypedSymValue
+  = Val (SymValue t)
   -- | @Alloca tp sz align@  allocates a new pointer to @sz@ elements of type
   -- @tp@ with alignment @align@.
-  | Alloca MemType (Maybe (BitWidth, TypedSymValue)) Alignment
+  | Alloca MemType (Maybe (BitWidth, SymValue t)) Alignment
     -- @Load ptr tp align@ tp is type to load.
-  | Load TypedSymValue MemType Alignment
+  | Load (SymValue t) MemType Alignment
 
 ppAlign :: Alignment -> Doc
 ppAlign a = text (", align " ++ show a)
 
 -- | Pretty print symbolic expression.
-ppSymExpr :: SymExpr -> Doc
-ppSymExpr (Val v) = ppTypedSymValue v
+ppSymExpr :: SymExpr t -> Doc
+ppSymExpr (Val v) = ppSymValue v
 ppSymExpr (Alloca ty mbLen a) = text "alloca" <+> ppMemType ty <> len <> ppAlign a
-  where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppTypedSymValue l) mbLen
+  where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppSymValue l) mbLen
 ppSymExpr (Load ptr tp a) =
-  text "load" <+> ppPtrType (ppMemType tp) <+> ppTypedSymValue ptr <> ppAlign a
+  text "load" <+> ppPtrType (ppMemType tp) <+> ppSymValue ptr <> ppAlign a
 
 -- | Predicates in symbolic simulator context.
-data SymCond
+data SymCond t
   -- | @HasConstValue v w i@ holds if @v@ corresponds to the constant @i@.
-  = HasConstValue TypedSymValue BitWidth Integer
+  = HasConstValue (SymValue t) BitWidth Integer
 
 -- | Pretty print symbolic condition.
-ppSymCond :: SymCond -> Doc
-ppSymCond (HasConstValue v _ i) = ppTypedSymValue v <+> text "==" <+> integer i
+ppSymCond :: SymCond t -> Doc
+ppSymCond (HasConstValue v _ i) = ppSymValue v <+> text "==" <+> integer i
 
 -- | A merge location is a block or Nothing if the merge happens at a return.
 type MergeLocation = Maybe SymBlockID
 
 -- | Instruction in symbolic level.
-data SymStmt
+data SymStmt t
   -- | @PushCallFrame fn args res retTarget@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@, and store the result in @res@ if the function
   -- returns normally.  The calling function will resume execution at retTarget.
-  = PushCallFrame TypedSymValue [(MemType,TypedSymValue)] (Maybe (MemType, L.Ident)) SymBlockID
+  = PushCallFrame (SymValue t) [(MemType,SymValue t)] (Maybe (MemType, L.Ident)) SymBlockID
   -- | @Return@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
-  | Return (Maybe TypedSymValue)
+  | Return (Maybe (SymValue t))
   -- | @PushPendingExecution tgt c rest@ make the current state a pending execution in the
   -- top-most merge frame with the additional path constraint c, and current block @tgt@.
   -- The final arguments contains the statements to execute with the other path (which 
   -- may assume the negation of the path condition @c@. 
-  | PushPendingExecution SymBlockID SymCond MergeLocation [SymStmt]
+  | PushPendingExecution SymBlockID (SymCond t) MergeLocation [SymStmt t]
   -- | Sets the block to the given location.
   | SetCurrentBlock SymBlockID
   -- | Assign result of instruction to register.
-  | Assign L.Ident MemType SymExpr
+  | Assign L.Ident MemType (SymExpr t)
   -- | @Store v addr@ stores value @v@ in @addr@.
-  | Store MemType TypedSymValue TypedSymValue Alignment
+  | Store MemType (SymValue t) (SymValue t) Alignment
   -- | Print out an error message if we reach an unreachable.
   | Unreachable
   -- | An LLVM statement that could not be translated.
   | BadSymStmt L.Stmt
 
-ppStmt :: SymStmt -> Doc
+ppStmt :: SymStmt t -> Doc
 ppStmt (PushCallFrame fn args res retTgt)
-  = text "pushCallFrame" <+> ppTypedSymValue fn
-  <> parens (commas (ppTypedSymValue . snd <$> args))
+  = text "pushCallFrame" <+> ppSymValue fn
+  <> parens (commas (ppSymValue . snd <$> args))
   <+> maybe (text "void") (\(tp,v) -> ppMemType tp <+> L.ppIdent v) res
   <+> text "returns to" <+> ppSymBlockID retTgt
-ppStmt (Return mv) = text "return" <+> maybe empty ppTypedSymValue mv
+ppStmt (Return mv) = text "return" <+> maybe empty ppSymValue mv
 ppStmt (PushPendingExecution b c ml rest) =
     text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
       $+$ vcat (fmap ppStmt rest)
@@ -351,34 +354,34 @@ ppStmt (PushPendingExecution b c ml rest) =
 ppStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
 ppStmt (Assign v _ e) = L.ppIdent v <+> char '=' <+> ppSymExpr e
 ppStmt (Store tp v addr a) =
-  text "store" <+> ppMemType tp <+> ppTypedSymValue v <> comma
-               <+> ppTypedSymValue addr <> ppAlign a
+  text "store" <+> ppMemType tp <+> ppSymValue v <> comma
+               <+> ppSymValue addr <> ppAlign a
 ppStmt Unreachable = text "unreachable"
 ppStmt (BadSymStmt s) = L.ppStmt s
 
-data SymBlock = SymBlock {
+data SymBlock t = SymBlock {
          sbId :: SymBlockID -- ^ Identifier for block (unique within definition).
-       , sbStmts :: [SymStmt]
+       , sbStmts :: [SymStmt t]
        }
 
-ppSymBlock :: SymBlock -> Doc
+ppSymBlock :: SymBlock t -> Doc
 ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (ppStmt <$> sbStmts sb))
 
 -- | Symbolically lifted version of a LLVM definition.
-data SymDefine = SymDefine {
+data SymDefine t = SymDefine {
          sdName :: L.Symbol
        , sdArgs :: [(L.Ident, MemType)]
        , sdRetType :: Maybe MemType
-       , sdBody :: Map SymBlockID SymBlock
+       , sdBody :: Map SymBlockID (SymBlock t)
        }
 
-lookupSymBlock :: SymDefine -> SymBlockID -> SymBlock
+lookupSymBlock :: SymDefine t -> SymBlockID -> SymBlock t
 lookupSymBlock sd sid =
   case Map.lookup sid (sdBody sd) of
     Nothing  -> error $ "Failed to locate symblock " ++ show (ppSymBlockID sid)
     Just blk -> blk
 
-ppSymDefine :: SymDefine -> Doc
+ppSymDefine :: SymDefine t -> Doc
 ppSymDefine d = text "define"
               <+> ppRetType (sdRetType d)
               <+> L.ppSymbol (sdName d)

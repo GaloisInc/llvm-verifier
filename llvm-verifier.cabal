@@ -104,6 +104,7 @@ executable lss
     , llvm-verifier
     , mtl
     , parsec >= 2.1.0.1
+    , pretty
     , vector
     , Verinf
 

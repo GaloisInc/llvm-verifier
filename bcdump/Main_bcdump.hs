@@ -16,6 +16,7 @@ import qualified Text.LLVM                      as LLVM
 
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Codebase
+import           Verifier.LLVM.SAWBackend
 import           Verifier.LLVM.Simulator.SimUtils
 import           Verifier.LLVM.Translation
 
@@ -40,13 +41,18 @@ main = do
       removeFile tmpll
 
   mdl <- loadModule bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
-  cb <- mkCodebase mdl
+  let dl = parseDataLayout $ LLVM.modDataLayout mdl
+  let mg = defaultMemGeom dl
+  (sbe, _) <- createSAWBackend dl mg
+  cb <- mkCodebase sbe dl mdl
+
   banners $ "llvm-pretty module"
   putStrLn $ show (LLVM.ppModule mdl)
   putStrLn ""
   sdl <- forM (LLVM.modDefines mdl) $ \d -> do
     let ?lc = cbLLVMContext cb
-    case liftDefine d of
+    md <- let ?sbe = sbe in liftDefine d
+    case md of
       Left ed -> do putStrLn $ show ed
                     return empty
       Right (warnings,sd) -> do

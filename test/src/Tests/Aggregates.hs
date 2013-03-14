@@ -47,9 +47,9 @@ aggTests =
     arrayMat4x4 v         = t2 v "matrix_mul_4x4" (RV 304)
     t1                    = mkNullaryTest "test-arrays.bc"
     t2                    = mkNullaryTest "test-mat4x4.bc"
-    mkNullaryTest bc v nm = psk v . chkNullaryCInt32Fn v (commonCB bc) (Symbol nm)
+    mkNullaryTest bc v nm = psk v . chkNullaryCInt32Fn v bc (Symbol nm)
     runStruct v           = \(f :: AllMemModelTest) ->
-                              runAllMemModelTest v (commonCB "test-structs.bc") f
+                              runAllMemModelTest v "test-structs.bc" f
 
 structInitAccessImpl :: AllMemModelTest
 structInitAccessImpl = do
