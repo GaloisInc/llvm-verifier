@@ -49,6 +49,7 @@ library
     , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
     , fingertree
+    , lens
     , llvm-pretty >= 0.1.2.0
     , mtl
     , pretty
@@ -64,6 +65,7 @@ library
     Verifier.LLVM.Backend
     Verifier.LLVM.Codebase
     Verifier.LLVM.BitBlastBackend
+    Verifier.LLVM.DataLayout
     Verifier.LLVM.LLVMContext
     Verifier.LLVM.Printf
     Verifier.LLVM.SAWBackend
@@ -97,10 +99,12 @@ executable lss
   build-depends:
       base >= 4
     , cmdargs >= 0.8
+    , lens
     , llvm-pretty >= 0.1.1.0
     , llvm-verifier
     , mtl
     , parsec >= 2.1.0.1
+    , pretty
     , vector
     , Verinf
 
@@ -125,6 +129,7 @@ executable Tests
     , data-binary-ieee754 >= 0.4.2
     , filepath
     , fingertree
+    , lens
     , llvm-pretty >= 0.1.1.0
     , mtl
     , pretty

@@ -5,10 +5,7 @@
 {-# LANGUAGE ViewPatterns     #-}
 
 module Verifier.LLVM.Simulator.Debugging where
-
 import           Control.Monad.Trans
-import           Text.LLVM              (Typed(..))
-
 import           Verifier.LLVM.Simulator.Common
 
 -- NB: Currently only valid for SBEBitBlast mems
@@ -38,7 +35,7 @@ sanityChecks = SEH
         CE.assert False $ return ()
 -}
 
-  , onPostGlobInit = \_g (Typed _ty _gdata) -> do
+  , onPostGlobInit = \_g _ -> do
       {-
       Just mem       <- getMem
       sz        <- withLC (`llvmStoreSizeOf` ty)

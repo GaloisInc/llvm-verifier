@@ -14,13 +14,12 @@ Point-of-contact : jstanley
 module Tests.Aggregates (aggTests) where
 
 import           Control.Applicative
+import           Control.Monad.State
 import           Test.QuickCheck
 import           Tests.Common
-import qualified Text.LLVM        as L
 
 import           Verifier.LLVM.Backend
 import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Utils
 
 aggTests :: [(Args, Property)]
 aggTests =
@@ -30,8 +29,10 @@ aggTests =
   , test 1 False "test-array-1d-initializer"        $ arrayInit1D      1
   , test 1 False "test-array-2d-initializer"        $ arrayInit2D      1
   , test 1 False "test-array-mat4x4-mult"           $ arrayMat4x4      1
-  , test 1 False "test-struct-init-and-access"      $ structInitAccess 1
-  , test 1 False "test-array-of-structs"            $ structArray      1
+  , test 1 False "test-struct-init-and-access"      $ 
+      runStruct 1 structInitAccessImpl
+  , test 1 False "test-array-of-structs"            $
+      runStruct 1 structArrayImpl
   {-
   , lssTest 0 "ctests/test-struct-member-indirect-call" $ \v cb -> do
       runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 0)
@@ -44,39 +45,37 @@ aggTests =
     arrayInit1D v         = t1 v "onedim_init" (RV 3)
     arrayInit2D v         = t1 v "twodim_init" (RV 21)
     arrayMat4x4 v         = t2 v "matrix_mul_4x4" (RV 304)
-    structInitAccess v    = psk v $ runStruct v structInitAccessImpl
-    structArray v         = psk v $ runStruct v structArrayImpl
     t1                    = mkNullaryTest "test-arrays.bc"
     t2                    = mkNullaryTest "test-mat4x4.bc"
-    mkNullaryTest bc v nm = psk v . chkNullaryCInt32Fn v (commonCB bc) (L.Symbol nm)
+    mkNullaryTest bc v nm = psk v . chkNullaryCInt32Fn v bc (Symbol nm)
     runStruct v           = \(f :: AllMemModelTest) ->
-                              runAllMemModelTest v (commonCB "test-structs.bc") f
+                              runAllMemModelTest v "test-structs.bc" f
 
 structInitAccessImpl :: AllMemModelTest
 structInitAccessImpl = do
-  callDefine_ (L.Symbol "struct_test") i64 []
+  dl <- withDL id
+  let si = mkStructInfo dl False [i32, i8]
+  callDefine_ (Symbol "struct_test") (Just (StructType si)) []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
     Just rv -> do
-      lc <- getLC
-      let ?lc = lc
-      let si = mkStructInfo False [i32, i8, padTy 3]
-      bx <- withSBE $ \sbe -> applyTypedExpr sbe (GetStructField si rv 0)
-      by <- withSBE $ \sbe -> applyTypedExpr sbe (GetStructField si rv 1)
-      bxc <- withSBE' $ \s -> asSignedInteger s bx
-      byc <- withSBE' $ \s -> asSignedInteger s by
+      sbe <- gets symBE
+      bx <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 0)
+      by <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 1)
+      let bxc = asSignedInteger sbe 32 bx
+          byc = asSignedInteger sbe  8 by
       return $ bxc `constTermEq` 42
                &&
                byc `constTermEq` fromIntegral (fromEnum 'z')
 
 structArrayImpl :: AllMemModelTest
 structArrayImpl = do
-  callDefine_ (L.Symbol "struct_test_two") i32 []
+  callDefine_ (Symbol "struct_test_two") (Just i32) []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
-    Just rv -> (`constTermEq` 1) <$> withSBE' (\s -> asSignedInteger s rv)
+    Just rv -> (`constTermEq` 1) <$> withSBE' (\s -> asSignedInteger s 32 rv)
 
 --------------------------------------------------------------------------------
 -- Scratch

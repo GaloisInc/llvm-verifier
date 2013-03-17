@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE RankNTypes #-}
 -- | This module defines the main data types for the AST used directly by the symbolic
 -- simulator.  This AST data type is the interface between the symbolic execution and
 -- the LLVM lifting operating.
@@ -13,25 +14,25 @@
 module Verifier.LLVM.AST
   ( FuncID
   , SymBlockID
-  , Reg
-  , SymValue
-  , sValString
-  , TypedSymValue(..)
-  , ppTypedSymValue
+  , ExprEvalFn(..)
+  , L.Symbol(..)
+  , L.ppSymbol
+  , L.Ident(..)
+  , L.ppIdent
+  , L.BlockLabel
+  , L.ICmpOp(..)
+  , SymValue(..)
+  , ppSymValue
   , BitWidth
   , NUWFlag
   , NSWFlag
   , ExactFlag
   , IntArithOp(..)
+  , ppIntArithOp
   , OptVectorLength
   , TypedExpr(..)
   , StructInfo(..)
-  , Offset
-  , Size
-  , mkStructInfo
-  , structFieldOffset
   , Int32
-  , GEPOffset(..)
   , SymExpr(..)
   , SymCond(..)
   , MergeLocation
@@ -47,43 +48,44 @@ module Verifier.LLVM.AST
   , ppSymCond
   , ppSymDefine
   , ppSymExpr
-  , ppSymStmt
+  , ppStmt
   , symBlockID
   , symBlockLabel
+  , module Verifier.LLVM.LLVMContext
+  , L.commas
   ) where
 
-import Control.Applicative ((<$>))
-import Control.Exception (assert)
+import Control.Applicative (Applicative, (<$>))
+import Control.Lens hiding (op)
+import Control.Monad.IO.Class
 import Data.Foldable
-import Data.Traversable
 import Data.Int
 import Data.List (intersperse)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Vector (Vector)
 import qualified Data.Vector as V
-import Data.Word
-import qualified Text.LLVM.AST as LLVM
 import qualified Text.LLVM.AST as L
 import Text.PrettyPrint.HughesPJ
 
 import Verifier.LLVM.LLVMContext
+import Verifier.LLVM.Utils
 
 -- | A fake entry label to represent the function that calls a user function.
-entrySymbol :: LLVM.Symbol
-entrySymbol = LLVM.Symbol "__galois_entry"
+entrySymbol :: L.Symbol
+entrySymbol = L.Symbol "__galois_entry"
 
 -- | A fake sentinel SymBlockID to represent a fictitious target block for after
 -- a normal return from a toplevel function invocation.
 entryRetNormalID :: SymBlockID
-entryRetNormalID = NamedBlock (LLVM.Named $ LLVM.Ident "__galois_entry_ret_normal") (-1)
+entryRetNormalID = NamedBlock (L.Named $ L.Ident "__galois_entry_ret_normal") (-1)
 
 -- | Intersperse commas into document.
 commas :: [Doc] -> Doc
 commas ds = hcat (intersperse (comma <> space) ds)
 
 -- | Identifier for a function.
-type FuncID = LLVM.Symbol
+type FuncID = L.Symbol
 
 -- | Identifier for a basic block.
 data SymBlockID
@@ -91,7 +93,7 @@ data SymBlockID
   -- post-dominator frames.
   = InitBlock
   -- | Identifier for blocks derived from LLVM blocks.
-  | NamedBlock !(LLVM.BlockLabel) !Int
+  | NamedBlock !(L.BlockLabel) !Int
   deriving (Eq, Ord, Show)
 
 -- | Return init symbolic block id.
@@ -100,89 +102,17 @@ initSymBlockID = InitBlock
 
 -- | Create new block id for block with given name and unique integer.
 -- The first block is for the entry point to the LLVM block.
-symBlockID :: LLVM.BlockLabel -> Int -> SymBlockID
+symBlockID :: L.BlockLabel -> Int -> SymBlockID
 symBlockID i = NamedBlock i
 
-symBlockLabel :: SymBlockID -> Maybe LLVM.BlockLabel
+symBlockLabel :: SymBlockID -> Maybe L.BlockLabel
 symBlockLabel (NamedBlock i _) = Just i
 symBlockLabel _                = Nothing
 
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc
 ppSymBlockID InitBlock = text "init"
-ppSymBlockID (NamedBlock b n) = LLVM.ppLabel b <> char '.' <> int n
-
--- | Identies a named value in a function.
--- TODO: Figure out if LLVM.Ident is the right type and if this can be
--- changed to an integer (for efficiency purposes).
-type Reg = LLVM.Ident
-
-ppReg :: Reg -> Doc
-ppReg = LLVM.ppIdent
-
-type Typed v = LLVM.Typed v
-
-type SymValue = L.Value
-
-type BitWidth = Int 
-
-type Size = Word64
-type Offset = Word64
-
-
-ppIntType :: BitWidth -> Doc
-ppIntType i = char 'i' <> integer (toInteger i)
-
-ppPtrType :: L.Type -> Doc
-ppPtrType tp = L.ppType tp <> char '*'
-
-ppVector :: Int -> Doc -> Doc
-ppVector n e = L.angles (int n <+> char 'x' <+> e)
-
-ppIntVector :: Int -> BitWidth -> Doc
-ppIntVector n w = ppVector n (ppIntType w)
-
-ppTypeVector :: Int -> L.Type -> Doc
-ppTypeVector n w = ppVector n (L.ppType w)
-
--- | Information about structs.  Offsets and size is in bytes.
-data StructInfo = StructInfo { structPacked :: !Bool
-                             , structSize :: !Size
-                               
-                             , structFields :: !(Vector (L.Type,Offset))
-                             }
-
-structInfoType :: StructInfo -> L.Type
-structInfoType si
-    | structPacked si = L.PackedStruct flds
-    | otherwise = L.Struct flds
-  where flds = V.toList $ fst <$> structFields si
-
-mkStructInfo :: (?lc :: LLVMContext) => Bool -> [L.Type] -> StructInfo
-mkStructInfo packed tpl = StructInfo { structPacked = packed
-                                     , structSize = fromInteger (ssiBytes ssi)
-                                     , structFields = V.fromList flds
-                                     }
-  where ssi = llvmStructInfo' ?lc packed tpl
-        flds = zip tpl (fromInteger <$> ssiOffsets ssi)
-
-structFieldOffset :: StructInfo -> Int -> Offset
-structFieldOffset si i = assert (i < V.length f) o
-  where f = structFields si
-        (_,o) = f V.! i
-
-data GEPOffset v
-     -- | Returns the address of a field in a struct.
-   = StructField StructInfo Int
-     -- | @ArrayElement sz w i@ denotes the ith value in an array with
-     -- elements @sz@ wide.  The value @i@ has @w@ bits.
-   | ArrayElement Integer BitWidth v
-  deriving (Functor, Foldable, Traversable)
-
-ppGEPOffset :: (v -> Doc) -> GEPOffset v -> Doc
-ppGEPOffset _ (StructField _ i) = text "i32" <+> int i 
-ppGEPOffset pp (ArrayElement _ w v) =
-  ppIntType w <> integer (toInteger w) <+> pp v
+ppSymBlockID (NamedBlock b n) = L.ppLabel b <> char '.' <> int n
 
 -- | NUW flag used with addition, subtraction, multiplication, and left shift to
 -- indicates that unsigned overflow is undefined.
@@ -196,6 +126,7 @@ type NSWFlag = Bool
 -- operation should not have any remainder.  Otherwise the value is undefined.
 type ExactFlag = Bool
 
+-- | Binary operation on integers.
 data IntArithOp
   = Add NUWFlag NSWFlag
   | Sub NUWFlag NSWFlag
@@ -229,11 +160,27 @@ ppIntArithOp Xor           = text "xor"
 type OptVectorLength = Maybe Int
 
 data TypedExpr v
+    -- | Integer width and value.
+  = SValInteger BitWidth Integer
+  | SValFloat  Float
+  | SValDouble Double
+    -- | Null pointer value with the type of element that it points to.
+  | SValNull SymType
+    -- | Array of values (strings are mapped to 8-bit integer arrays).
+  | SValArray MemType (Vector v)
+    -- | Vector element with given values.
+  | SValVector MemType (Vector v)
+    -- | Create a struct with the given field values.
+  | SValStruct StructInfo (Vector v)
     -- | @IntArith op mn w x y@ performs the operation @op@ on @x@ and @y@.
     -- If @mn@ is @Nothing@, then @x@ and @y@ are integers with length @w@.  Otherwise
     -- @x@ and @y@ are vectors with integer elements of length @w@, and @mn@ contains the
     -- number of elements.
-  = IntArith IntArithOp OptVectorLength BitWidth v v
+  | IntArith IntArithOp OptVectorLength BitWidth v v
+    -- | @PtrAdd p i@ increments the value of the pointer @p@ by @i@ bytes.  @p@ must
+    -- be a pointer, and @i@ must be an integer with the same width as a pointer.
+    -- Addition uses standard two's complement rules.
+  | PtrAdd v v
     -- | @UAddWithOverflow w x y@ adds @x@ and @y@ and returns a struct whose first element
     -- contains a @w@-bit sum of @x@ and @y@ and second element contains the single overflow bit. 
   | UAddWithOverflow BitWidth v v
@@ -254,36 +201,21 @@ data TypedExpr v
     -- | @PtrToInt tp t rw@ converts a pointer @t@ with type @tp@ to an
     -- integer with width @rw@.  The value of the pointer is truncated or zero
     -- extended as necessary to have the correct length.
-  | PtrToInt OptVectorLength L.Type v BitWidth
+  | PtrToInt OptVectorLength SymType v BitWidth
     -- | @IntToPtr iw t tp@ converts an integer @t@ with width @iw@ to
     -- a pointer.  The value of the integer is truncated or zero
     -- extended as necessary to have the correct length.
-  | IntToPtr OptVectorLength BitWidth v L.Type
+  | IntToPtr OptVectorLength BitWidth v SymType
     -- | @Select mn c tp x y@ selects the arguments in @x@ if @c@ evaluated to @1@ and
     -- @y@ if @c@ evaluates to @0@.   @c@ must have type @i1@ and @x@ and @y@ have type
     -- @tp@.  The function is extended pairwise to vectors if @mn@ holds an integer. 
-  | Select OptVectorLength v L.Type v v
-    -- | @Bitcast itp t rtp@ converts @t@ from type @itp@ to type @rtp@.
-    -- The size of types @itp@ and @rtp@ is assumed to be equal.
-  | Bitcast L.Type v L.Type
-    -- | GEP instruction
-  | GEP Bool v [GEPOffset v] L.Type
+  | Select OptVectorLength v MemType v v
     -- | Return a field out of a struct 
   | GetStructField StructInfo v Int
-    -- | Return a specific elemnt of an array.
-  | GetConstArrayElt L.Type v Int32
-    -- | Integer width and value.
-  | SValInteger BitWidth Integer
-  | SValFloat  Float
-  | SValDouble Double
-    -- | Null pointer value with the width of the pointer and the type of the element
-    -- that it points to.
-  | SValNull BitWidth L.Type
-    -- | Array of values (strings are mapped to 8-bit integer arrays).
-  | SValArray L.Type (Vector v)
-  | SValStruct StructInfo (Vector v)
-    -- | Vector element with given values.
-  | SValVector L.Type (Vector v)
+    -- | Return a specific element of an array.
+    -- Arguments are: number of elements, element type, array, and index.
+  | GetConstArrayElt Int MemType v Int
+
  deriving (Functor, Foldable, Traversable)
 
 -- | Pretty print a typed expression.
@@ -297,6 +229,7 @@ ppTypedExpr ppConv ppValue tpExpr =
       IntArith op mn w x y ->
         ppIntArithOp op <+> tp <+> ppValue x <> comma <+> ppValue y
        where tp  = maybe ppIntType ppIntVector mn w
+      PtrAdd p o -> text "ptrAdd" <+> ppValue p <> comma <+> ppValue o
       UAddWithOverflow w x y -> text ("@llvm.uadd.with.overflow.i" ++ show w)
         <> parens (ppValue x <> comma <+> ppValue y)
       IntCmp op mn w x y ->
@@ -306,159 +239,153 @@ ppTypedExpr ppConv ppValue tpExpr =
       Trunc mn iw v rw    -> ppConv "trunc"    (ppMIntType mn iw) v (ppMIntType mn rw)
       ZExt  mn iw v rw    -> ppConv "zext"     (ppMIntType mn iw) v (ppMIntType mn rw)
       SExt  mn iw v rw    -> ppConv "sext"     (ppMIntType mn iw) v (ppMIntType mn rw)
-      PtrToInt mn tp v rw -> ppConv "ptrtoint" (ppMType mn tp)    v (ppMIntType mn rw)
-      IntToPtr mn iw v tp -> ppConv "inttoptr" (ppMIntType mn iw) v (ppMType mn tp)
+      PtrToInt mn tp v rw -> ppConv "ptrtoint" (ppMSymType mn tp) v (ppMIntType mn rw)
+      IntToPtr mn iw v tp -> ppConv "inttoptr" (ppMIntType mn iw) v (ppMSymType mn tp)
       Select mn c tp t f -> text "select" <+> ppMIntType mn 1 <+> ppValue  c
-                              <> comma <+> ppMType mn tp <+> ppValue t
-                              <> comma <+> ppValue f
-      Bitcast itp v rtp   -> ppConv "bitcast"  (L.ppType itp)     v (L.ppType rtp)
-      GEP ib ptr idxl _ -> text "getelementptr" <+> L.opt ib (text "inbounds")
-          <+> commas (ppValue ptr : (ppGEPOffset ppValue <$> idxl))
+                                 <> comma <+> ppMMemType mn tp <+> ppValue t
+                                 <> comma <+> ppValue f
       GetStructField _ v i -> text "extractfield" <+> ppValue v <+> text (show i)
-      GetConstArrayElt _ v i -> text "arrayelt" <+> ppValue v <+> text (show i)
+      GetConstArrayElt _ _ v i -> text "arrayelt" <+> ppValue v <+> text (show i)
       SValInteger _ i -> integer i
       SValDouble i -> double i 
       SValFloat i -> float i 
       SValNull{} -> text "null"
       SValArray _ es -> brackets $ commas $ V.toList $ ppValue <$> es
       SValStruct si values -> L.structBraces (commas fl)
-        where fn (tp,_) v = L.ppType tp <+> ppValue v
-              fl = V.toList $ V.zipWith fn (structFields si) values
+        where fn tp v = ppMemType tp <+> ppValue v
+              fl = V.toList $ V.zipWith fn (siFieldTypes si) values
       SValVector _ es -> brackets $ commas $ V.toList $ ppValue <$> es
-  where ppMIntType Nothing w = ppIntType w
-        ppMIntType (Just n) w = ppIntVector n w
-        ppMType Nothing tp = L.ppType tp
-        ppMType (Just n) tp = ppTypeVector n tp
+  where ppMIntType mn w = maybe id ppVectorType mn (ppIntType w)
+        ppMMemType mn tp = maybe id ppVectorType mn (ppMemType tp)
+        ppMSymType mn tp = maybe id ppVectorType mn (ppSymType tp)
+
+-- | Represents a function for evaluating expressions.
+newtype ExprEvalFn v t
+  = ExprEvalFn (forall m . (Applicative m, MonadIO m) => (v -> m t) -> m t)
+
 
 -- | Represents a value in the symbolic simulator.
-data TypedSymValue
+data SymValue t
     -- | Register identifier.
   = SValIdent L.Ident 
      -- | Symbol 
   | SValSymbol L.Symbol
-  | SValExpr (TypedExpr TypedSymValue)
+  | SValExpr (TypedExpr (SymValue t)) (ExprEvalFn (SymValue t) t)
 
-sValString :: String -> TypedSymValue
-sValString s = SValExpr $ SValArray tp (toChar <$> V.fromList s)
- where tp = L.PrimType (L.Integer 8)
-       toChar c = SValExpr $ SValInteger 8 (toInteger (fromEnum c))
 
-ppTypedSymValue :: TypedSymValue -> Doc
-ppTypedSymValue = go
+ppSymValue :: SymValue t -> Doc
+ppSymValue = go
   where ppConv nm itp v rtp = text nm <+> parens (itp <+> go v <+> text "to" <+> rtp) 
         go (SValIdent i) = L.ppIdent i
         go (SValSymbol s) = L.ppSymbol s
-        go (SValExpr te) = ppTypedExpr ppConv go te
+        go (SValExpr te _) = ppTypedExpr ppConv go te
 
 -- | Expression in Symbolic instruction set.
 -- | TODO: Make this data-type strict.
-data SymExpr
+data SymExpr t
   -- | Statement for type-checked operations.
   -- = TypedExpr (TypedExpr TypedSymValue)
-  = Val TypedSymValue
+  = Val (SymValue t)
   -- | @Alloca tp sz align@  allocates a new pointer to @sz@ elements of type
   -- @tp@ with alignment @align@.
-  | Alloca LLVM.Type (Maybe (BitWidth, TypedSymValue)) (Maybe Int)
-    -- @Load ptr tp malign@ tp is type to load.
-  | Load TypedSymValue L.Type (Maybe LLVM.Align)
+  | Alloca MemType (Maybe (BitWidth, SymValue t)) Alignment
+    -- @Load ptr tp align@ tp is type to load.
+  | Load (SymValue t) MemType Alignment
+
+ppAlign :: Alignment -> Doc
+ppAlign a = text (", align " ++ show a)
 
 -- | Pretty print symbolic expression.
-ppSymExpr :: SymExpr -> Doc
-ppSymExpr (Val v) = ppTypedSymValue v
-ppSymExpr (Alloca ty mbLen mbAlign) = text "alloca" <+> L.ppType ty <> len <> align
-  where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppTypedSymValue l) mbLen
-        align = maybe empty (\a -> comma <+> text "align" <+> int a) mbAlign
-ppSymExpr (Load ptr tp malign) =
-  text "load" <+> ppPtrType tp <+> ppTypedSymValue ptr <> L.ppAlign malign
+ppSymExpr :: SymExpr t -> Doc
+ppSymExpr (Val v) = ppSymValue v
+ppSymExpr (Alloca ty mbLen a) = text "alloca" <+> ppMemType ty <> len <> ppAlign a
+  where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppSymValue l) mbLen
+ppSymExpr (Load ptr tp a) =
+  text "load" <+> ppPtrType (ppMemType tp) <+> ppSymValue ptr <> ppAlign a
 
 -- | Predicates in symbolic simulator context.
-data SymCond
+data SymCond t
   -- | @HasConstValue v w i@ holds if @v@ corresponds to the constant @i@.
-  = HasConstValue TypedSymValue BitWidth Integer
-  -- | @TrueSymCond@ always holds.
-  | TrueSymCond
+  = HasConstValue (SymValue t) BitWidth Integer
 
 -- | Pretty print symbolic condition.
-ppSymCond :: SymCond -> Doc
-ppSymCond (HasConstValue v _ i) = ppTypedSymValue v <+> text "==" <+> integer i
-ppSymCond TrueSymCond = text "true"
+ppSymCond :: SymCond t -> Doc
+ppSymCond (HasConstValue v _ i) = ppSymValue v <+> text "==" <+> integer i
 
 -- | A merge location is a block or Nothing if the merge happens at a return.
 type MergeLocation = Maybe SymBlockID
 
 -- | Instruction in symbolic level.
-data SymStmt
+data SymStmt t
   -- | @PushCallFrame fn args res retTarget@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@, and store the result in @res@ if the function
   -- returns normally.  The calling function will resume execution at retTarget.
-  = PushCallFrame TypedSymValue [TypedSymValue] (Maybe (Typed Reg)) SymBlockID
+  = PushCallFrame (SymValue t) [(MemType,SymValue t)] (Maybe (MemType, L.Ident)) SymBlockID
   -- | @Return@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
-  | Return (Maybe TypedSymValue)
+  | Return (Maybe (SymValue t))
   -- | @PushPendingExecution tgt c rest@ make the current state a pending execution in the
   -- top-most merge frame with the additional path constraint c, and current block @tgt@.
   -- The final arguments contains the statements to execute with the other path (which 
   -- may assume the negation of the path condition @c@. 
-  | PushPendingExecution SymBlockID SymCond MergeLocation [SymStmt]
+  | PushPendingExecution SymBlockID (SymCond t) MergeLocation [SymStmt t]
   -- | Sets the block to the given location.
   | SetCurrentBlock SymBlockID
   -- | Assign result of instruction to register.
-  | Assign (L.Typed Reg) SymExpr
+  | Assign L.Ident MemType (SymExpr t)
   -- | @Store v addr@ stores value @v@ in @addr@.
-  | Store (L.Typed TypedSymValue) TypedSymValue (Maybe LLVM.Align)
+  | Store MemType (SymValue t) (SymValue t) Alignment
   -- | Print out an error message if we reach an unreachable.
   | Unreachable
   -- | An LLVM statement that could not be translated.
   | BadSymStmt L.Stmt
-  -- TODO: Support all exception handling.
 
-ppSymStmt :: SymStmt -> Doc
-ppSymStmt (PushCallFrame fn args res retTgt)
-  = text "pushCallFrame" <+> ppTypedSymValue fn
-  <> parens (commas (map ppTypedSymValue args))
-  <+> maybe (text "void") (LLVM.ppTyped ppReg) res
+ppStmt :: SymStmt t -> Doc
+ppStmt (PushCallFrame fn args res retTgt)
+  = text "pushCallFrame" <+> ppSymValue fn
+  <> parens (commas (ppSymValue . snd <$> args))
+  <+> maybe (text "void") (\(tp,v) -> ppMemType tp <+> L.ppIdent v) res
   <+> text "returns to" <+> ppSymBlockID retTgt
-ppSymStmt (Return mv) = text "return" <+> maybe empty ppTypedSymValue mv
-ppSymStmt (PushPendingExecution b c ml rest) =
+ppStmt (Return mv) = text "return" <+> maybe empty ppSymValue mv
+ppStmt (PushPendingExecution b c ml rest) =
     text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
-      $+$ vcat (fmap ppSymStmt rest)
+      $+$ vcat (fmap ppStmt rest)
   where loc = maybe (text "return") ppSymBlockID ml
-ppSymStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
-ppSymStmt (Assign (L.Typed _ v) e) = ppReg v <+> char '=' <+> ppSymExpr e
-ppSymStmt (Store v addr malign) =
-  text "store" <+> L.ppTyped ppTypedSymValue v <> comma
-               <+> ppTypedSymValue addr <> LLVM.ppAlign malign
-ppSymStmt Unreachable = text "unreachable"
-ppSymStmt (BadSymStmt s) = L.ppStmt s
+ppStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
+ppStmt (Assign v _ e) = L.ppIdent v <+> char '=' <+> ppSymExpr e
+ppStmt (Store tp v addr a) =
+  text "store" <+> ppMemType tp <+> ppSymValue v <> comma
+               <+> ppSymValue addr <> ppAlign a
+ppStmt Unreachable = text "unreachable"
+ppStmt (BadSymStmt s) = L.ppStmt s
 
-data SymBlock = SymBlock {
+data SymBlock t = SymBlock {
          sbId :: SymBlockID -- ^ Identifier for block (unique within definition).
-       , sbStmts :: [SymStmt]
+       , sbStmts :: [SymStmt t]
        }
 
-ppSymBlock :: SymBlock -> Doc
-ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (map ppSymStmt (sbStmts sb)))
+ppSymBlock :: SymBlock t -> Doc
+ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (ppStmt <$> sbStmts sb))
 
 -- | Symbolically lifted version of a LLVM definition.
-data SymDefine = SymDefine {
-         sdName :: LLVM.Symbol
-       , sdArgs :: [Typed Reg]
-       , sdVarArgs :: Bool
-       , sdRetType :: LLVM.Type
-       , sdBody :: Map SymBlockID SymBlock
+data SymDefine t = SymDefine {
+         sdName :: L.Symbol
+       , sdArgs :: [(L.Ident, MemType)]
+       , sdRetType :: Maybe MemType
+       , sdBody :: Map SymBlockID (SymBlock t)
        }
 
-lookupSymBlock :: SymDefine -> SymBlockID -> SymBlock
+lookupSymBlock :: SymDefine t -> SymBlockID -> SymBlock t
 lookupSymBlock sd sid =
   case Map.lookup sid (sdBody sd) of
     Nothing  -> error $ "Failed to locate symblock " ++ show (ppSymBlockID sid)
     Just blk -> blk
 
-ppSymDefine :: SymDefine -> Doc
+ppSymDefine :: SymDefine t -> Doc
 ppSymDefine d = text "define"
-              <+> LLVM.ppType (sdRetType d)
-              <+> LLVM.ppSymbol (sdName d)
-              <> parens (commas (map (LLVM.ppTyped LLVM.ppIdent) (sdArgs d)))
+              <+> ppRetType (sdRetType d)
+              <+> L.ppSymbol (sdName d)
+              <> parens (commas ((\(i,tp) -> ppMemType tp <+> L.ppIdent i) <$> sdArgs d))
               <+> char '{'
               $+$ vcat (map ppSymBlock (Map.elems (sdBody d)))
               $+$ char '}'

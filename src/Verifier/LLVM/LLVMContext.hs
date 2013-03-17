@@ -1,324 +1,225 @@
 {- |
 Module           : $Header$
-Description      : Info about LLVM memory
+Description      : Provides information about types in an LLVM Module.
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : jhendrix
 -}
 
-{-# LANGUAGE ViewPatterns          #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams             #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE TupleSections              #-}
+{-# LANGUAGE TypeSynonymInstances       #-}
+{-# LANGUAGE ViewPatterns               #-}
+{-# OPTIONS_GHC -fno-warn-orphans       #-}
 module Verifier.LLVM.LLVMContext
-  ( resolveType
-  , TypeAliasMap
-  , LLVMContext( llvmAddrWidthBits
-               , llvmPtrAlign
-               , llvmTypeAliasMap
-               )
-  , StructSizeInfo(..)
-  , llvmStructInfo'
-  , llvmLookupAlias
-  , llvmLookupAlias'
-  , buildLLVMContext
-  , llvmAllocSizeOf
-  , llvmMinBitSizeOf
-  , llvmStoreSizeOf
+  ( module Verifier.LLVM.DataLayout
+  , AliasMap
+  , mkAliasMap
+  , LLVMContext
+  , mkLLVMContext
+  , llvmDataLayout
+  , llvmAliasMap
+  , liftMemType
+  , liftRetType
+  , asMemType
+  , asRetType
   , Addr
   , MemGeom(..)
   , defaultMemGeom
   ) where
 
-import           Data.Bits
-import           Data.FingerTree
+import Control.Applicative
+import Control.Lens
+import Control.Monad.State (State, runState, MonadState(..), modify)
 import           Data.Map (Map)
 import qualified Data.Map as Map
-import           Data.Maybe
-import           Data.Monoid
-import qualified Control.Exception as CE
-import qualified Data.FingerTree   as FT
-import qualified Data.Foldable     as DF
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Text.LLVM         as L
+import Text.PrettyPrint
 
-import Verifier.LLVM.Utils
+import Verifier.LLVM.DataLayout
 
-type TypeAliasMap = Map L.Ident L.Type
+instance (?lc :: LLVMContext) => Eq FunDecl where
+  FunDecl xr xa xv == FunDecl yr ya yv = (xr,xa,xv) == (yr,ya,yv)
 
-data LLVMContext = LLVMContext
-  { llvmAddrWidthBits :: Int
-  , llvmPtrAlign      :: Integer -- pointer alignment, in bytes
-  , llvmTypeAliasMap  :: TypeAliasMap
-  , llvmDataLayout    :: L.DataLayout
-  }
+instance (?lc :: LLVMContext) => Eq SymType where
+  MemType x == MemType y = x == y
+  Alias i == y = maybe False (== y) (lookupAlias i)
+  x == Alias i = maybe False (x ==) (lookupAlias i)
+  FunType x == FunType y = x == y
+  UnsupportedType{} == UnsupportedType{} = True
+  VoidType == VoidType = True
+  _ == _ = False
 
-instance Show LLVMContext where
-  show (LLVMContext w a _ _) =
-    "LC: Addrwidth = " ++ show w ++ ", Ptralign = " ++ show a
+instance (?lc :: LLVMContext) => Eq MemType where
+  IntType x == IntType y = x == y
+  FloatType == FloatType = True
+  DoubleType == DoubleType = True
+  PtrType x == PtrType y = x == y
+  ArrayType xn xt == ArrayType yn yt = (xn,xt) == (yn,yt)
+  VecType   xn xt == VecType   yn yt = (xn,xt) == (yn,yt)
+  StructType x == StructType y = x == y
+  _ == _ = False
 
-llvmLookupAlias' :: LLVMContext -> L.Ident -> Maybe L.Type
-llvmLookupAlias' lc i = Map.lookup i (llvmTypeAliasMap lc) 
+instance (?lc :: LLVMContext) => Eq StructInfo where
+  x == y = (structPacked x, siFieldTypes x)
+        == (structPacked y, siFieldTypes y)
 
-llvmLookupAlias :: LLVMContext -> L.Ident -> L.Type
-llvmLookupAlias lc i = fromMaybe (error msg) $ llvmLookupAlias' lc i
-  where msg = "Failed to locate type alias named "
-                ++ show (L.ppIdent i) ++ " in code base"
+data IdentStatus
+  = Resolved SymType
+  | Active
+  | Pending L.Type
 
-data AlignType
-  = IntegerAlign
-  | VectorAlign
-  | FloatAlign
-  | AggregateAlign
-  | StackAlign
-  deriving (Ord, Eq, Show)
+data TCState = TCS { tcsDataLayout :: DataLayout
+                   , tcsMap :: Map L.Ident IdentStatus 
+                     -- | Set of types encountered that are not supported by
+                     -- the 
+                   , tcsUnsupported :: Set L.Type
+                   , tcsUnresolvable :: Set L.Ident
+                   }
 
-data AlignInfo =
-  AlignInfo
-  { aiType     :: AlignType
-  , aiABI      :: Integer
-  , aiBitwidth :: Integer
-  }
-  deriving (Show, Eq)
+runTC :: DataLayout
+      -> Map L.Ident IdentStatus
+      -> TC a
+      -> ([Doc], a)
+runTC pdl initMap m = over _1 tcsErrors . view swapped $ runState m tcs0
+  where tcs0 = TCS { tcsDataLayout = pdl
+                   , tcsMap =  initMap
+                   , tcsUnsupported = Set.empty
+                   , tcsUnresolvable = Set.empty
+                   }
 
-newtype BW          = BW Integer
-type AlignTree      = FingerTree BW AlignInfo
-data AlignTreeMatch = Exact AlignInfo | Succ AlignInfo | Missing
-instance Monoid BW where
-  mempty                = BW 0
-  mappend (BW a) (BW b) = BW (max a b)
-instance Measured BW AlignInfo where
-  measure (AlignInfo _ _ bw) = BW bw
+tcsErrors :: TCState -> [Doc]
+tcsErrors tcs = (ppUnsupported <$> Set.toList (tcsUnsupported tcs))
+             ++ (ppUnresolvable <$> Set.toList (tcsUnresolvable tcs))
+  where ppUnsupported tp = text "Unsupported type:" <+> L.ppType tp
+        ppUnresolvable i = text "Could not resolve identifier:" <+> L.ppIdent i
+ 
+-- | Type lifter contains types that could not be parsed.
+type TC = State TCState
 
-buildLLVMContext :: TypeAliasMap -> L.DataLayout -> LLVMContext
-buildLLVMContext tam dl = lc
-  where
-    lc = LLVMContext
-         { llvmAddrWidthBits = dlPtrSize dl
-         , llvmPtrAlign      = (dlPtrAlign dl + 7) `shiftR` 3
-         , llvmTypeAliasMap  = tam
-         , llvmDataLayout    = dl
-         }
+recordUnsupported :: L.Type -> TC ()
+recordUnsupported tp = modify fn
+  where fn tcs = tcs { tcsUnsupported = Set.insert tp (tcsUnsupported tcs) }
 
--- | Obtain the alignment, in bytes, of the given type.  Note that we do not
---  currently support "preferred" alignments.  Corresponds to
---  TargetData::getAlignment().
-llvmTypeABIAlignOf :: LLVMContext -> L.Type -> Integer
-llvmTypeABIAlignOf lc ty = case ty of
-  L.Alias a                -> llvmTypeABIAlignOf lc (llvmLookupAlias lc a)
-  L.PtrTo{}                -> llvmPtrAlign lc
-  L.Array _ ety            -> llvmTypeABIAlignOf lc ety
-  L.PackedStruct{}         -> 1
-  L.Struct tpl            -> max (aiABI $ llvmAlignmentOf lc ty AggregateAlign)
-                                 (ssiAlign $ llvmStructInfo' lc False tpl)
-  L.PrimType L.Integer{}   -> align IntegerAlign
-  L.PrimType L.Void        -> align IntegerAlign
-  L.PrimType L.FloatType{} -> align FloatAlign
-  L.Vector{}               -> align VectorAlign
-  L.PrimType L.X86mmx      -> align VectorAlign
+-- | Returns the type bound to an identifier.
+tcIdent :: L.Ident -> TC SymType
+tcIdent i = do
+  im <- tcsMap <$> get
+  let retUnsupported = tp <$ modify fn
+        where tp = UnsupportedType (L.Alias i)
+              fn tcs = tcs { tcsUnresolvable = Set.insert i (tcsUnresolvable tcs) }
+  case Map.lookup i im of
+    Nothing -> retUnsupported
+    Just (Resolved tp) -> return tp
+    Just Active -> retUnsupported
+    Just (Pending tp) -> do
+        modify (ins Active)
+        stp <- tcType tp
+        stp <$ modify (ins (Resolved stp))
+      where ins v tcs = tcs { tcsMap = Map.insert i v (tcsMap tcs) }
 
-  _ ->
-    error $ "internal: " ++ "unsupported llvmTypeABIAlignOf type: "
-            ++ show (L.ppType ty)
-  where
-    align = aiABI . llvmAlignmentOf lc ty
+resolveMemType :: SymType -> TC (Maybe MemType)
+resolveMemType = resolve
+  where resolve (MemType mt) = return (Just mt)
+        resolve (Alias i) = resolve =<< tcIdent i
+        resolve FunType{} = return Nothing
+        resolve UnsupportedType{} = return Nothing
+        resolve VoidType = return Nothing
 
--- | Returns the number of bytes that alloca must reserve for the given type;
--- includes any target-specific alignment padding that must occur.  Corresponds
--- to TargetData::getTypeAllocSize().
-llvmAllocSizeOf :: LLVMContext -> L.Type -> Integer
-llvmAllocSizeOf lc ty = CE.assert (isPow2 align) $
-  nextMultiple align (llvmStoreSizeOf lc ty)
-  where
-    align = llvmTypeABIAlignOf lc ty
+resolveRetType :: SymType -> TC (Maybe RetType)
+resolveRetType = resolve
+  where resolve (MemType mt) = return (Just (Just mt))
+        resolve (Alias i) = resolve =<< tcIdent i
+        resolve VoidType = return (Just Nothing)
+        resolve _ = return Nothing
 
--- | Returns the minumum number of bytes required to represent a value of the
--- given type (e.g., i7 requires 1 byte); this is the maximum number of bytes
--- that may be overwritten when storing the specified type.  Corresponds to
--- TargetData::getTypeStoreSize().
-llvmStoreSizeOf :: LLVMContext -> L.Type -> Integer
-llvmStoreSizeOf lc ty = (llvmMinBitSizeOf lc ty + 7) `shiftR` 3
+tcMemType :: L.Type -> TC (Maybe MemType)
+tcMemType tp = resolveMemType =<< tcType tp
 
--- | Returns the minimum number of bits required to represent a value of the
--- given type (e.g. i7 requires exactly 7 bits).  Corresponds to
--- TargetData::getTypeSizeInBits().
-llvmMinBitSizeOf :: LLVMContext -> L.Type -> Integer
-llvmMinBitSizeOf lc ty = case ty of
-  L.PrimType pty                 -> prim pty
-  L.Alias a                      -> llvmMinBitSizeOf lc (llvmLookupAlias lc a)
-  L.Array (toInteger -> len) ety -> len * llvmMinBitSizeOf lc ety
-  L.PtrTo{}                      -> toInteger (llvmAddrWidthBits lc)
-  L.Vector (toInteger -> len) tp -> toInteger len * llvmMinBitSizeOf lc tp
-  L.PackedStruct tpl             -> (ssiBytes $ llvmStructInfo' lc True  tpl) `shiftL` 3
-  L.Struct tpl                   -> (ssiBytes $ llvmStructInfo' lc False tpl) `shiftL` 3
-  L.FunTy{}                      -> error "internal: Cannot get size of function type."
-  L.Opaque{}                     -> error "internal: Cannot get size of opaque type."
-  where
-    prim (L.Integer w)             = toInteger w
-    prim (L.FloatType L.Float)     = 32
-    prim (L.FloatType L.Double)    = 64
-    prim (L.FloatType L.Fp128)     = 128
-    prim (L.FloatType L.X86_fp80)  = 80
-    prim (L.FloatType L.PPC_fp128) = 128
-    prim L.Label                   = error "internal: Cannot get size of label."
-    prim L.Void                    = error "internal: Cannot get size of void."
-    prim L.X86mmx                  = error "internal: X86MMX memory size is undefined."
-    prim L.Metadata                = error "internal: Cannnot get size of metadata."
-
---------------------------------------------------------------------------------
--- Data layout query functions -- see Data Layout section at
--- http://llvm.org/docs/LangRef.html for details.  These functions yield the
--- specified default values in the absence of overriding target data layout
--- information.  NB: Currently, we do not use any of the "preferred" alignments.
-
--- | Constructs a function for obtaining target-specific alignment info.  The
--- function produced corresponds to TargetData::getAlignmentInfo().
-llvmAlignmentOf :: LLVMContext -> L.Type -> AlignType -> AlignInfo
-llvmAlignmentOf lc ty alignTy =
-  let w = bitwidth in
-  case alignTy of
-    IntegerAlign -> case lkupAlign i w of
-      Exact ai -> ai
-      Succ ai  -> ai                 -- Use smallest size > w
-      Missing  -> DF.maximumBy cmp i -- Fall back on largest integer
-    VectorAlign -> case lkupAlign v w of
-      Exact ai -> ai
-      _        ->
-        -- Fall back on "natural alignment for vector types"
-        case ty of
-          L.Vector (toInteger -> len) ety ->
-            let ea        = llvmAllocSizeOf lc ety * len
-                elemAlign = if isPow2 ea then ea else nextPow2 ea
-            in
-              AlignInfo VectorAlign elemAlign w
-          _ -> error $ "internal: attempted to determine vector alignment "
-                       ++ "for non-vector type"
-    FloatAlign     -> requireExact "float"     (lkupAlign f w)
-    AggregateAlign -> requireExact "aggregate" (lkupAlign ag w)
-    StackAlign     -> requireExact "stack"     (lkupAlign st w)
-  where
-    bitwidth =
-      case ty of
-        L.Struct{} -> 0
-        _ -> llvmMinBitSizeOf lc ty
-    dl                  = llvmDataLayout lc
-    splitBitwidth w     = FT.split $ \(BW y) -> y > w
-    cmp x y             = aiBitwidth x `compare` aiBitwidth y
-
-    requireExact :: String -> AlignTreeMatch -> AlignInfo
-    requireExact _ (Exact ai) = ai
-    requireExact msg _        = error $ "internal: failed to find exact "
-                                        ++ "match for " ++ msg
-                                        ++ " alignment type."
-
-    -- Look for the AlignInfo with the given bitwidth in the giventree; if it
-    -- does not match exactly, provide the successor bitwidth if it exists.
-    lkupAlign alignTree w = case viewr ftl of
-      (_ :> a)
-        | aiBitwidth a == w -> Exact a
-        | otherwise         -> case viewl ftr of
-                                 (a' :< _) -> Succ a'
-                                 _        -> Missing
-      EmptyR -> Missing
-      where
-        (ftl, ftr) = splitBitwidth w alignTree
-
-    -- AlignTrees by alignment type
-    [i, f, v, ag, st] =
-      map (\aty ->
-             let dflts    = filterAligns aty dfltAligns
-                 dfltTree = ins FT.empty dflts
-                 ins      = foldr insAlign
-             in
-               ins dfltTree              -- ^ ...and override defaults as needed
-               $ filterAligns aty        -- ^ ...for this alignment type...
-               $ mapMaybe mkAlignInfo dl -- ^ pick up target data alignment info...
-          )
-          [IntegerAlign, FloatAlign, VectorAlign, AggregateAlign, StackAlign]
-
-    insAlign :: AlignInfo -> AlignTree -> AlignTree
-    insAlign ai ft = case viewr ftl of
-      (ftl' :> ai') -> ftl' >< mid ai' >< ftr
-      EmptyR        -> case viewl ftr of
-                         (ai' :< ftr') -> ftl >< mid ai' >< ftr'
-                         EmptyL        -> s ai
-      where
-        s          = FT.singleton
-        (ftl, ftr) = splitBitwidth (aiBitwidth ai) ft
-        mid x      = case ai `cmp` x of
-                       LT -> s ai >< s x
-                       GT -> s x  >< s ai
-                       EQ -> s ai -- replace old value
-
-    mkAlignInfo :: L.LayoutSpec -> Maybe AlignInfo
-    mkAlignInfo ls = case ls of
-      L.IntegerSize w abi _   -> ai IntegerAlign abi w
-      L.VectorSize w abi _    -> ai VectorAlign abi w
-      L.FloatSize w abi _     -> ai FloatAlign abi w
-      L.AggregateSize w abi _ -> ai AggregateAlign abi w
-      L.StackObjSize w abi _  -> ai StackAlign abi w
-      _                       -> Nothing
-      where
-        ai at abi w = Just $ AlignInfo at (toInteger abi `shiftR` 3) (toInteger w)
-
-    filterAligns :: AlignType -> [AlignInfo] -> [AlignInfo]
-    filterAligns at = filter ((==at) . aiType)
-
-    -- Default alignments for integer types
-    dfltAligns :: [AlignInfo]
-    dfltAligns =
-      [ AlignInfo IntegerAlign     1   1 -- i1
-      , AlignInfo IntegerAlign     1   8 -- i8
-      , AlignInfo IntegerAlign     2  16 -- i16
-      , AlignInfo IntegerAlign     4  32 -- i32
-      , AlignInfo IntegerAlign     4  64 -- i64
-      , AlignInfo FloatAlign       4  32 -- float
-      , AlignInfo FloatAlign       8  64 -- double
-      , AlignInfo VectorAlign      8  64 -- v2i32, v1i64, ...
-      , AlignInfo VectorAlign     16 128 -- v16i8, v8i16, v4i32, ...
-      , AlignInfo AggregateAlign   0   0 -- struct
-      ]
-
-resolveType :: LLVMContext -> L.Type -> L.Type
-resolveType lc (L.Alias nm) = resolveType lc (llvmLookupAlias lc nm)
-resolveType _ tp = tp
-
-data StructSizeInfo   = SSI
-  { ssiBytes   :: Integer    -- struct size in bytes
-  , ssiAlign   :: Integer    -- struct alignment in bytes
-  , ssiOffsets :: [Integer] -- /i/th element contains the 0-based byte offset to
-                             -- struct member /i/
-  }
-  deriving (Show)
+tcType :: L.Type -> TC SymType
+tcType tp0 = do
+  let badType = UnsupportedType tp0 <$ recordUnsupported tp0
+  let maybeApp :: (a -> MemType) -> TC (Maybe a) -> TC SymType
+      maybeApp f mmr = maybe badType (return . MemType . f) =<< mmr
+  case tp0 of
+    L.PrimType pt ->
+      case pt of
+        L.Void -> return VoidType
+        L.Integer w -> return $ MemType $ IntType (fromIntegral w)
+        L.FloatType ft -> do
+          case ft of
+            L.Float -> return $ MemType FloatType
+            L.Double -> return $ MemType DoubleType
+            _ -> badType
+        _ -> badType
+    L.Alias i -> return (Alias i)
+    L.Array n etp -> maybeApp (ArrayType (fromIntegral n)) $ tcMemType etp
+    L.FunTy res args va -> do
+      mrt <- resolveRetType =<< tcType res
+      margs <- mapM tcMemType args
+      maybe badType (return . FunType) $
+        FunDecl <$> mrt <*> sequence margs <*> pure va
+    L.PtrTo tp ->  (MemType . PtrType) <$> tcType tp
+    L.Struct tpl       -> maybeApp StructType $ tcStruct False tpl
+    L.PackedStruct tpl -> maybeApp StructType $ tcStruct True  tpl
+    L.Vector n etp -> maybeApp (VecType (fromIntegral n)) $ tcMemType etp
+    L.Opaque -> badType
 
 -- | Constructs a function for obtaining target-specific size/alignment
 -- information about structs.  The function produced corresponds to the
 -- StructLayout object constructor in TargetData.cpp.
-llvmStructInfo' :: LLVMContext -> Bool -> [L.Type] -> StructSizeInfo
-llvmStructInfo' lc packed fldTys =
-    let SSI sz align offs = foldl impl (SSI 0 1 []) fldTys
-     in SSI (nextMultiple align sz) align offs
-  where
-    impl (SSI sz align offsets) elemTy =
-      SSI
-        (sz' + llvmAllocSizeOf lc elemTy)
-        (max elemAlign align)
-        (offsets ++ [sz'])
-      where
-        sz'       = nextMultiple elemAlign sz
-        elemAlign | packed = 1 
-                  | otherwise = llvmTypeABIAlignOf lc elemTy
+tcStruct :: Bool -> [L.Type] -> TC (Maybe StructInfo)
+tcStruct packed fldTys = do
+  pdl <- tcsDataLayout <$> get
+  fmap (mkStructInfo pdl packed) . sequence <$> mapM tcMemType fldTys
 
--- | Extract target pointer size from data layout, or fall back on default.
-dlPtrSize :: L.DataLayout -> Int
-dlPtrSize []                      = 64
-dlPtrSize (L.PointerSize w _ _:_) = w
-dlPtrSize (_:dls)                 = dlPtrSize dls
+type AliasMap = Map L.Ident SymType
 
--- | Extract target pointer alignment from data layout, or fall back on default.
-dlPtrAlign :: L.DataLayout -> Integer
-dlPtrAlign []                      = 64
-dlPtrAlign (L.PointerSize _ a _:_) = toInteger a
-dlPtrAlign (_:dls)                 = dlPtrAlign dls
+data LLVMContext = LLVMContext
+  { llvmDataLayout :: DataLayout
+  , llvmAliasMap  :: AliasMap
+  }
 
--- Memeory Geometry
+lookupAlias :: (?lc :: LLVMContext) => L.Ident -> Maybe SymType
+lookupAlias i = llvmAliasMap ?lc ^. at i
+
+asMemType :: AliasMap -> SymType -> Maybe MemType
+asMemType _ (MemType mt) = return mt
+asMemType m (Alias i) = asMemType m =<< (m ^. at i)
+asMemType _ _ = Nothing
+
+asRetType :: AliasMap -> SymType -> Maybe RetType
+asRetType _ (MemType mt) = Just (Just mt)
+asRetType _ VoidType = Just Nothing
+asRetType m (Alias i) = asRetType m =<< (m ^. at i)
+asRetType _ _ = Nothing
+
+-- | Returns the type alias map for the given types.
+mkAliasMap :: DataLayout -> [L.TypeDecl]  -> ([Doc], AliasMap)
+mkAliasMap dl decls = runTC dl (Pending <$> Map.fromList tps) $ do
+    Map.fromList <$> traverse (_2 tcType) tps
+  where tps = [ (L.typeName d, L.typeValue d) | d <- decls ]
+
+-- | Returns an LLVM context and types that are not supported by symbolic simulator.
+mkLLVMContext :: DataLayout -> AliasMap -> LLVMContext
+mkLLVMContext = LLVMContext
+
+liftType :: (?lc :: LLVMContext) => L.Type -> Maybe SymType
+liftType tp | null edocs = Just stp
+            | otherwise = Nothing
+  where m0 = Resolved <$> llvmAliasMap ?lc
+        (edocs,stp) = runTC (llvmDataLayout ?lc) m0 $ tcType tp
+
+liftMemType :: (?lc :: LLVMContext) => L.Type -> Maybe MemType
+liftMemType tp = asMemType (llvmAliasMap ?lc) =<< liftType tp
+
+liftRetType :: (?lc :: LLVMContext) => L.Type -> Maybe RetType
+liftRetType tp = asRetType (llvmAliasMap ?lc) =<< liftType tp
+
+-- Memery Geometry
 
 type Addr = Integer
 
@@ -341,47 +242,22 @@ data MemGeom = MemGeom {
 -- pointer belongs simply by inspecting its address.
 --
 -- TODO: Allow user overrides of memory geom
-defaultMemGeom :: LLVMContext -> MemGeom
-defaultMemGeom lc =
-  MemGeom (stackStart, stackEnd)
-          (codeStart,  codeEnd)
-          (dataStart,  dataEnd)
-          (heapStart,  heapEnd)
+defaultMemGeom :: DataLayout  -> MemGeom
+defaultMemGeom dl
+    | w < 16 =  error "Pointers must be at least 16bits to get sufficient memory size."
+    | otherwise = 
+        MemGeom (stackStart, stackEnd)
+                (codeStart,  codeEnd)
+                (dataStart,  dataEnd)
+                (heapStart,  heapEnd)
   where
-    w           = llvmAddrWidthBits lc
-    addrSpace   = 2 ^ w - 1
-    stackStart  = 0
-    stackEnd    = addrSpace `div` 4
-    codeStart   = stackEnd + 1
-    codeEnd     = codeStart + addrSpace `div` 8
-    dataStart   = codeEnd + 1
-    dataEnd     = dataStart + addrSpace `div` 8
-    heapStart   = dataEnd + 1
-    heapEnd     = addrSpace
+    w = ptrBitwidth dl
+    stackStart  = 4096 -- Start at first page rather than null
+    codeStart   = 2 ^ w `div` 4
+    dataStart   = codeStart + 2 ^ w `div` 8
+    heapStart   = dataStart + 2 ^ w `div` 8
 
---------------------------------------------------------------------------------
--- Testing
-
-__nowarn_unused :: a
-__nowarn_unused = undefined testLC
-
-testLC :: LLVMContext
-testLC =
-  buildLLVMContext
-    (error "type alias lookup not defined")
-    [ L.LittleEndian
-    , L.PointerSize 64 64 (Just 64)
-    , L.IntegerSize 1 8 (Just 8)
-    , L.IntegerSize 8 8 (Just 8)
-    , L.IntegerSize 16 16 (Just 16)
-    , L.IntegerSize 32 32 (Just 32)
-    , L.IntegerSize 64 64 (Just 64)
-    , L.FloatSize 32 32 (Just 32)
-    , L.FloatSize 64 64 (Just 64)
-    , L.FloatSize 80 128 (Just 128)
-    , L.VectorSize 64 64 (Just 64)
-    , L.VectorSize 128 128 (Just 128)
-    , L.AggregateSize 0 0 (Just 64)
-    , L.StackObjSize 0 64 (Just 64)
-    , L.NativeIntSize [8, 16, 32, 64]
-    ]
+    stackEnd    = codeStart - 1
+    codeEnd     = dataStart - 1
+    dataEnd     = heapStart - 1
+    heapEnd     = 2 ^ w - 1

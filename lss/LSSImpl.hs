@@ -9,6 +9,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE Rank2Types                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TypeFamilies               #-}
@@ -17,23 +18,21 @@ Point-of-contact : jhendrix
 
 module LSSImpl where
 
-import           Control.Applicative             hiding (many)
+import           Control.Applicative ((<$>))
+import           Control.Lens
 import           Control.Monad.State
 import           Data.Char
 import           Data.Int
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
-import           Text.LLVM                       ((=:), Typed(..))
 import           Verinf.Utils.LogMonad
 import qualified Text.LLVM                       as L
 
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
 import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator
 import           Verifier.LLVM.Simulator.Common
-import           Verifier.LLVM.Utils
 
 data LSS = LSS
   { dbug    :: DbugLvl
@@ -71,30 +70,29 @@ type ExecRsltHndlr sbe crt a =
 lssImpl :: Functor sbe
         => SBE sbe
         -> SBEMemory sbe
-        -> Codebase
+        -> Codebase sbe
         -> [String]
         -> LSS
         -> IO (ExecRslt sbe Integer)
 lssImpl sbe mem cb argv0 args = do
-  mainDef <- case lookupDefine (L.Symbol "main") cb of
-               Nothing -> error "Provided bitcode does not contain main()."
-               Just mainDef -> do
-                 when (null (sdArgs mainDef) && length argv' > 1) warnNoArgv
-                 return mainDef
+  let mainDef =
+        case lookupDefine (L.Symbol "main") cb of
+          Nothing -> error "Provided bitcode does not contain main()."
+          Just md -> md
   runBitBlast sbe mem cb mg argv' args mainDef
   where
     argv' = "lss" : argv0
-    lc    = cbLLVMCtx cb
-    mg    = defaultMemGeom lc
+    mg    = defaultMemGeom (cbDataLayout cb)
+
 
 runBitBlast :: Functor sbe
             => SBE sbe -- ^ SBE to use
             -> SBEMemory sbe     -- ^ SBEMemory to use
-            -> Codebase
+            -> Codebase sbe
             -> MemGeom
             -> [String]          -- ^ argv
             -> LSS               -- ^ LSS command-line arguments
-            -> SymDefine         -- ^ Define of main()
+            -> SymDefine (SBETerm sbe) -- ^ Define of main()
             -> IO (ExecRslt sbe Integer)
 runBitBlast sbe mem cb mg argv' args mainDef = do
   runSimulator cb sbe mem seh' opts $ do
@@ -106,52 +104,56 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
       dbugM $ "Code range  : " ++ sr (mgCode mg)
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
-    argsv <- if mainHasArgv then buildArgv numArgs argv' else return []
     let mainSymbol = L.Symbol "main"
-    mainSymDef <- lookupSymbolDef mainSymbol
+    argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
     --TODO: Verify main has expected signature.
-    callDefine_ mainSymbol (sdRetType mainSymDef) argsv
+    callDefine_ mainSymbol (sdRetType mainDef) argsv
     mrv <- getProgramReturnValue
     mm  <- getProgramFinalMem
-    eps <- gets errorPaths
+    eps <- use errorPaths
     case mrv of
       Nothing -> return (NoMainRV eps mm)
       Just rv -> do
-        let mval = asUnsignedInteger sbe rv
-        return $ maybe (SymRV eps mm rv) (\(_,x) -> (ConcRV eps mm x)) mval
+        let mval = asUnsignedInteger sbe undefined rv
+        return $ maybe (SymRV eps mm rv) (\x -> (ConcRV eps mm x)) mval
   where
     opts        = Just $ LSSOpts (errpaths args)
     seh'        = defaultSEH
-    mainHasArgv = not $ null $ sdArgs mainDef
-    numArgs     = fromIntegral (length argv') :: Int32
 
 buildArgv ::
   ( MonadIO m
   , Functor sbe
   , Functor m
   )
-  => Int32 -> [String] -> Simulator sbe m [SBETerm sbe]
-buildArgv numArgs argv' = do
-  argc     <- withSBE $ \s -> termInt s 32 (fromIntegral numArgs)
-  ec <- getEvalContext "buildArgv" Nothing
-
-  strVals <- forM argv' $ \str -> do
+  => [MemType] -- ^ Types of arguments expected by main.
+  -> [String] -- ^ Arguments
+  -> Simulator sbe m [(MemType,SBETerm sbe)]
+buildArgv [] argv' = do
+  liftIO $ when (length argv' > 1) $ do
+    putStrLn $ "WARNING: main() takes no argv; ignoring provided arguments:\n" ++ show argv'
+  return []
+buildArgv [IntType argcw, ptype@PtrType{}] argv' | length argv' < 2^argcw = do
+  sbe <- gets symBE
+  argc     <- liftSBE $ termInt sbe argcw (toInteger (length argv'))
+  aw <- withDL ptrBitwidth
+  one <- liftSBE $ termInt sbe aw 1
+  strPtrs  <- forM argv' $ \str -> do
      let len = length str + 1
-     let tp = L.Array (fromIntegral len) (L.PrimType (L.Integer 8))
-     v <- getTypedTerm' ec (sValString (str ++ [chr 0]))
-     return (Typed tp v)
-  one <- getSizeT 1
-  strPtrs  <- mapM (\ty -> tv <$> alloca ty one Nothing) (tt <$> strVals)
-  num <- getSizeT (toInteger numArgs)
-  argvBase <- alloca i8p num Nothing
-  argvArr  <- withSBE (\s -> termArray s i8p strPtrs)
+     let tp = ArrayType len (IntType 8)
+     let ?sbe = sbe
+     sv <- liftIO $ liftStringValue (str ++ [chr 0])
+     v <- evalExpr "buildArgv" sv
+     p <- alloca tp aw one 0
+     store tp v p 0
+     return p
+  argvBase <- alloca i8p argcw argc 0
+  argvArr  <- liftSBE $ termArray sbe i8p strPtrs
   -- Write argument string data and argument string pointers
-  forM_ (strPtrs `zip` strVals) $ \(p,v) -> store v p
-  store (L.Array numArgs i8p =: argvArr) (tv argvBase)
-  return [argc, (L.typedValue argvBase)]
-  where
-    tv = typedValue
-    tt = typedType
+  store (ArrayType (length argv') i8p) argvArr argvBase 0
+  return [ (IntType argcw, argc)
+         , (ptype, argvBase)
+         ]
+buildArgv _ _ = error "main() has an unsupported type."
 
 warnNoArgv :: IO ()
 warnNoArgv = putStrLn "WARNING: main() takes no argv; ignoring provided arguments."
