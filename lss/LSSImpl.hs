@@ -132,7 +132,8 @@ buildArgv [] argv' = do
   liftIO $ when (length argv' > 1) $ do
     putStrLn $ "WARNING: main() takes no argv; ignoring provided arguments:\n" ++ show argv'
   return []
-buildArgv [IntType argcw, ptype@PtrType{}] argv' | length argv' < 2^argcw = do
+buildArgv [IntType argcw, ptype@PtrType{}] argv'
+  | fromIntegral (length argv') < (2 :: Integer) ^ argcw = do
   sbe <- gets symBE
   argc     <- liftSBE $ termInt sbe argcw (toInteger (length argv'))
   aw <- withDL ptrBitwidth
