@@ -14,16 +14,16 @@ module Tests.AES (aesTests) where
 
 import           Control.Applicative
 import           Control.Monad (forM)
+import           Control.Monad.State (gets)
 import           Data.Maybe
 import           Test.QuickCheck
 import           Tests.Common
-import           Text.LLVM               ((=:), Typed(..), typedValue)
 import qualified Text.LLVM               as L
 
 import           Verifier.LLVM.Backend
+import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator
 import           Verifier.LLVM.Simulator.Debugging
-import           Verifier.LLVM.Utils
 
 aesTests :: [(Args, Property)]
 aesTests =
@@ -32,38 +32,40 @@ aesTests =
   ]
   where
     aes128Concrete v = psk v $ runAES v aes128ConcreteImpl
-    runAES v         = runAllMemModelTest v (commonCB "aes128BlockEncrypt.bc")
+    runAES v         = runAllMemModelTest v "aes128BlockEncrypt.bc"
 
 aes128ConcreteImpl :: forall sbe . Functor sbe => Simulator sbe IO Bool
 aes128ConcreteImpl = do
   setSEH sanityChecks
   ptptr  <- initArr ptVals
   keyptr <- initArr keyVals
-  one <- getSizeT 1
-  ctptr  <- typedValue <$> alloca arrayTy one (Just 4)
-  let args :: [SBETerm sbe]
-      args = [ptptr, keyptr, ctptr]
+  let aw = 8
+  one <- withSBE $ \sbe -> termInt sbe aw 1
+  ctptr  <- alloca arrayTy aw one 2
+  let args :: [(MemType, SBETerm sbe)]
+      args = [ptptr, keyptr, (IntType aw, ctptr)]
   [_, _, ctRawPtr] <-
-    callDefine (L.Symbol "aes128BlockEncrypt") voidTy args
+    callDefine (L.Symbol "aes128BlockEncrypt") Nothing args
   Just mem <- getProgramFinalMem
-  ctarr <- withSBE $ \s -> snd <$> memLoad s mem (L.Typed (L.PtrTo arrayTy) ctRawPtr)
-
+  ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr 2
   ctVals <- forM [0..3] $ \i ->
-    withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt i32 ctarr i)
+    withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt 4 i32 ctarr i)
   return (ctVals == ctChks)
   where
     getVal :: SBE sbe -> SBETerm sbe -> Integer
-    getVal s v = snd $ fromJust $ asUnsignedInteger s v
-    initArr :: [Integer] -> Simulator sbe IO (SBETerm sbe)
+    getVal s v = fromJust $ asUnsignedInteger s 32 v
+    initArr :: [Integer] -> Simulator sbe IO (MemType,SBETerm sbe)
     initArr xs = do
-       arrElts <- mapM (withSBE . \x s -> termInt s 32 x) xs
-       arr <- withSBE $ \sbe -> termArray sbe (L.PrimType (L.Integer 32)) arrElts
-       one <- getSizeT 1
-       p   <- typedValue <$> alloca arrayTy one (Just 4)
-       store (arrayTy =: arr) p
-       return p
+       sbe <- gets symBE
+       arrElts <- mapM (liftSBE . termInt sbe 32) xs
+       arr <- liftSBE $ termArray sbe i32 arrElts
+       let aw = 8
+       one <- liftSBE $ termInt sbe aw 1
+       p   <- alloca arrayTy aw one 2
+       store arrayTy arr p 2
+       return (i32p, p)
 
-    arrayTy = L.Array 4 i32
+    arrayTy = ArrayType 4 i32
     ptVals  = [0x00112233, 0x44556677, 0x8899aabb, 0xccddeeff]
     keyVals = [0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f]
     ctChks  = [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]
