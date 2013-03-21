@@ -16,7 +16,8 @@ PDFARGS   = -H ${MAINTARGET}-head.tex \
             -A ${MAINTARGET}-after.tex \
             --latex-engine=xelatex
 HTMLARGS  = --css ${MAIN}/doc.css \
-            --standalone
+            --standalone \
+            --self-contained
 AUX       = ${wildcard ${TMP}/*.blg} ${wildcard ${TMP}/*.bbl} ${wildcard ${TMP}/*.aux} \
             ${wildcard ${TMP}/*.eps} ${wildcard ${TMP}/*.log} ${wildcard ${TMP}/*.toc} \
 	    ${wildcard ${TMP}/*.out} ${wildcard ${TMP}/*.idx} ${wildcard ${TMP}/*.ilg} \
