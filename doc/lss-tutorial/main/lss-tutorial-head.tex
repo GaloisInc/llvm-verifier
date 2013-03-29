@@ -1,0 +1,85 @@
+\usepackage{amsfonts}
+\usepackage{xspace}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage[headheight=90pt,headsep=12pt,includeheadfoot,top=24pt,left=1in,footskip=24pt]{geometry}
+\usepackage{verbatim}
+\usepackage{fancyvrb}
+\usepackage{amsmath, amsthm, amssymb}
+\usepackage{fancyhdr}
+\usepackage{xcolor}
+%\usepackage[xetex,bookmarks=true,pagebackref=true,linktocpage=true]{hyperref}
+%\usepackage[style=list]{glossary}
+
+\newcommand{\titleline}{Generating Formal Models with the LLVM Symbolic Simulator}
+
+\hypersetup{%
+   pdftitle     = \titleline,
+   pdfkeywords  = {LLVM, Symbolic Simulation, Cryptography, Programming, Formal Methods, Formal Models},
+   pdfauthor    = {Galois, Inc.},
+   pdfpagemode  = UseOutlines
+}
+
+%\input{utils/Indexes.tex}
+%\input{utils/GlossaryItems.tex}
+%\input{utils/trickery.tex}
+
+% fonts
+\usepackage{fontspec}
+\usepackage{xunicode}
+\usepackage{xltxtra}
+%\setmainfont[Mapping=tex-text]{Garamond}
+\setsansfont[Mapping=tex-text]{Optima}
+\usepackage{sectsty}
+\allsectionsfont{\sffamily}
+
+\newcommand{\todo}[1]{\begin{center}\framebox{\begin{minipage}{0.8\textwidth}{{\bf TODO:} #1}\end{minipage}}\end{center}}
+
+\DefineVerbatimEnvironment{code}{Verbatim}{}
+
+% various little text sections:
+\newcommand{\draftdate}{DRAFT of \today}
+% \setlength{\voffset}{-1cm}
+% \setlength{\headsep}{2cm}
+% \setlength{\headheight}{15.2pt}
+% \renewcommand{\headrulewidth}{0pt} % no line on top
+% \renewcommand{\footrulewidth}{.5pt} % line on bottom
+% %\renewcommand{\chaptermark}[1]{\markboth{#1}{}}
+% %\renewcommand{\sectionmark}[1]{\markright{#1}{}}
+% \cfoot{}
+% \fancyfoot[LE,RO]{\fancyplain{}{\textsf{\thepage}}}
+% \fancyfoot[LO,RE]{\fancyplain{}{\textsf{\copyright\ 2010, Galois, Inc.}}}
+% %\fancyhead[LE]{\fancyplain{}{\textsf{\draftdate}}}
+% %\fancyhead[RO]{\fancyplain{}{\textsf{DO NOT DISTRIBUTE!}}}
+% \fancyhead[LE]{\fancyplain{}{\textsf{\titleline}}}
+% \fancyhead[RO]{\fancyplain{}{\textsf{\titleline}}}
+% \fancyhead[LO,RE]{}
+% \pagestyle{fancyplain}
+
+%\makeglossary
+%\makeindex
+
+\title{\LARGE{\bf \titleline}}
+\author{\\$ $\\$ $\\
+        Galois, Inc.\\
+        421 SW 6th Ave., Suite 300\\Portland, OR 97204}
+\date{
+\vspace*{2cm}$ $\\
+\includegraphics[height=1in]{images/Galois_logo_blue_box.pdf}
+\vspace*{2cm}$ $\\
+%\draftdate
+%\\
+%PLEASE DO NOT DISTRIBUTE!
+}
+
+\pagestyle{fancy}
+\fancyheadoffset[l]{1in}
+\fancyheadoffset[r]{0.2in}
+\fancyhead{}%clear
+\fancyfoot{}%clear
+\lhead{\sffamily\hspace{24pt}\includegraphics[height=1in]{images/Galois_logo_blue_box.pdf}}
+\rhead{\sffamily\titleline\\\vspace{12pt}}
+\rfoot{\sffamily\thepage}
+\lfoot{\sffamily\copyright 2012 Galois, Inc.}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{1pt}

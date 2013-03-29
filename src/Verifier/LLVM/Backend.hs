@@ -33,7 +33,6 @@ import           Text.PrettyPrint.HughesPJ
 
 import Verifier.LLVM.AST
 
-
 -- | SBEPred yields the type used to represent predicates in particular SBE interface
 -- implementation.
 type family SBETerm (sbe :: * -> *)
@@ -225,6 +224,11 @@ data SBE m = SBE
     -- true and @f@ otherwise.  The memory should have the same number of stack
     -- and merge frames.
   , memMerge :: SBEPred m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
+
+  -- | @term SAT t@ returns @True@ if @t@ is satisfiable, @False@
+  -- otherwise. TODO: eventually return a satisfying assignment.
+  -- TODO: define SatResult
+  --, termSAT :: SBETerm m -> m SatResult
 
     ----------------------------------------------------------------------------
     -- Output functions

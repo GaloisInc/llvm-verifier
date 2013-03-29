@@ -4,12 +4,20 @@ MAIN      = main
 MAINTARGET= ${MAIN}/${TARGET}
 TMPTARGET = ${TMP}/${TARGET}
 SRCS      = ${wildcard *.tex */*.tex *.sty */*.sty} ${wildcard *.bib */*.bib} \
-	    ${wildcard *.sty} Makefile ${wildcard *.cry */*.cry}
+	    ${wildcard *.sty} Makefile ${wildcard *.cry */*.cry} \
+	    ${MAINTARGET}.md
 SPELLSRC  = ${filter-out ${wildcard utils/*.tex}, ${wildcard *.tex */*.tex}}
 TMPDIR    = out
 NEWSPELL  = ${TMPDIR}/${TARGET}.SPELLNEW
 OLDSPELL  = ${TMPDIR}/${TARGET}.SPELLOLD
 SPELL     = aspell -t -l
+PDFARGS   = -H ${MAINTARGET}-head.tex \
+            -B ${MAINTARGET}-before.tex \
+            -A ${MAINTARGET}-after.tex \
+            --latex-engine=xelatex
+HTMLARGS  = --css ${MAIN}/doc.css \
+            --standalone \
+            --self-contained
 AUX       = ${wildcard ${TMP}/*.blg} ${wildcard ${TMP}/*.bbl} ${wildcard ${TMP}/*.aux} \
             ${wildcard ${TMP}/*.eps} ${wildcard ${TMP}/*.log} ${wildcard ${TMP}/*.toc} \
 	    ${wildcard ${TMP}/*.out} ${wildcard ${TMP}/*.idx} ${wildcard ${TMP}/*.ilg} \
@@ -25,14 +33,10 @@ all: pdf
 pdf: ${TARGET}.pdf
 
 ${TARGET}.pdf: ${SRCS}
-	${LATEX}     ${MAINTARGET}
-	${BIBTEX}    ${TMP}/${TARGET}
-	${LATEX}     ${MAINTARGET}
-	${LATEX}     ${MAINTARGET}
+	pandoc ${PDFARGS} -o $@ ${MAINTARGET}.md
 
-# for quickly seeing changes; might get the labels wrong
-quick: ${SRCS}
-	${LATEX}     ${MAINTARGET}
+${TARGET}.html: ${SRCS}
+	pandoc ${HTMLARGS} -o $@ ${MAINTARGET}.md
 
 # load into Cryptol
 cry:

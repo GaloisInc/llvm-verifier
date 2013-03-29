@@ -1,3 +1,0 @@
-MD5 (lss-alpha-rc2-linux.tar.gz) = 7f25f7d5c0dad4b70781c04b365afdbe
-MD5 (lss-alpha-rc2-macosx.tar.gz) = da0eef5719abeb42da9fcb82dde5d9be
-MD5 (lss-alpha-rc2-windows.zip) = 27d5a2d4f88921052223a64f6c1fcbca
