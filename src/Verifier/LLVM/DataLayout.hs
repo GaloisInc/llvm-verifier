@@ -8,6 +8,20 @@ module Verifier.LLVM.DataLayout
   ( Size
   , Offset
   , Alignment
+
+    -- * Data layout declarations.
+  , DataLayout
+  , EndianForm(..)
+  , intLayout
+  , maxAlignment
+  , ptrSize
+  , ptrAlign
+  , ptrBitwidth
+  , defaultDataLayout
+  , parseDataLayout
+  , memTypeAlign
+  , memTypeSize
+
     -- * Type information.
   , SymType(..)
   , ppSymType
@@ -22,25 +36,22 @@ module Verifier.LLVM.DataLayout
   , varArgsFunDecl
   , ppFunDecl
   , ppRetType
+
     -- ** Struct type information.
-  , StructInfo(..)
-  , FieldInfo(..)
+  , StructInfo
+  , siIsPacked
+  , mkStructInfo
   , siFieldCount
+  , FieldInfo
+  , fiOffset
+  , fiType
+  , fiPadding
   , siFieldInfo
   , siFieldTypes
   , siFieldOffset
-
-    -- * Data layout declarations.
-  , DataLayout
-  , maxAlignment
-  , ptrSize
-  , ptrAlign
-  , ptrBitwidth
-  , defaultDataLayout
-  , parseDataLayout
-  , memTypeAlign
-  , memTypeSize  
-  , mkStructInfo
+  , siFields
+  , siIndexOfOffset
+  , siDropLastField
   ) where
 
 import Control.Applicative ((<$>))
@@ -56,6 +67,21 @@ import qualified Text.LLVM as L
 import Text.PrettyPrint
 import Verifier.LLVM.Utils
 
+-- | Performs a binary search on a range of ints.
+binarySearch :: (Int -> Ordering)
+             -> Int -- ^ Lower bound (included in range)
+             -> Int -- ^ Upper bound (excluded from range)
+             -> Maybe Int
+binarySearch f = go
+  where go l h | l == h = Nothing
+               | otherwise = case f i of
+                               -- Index is less than one f is searching for
+                               LT -> go (i+1) h
+                               EQ -> Just i
+                               -- Index is greater than one f is searching for.
+                               GT -> go l i
+          where i = l + (h - l) `div` 2
+
 -- | Size is in bytes unless bits is explicitly stated.
 type Size = Word64
 
@@ -65,112 +91,6 @@ type Offset = Word64
 -- e.g., alignment value of 3 indicates the pointer must align on 2^3-byte boundaries.
 type Alignment = Word32
 
--- | Type supported by symbolic simulator.
-data SymType
-  = MemType MemType
-  | Alias L.Ident
-  | FunType FunDecl
-    -- | A type not supported by the symbolic simulator.
-  | UnsupportedType L.Type
-  | VoidType
-
-ppSymType :: SymType -> Doc
-ppSymType (MemType tp) = ppMemType tp
-ppSymType (Alias i) = L.ppIdent i
-ppSymType (FunType d) = ppFunDecl d
-ppSymType (UnsupportedType tp) = L.ppType tp    
-ppSymType VoidType = text "void"
-
--- | LLVM Types supported by simulator with a defined size and alignment.
-data MemType
-  = IntType BitWidth
-  | FloatType
-  | DoubleType
-  | PtrType SymType
-  | ArrayType Int MemType
-  | VecType Int MemType
-  | StructType StructInfo
-
-ppMemType :: MemType -> Doc
-ppMemType mtp = 
-  case mtp of
-    IntType w -> ppIntType w
-    FloatType -> text "float"
-    DoubleType -> text "double"
-    PtrType tp -> ppPtrType (ppSymType tp)
-    ArrayType n tp -> ppArrayType n (ppMemType tp)
-    VecType n tp  -> ppVectorType n (ppMemType tp)
-    StructType si -> ppStructInfo si
-
-
--- | Alignment restriction in bytes.
-data FunDecl = FunDecl { fdRetType  :: !RetType
-                       , fdArgTypes :: ![MemType]
-                       , fdVarArgs  :: !Bool
-                       }
--- | Return type if any.
-type RetType = Maybe MemType
-
--- | Declare function that returns void
-voidFunDecl :: [MemType] -> FunDecl
-voidFunDecl tps = FunDecl { fdRetType = Nothing
-                          , fdArgTypes = tps
-                          , fdVarArgs = False
-                          }
-
--- | Declare function that returns a value.
-funDecl :: MemType -> [MemType] -> FunDecl
-funDecl rtp tps = FunDecl { fdRetType = Just rtp
-                          , fdArgTypes = tps
-                          , fdVarArgs = False
-                          }
-
--- | Declare function that returns a value.
-varArgsFunDecl :: MemType -> [MemType] -> FunDecl
-varArgsFunDecl rtp tps = FunDecl { fdRetType = Just rtp
-                                 , fdArgTypes = tps
-                                 , fdVarArgs = True
-                                 }
-
-ppFunDecl :: FunDecl -> Doc
-ppFunDecl (FunDecl rtp args va) = rdoc <> parens (L.commas (fmap ppMemType args ++ vad))
-  where rdoc = maybe (text "void") ppMemType rtp
-        vad = if va then [text "..."] else []
-
--- | Pretty print return type.
-ppRetType :: RetType -> Doc
-ppRetType = maybe (text "void") ppMemType
-
-
--- | Information about structs.  Offsets and size is in bytes.
-data StructInfo = StructInfo { structPacked :: !Bool
-                             , structSize :: !Size
-                             , structAlign :: !Alignment
-                             , siFields :: !(V.Vector FieldInfo)
-                             }
-
-data FieldInfo = FieldInfo { fiOffset :: !Offset
-                           , fiType :: !MemType
-                             -- | Amount of padding in bytes at end of field.
-                           , fiPadding :: !Size
-                           }
-
-siFieldTypes :: StructInfo -> Vector MemType
-siFieldTypes si = fiType <$> siFields si
-
-siFieldCount :: StructInfo -> Int
-siFieldCount = V.length . siFields
-
-siFieldInfo :: StructInfo -> Int -> Maybe FieldInfo
-siFieldInfo si i = siFields si V.!? i
-
--- | Returns offset of field if it is defined.
-siFieldOffset :: StructInfo -> Int -> Maybe Offset
-siFieldOffset si i = fiOffset <$> siFieldInfo si i
-
-ppStructInfo :: StructInfo -> Doc
-ppStructInfo si = L.structBraces $ L.commas (V.toList fields)
-  where fields = ppMemType <$> siFieldTypes si
 
 newtype BW = BW Word64
   deriving (Eq, Ord, Num)
@@ -260,7 +180,7 @@ data DataLayout
 makeLenses ''DataLayout
 
 ptrBitwidth :: DataLayout -> BitWidth
-ptrBitwidth pdl = 8 * fromIntegral (pdl^.ptrSize)
+ptrBitwidth dl = 8 * fromIntegral (dl^.ptrSize)
 
 -- | Reduce the bit level alignment to a byte value, and error if it is not
 -- a multiple of 8.
@@ -359,11 +279,90 @@ parseDataLayout :: L.DataLayout -> DataLayout
 parseDataLayout dl =
   execState (mapM_ addLayoutSpec dl) defaultDataLayout
 
--- | Returns size of sym type in bytes.
+-- | Type supported by symbolic simulator.
+data SymType
+  = MemType MemType
+  | Alias L.Ident
+  | FunType FunDecl
+    -- | A type not supported by the symbolic simulator.
+  | UnsupportedType L.Type
+  | VoidType
+
+ppSymType :: SymType -> Doc
+ppSymType (MemType tp) = ppMemType tp
+ppSymType (Alias i) = L.ppIdent i
+ppSymType (FunType d) = ppFunDecl d
+ppSymType (UnsupportedType tp) = L.ppType tp    
+ppSymType VoidType = text "void"
+
+-- | LLVM Types supported by simulator with a defined size and alignment.
+data MemType
+  = IntType BitWidth
+  | PtrType SymType
+  | FloatType
+  | DoubleType
+  | ArrayType Int MemType
+  | VecType Int MemType
+  | StructType StructInfo
+
+ppMemType :: MemType -> Doc
+ppMemType mtp = 
+  case mtp of
+    IntType w -> ppIntType w
+    FloatType -> text "float"
+    DoubleType -> text "double"
+    PtrType tp -> ppPtrType (ppSymType tp)
+    ArrayType n tp -> ppArrayType n (ppMemType tp)
+    VecType n tp  -> ppVectorType n (ppMemType tp)
+    StructType si -> ppStructInfo si
+
+
+-- | Alignment restriction in bytes.
+data FunDecl = FunDecl { fdRetType  :: !RetType
+                       , fdArgTypes :: ![MemType]
+                       , fdVarArgs  :: !Bool
+                       }
+-- | Return type if any.
+type RetType = Maybe MemType
+
+-- | Declare function that returns void
+voidFunDecl :: [MemType] -> FunDecl
+voidFunDecl tps = FunDecl { fdRetType = Nothing
+                          , fdArgTypes = tps
+                          , fdVarArgs = False
+                          }
+
+-- | Declare function that returns a value.
+funDecl :: MemType -> [MemType] -> FunDecl
+funDecl rtp tps = FunDecl { fdRetType = Just rtp
+                          , fdArgTypes = tps
+                          , fdVarArgs = False
+                          }
+
+-- | Declare function that returns a value.
+varArgsFunDecl :: MemType -> [MemType] -> FunDecl
+varArgsFunDecl rtp tps = FunDecl { fdRetType = Just rtp
+                                 , fdArgTypes = tps
+                                 , fdVarArgs = True
+                                 }
+
+ppFunDecl :: FunDecl -> Doc
+ppFunDecl (FunDecl rtp args va) = rdoc <> parens (L.commas (fmap ppMemType args ++ vad))
+  where rdoc = maybe (text "void") ppMemType rtp
+        vad = if va then [text "..."] else []
+
+-- | Pretty print return type.
+ppRetType :: RetType -> Doc
+ppRetType = maybe (text "void") ppMemType
+
+intWidthSize ::  BitWidth -> Size
+intWidthSize w = (fromIntegral w + 7) `div` 8 -- Convert bits to bytes.
+
+-- | Returns size of MemType in bytes.
 memTypeSize :: DataLayout -> MemType -> Size
 memTypeSize dl mtp =
   case mtp of
-    IntType w -> (fromIntegral w + 7) `div` 8 -- Convert bits to bytes.
+    IntType w -> intWidthSize w
     FloatType -> 4
     DoubleType -> 8
     PtrType{} -> dl ^. ptrSize
@@ -392,6 +391,20 @@ memTypeAlign dl mtp =
         Nothing -> fromIntegral (lgCeil n) + memTypeAlign dl tp
     StructType si  -> structAlign si
 
+-- | Information about structs.  Offsets and size is in bytes.
+data StructInfo = StructInfo { siDataLayout :: !DataLayout
+                             , siIsPacked   :: !Bool
+                             , structSize   :: !Size
+                             , structAlign  :: !Alignment
+                             , siFields     :: !(V.Vector FieldInfo)
+                             }
+
+data FieldInfo = FieldInfo { fiOffset    :: !Offset
+                           , fiType      :: !MemType
+                             -- | Number of bytes of padding at end of field.
+                           , fiPadding   :: !Size
+                           }
+
 -- | Constructs a function for obtaining target-specific size/alignment
 -- information about structs.  The function produced corresponds to the
 -- StructLayout object constructor in TargetData.cpp.
@@ -408,19 +421,61 @@ mkStructInfo dl packed tps0 = go [] 0 (max a0 (nextAlign a0 tps0)) tps0
         go :: [FieldInfo] -- ^ Fields so far in reverse order.
            -> Size        -- ^ Total size so far (aligned to next element)
            -> Alignment   -- ^ Maximum alignment
-           -> [MemType]   -- ^ Fields to process
+             -> [MemType]   -- ^ Fields to process
            -> StructInfo
         go flds sz maxAlign [] =
-            StructInfo { structPacked = packed
+            StructInfo { siDataLayout = dl
+                       , siIsPacked = packed
                        , structSize = sz
                        , structAlign = maxAlign
                        , siFields = V.fromList (reverse flds)
                        }
         go flds sz a (tp:tpl) = go (fi:flds) sz' (max a a') tpl 
-          where fi = FieldInfo { fiOffset = sz, fiType = tp, fiPadding = sz' - e }
+          where fi = FieldInfo { fiOffset = sz
+                               , fiType = tp
+                               , fiPadding = sz' - e
+                               }
                 -- End of field for tp
                 e = sz + memTypeSize dl tp
                 -- Alignment of next field
                 a' = nextAlign a tpl
                 -- Size of field at alignment for next thing.
                 sz' = nextPow2Multiple e (fromIntegral a')
+
+siFieldTypes :: StructInfo -> Vector MemType
+siFieldTypes si = fiType <$> siFields si
+
+siFieldCount :: StructInfo -> Int
+siFieldCount = V.length . siFields
+
+-- | Returns inforation at given field if int is a valid index.
+siFieldInfo :: StructInfo -> Int -> Maybe FieldInfo
+siFieldInfo si i = siFields si V.!? i
+
+-- | Returns offset of field if it is defined.
+siFieldOffset :: StructInfo -> Int -> Maybe Offset
+siFieldOffset si i = fiOffset <$> siFieldInfo si i
+
+-- | Returns index of field at the given byte offset (if any).
+siIndexOfOffset :: StructInfo -> Offset -> Maybe Int
+siIndexOfOffset si o = binarySearch f 0 (V.length flds)
+  where flds = siFields si
+        f i | e <= o = LT -- Index too low if field ends before offset.
+            | o < s  = GT -- Index too high if field starts after offset.
+            | otherwise = EQ
+         where s = fiOffset (flds V.! i)
+               e | i+1 == V.length flds = structSize si
+                 | otherwise = fiOffset (flds V.! i)
+
+-- | Pretty print struct info.
+ppStructInfo :: StructInfo -> Doc
+ppStructInfo si = L.structBraces $ L.commas (V.toList fields)
+  where fields = ppMemType <$> siFieldTypes si
+
+-- | Removes the last field from a struct if at least one field exists.
+siDropLastField :: StructInfo -> Maybe (StructInfo, FieldInfo)
+siDropLastField si
+  | V.null (siFields si) = Nothing
+  | otherwise = Just (si', V.last (siFields si))
+ where si' = mkStructInfo (siDataLayout si) (siIsPacked si) flds'
+       flds' = V.toList $ V.init $ siFieldTypes si

@@ -39,6 +39,16 @@ data StructValue :: (n :: Nat) -> Vec n fieldType -> sort 0 where {
                -> StructValue (Succ n) (ConsVec fieldType (tp,padding) n r);
   }
 
+snocVec :: (e :: sort 0) -> (n::Nat) -> Vec n e -> e -> Vec (Succ n) e;
+
+snocStruct :: (n :: Nat)
+           -> (tps :: Vec n fieldType)
+           -> StructValue n tps
+           -> (tp :: LLVMType)
+           -> value tp
+           -> (padding :: Nat)
+           -> StructValue (Succ n) (snocVec fieldType n tps (tp,padding));
+
 value :: LLVMType -> sort 0;
 value (IntType w) = bitvector w;
 value FloatType   = Float;
@@ -51,12 +61,19 @@ value (VectorType n tp) = Vec n (value tp);
 binFn :: sort 0 -> sort 0;
 binFn tp = tp -> tp -> tp;
 
-llvmIntConstant :: (w :: Nat) -> Nat -> value (IntType w);
+-- | Returns value in intege value as a natural number less than 2^w.
+llvmIntValueNat :: (w :: Nat) -> bitvector w -> Nat;
+
+llvmIntConstant :: (w :: Nat) -> Nat -> bitvector w;
 
 llvmNullPtr :: (c :: Nat) -> value (PtrType c);
 
-llvmAdd  :: (w :: Nat) -> binFn (value (IntType w));
-llvmAddV :: (n w :: Nat) -> binFn (value (VectorType n (IntType w)));
+-- | Return true if first bitvector is a multiple of the other when
+-- considered as an unsigned integer.
+isAligned :: (w :: Nat) -> bitvector w -> bitvector 32 -> Bool;
+
+llvmAdd  :: (w :: Nat) -> binFn (bitvector w);
+llvmAddV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
 
 llvmSub  :: (w :: Nat) -> binFn (value (IntType w));
 llvmSubV :: (n w :: Nat) -> binFn (value (VectorType n (IntType w)));
@@ -170,3 +187,19 @@ llvmArrayElt :: (n :: Nat)
              -> Vec n (value tp)
              -> Fin n
              -> value tp;
+
+-- | Append the one bitvector to another.  The first vector is the most significant.
+llvmAppendInt :: (u v :: Nat)
+              -> bitvector u
+              -> bitvector v
+              -> bitvector (addNat u v);
+
+-- | @llvmIntSlice i n o v@ returns an @n@-bit bitvector equal to v / 2^i.
+llvmIntSlice :: (i n o :: Nat) -> bitvector (addNat (addNat i n) o) -> bitvector n;
+llvmIntSlice i n o a = vDrop Bool i n (vTake Bool (addNat i n) o a); 
+
+llvmIntToFloat  :: bitvector 32 -> Float;
+llvmFloatToInt  :: Float -> bitvector 32;
+
+llvmIntToDouble :: bitvector 64 -> Float;
+llvmDoubleToInt :: Float -> bitvector 64;

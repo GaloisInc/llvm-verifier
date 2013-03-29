@@ -1,19 +1,31 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DoAndIfThenElse #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# OPTIONS_GHC -fno-warn-name-shadowing #-}
-module Verifier.LLVM.SAWBackend where
+{-# LANGUAGE ViewPatterns #-}
+module Verifier.LLVM.SAWBackend
+  ( SAWBackend
+  , SAWMemory
+  , createSAWBackend
+  ) where
 
-import Control.Applicative
+import Control.Applicative hiding (empty)
 import Control.Exception (assert)
-import Control.Lens 
+import Control.Lens hiding (op, iact)
 import Control.Monad
 import Control.Monad.State
+import Data.Bits
+import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Data.Vector as V
 
 import Verifier.LLVM.AST
@@ -23,31 +35,109 @@ import Verifier.SAW
 import Verifier.SAW.ParserUtils
 import Verifier.SAW.Prelude
 
+#if __GLASGOW_HASKELL__ < 706
+-- | Strict version of modifyIORef
+-- Added for compatibility with GHC base 4.5 and 4.6
+modifyIORef' :: IORef a -> (a -> a) -> IO ()
+modifyIORef' r f = do
+  v <- readIORef r
+  writeIORef r $! f v 
+#endif
+
 
 nyi :: String -> a
 nyi nm = error $ "Not yet implemented: " ++ show nm
 
+scBitwidth :: SharedContext s -> BitWidth -> IO (SharedTerm s)
+scBitwidth sc w = scNat sc (toInteger w)
+
+scBitvectorType :: SharedContext s -> SharedTerm s -> IO (SharedTerm s)
+scBitvectorType sc wt = ($ wt) =<< scApplyPreludeBitvector sc
+
 scFreshInt :: SharedContext s -> BitWidth -> IO (SharedTerm s)
-scFreshInt sc w = do
-  wt <- scNat sc (toInteger w)
-  bvFn <- scApplyPreludeBitvector sc
-  scFreshGlobal sc "_" =<< bvFn wt
-  
-scAsBool :: SharedTerm s -> Maybe Bool
-scAsBool = nyi "scAsBool"
+scFreshInt sc w =
+  scFreshGlobal sc "_" =<< scBitvectorType sc =<< scBitwidth sc w
+
+preludeTrueTermF :: TermF t
+preludeTrueTermF = FTermF $ CtorApp (mkIdent preludeModuleName "True") []
+
+preludeFalseTermF :: TermF t
+preludeFalseTermF = FTermF $ CtorApp (mkIdent preludeModuleName "False") []
+
+preludeBVNatTermF :: TermF t
+preludeBVNatTermF = FTermF $ GlobalDef (mkIdent preludeModuleName "bvNat")
+
+termAsBool :: SharedTerm s -> Maybe Bool
+termAsBool (asTermF -> Just a)
+  | a == preludeTrueTermF  = return True
+  | a == preludeFalseTermF = return False
+termAsBool _ = Nothing
+
+asUnsignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
+asUnsignedBitvector w s2 = do
+  (s1, vt) <- asApp s2
+  (s0, wt) <- asApp s1
+  when (asTermF  s0 /= Just preludeBVNatTermF) Nothing
+  when (asNatLit wt /= Just (toInteger w)) Nothing
+  asNatLit vt
+
+scBool :: SharedContext s -> Bool -> IO (SharedTerm s)
+scBool sc True = scApplyPreludeTrue sc
+scBool sc False = scApplyPreludeFalse sc
 
 scFloat :: SharedContext s -> Float -> IO (SharedTerm s)
-scFloat = nyi "scFloat"
+scFloat sc v = scTermF sc (FTermF (FloatLit v))
 
 scDouble :: SharedContext s -> Double -> IO (SharedTerm s)
-scDouble = nyi "scDouble"
+scDouble sc v = scTermF sc (FTermF (DoubleLit v))
 
 -- | Create a vector from a term representing its element types and the element.
 scVecLit :: SharedContext s
          -> SharedTerm s -- ^ Type of vector elments.
          -> V.Vector (SharedTerm s) -- ^ Elements
          -> IO (SharedTerm s)
-scVecLit = nyi "scVecLit"
+scVecLit sc tp v = scTermF sc (FTermF (ArrayValue tp v))
+
+$(runDecWriter $ do
+    prelude <- defineImport [|preludeModule|] preludeModule
+    llvm <- defineModuleFromFile [prelude] "llvmModule" "saw/LLVM.sawcore"
+    declareDefTermF llvm "llvmAdd"
+    declareSharedModuleFns "LLVM" (decVal llvm)
+ )
+
+scResizeTerm :: SharedContext s
+             -> BitWidth -- ^ Input width
+             -> (BitWidth, SharedTerm s) -- ^ Result bitwith and term representing it.
+             -> SharedTerm s
+             -> IO (SharedTerm s)
+scResizeTerm sc iw (rw,rt) v
+  | iw < rw = do
+      fn <- scApplyLLVMLlvmZExt sc
+      dt <- scBitwidth sc (rw - iw)
+      fn dt rt v
+  | iw > rw = do
+      fn <- scApplyLLVMLlvmTrunc sc
+      dt <- scBitwidth sc (iw - rw)
+      fn dt rt v
+  | otherwise = return v
+
+-- | Create a bitvector from a constant.
+scBitvectorConst :: SharedContext s
+                 -> BitWidth -- ^ Result width with corresponding term.
+                 -> Integer -- ^ Value of bitvector.
+                 -> IO (SharedTerm s)
+scBitvectorConst sc w v = do
+  wt <- scBitwidth sc w
+  scBitvectorConst' sc (w,wt) v
+
+-- | Create a bitvector from a constant.
+scBitvectorConst' :: SharedContext s
+                  -> (BitWidth, SharedTerm s) -- ^ Result width with corresponding term.
+                  -> Integer -- ^ Value of bitvector.
+                  -> IO (SharedTerm s)
+scBitvectorConst' sc (w,wt) v = do
+  cfn <- scApplyLLVMLlvmIntConstant sc 
+  cfn wt =<< scNat sc (v `mod` 2^(toInteger w))
 
 {-
 Essay on how allocations are done:
@@ -69,50 +159,381 @@ Operations that attempt to exploit this normalization include:
 scFreshPtr :: SharedContext s -> DataLayout -> IO (SharedTerm s)
 scFreshPtr sc dl = scFreshInt sc (ptrBitwidth dl)
 
-
--- | The allocation state of memory.
--- Type parameters are for merge predicate and changes respectively.
-data MemState p d
+-- | A state of memory as of a stack push, branch, or merge.
+data MemState d
   = -- | Represents initial memory and changes since then.
+    -- Changes are stored in order, with more recent changes closer to the head
+    -- of the list.
     EmptyMem [d]
-    -- | Represents a push of a stack frame, and allocation since that stack push.
-  | StackFrame [d] (MemState p d)
-    -- | Represents a push of a branch frame, and allocations since that branch.
-  | BranchFrame [d] (MemState p d)
-    -- | Represents a merge of two frames.
-  | MergeFrame p [d] [d] (MemState p d)
+    -- | Represents a push of a stack frame,  andchanges since that stack push.
+    -- Changes are stored in order, with more recent changes closer to the head
+    -- of the list.
+  | StackFrame  [d] (MemState d) 
+    -- | Represents a push of a branch frame, and changes since that branch.
+    -- Changes are stored in order, with more recent changes closer to the head
+    -- of the list.
+  | BranchFrame [d] (MemState d)
+
+-- | Lens to changes in mem state since last branch or stack push event.
+lastMemChanges :: Simple Lens (MemState d) [d]
+lastMemChanges f (EmptyMem l)      = EmptyMem <$> f l 
+lastMemChanges f (StackFrame  l m) = flip StackFrame  m <$> f l
+lastMemChanges f (BranchFrame l m) = flip BranchFrame m <$> f l
+
+-- | Lens to previous memory in last branch or stack push event.
+prevMem :: Simple Traversal (MemState d) (MemState d)
+prevMem _ m@EmptyMem{} = pure m
+prevMem f (StackFrame  l m) = StackFrame l  <$> f m
+prevMem f (BranchFrame l m) = BranchFrame l <$> f m
+
+-- | Returns all changes in memstate as a list.
+memChanges :: MemState d -> [d]
+memChanges m = m^.lastMemChanges ++ maybe [] memChanges (m^?prevMem) 
+
+-- | Add a memory change to the state.
+consMemChange :: d -> MemState d -> MemState d
+consMemChange d = over lastMemChanges (d:)
 
 data MemAlloc s
     -- | Represents a stack allocation with base, alignment of base, and number of bytes.
   = StackAlloc (SharedTerm s) Alignment (SharedTerm s)
     -- | Represents a heap allocation with base, alignment of base, and number of bytes.
   | HeapAlloc (SharedTerm s) Alignment (SharedTerm s)
+  | AllocMerge (SharedTerm s) [MemAlloc s] [MemAlloc s]
 
-type MemAllocState s = MemState (SharedTerm s) (MemAlloc s)
+type MemAllocState s = MemState (MemAlloc s)
 
 data MemWrite s
-    -- | @MemCopy dst src len a@ represents a copy from [src..len) to
-    -- [dst..len).  Both source and dest can be assumed to satisfy the
-    -- given alignment. 
-  = MemCopy (SharedTerm s) (SharedTerm s) (SharedTerm s) Alignment
-    -- | Memstore is given address, type of value, value, and alignment. 
-  | MemStore (SharedTerm s) MemType (SharedTerm s) Alignment
+    -- | @MemCopy dstRange src len@ represents a copy from [src..len) to
+    -- dstRange.  Both source and dest can be assumed to satisfy the
+    -- given alignment.  The length of each range is guaranteed to be the same.
+  = MemCopy (StoreRange s) (SharedTerm s) 
+    -- | Memstore is given address, type of value, and value.
+  | MemStore (StoreRange s) MemType (SharedTerm s)
+  | WriteMerge (SharedTerm s) [MemWrite s] [MemWrite s]
 
-type MemWriteState s = MemState (SharedTerm s) (MemAlloc s)
+type MemWriteState s = MemState (MemWrite s)
+
+-- | Set of shared term variables that refer to allocations.
+type Allocations s = IORef (Set (SharedTerm s))
+
+-- | Create a new pointer variable as a global variable.
+allocPtr :: DataLayout -> SharedContext s -> Allocations s -> IO (SharedTerm s)
+allocPtr dl sc al = do
+  v <- scFreshGlobal sc "_"
+         =<< scBitvectorType sc
+         =<< scBitwidth sc (ptrBitwidth dl)
+  v <$ modifyIORef' al (Set.insert v)
+
+asApp2 :: SharedTerm s -> Maybe (SharedTerm s, SharedTerm s, SharedTerm s)
+asApp2 t = do
+  (t1,a2) <- asApp t
+  (t0,a1) <- asApp t1
+  return (t0,a1,a2)
+
+data SAWBackendState s =
+       SBS { sbsDataLayout :: DataLayout
+           , sbsContext :: SharedContext s
+           , sbsAllocations :: Allocations s
+             -- | Width of pointers in bits as a nat.
+           , sbsPtrWidth :: SharedTerm s
+             -- | Function for adding two pointers.
+           , sbsPtrAddFn :: SharedTerm s
+                               -- | Function for subtracting one pointer from another.
+           , sbsPtrSubFn :: SharedTerm s
+             -- | LLVM Type of a pointer
+           , sbsPtrType    :: SharedTerm s
+             -- | LLVM Type of floats.
+           , sbsFloatType  :: SharedTerm s
+             -- | LLVM Type for double
+           , sbsDoubleType :: SharedTerm s
+              -- | Creates LLVM type for arrays
+           , sbsArrayTypeFn :: SharedTerm s -> SharedTerm s -> IO (SharedTerm s)
+              -- | Creates LLVM type for vectors
+           , sbsVecTypeFn :: SharedTerm s -> SharedTerm s -> IO (SharedTerm s)
+              -- | Creates LLVM type for structs
+           , sbsStructTypeFn :: SharedTerm s -> SharedTerm s -> IO (SharedTerm s)
+              -- | Fieldtype constant
+           , sbsFieldType :: SharedTerm s
+           }
+
+mkBackendState :: DataLayout -> SharedContext s -> IO (SAWBackendState s)
+mkBackendState dl sc = do
+  ptrWidth <- scBitwidth sc (ptrBitwidth dl)
+  addFn <- join $ scApplyLLVMLlvmAdd sc ?? ptrWidth
+  subFn <- join $ scApplyLLVMLlvmSub sc ?? ptrWidth
+  allocs <- newIORef Set.empty
+
+  -- LLVM Type imports
+  ptrType <- join $ scApplyLLVMPtrType sc <*> scNat sc (toInteger (dl^.ptrSize))
+  floatType  <- scApplyLLVMFloatType sc
+  doubleType <- scApplyLLVMDoubleType sc
+  arrayTypeFn  <- scApplyLLVMArrayType sc 
+  vecTypeFn    <- scApplyLLVMVectorType sc 
+  structTypeFn <- scApplyLLVMStructType sc
+  fieldType <- scApplyLLVMFieldType sc
+
+  return SBS { sbsDataLayout = dl
+             , sbsContext = sc
+             , sbsAllocations = allocs
+             , sbsPtrWidth = ptrWidth
+             , sbsPtrAddFn = addFn
+             , sbsPtrSubFn = subFn
+             , sbsPtrType      = ptrType
+             , sbsFloatType    = floatType
+             , sbsDoubleType   = doubleType
+             , sbsArrayTypeFn  = arrayTypeFn
+             , sbsVecTypeFn    = vecTypeFn
+             , sbsStructTypeFn = structTypeFn
+             , sbsFieldType    = fieldType
+             }
+
+sbsMkPtrConstant :: SAWBackendState s -> Integer -> IO (SharedTerm s)
+sbsMkPtrConstant sbs =
+  scBitvectorConst' (sbsContext sbs)
+                    (ptrBitwidth (sbsDataLayout sbs), sbsPtrWidth sbs)
+
+sbsIsAlloc :: SAWBackendState s -> SharedTerm s -> IO Bool
+sbsIsAlloc sbs t = Set.member t <$> readIORef (sbsAllocations sbs)
+
+-- | Attempts to decompose a term into an allocation and an offset.
+sbsDecomposePtr :: SAWBackendState s -> SharedTerm s -> IO (Maybe (SharedTerm s, SharedTerm s))
+sbsDecomposePtr sbs ptr =
+  case asApp2 ptr of
+    Just (f,b,o) | f == sbsPtrAddFn sbs -> do
+      isAlloc <- sbsIsAlloc sbs b
+      return $ if isAlloc then Just (b,o) else Nothing
+    _ -> return Nothing
+
+-- | Adds two terms together (which must be pointer-sized integers).
+sbsPtrAdd :: SAWBackendState s -> SharedTerm s -> SharedTerm s -> IO (SharedTerm s)
+sbsPtrAdd sbs x y = do
+  mx <- sbsDecomposePtr sbs x
+  let addFn = scApply2 (sbsContext sbs) (sbsPtrAddFn sbs)
+  case mx of
+    Just (b,o) -> addFn b =<< addFn o y
+    Nothing -> do
+      my <- sbsDecomposePtr sbs y
+      case my of
+        Just (b,o) -> addFn b =<< addFn x o
+        Nothing -> addFn x y
+
+sbsPtrSub :: SAWBackendState s -> SharedTerm s -> SharedTerm s -> IO (SharedTerm s)
+sbsPtrSub sbs x y = do
+  mx <- sbsDecomposePtr sbs x
+  my <- sbsDecomposePtr sbs y
+  let subFn = scApply2 (sbsContext sbs) (sbsPtrSubFn sbs)
+  case (,) <$> mx <*> my of
+    Just ((bx,ox),(by,oy)) | bx == by -> subFn ox oy
+    _ -> subFn x y
+
+-- | Attempt to parse the term as a constant integer.
+sbsIntAsConst :: SAWBackendState s -> BitWidth -> SharedTerm s -> IO (Maybe Integer)
+sbsIntAsConst sbs w t = scBitwidth (sbsContext sbs) w >>= \wt -> sbsIntAsConst' sbs wt t
+
+-- | Attempt to parse the term as a constant integer.
+sbsPtrOffsetAsConst :: SAWBackendState s -> SharedTerm s -> IO (Maybe Integer)
+sbsPtrOffsetAsConst sbs = sbsIntAsConst' sbs (sbsPtrWidth sbs)
+
+-- | Attempt to parse the second term as a constant integer.
+-- The first term is the width of the term.
+sbsIntAsConst' :: SAWBackendState s -> SharedTerm s -> SharedTerm s -> IO (Maybe Integer)
+sbsIntAsConst' sbs w t =
+  fmap asNatLit $ join $
+    scApplyLLVMLlvmIntValueNat (sbsContext sbs) ?? w ?? t
+
+type AllocInfo s = Maybe (SharedTerm s, SharedTerm s, SharedTerm s)
+
+-- | Attempt to decompose range.
+sbsAllocInfo :: SAWBackendState s -> SharedTerm s -> SharedTerm s -> IO (AllocInfo s)
+sbsAllocInfo sbs ptr sizeTerm = do
+  -- Attempt to decompose pointer.
+  dptr <- sbsDecomposePtr sbs ptr
+  -- Get allocation info if pointer can be decomposed
+  case dptr of
+    Just (b,o) -> do
+      (\e -> Just (b,o,e)) <$> sbsPtrAdd sbs o sizeTerm
+    Nothing -> return Nothing
+
+data LoadRange s =
+    LoadRange { lrPtr :: SharedTerm s
+                -- | End of shared term.
+              , lrEnd :: SharedTerm s
+              , lrAlloc :: AllocInfo s
+              , lrStartOffsetAsConst :: Maybe Integer
+              , lrEndOffsetAsConst :: Maybe Integer
+              , lrType :: MemType
+                -- | Offset since load defined.
+              , lrOffset :: Int
+              , lrBaseAlignment :: Alignment
+              }
+
+mkLoadRange :: SAWBackendState s
+            -> MemType -> SharedTerm s -> Int -> Alignment -> IO (LoadRange s)
+mkLoadRange sbs tp ptr o a = do
+  let sz = toInteger (memTypeSize (sbsDataLayout sbs) tp)
+  -- Get size of term.
+  sizeTerm <- sbsMkPtrConstant sbs sz
+  -- Get end pointer
+  endPtr <- sbsPtrAdd sbs ptr sizeTerm
+  -- Attempt to decompose pointer.
+  dptr <- sbsDecomposePtr sbs ptr
+  -- Get allocation info if pointer can be decomposed
+  alloc <- sbsAllocInfo sbs ptr sizeTerm
+  -- Get start offset if pointer can be decomposed
+  s <- join <$> traverse (sbsPtrOffsetAsConst sbs . view _2) dptr
+  -- Return final load range.
+  return $ LoadRange { lrPtr = ptr
+                     , lrEnd = endPtr
+                     , lrAlloc = alloc
+                     , lrStartOffsetAsConst = s
+                     , lrEndOffsetAsConst = (sz+) <$> s
+                     , lrType = tp
+                     , lrOffset = o
+                     , lrBaseAlignment = a
+                     }
+
+-- | Size of load range in bytes.
+lrSize :: DataLayout -> LoadRange s -> Integer
+lrSize dl lr = toInteger (memTypeSize dl (lrType lr))
+
+-- | @subrange ptr off tp@ updates the range to point to a term of type tp at (ptr+off).
+subrange :: SAWBackendState s -> LoadRange s -> Int -> MemType -> IO (LoadRange s)
+subrange sbs lr o tp = do
+  ptr <- sbsPtrAdd sbs (lrPtr lr) =<< sbsMkPtrConstant sbs (toInteger o)
+  mkLoadRange sbs tp ptr (lrOffset lr + o) (lrBaseAlignment lr)
+
+adjustAlignment :: Int -> Alignment -> Alignment
+adjustAlignment off a = checkAlign 0
+  where checkAlign i | i == a = i
+                       -- Stop if offset is set at this bit. 
+                     | off `testBit` fromIntegral i = i
+                     | otherwise = checkAlign (i+1)
+
+-- | Returns alignment for load range.
+lrAlignment :: LoadRange s -> Alignment
+lrAlignment lr = adjustAlignment (lrOffset lr) (lrBaseAlignment lr)
+
+-- | Denotes a contiguous range of memory.
+data StoreRange s = StoreRange { srPtr   :: SharedTerm s
+                               , srEnd :: SharedTerm s
+                               , srAlloc :: Maybe (SharedTerm s, SharedTerm s, SharedTerm s)
+                               , srStartOffsetAsConst :: Maybe Integer
+                               , srSizeAsConst :: Maybe Integer
+                               , srEndOffsetAsConst :: Maybe Integer
+                                 -- | Offset since load defined.
+                               , srOffset :: Int
+                               , srBaseAlignment :: Alignment
+                               }
+
+
+mkStoreRange :: SAWBackendState s
+             -> SharedTerm s
+             -> SharedTerm s
+             -> Alignment
+             -> IO (StoreRange s)
+mkStoreRange sbs ptr sizeTerm a = do
+  -- Get end pointer
+  endPtr <- sbsPtrAdd sbs ptr sizeTerm
+  -- Get allocation info if pointer can be decomposed
+  alloc <- sbsAllocInfo sbs ptr sizeTerm
+  -- Get start offset if pointer can be decomposed
+  s <- join <$> traverse (sbsPtrOffsetAsConst sbs . view _2) alloc
+  -- Get size of pointer
+  sz <- sbsPtrOffsetAsConst sbs sizeTerm
+  -- Return final load range.
+  return $ StoreRange { srPtr = ptr
+                      , srEnd = endPtr
+                      , srAlloc = alloc
+                      , srStartOffsetAsConst = s
+                      , srSizeAsConst = sz
+                      , srEndOffsetAsConst = (+) <$> s <*> sz
+                      , srOffset = 0
+                      , srBaseAlignment = a
+                      }
+
+-- | Returns true if store size is at least a specified amount.
+srSizeAtLeast :: StoreRange s -> Integer -> Bool
+srSizeAtLeast sr sz = maybe False (>= sz) (srSizeAsConst sr)
+
+srAlignment :: StoreRange s -> Alignment
+srAlignment sr = adjustAlignment (srOffset sr) (srBaseAlignment sr)
+
+-- | Returns term indicating if two ranges are definitely disjoint, and false if they may overlap
+offsetsDisjoint :: LoadRange s -> StoreRange s -> Bool
+offsetsDisjoint lr sr = do
+  case (==) <$> (view _1 <$> lrAlloc lr) <*> (view _1 <$> srAlloc sr) of
+    -- If allocations are same, check ranges do not overlap.
+    Just True ->
+      let lrBeforeSr = (<=) <$> lrEndOffsetAsConst lr <*> srStartOffsetAsConst sr
+          srBeforeLr = (<=) <$> srEndOffsetAsConst sr <*> lrStartOffsetAsConst lr
+       in lrBeforeSr == Just True || srBeforeLr == Just True
+    -- If allocations are different return true. 
+    Just False -> True
+    -- Otherwise, nothing can be said.
+    Nothing -> False
+
+-- | Returns true if first range is completely contained within second.
+offsetIsContainedBy :: SAWBackendState s
+                    -> LoadRange s
+                    -> StoreRange s
+                    -> IO (SharedTerm s)
+offsetIsContainedBy sbs lr sr = do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
+  -- Checks that store size is greater than load size before trying next
+  --computation. 
+  let checkSize m = do
+         case srSizeAsConst sr of
+           Just s | s < lrSize dl lr -> scApplyPreludeFalse sc
+           _ -> m
+  case (,) <$> lrAlloc lr <*> srAlloc sr of
+    -- If allocations are same, check one range is contained in another
+    Just ((lv,ls,le), (sv,ss,se))
+      | lv == sv -> checkSize $ do
+        uleFn <- join $ scApplyLLVMLlvmIule sc <*> scBitwidth sc (ptrBitwidth dl)
+        join $ scApplyPreludeAnd sc
+              <*> scApply2 sc uleFn ss ls
+              <*> scApply2 sc uleFn le se
+        -- If allocations are distinct, they must be disjoint.
+      | otherwise -> scApplyPreludeFalse sc
+    -- Allocations could not be identified, so we create formula.
+    Nothing -> checkSize $ do
+      uleFn <- join $ scApplyLLVMLlvmIule sc <*> scBitwidth sc (ptrBitwidth dl)
+      join $ scApplyPreludeAnd sc
+            <*> scApply2 sc uleFn (srPtr sr) (lrPtr lr)
+            <*> scApply2 sc uleFn (lrEnd lr) (srEnd sr) 
+
+-- | @rebasePtr sbs lr oldBase newBase@ returns offset pointer equal to newBase + (lr - oldPbase).
+rebasePtr :: SAWBackendState s
+          -> LoadRange s
+          -> StoreRange s
+          -> SharedTerm s
+          -> IO (LoadRange s)
+rebasePtr sbs lr sr newBase = do
+  ptr <- sbsPtrAdd sbs newBase =<< sbsPtrSub sbs (lrPtr lr) (srPtr sr)
+  -- TODO: Fix the alignment and offset to be more accurate.
+  mkLoadRange sbs (lrType lr) ptr 0 0
 
 data SAWMemory s = SAWMemory { _memSymbols :: Map (SharedTerm s) Symbol
                              , _allocState :: MemAllocState s
-                             , _valueState :: MemWriteState s
+                             , _writeState :: MemWriteState s
                              }
 
 emptyMemory :: SAWMemory s
 emptyMemory = SAWMemory { _memSymbols = Map.empty
                         , _allocState = EmptyMem []
-                        , _valueState = EmptyMem []
+                        , _writeState = EmptyMem []
                         }
 
 memSymbols :: Simple Lens (SAWMemory s) (Map (SharedTerm s) Symbol)
 memSymbols = lens _memSymbols (\s v -> s { _memSymbols = v })
+
+allocState :: Simple Lens (SAWMemory s) (MemAllocState s)
+allocState = lens _allocState (\s v -> s { _allocState = v })
+
+writeState :: Simple Lens (SAWMemory s) (MemWriteState s)
+writeState = lens _writeState (\s v -> s { _writeState = v })
 
 smAddDefine :: DataLayout
             -> SharedContext s
@@ -133,34 +554,572 @@ smLookupSymbol m t =
     Just r -> LookupResult r
     Nothing -> Indeterminate
 
-{-
-szResizeTerm :: SharedContext s
-             -> BitWidth -- ^ Input width
-             -> BitWidth -- ^ Result bitwith
-             -> SharedTerm s
-             -> IO (SharedTerm s)
-szResizeTerm sc iw rw v
-  | iw < rw =
-      extOp scApplyLLVMLlvmZExt  scApplyLLVMLlvmZExtV mn  (rw - iw) iw v
-        | iw > rw =
-          extOp scApplyLLVMLlvmTrunc scApplyLLVMLlvmTruncV mn (iw - rw) rw v
-        | otherwise = return (\eval -> eval v)
+smAlloc :: DataLayout
+        -> SharedContext s
+        -> Allocations s
+           -- | Constructor for creating memalloc.
+        -> (SharedTerm s -> Alignment -> SharedTerm s -> MemAlloc s)
+        -> SAWMemory s
+        -> MemType
+        -> BitWidth -- ^ Width of count.
+        -> SharedTerm s -- ^ Count
+        -> Alignment
+        -> IO (AllocResult (SAWBackend s))
+smAlloc dl sc alloc allocCtor m tp w cnt a = do
+  -- Create new variable for base address.
+  base <- allocPtr dl sc alloc
+  -- Get width of pointers.
+  let pw = ptrBitwidth dl
+  pwt <- scBitwidth sc pw
+  -- Get size of tp in bytes.
+  tpSize <- scBitvectorConst' sc (pw,pwt) (toInteger (memTypeSize dl tp))
+  -- Convert count to have same bitwidth as pointer.
+  cnt' <- scResizeTerm sc w (pw,pwt) cnt
+  -- Get total number of bytes.
+  mulFn <- scApplyLLVMLlvmMul sc
+  mulOp <- mulFn pwt
+  totalSize <- scApplyAll sc mulOp [cnt', tpSize]
+  -- Return memory with new change.
+  let m' = m & allocState %~ consMemChange (allocCtor base a totalSize)
+  -- Get true predicate.
+  t <- scApplyPreludeTrue sc
+  -- Return successful allocation.
+  return $ AResult t base m'   
 
-smStackAlloc :: DataLayout
-             -> SharedContext s
-             -> SAWMemory s
+smStackPushFrame :: SharedContext s
+                 -> SAWMemory s
+                 -> IO (SharedTerm s, SAWMemory s)
+smStackPushFrame sc m = do
+  -- Push a stack frame.
+  let m' = m & allocState %~ StackFrame []
+  -- Return true predicate and updated memory.
+  (,m') <$> scApplyPreludeTrue sc
+
+smStackPopFrame :: SAWMemory s -> SAWMemory s
+smStackPopFrame m =
+  case m^.allocState of
+    -- Update allocState to point to old memory with heap allocations still
+    -- performed.
+    StackFrame cl p -> m & allocState .~ (p & lastMemChanges %~ (cl'++))
+      where cl' = mapMaybe filterStack cl
+    _ -> error "smStackPopFrame given unexpected allocation frame." 
+  where filterStack :: MemAlloc s -> Maybe (MemAlloc s)
+        filterStack StackAlloc{} = Nothing
+        filterStack (a@HeapAlloc{}) = Just a
+        filterStack (AllocMerge c tl fl) = Just $
+          AllocMerge c (mapMaybe filterStack tl)
+                       (mapMaybe filterStack fl)
+  
+
+-- | A read action takes a pointer to 
+type ReadAction s = LoadRange s -> IO (SharedTerm s, SharedTerm s)
+
+-- | This is a function which allows a single read to be split into two disjoint
+-- reads and then rejoined.
+type RejoinCont s m a = MemType -- Type of first read.
+                      -> Int     -- Offset for second read.
+                      -> MemType -- Type of second read.
+                         -- Action to merge read results
+                      -> (SharedTerm s -> SharedTerm s -> IO (SharedTerm s))
+                      -> m a
+
+-- Reads pointer values at disjoint addresses and merges result.
+mergeLoads :: SharedContext s
+              -- Action for reading subranges.
+           -> (MemType -> Int -> IO (SharedTerm s, SharedTerm s))
+           -> RejoinCont s IO (SharedTerm s, SharedTerm s)
+mergeLoads sc subFn tp1 o2 tp2 mergeFn = do
+  (c1,r1) <- subFn tp1 0
+  (c2,r2) <- subFn tp2 o2
+  c <- join $ scApplyPreludeAnd sc ?? c1 ?? c2
+  (c,) <$> mergeFn r1 r2
+
+-- | Split int load divides the read of a single integer into two reads of
+-- smaller integers and appends the result together.
+splitIntLoad :: SAWBackendState s
+             -> Integer -- ^ Number of bytes in int to load. 
+             -> Integer -- ^ Index of byte offset to split at.
+                -- | Action for merging reads.
+             -> RejoinCont s m a
+             -> m a
+splitIntLoad sbs w l mergeFn = assert (0 < l && l < w) $ do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
+  let w1 = 8*fromInteger l         -- Low-order aligned read width
+      w2 = 8*(fromInteger w) - w1 -- High-order aligned read width
+  mergeFn (IntType w1) (fromInteger l) (IntType w2) $ \r1 r2 -> do
+    appendFn <- scApplyLLVMLlvmAppendInt sc
+    wt1 <- scNat sc (toInteger w1)
+    wt2 <- scNat sc (toInteger w2)
+    case dl^.intLayout of
+      BigEndian    -> appendFn wt1 wt2 r1 r2
+      LittleEndian -> appendFn wt2 wt1 r2 r1
+
+-- | Divides read of a vector or array into reads of smaller elements.
+splitVecLoad :: SAWBackendState s
+                -- | Number of elements 
+             -> Int
+                -- | Type of vector elements
              -> MemType
-             -> BitWidth
-             -> SharedTerm s
-             -> Alignment
+                -- | Range to read.
+             -> LoadRange s
+                -- | Action for merging reads.
+             -> RejoinCont s IO (SharedTerm s, SharedTerm s)
+             -> IO (SharedTerm s, SharedTerm s)
+splitVecLoad sbs 0 tp _ _ = do
+  let sc = sbsContext sbs
+  (,) <$> scApplyPreludeTrue sc
+      <*> join (scApplyPreludeEmptyVec sc <*> sbsMemType sbs tp)
+splitVecLoad sbs n etp ptr mergeFn = assert (n > 0) $ do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
+  let sz = fromIntegral $ memTypeSize dl etp
+  mergeFn (ArrayType (n-1) (lrType ptr)) ((n-1) * sz) etp $ \vec e -> do
+    join $ scApplyLLVMSnocVec sc
+             <*> sbsMemType sbs etp
+             <*> scNat sc (toInteger (n-1))
+             ?? vec
+             ?? e
+
+splitStructLoad :: SAWBackendState s
+                -> StructInfo
+                   -- | Action for reading subranges.
+                   -- Takes subtype and offset in bytes from range to read.
+                -> (MemType -> Int -> IO (SharedTerm s, SharedTerm s))
+                -> IO (SharedTerm s, SharedTerm s)
+splitStructLoad sbs si subFn = do
+  let sc = sbsContext sbs
+  case siDropLastField si of
+    Nothing -> do
+      (,) <$> scApplyPreludeTrue sc
+          <*> scApplyLLVMEmptyStruct sc
+    Just (si', fi) -> do
+      let offset = fromIntegral (fiOffset fi)
+      mergeLoads sc subFn (StructType si') offset (fiType fi) $ \r1 r2 -> do
+        fieldType <- scApplyLLVMFieldType sc
+        fldV <- traverse (sbsFieldInfo sbs) (siFields si')
+        join $ scApplyLLVMSnocStruct sc
+                 <*> scNat sc (toInteger (siFieldCount si'))
+                 <*> scVecLit sc fieldType fldV
+                 <*> pure r1
+                 <*> sbsMemType sbs (fiType fi)
+                 <*> pure r2
+                 <*> scNat sc (toInteger (fiPadding fi))
+
+splitRead :: forall s .
+             SAWBackendState s
+             -- | Range of previous write.
+          -> StoreRange s
+             -- | Action to perform for when range to read from is
+             -- completely in range of previous write.
+          -> ReadAction s
+             -- | Action to perform for when range to read from is
+             -- completely out of range of previous write.
+          -> ReadAction s
+          -> ReadAction s
+splitRead sbs sr iact oact ptr
+  | offsetsDisjoint ptr sr = oact ptr
+  | otherwise = do
+    let dl = sbsDataLayout sbs
+    let sc = sbsContext sbs
+    cbt <- offsetIsContainedBy sbs ptr sr
+    --  Indicates if load should be treated as atomic.
+    -- This occurs if size is at most a byte, or if alignment and store size means it must read
+    -- value.
+    let isAtomic = lsz <= 1 || (2^a >= lsz && srSizeAtLeast sr lsz)
+          where a = min (srAlignment sr) (lrAlignment ptr)
+                lsz = lrSize dl ptr
+    -- Split action
+    case termAsBool cbt of
+      Just True -> iact ptr
+      Just False | isAtomic -> oact ptr
+      Nothing    | isAtomic -> do
+        iteFn <- scApplyPreludeIte sc
+        boolType <- scPreludeBool sc
+        (ct,rt) <- iact ptr
+        (cf,rf) <- oact ptr
+        (,) <$> iteFn boolType cbt ct cf 
+            <*> join (iteFn <$> sbsMemType sbs (lrType ptr) ?? cbt ?? rt ?? rf)
+      -- Decompose read into multiple smaller reads depending on type.
+      _ -> do
+        let splitRead' tp' o' = splitRead sbs sr iact oact =<< subrange sbs ptr o' tp'
+        let mergeFn = mergeLoads sc splitRead'
+        let readInt w = splitIntLoad sbs w (w-1) mergeFn
+        case lrType ptr of
+          IntType w -> readInt (bitsToBytes w)
+          FloatType -> do
+            convertFn <- scApplyLLVMLlvmIntToFloat sc
+            _2 convertFn =<< readInt 4
+          DoubleType -> do
+            convertFn <- scApplyLLVMLlvmIntToDouble sc
+            _2 convertFn =<< readInt 8
+          PtrType{}  -> readInt (toInteger (dl^.ptrSize))
+          ArrayType n etp -> splitVecLoad sbs n etp ptr mergeFn
+          VecType n etp   -> splitVecLoad sbs n etp ptr mergeFn
+          StructType si ->
+                case siDropLastField si of
+                  Nothing -> do
+                    (,) <$> scApplyPreludeTrue sc
+                        <*> scApplyLLVMEmptyStruct sc
+                  Just (si', fi) -> do
+                    let offset = fromIntegral (fiOffset fi)
+                    mergeLoads sc splitRead' (StructType si') offset (fiType fi) $ \r1 r2 -> do
+                      structFn <- scApplyLLVMSnocStruct sc
+                      fieldType <- scApplyLLVMFieldType sc
+                      fldV <- traverse (sbsFieldInfo sbs) (siFields si')
+                      join $ structFn
+                              <$> scNat sc (toInteger (siFieldCount si'))
+                              <*> scVecLit sc fieldType fldV
+                              <*> pure r1
+                              <*> sbsMemType sbs (fiType fi)
+                              <*> pure r2
+                              <*> scNat sc (toInteger (fiPadding fi))
+
+-- | Return term value, length of fields, and vector with the types of the fields.
+createStructValue :: forall s v
+                   . SAWBackendState s
+                  -> V.Vector (FieldInfo, v)
+                  -> IO (ExprEvalFn v (SharedTerm s))
+createStructValue sbs flds = do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
+  fieldType <- scApplyLLVMFieldType sc
+  let foldFn :: (FieldInfo, v)
+             -> (Integer, ExprEvalFn v (SharedTerm s), SharedTerm s)
+             -> IO (Integer, ExprEvalFn v (SharedTerm s), SharedTerm s)
+      foldFn (fi,expr) (n,ExprEvalFn reval, rvtp) = do
+        mtp <- sbsMemType sbs (fiType fi)
+        padding <- scNat sc (toInteger (fiPadding fi))
+        nt <- scNat sc n
+        consStruct <- scApplyLLVMConsStruct sc
+        let cfn = consStruct mtp padding nt rvtp
+        let reval' = ExprEvalFn $ \eval ->
+                      join $ ((liftIO .) . cfn) <$> eval expr <*> reval eval
+        consVecFn <- scApplyPreludeConsVec sc
+        entry <- scTuple sc [mtp,padding] 
+        (n+1,reval',) <$> consVecFn fieldType entry nt rvtp
+  -- Get initial value and type.
+  empty <- scApplyLLVMEmptyStruct sc
+  let eval0 = ExprEvalFn $ \_ -> return empty
+  emptyFn <- scApplyPreludeEmptyVec sc
+  tp0 <- emptyFn fieldType
+  view _2 <$> foldrMOf folded foldFn (0, eval0, tp0) flds
+
+-- | Create a dummy value (of all zeros) for the given memtype.
+dummyValue :: SAWBackendState s -> MemType -> IO (SharedTerm s)
+dummyValue sbs tp0 = do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
+  let vecFn n tp = do
+       fn <- scApplyPreludeReplicate sc
+       join $ fn <$> scNat sc (toInteger n)
+                 <*> sbsMemType sbs tp
+                 <*> dummyValue sbs tp
+  case tp0 of
+    IntType w -> scBitvectorConst sc w 0
+    FloatType -> scFloat sc 0
+    DoubleType -> scDouble sc 0
+    PtrType{} -> scBitvectorConst sc (ptrBitwidth dl) 0
+    ArrayType n tp -> vecFn n tp
+    VecType n tp -> vecFn n tp
+    StructType si -> do
+      let valueFn fi = (fi, fiType fi)
+      ExprEvalFn evalFn <- createStructValue sbs (valueFn <$> siFields si)
+      evalFn (dummyValue sbs)
+
+scApply2 :: SharedContext s
+         -> SharedTerm s
+         -> SharedTerm s -> SharedTerm s -> IO (SharedTerm s)
+scApply2 sc f x y = do
+  g <- scApply sc f x 
+  scApply sc g y
+
+scLazyIte :: SharedContext s
+          -> SharedTerm s -- ^ Condition
+          -> IO (SharedTerm s) -- ^ Type of result
+          -> IO (SharedTerm s) -- ^ Result if condition is true.
+          -> IO (SharedTerm s) -- ^ Result if condition is false.
+          -> IO (SharedTerm s) -- ^ Result if condition is false.
+scLazyIte sc c mtp mx my = do
+  case scViewAsBool c of
+    Just True -> mx
+    Just False -> my
+    Nothing -> join $ scApplyPreludeIte sc <*> mtp <*> pure c <*> mx <*> my
+
+-- | sliceIntFromInt 
+sliceIntFromInt :: SAWBackendState s
+                -> Integer      -- ^ Number of bytes to select.
+                -> Integer      -- ^ Number of bytes in value.
+                -> SharedTerm s -- ^ Value written (must be an integer).
+                -> Integer      -- ^ Byte offset to read at.
+                -> IO (SharedTerm s)
+sliceIntFromInt sbs lw sw v o
+   | lw == sw = assert (o == 0) $ return v
+   | otherwise = assert (o + lw <= sw) $ do
+       join $ scApplyLLVMLlvmIntSlice sc
+              <*> scNat sc (8*l)
+              <*> scNat sc (toInteger lw)
+              <*> scNat sc (8*e)
+              <*> pure v
+  where dl = sbsDataLayout sbs
+        sc = sbsContext sbs
+        -- l is number of bytes to drop from beginning.
+        l = case dl^.intLayout of
+              LittleEndian -> o
+              BigEndian    -> (sw-lw)-o
+        -- Number of bytes to drop from end.
+        e = (sw-lw) - l
+
+-- | Select a subrange out of a value, and merge results.
+selectOffset :: forall s
+              . SAWBackendState s
+             -> Integer      -- ^ Width of read in bytes
+             -> Alignment    -- ^ Alignment constraint in reading.
+             -> SharedTerm s -- ^ Offset to read.
+             -> Integer      -- ^ Width of write in bytes.
+             -> SharedTerm s -- ^ Type of result.
+                -- | Given a concrete offset, this returns the selected term.
+             -> (Integer -> IO (SharedTerm s))
              -> IO (SharedTerm s)
-smStackAlloc dl sc m tp w cnt a = do
-  ptrBitwidth dl
- 
+selectOffset sbs lw a offset sw resType sliceAt =  do
+     let dl = sbsDataLayout sbs
+     let sc = sbsContext sbs
+     -- Get bitwidth of alignment on ptr'
+     let wt = sbsPtrWidth sbs
+     let -- This function considers whether the value can belong to a particular offset.
+         mergeOffset o r = do
+           -- Offset is in bytes
+           cond <- join $ scApply2 sc
+                          <$> (join $ scApplyLLVMLlvmIeq sc ?? wt)
+                          <*> pure offset
+                          <*> scBitvectorConst' sc (ptrBitwidth dl,wt) o
+           -- Note: This code assumes that integers are stored with least-significant
+           -- bits first.
+           scLazyIte sc cond
+                        (pure resType)
+                        (sliceAt o)
+                        (pure r)           
+     v0 <- sliceAt 0
+     let offsets = takeWhile (\j -> j <= (sw - lw)) [ 2^a*i | i <-[1..]]
+     foldrMOf folded mergeOffset v0 offsets
 
+-- | Convert bits to bytes.
+bitsToBytes :: BitWidth -> Integer
+bitsToBytes w | w .&. 0x7 == 0 = toInteger w `shiftR` 3
+              | otherwise = error "SAW Backend only supports full byte memory accesses."
 
+-- | Returns true if two types have compatible SAWCore types.
+compatTypes :: DataLayout -> MemType -> MemType -> Bool
+compatTypes dl tp0 tp1 =
+  case (tp0, tp1) of
+    (IntType w0, IntType w1) -> w0 == w1
+    (IntType w0, PtrType{}) -> w0 == ptrBitwidth dl
+    (PtrType{}, IntType w1) -> ptrBitwidth dl == w1
+    (PtrType{}, PtrType{}) -> True
+    (FloatType, FloatType) -> True
+    (DoubleType, DoubleType) -> True
+    (ArrayType m tp0', ArrayType n tp1') -> m == n && compatTypes dl tp0' tp1'
+    (ArrayType m tp0',   VecType n tp1') -> m == n && compatTypes dl tp0' tp1'
+    (VecType m tp0',   ArrayType n tp1') -> m == n && compatTypes dl tp0' tp1'
+    (VecType m tp0',     VecType n tp1') -> m == n && compatTypes dl tp0' tp1'
+    (StructType si0, StructType si1) -> V.and $ V.zipWith fieldFn (siFields si0) (siFields si1)
+      where fieldFn fi0 fi1 = fiOffset fi0 == fiOffset fi1
+                           && compatTypes dl (fiType fi0) (fiType fi1)
+                           && fiPadding fi0 == fiPadding fi1
+    _ -> False
+
+scIntValueType :: SharedContext s -> BitWidth -> IO (SharedTerm s) 
+scIntValueType sc w = 
+  join $ scApplyLLVMValue sc <*> scIntType sc w
+
+-- | Returns type of values associated with given type.
+sbsTypeValue :: SAWBackendState s -> MemType -> IO (SharedTerm s)
+sbsTypeValue sbs tp = join $ scApplyLLVMValue (sbsContext sbs) <*> sbsMemType sbs tp
+
+{-
+sliceVec :: SAWBackendState s
+         -> Integer -- ^ Number of bytes to read
+         -> Int -- ^ Number of elements in vector
+         -> MemType -- ^ Type of each element in vector
+         -> SharedTerm s -- ^ Vector value
+         -> Integer -- ^ Offset to read from.
+            -- ^ Returns lift of values Number of 
+         -> IO [(SharedTerm s, Integer, Integer)]
+sliceVec sbs _ n etp v offset = do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
+  let (i,r) = offset `divMod` memTypeSize dl etp
+  fmap (,r) $ join $ scApplyPreludeGet sc
+                       <*> scNat sc (toInteger n)
+                       <*> sbsTypeValue sbs etp
+                       <*> pure v
+                       <*> scFinConst sc i (toInteger n)
 -}
 
+sliceIntFromValue :: forall s .
+                     SAWBackendState s
+                  -> Integer -- ^ Number of bytes to select.
+                  -> MemType -- ^ Type of value
+                  -> SharedTerm s -- ^ Value written
+                  -> Integer      -- ^ Number of bytes to drop from beginning.
+                  -> IO (SharedTerm s)
+sliceIntFromValue sbs lw stp v offset = do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
+  let sw = toInteger $ memTypeSize dl stp
+  assert (lw <= sw) $ do
+    let sliceInt :: SharedTerm s -> IO (SharedTerm s)
+        sliceInt v' = sliceIntFromInt sbs lw sw v' offset
+    --let sliceVec' n etp = uncurry sliceInt =<< sliceVec sbs n etp v offset
+    case stp of
+      IntType{} -> sliceInt v
+      FloatType -> sliceInt =<< join (scApplyLLVMLlvmFloatToInt sc ?? v)
+      DoubleType -> sliceInt =<< join (scApplyLLVMLlvmDoubleToInt sc ?? v)
+      PtrType{} -> sliceInt v
+      --ArrayType n etp -> sliceVec' n etp
+      --VecType n etp   -> sliceVec' n etp
+      StructType si -> do
+        let Just i = siIndexOfOffset si (fromIntegral offset)
+        nyi "StructType" si i
+
+-- | Extract an int value with  a given number of bytes from  another term.
+loadIntValue :: SAWBackendState s
+             -> Integer -- ^ Number of bytes to load 
+             -> SharedTerm s -- ^ Offset of load.
+             -> Alignment -- ^ Alignment for read.
+             -> MemType -- ^ Type of value
+             -> SharedTerm s -- ^ Value
+             -> IO (SharedTerm s)
+loadIntValue sbs lw offset a stp v = do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
+  let sw = toInteger $ memTypeSize dl stp
+  resType <- scIntValueType sc (8*fromInteger lw)
+  let sliceFn = sliceIntFromValue sbs lw stp v
+  selectOffset sbs lw a offset sw resType sliceFn
+
+-- | Returns true if this mem type only contains types to read that occupy
+-- full bytes. 
+byteLevelMemType :: MemType -> Bool
+byteLevelMemType tp =
+  case tp of
+    IntType w -> w `mod` 8 == 0
+    PtrType _ -> True
+    FloatType -> True
+    DoubleType -> True
+    ArrayType _ etp -> byteLevelMemType etp
+    VecType _ etp   -> byteLevelMemType etp
+    StructType si   -> V.all byteLevelMemType (siFieldTypes si)
+
+smLoad :: forall s .
+          SAWBackendState s
+       -> SAWMemory s
+       -> MemType
+       -> SharedTerm s
+       -> Alignment
+       -> IO (SharedTerm s, SharedTerm s) -- Validity predicate and result.
+smLoad sbs m tp0 ptr0 a0 = assert (byteLevelMemType tp0) $
+    loadFn (memChanges (m^.writeState)) =<< mkLoadRange sbs tp0 ptr0 0 a0
+  where dl = sbsDataLayout sbs
+        sc = sbsContext sbs
+        loadFn :: [MemWrite s]
+               -> LoadRange s
+               -> IO (SharedTerm s, SharedTerm s)
+        loadFn [] lr = do
+          (,) <$> scBool sc (lrSize dl lr == 0)
+              <*> dummyValue sbs (lrType lr)
+        loadFn (MemCopy dst src:r) ptr =
+            splitRead sbs dst inAct outAct ptr
+          where -- Action to perform if pointer is in range of memcopy.
+                inAct ptr' = loadFn r =<< rebasePtr sbs ptr' dst src
+                -- Action to perform if pointer is not in range of memcopy.
+                outAct = loadFn r
+        loadFn (MemStore dst stp v:r) ptr =
+            splitRead sbs dst inAct outAct ptr
+          where -- Action to perform if pointer is in range of memcopy.
+                inAct :: ReadAction s
+                inAct ptr' = (,) <$> scApplyPreludeTrue sc
+                                     <*> inAct' ptr'
+                inAct' :: LoadRange s -> IO (SharedTerm s)
+                inAct' (lrType -> tp') | compatTypes dl tp' stp = pure v
+                inAct' ptr' = do
+                  let a = min (srAlignment dst) (lrAlignment ptr')
+                  offset <- sbsPtrSub sbs (lrPtr ptr') (srPtr dst)
+                  case lrType ptr' of
+                    IntType (bitsToBytes -> lw) ->
+                       loadIntValue sbs lw offset a stp v 
+                    PtrType _ -> loadIntValue sbs (toInteger (dl^.ptrSize)) offset a stp v
+                    FloatType -> undefined
+                    DoubleType -> undefined
+                    ArrayType _ _ -> undefined
+                    VecType _ _ -> undefined
+                    StructType _ -> undefined
+                -- Action to perform if pointer is not in range of memcopy.
+                outAct = loadFn r
+        loadFn (WriteMerge c wt wf:r) ptr = do
+          (ct,rt) <- loadFn (wt++r) ptr
+          (cf,rf) <- loadFn (wf++r) ptr
+          iteFn <- scApplyPreludeIte sc
+          boolType <- scPreludeBool sc
+          isValid <- iteFn boolType c ct cf
+          (isValid,) <$> join (iteFn <$> sbsMemType sbs (lrType ptr) ?? c ?? rt ?? rf)
+
+-- | Returns predicate indicating the store range is valid
+validStoreFn :: [MemAlloc s] -> StoreRange s -> IO (SharedTerm s)
+validStoreFn _ _ = nyi "validStoreFn"
+
+smAddWrite :: SAWMemory s
+           -> StoreRange s
+           -> MemWrite s
+           -> IO (SharedTerm s, SAWMemory s) -- Predicate and new memory.
+smAddWrite m sr wr = do
+  let m' = m & writeState %~ consMemChange wr
+  (,m') <$> validStoreFn (memChanges (m^.allocState)) sr
+
+smStore :: SAWBackendState s
+        -> SAWMemory s
+        -> SharedTerm s -- ^ Address to store value at. 
+        -> MemType      -- ^ Type of value
+        -> SharedTerm s -- ^ Value to store
+        -> Alignment
+        -> IO (SharedTerm s, SAWMemory s) -- Predicate and new memory.
+smStore sbs m ptr0 tp v a0 = do
+  let sz0 = memTypeSize (sbsDataLayout sbs) tp
+  szTerm <- sbsMkPtrConstant sbs (toInteger sz0)
+  sr <- mkStoreRange sbs ptr0 szTerm a0
+  smAddWrite m sr (MemStore sr tp v)
+
+-- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
+-- both of which must be aligned according to @align@ and must refer to
+-- non-overlapping regions.
+smCopy :: SAWBackendState s
+       -> SAWMemory s
+       -> SharedTerm s -- ^ Destination pointer
+       -> SharedTerm s -- ^ Source pointer
+       -> BitWidth  -- ^ Bitwidth for counting number of bits.
+       -> SharedTerm s -- ^ Number of bytes to copy.
+       -> SharedTerm s -- ^ Alignment in bytes (should have 32-bit bits)
+       -> IO (SharedTerm s, SAWMemory s)
+smCopy sbs m dst src w l aterm = do
+  szTerm <- scResizeTerm (sbsContext sbs) w
+              (ptrBitwidth (sbsDataLayout sbs), sbsPtrWidth sbs) l  
+  -- | Attempt to parse the term as a constant integer.
+  mac <- sbsIntAsConst sbs 32 aterm
+  -- Convert alignment to Alignment as a power of two.
+  let parseAlign i a | a == 0 = i
+                     | a `testBit` 0 = i
+                     | otherwise = parseAlign (i+1) (a `shiftR` 1)
+  let a = maybe 0 (parseAlign 0) mac
+  sr <- mkStoreRange sbs dst szTerm a
+  alignFn <- scApplyLLVMIsAligned (sbsContext sbs)
+  -- Check source is aligned
+  sa <- alignFn (sbsPtrWidth sbs) dst aterm
+  -- Check dest is aligned.
+  da <- alignFn (sbsPtrWidth sbs) src aterm
+  -- Add write and get new memory
+  (c,m') <- smAddWrite m sr (MemCopy sr src)
+  pAnd <- scApplyPreludeAnd (sbsContext sbs)
+  fmap (,m') $ pAnd c =<< pAnd sa da
 
 data SAWBackend s a = SAWBackend { runSAWBackend :: IO a }
   deriving (Functor)
@@ -169,28 +1128,56 @@ type instance SBETerm (SAWBackend s) = SharedTerm s
 type instance SBEPred (SAWBackend s) = SharedTerm s
 type instance SBEMemory (SAWBackend s) = SAWMemory s
 
-$(runDecWriter $ do
-    prelude <- importExp [|preludeModule|] preludeModule
-    llvm <- mkDecModule [prelude] "llvmModule" "saw/LLVM.sawcore"
-    decSharedModuleFns "LLVM" (decVal llvm)
- )
+lift1 :: (x -> IO r) -> (x -> SAWBackend s r)
+lift1 = (SAWBackend .)
 
-lift1 :: (x -> IO r) -> x -> SAWBackend s r
-lift1 fn x = SAWBackend (fn x)
+lift2 :: (x -> y -> IO r)
+      -> (x -> y -> SAWBackend s r)
+lift2 = (lift1 .)
 
-lift2 :: (x -> y -> IO r) -> x -> y -> SAWBackend s r
-lift2 fn x y = SAWBackend (fn x y)
+lift3 :: (x -> y -> z -> IO r)
+      -> (x -> y -> z -> SAWBackend s r)
+lift3 = (lift2 .)
 
-lift3 :: (x -> y -> z -> IO r) -> x -> y -> z -> SAWBackend s r
-lift3 fn x y z = SAWBackend (fn x y z)
+lift4 :: (w -> x -> y -> z -> IO r)
+      -> (w -> x -> y -> z -> SAWBackend s r)
+lift4 = (lift3 .)
+
+lift5 :: (v -> w -> x -> y -> z -> IO r)
+      -> (v -> w -> x -> y -> z -> SAWBackend s r)
+lift5 = (lift4 .)
+
+lift6 :: (u -> v -> w -> x -> y -> z -> IO r)
+      -> (u -> v -> w -> x -> y -> z -> SAWBackend s r)
+lift6 = (lift5 .)
+
+-- | Returns share term representing given state.
+sbsMemType :: SAWBackendState s -> MemType -> IO (SharedTerm s)
+sbsMemType sbs btp = do
+  let sc = sbsContext sbs
+  case btp of
+    IntType w -> scIntType sc w
+    FloatType  -> pure (sbsFloatType sbs)
+    DoubleType -> pure (sbsDoubleType sbs)
+    PtrType _  -> pure (sbsPtrType sbs)
+    ArrayType n tp -> 
+      join $ sbsArrayTypeFn sbs <$> scNat sc (toInteger n)
+                                <*> sbsMemType sbs tp
+    VecType n tp ->
+      join $ sbsVecTypeFn sbs <$> scNat sc (toInteger n)
+                              <*> sbsMemType sbs tp
+    StructType si -> do
+      nt <- scNat sc (toInteger (siFieldCount si))
+      fldV <- traverse (sbsFieldInfo sbs) (siFields si)
+      sbsStructTypeFn sbs nt =<< scVecLit sc (sbsFieldType sbs) fldV
 
 -- | Returns term (tp,padding) for the given field info. 
-scFieldInfo :: SharedContext s
-            -> (MemType -> IO (SharedTerm s))
-            -> FieldInfo
-            -> IO (SharedTerm s)
-scFieldInfo sc scMemType fi = do
-  tp <- scMemType (fiType fi)
+sbsFieldInfo :: SAWBackendState s
+             -> FieldInfo
+             -> IO (SharedTerm s)
+sbsFieldInfo sbs fi = do
+  tp <- sbsMemType sbs (fiType fi)
+  let sc = sbsContext sbs
   p <- scNat sc (toInteger (fiPadding fi))
   scTuple sc [tp,p]
 
@@ -203,51 +1190,28 @@ scFinConst sc i n | i < n = do
   join $ fv <$> scNat sc i <*> scNat sc (n - (i + 1))
 scFinConst _ _ _ = error "illegal arguments to scFinConst"
 
-mkEvalMemType :: forall s . DataLayout
-              -> SharedContext s
-              -> IO (MemType -> IO (SharedTerm s))
-mkEvalMemType dl sc = do
-  intTypeFn  <- scApplyLLVMIntType sc
-  floatType  <- scApplyLLVMFloatType sc
-  doubleType <- scApplyLLVMDoubleType sc
-  ptrTypeFn <- scApplyLLVMPtrType sc
-  ptrType   <- ptrTypeFn =<< scNat sc (toInteger (dl^.ptrSize))
-  arrayTypeFn  <- scApplyLLVMArrayType sc 
-  vecTypeFn    <- scApplyLLVMVectorType sc 
-  structTypeFn <- scApplyLLVMStructType sc
-  fieldType <- scApplyLLVMFieldType sc
-  let scMemType (IntType w) = intTypeFn =<< scNat sc (toInteger w)
-      scMemType FloatType   = return floatType
-      scMemType DoubleType  = return doubleType
-      scMemType (PtrType _) = return ptrType
-      scMemType (ArrayType n tp) = 
-        join $ arrayTypeFn <$> scNat sc (toInteger n) <*> scMemType tp
-      scMemType (VecType n tp) = 
-        join $ vecTypeFn <$> scNat sc (toInteger n) <*> scMemType tp
-      scMemType (StructType si) = do
-        nt <- scNat sc (toInteger (siFieldCount si))
-        fldV <- traverse (scFieldInfo sc scMemType) (siFields si)
-        structTypeFn nt =<< scVecLit sc fieldType fldV
-  return scMemType
 
-type EvalFn v s = (v -> IO (SharedTerm s)) -> IO (SharedTerm s)
+scIntType :: SharedContext s -> BitWidth -> IO (SharedTerm s)
+scIntType sc w = join $ scApplyLLVMIntType sc <*> scBitwidth sc w
+
+mkEvalMemType :: SAWBackendState s -> IO (MemType -> IO (SharedTerm s))
+mkEvalMemType sbs = do
+  return (sbsMemType sbs)
 
 typedExprEvalFn :: forall s v 
-                 . DataLayout
-                -> SharedContext s
+                 . SAWBackendState s
                 -> TypedExpr v
                 -> IO (ExprEvalFn v (SharedTerm s))
-typedExprEvalFn dl sc expr0 = do
+typedExprEvalFn sbs expr0 = do
+  let dl = sbsDataLayout sbs
+  let sc = sbsContext sbs
   let eval1 :: v
             -> (SharedTerm s -> IO (SharedTerm s))
             -> ExprEvalFn v (SharedTerm s)
       eval1 v fn = ExprEvalFn $ \eval -> liftIO . fn =<< eval v       
   let evalBin x y op = ExprEvalFn $ \eval -> liftIO . scApplyAll sc op =<< traverse eval [x,y]
-  scMemType <- mkEvalMemType dl sc
   let mkVecLit mtp v = do
-        mtpt <- scMemType mtp
-        valueFn <- scApplyLLVMValue sc
-        tp <- valueFn mtpt
+        tp <- join $ scApplyLLVMValue sc <*> sbsMemType sbs mtp
         return $ ExprEvalFn $ \eval -> liftIO . scVecLit sc tp =<< traverse eval v
   let constEvalFn v = ExprEvalFn $ \_ -> return v
       -- | Apply truncation or extension ops to term. 
@@ -266,8 +1230,8 @@ typedExprEvalFn dl sc expr0 = do
             -> v
             -> IO (ExprEvalFn v (SharedTerm s))
       extOp fn fnV mn dw rw v = do
-        dt <- scNat sc (toInteger dw)
-        rt <- scNat sc (toInteger rw)
+        dt <- scBitwidth sc dw
+        rt <- scBitwidth sc rw
         case mn of
           Nothing -> do
             f <- fn sc
@@ -288,11 +1252,8 @@ typedExprEvalFn dl sc expr0 = do
           extOp scApplyLLVMLlvmTrunc scApplyLLVMLlvmTruncV mn (iw - rw) rw v
         | otherwise = return $ ExprEvalFn $ (\eval -> eval v)
   case expr0 of
-    SValInteger w v -> do
-      cfn <- scApplyLLVMLlvmIntConstant sc
-      wt <- scNat sc $ toInteger w
-      vt <- scNat sc $ v `mod` 2^(toInteger w)
-      constEvalFn <$> cfn wt vt 
+    SValInteger w v ->      
+      constEvalFn <$> scBitvectorConst sc w v
     SValFloat v  -> constEvalFn <$> scFloat sc v
     SValDouble v -> constEvalFn <$> scDouble sc v
     SValNull{} -> do
@@ -301,38 +1262,15 @@ typedExprEvalFn dl sc expr0 = do
     SValArray  mtp v -> mkVecLit mtp v
     SValVector mtp v -> mkVecLit mtp v
     SValStruct si vals -> assert (siFieldCount si == V.length vals) $ do
-      fieldType <- scApplyLLVMFieldType sc
-      -- Return term value, length of fields, and vector with the types of the fields.
-      let procFields :: [(FieldInfo, v)]
-                     -> IO (Integer, ExprEvalFn v (SharedTerm s), SharedTerm s)
-          -- Return (EmptyStruct, EmptyVec fieldType)
-          procFields [] = do
-            (0,,) <$> (do empty <- scApplyLLVMEmptyStruct sc
-                          return $ ExprEvalFn $ \_ -> return empty)
-                  <*> (do emptyFn <- scApplyPreludeEmptyVec sc
-                          emptyFn fieldType)
-          procFields ((fi,expr):flds) = do
-            (n,ExprEvalFn reval,rvtp) <- procFields flds
-            -- Function fo r
-            mtp <- scMemType (fiType fi)
-            padding <- scNat sc n
-            nt <- scNat sc (toInteger (length flds))
-            (n+1,,) <$> (do consStruct <- scApplyLLVMConsStruct sc
-                            let cfn = consStruct mtp padding nt rvtp
-                            return $ ExprEvalFn $ \eval ->
-                              join $ (\c r -> liftIO (cfn c r)) <$> eval expr <*> reval eval)
-                    <*> (do consVecFn <- scApplyPreludeConsVec sc
-                            entry <- scTuple sc [mtp,padding]
-                            consVecFn fieldType entry nt rvtp)
-      view _2 <$> procFields (V.toList (siFields si `V.zip` vals))
+      createStructValue sbs (siFields si `V.zip` vals)
     IntArith op mn w x y -> do
         case mn of
           Nothing ->
-            fmap (evalBin x y) $ join $ mkFn sc <*> scNat sc (toInteger w)
+            fmap (evalBin x y) $ join $ mkFn sc <*> scBitwidth sc w
           Just n  ->
             fmap (evalBin x y) $ join $
               mkFnv sc <*> scNat sc (toInteger n)
-                       <*> scNat sc (toInteger w)
+                       <*> scBitwidth sc w
       where (mkFn, mkFnv) =
               case op of
                 Add{}  -> (scApplyLLVMLlvmAdd,  scApplyLLVMLlvmAddV)
@@ -356,18 +1294,18 @@ typedExprEvalFn dl sc expr0 = do
       let si = mkStructInfo dl False [IntType 1, IntType w]
       let [p0,p1] = V.toList $ fiPadding <$> siFields si
       fn <- scApplyLLVMLlvmAddWithOverflow sc
-              <*> scNat sc (toInteger w)
+              <*> scBitwidth sc w
               <*> scNat sc (toInteger p0)
               <*> scNat sc (toInteger p1)
       return $ ExprEvalFn $ \eval -> join $ (\xv yv -> liftIO $ fn xv yv) <$> eval x <*> eval y
     IntCmp op mn w x y -> do
         case mn of
           Nothing ->
-            fmap (evalBin x y) $ join $ mkFn sc <*> scNat sc (toInteger w)
+            fmap (evalBin x y) $ join $ mkFn sc <*> scBitwidth sc w
           Just n  ->
             fmap (evalBin x y) $ join $
               mkFnV sc <*> scNat sc (toInteger n)
-                       <*> scNat sc (toInteger w)
+                       <*> scBitwidth sc w
       where (mkFn, mkFnV) =
               case op of 
                 Ieq  -> (scApplyLLVMLlvmIeq,  scApplyLLVMLlvmIeqV)
@@ -394,14 +1332,14 @@ typedExprEvalFn dl sc expr0 = do
               Just n -> do
                 fn <- scApplyLLVMLlvmSelectV sc
                 fn <$> scNat sc (toInteger n)
-      mtp <- scMemType tp       
+      mtp <- sbsMemType sbs tp       
       return $ ExprEvalFn $ \eval -> do
          join $ (\cv xv yv -> liftIO $ fn mtp cv xv yv) <$> eval c <*> eval x <*> eval y 
     GetStructField si v i -> assert (i < siFieldCount si) $ do
       fn <- scApplyLLVMLlvmStructElt sc
       nt <- scNat sc (toInteger (siFieldCount si))
       fieldType <- scApplyLLVMFieldType sc
-      flds <- traverse (scFieldInfo sc scMemType) (siFields si)
+      flds <- traverse (sbsFieldInfo sbs) (siFields si)
       tps <- scVecLit sc fieldType flds
       -- Get index
       ft <- scFinConst sc (toInteger i) (toInteger (siFieldCount si))
@@ -409,7 +1347,7 @@ typedExprEvalFn dl sc expr0 = do
     GetConstArrayElt n tp a i -> assert (i < n) $ do
       fn <- scApplyLLVMLlvmArrayElt sc
       nt <- scNat sc (toInteger n)
-      mtp <- scMemType tp
+      mtp <- sbsMemType sbs tp
       it <- scFinConst sc (toInteger i) (toInteger n)
       return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt mtp val it) =<< eval a
 
@@ -418,6 +1356,7 @@ createSAWBackend :: DataLayout
                  -> MemGeom
                  -> IO (SBE (SAWBackend s), SAWMemory s)
 createSAWBackend dl _mg = do
+
   sc <- mkSharedContext llvmModule
   boolType <- scPreludeBool sc
   t    <- scApplyPreludeTrue sc
@@ -428,46 +1367,48 @@ createSAWBackend dl _mg = do
   let pIte = iteFn boolType
 
   bvEq <- scApplyPreludeBvEq sc
-  scMemType <- mkEvalMemType dl sc
-
+  sbs <- mkBackendState dl sc
+  let allocs = sbsAllocations sbs
   let sbe = SBE { sbeTruePred = t
                 , applyIEq = \w x y -> SAWBackend $
-                   join $ bvEq <$> scNat sc (toInteger w) ?? x ?? y
+                   join $ bvEq <$> scBitwidth sc w ?? x ?? y
                 , applyAnd  = lift2 pAnd
                 , applyBNot = lift1 pNot
                 , applyPredIte = lift3 pIte
-                , applyIte = \tp x y z -> SAWBackend $
-                    Right <$> join (iteFn <$> scMemType tp ?? x ?? y ?? z)
-                , asBool = scAsBool
+                , applyIte = \tp x y z -> SAWBackend $ do
+                    fmap Right $ join $
+                      iteFn <$> (join $ scApplyLLVMValue sc <*> sbsMemType sbs tp) 
+                            ?? x
+                            ?? y
+                            ?? z
+                , asBool = termAsBool
                 , prettyPredD = nyi "prettyPredD"
                 , evalPred = nyi "evalPred"
                 , freshInt = SAWBackend . scFreshInt sc
-                , typedExprEval = \expr -> do
-                    typedExprEvalFn dl sc expr
+                , typedExprEval = typedExprEvalFn sbs
                 , applyTypedExpr = \expr -> SAWBackend $ do
-                    ExprEvalFn fn <- typedExprEvalFn dl sc expr
+                    ExprEvalFn fn <- typedExprEvalFn sbs expr
                     fn return
                 , prettyTermD = nyi "prettyTermD"
-                , asUnsignedInteger = nyi "asUnsignedInteger"
-                , asConcretePtr = nyi "asConcretePtr"
-                , memDump = nyi "memDump"
-                , memLoad = nyi "memLoad"
-                , memStore = nyi "memStore"
+                , asUnsignedInteger = asUnsignedBitvector
+                , asConcretePtr     = asUnsignedBitvector (ptrBitwidth dl)
+                , memDump      = nyi "memDump"
+                , memLoad      = lift4 (smLoad sbs)
+                , memStore     = lift5 (smStore sbs)
+                , memCopy      = lift6 (smCopy sbs)
                 , memAddDefine = lift3 (smAddDefine dl sc) 
                 , memInitGlobal = nyi "memInitGlobal"
-                , codeLookupSymbol = \m t -> SAWBackend $ do
-                    return (smLookupSymbol m t)
-                , stackAlloc = nyi "stackAlloc"
-                , stackPushFrame = nyi "stackPushFrame"
-                , stackPopFrame = nyi "stackPopFrame"
-                , heapAlloc = nyi "heapAlloc"
-                , memCopy = nyi "memCopy"
-                , memBranch = SAWBackend . return
+                , codeLookupSymbol = ((SAWBackend . return) .) . smLookupSymbol
+                , stackAlloc     = lift5 (smAlloc dl sc allocs StackAlloc)
+                , stackPushFrame = lift1 (smStackPushFrame sc)
+                , stackPopFrame  = SAWBackend . return . smStackPopFrame
+                , heapAlloc      = lift5 (smAlloc dl sc allocs HeapAlloc)
+                , memBranch      = SAWBackend . return
                 , memBranchAbort = SAWBackend . return
-                , memMerge = nyi "memMerge"
+                , memMerge   = nyi "memMerge"
                 , writeAiger = nyi "writeAiger"
-                , writeCnf = nyi "writeCnf"
-                , evalAiger = nyi "evalAiger"
-                , sbeRunIO = runSAWBackend
+                , writeCnf   = nyi "writeCnf"
+                , evalAiger  = nyi "evalAiger"
+                , sbeRunIO   = runSAWBackend
                 }
   return (sbe, emptyMemory)

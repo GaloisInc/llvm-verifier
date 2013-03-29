@@ -64,8 +64,8 @@ instance (?lc :: LLVMContext) => Eq MemType where
   _ == _ = False
 
 instance (?lc :: LLVMContext) => Eq StructInfo where
-  x == y = (structPacked x, siFieldTypes x)
-        == (structPacked y, siFieldTypes y)
+  x == y = (siIsPacked x, siFieldTypes x)
+        == (siIsPacked y, siFieldTypes y)
 
 data IdentStatus
   = Resolved SymType

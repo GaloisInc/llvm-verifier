@@ -150,6 +150,17 @@ data SBE m = SBE
              -> SBETerm m -- ^ Value to store
              -> Alignment
              -> m (SBEPartialResult m (SBEMemory m))
+    -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
+    -- both of which must be aligned according to @align@ and must refer to
+    -- non-overlapping regions.
+  , memCopy :: SBEMemory m
+            -> SBETerm m -- ^ Destination pointer
+            -> SBETerm m -- ^ Source pointer
+            -> BitWidth  -- ^ Bitwidth for counting number of bits.
+            -> SBETerm m -- ^ Number of bytes to copy (should have
+            -> SBETerm m -- ^ Alignment in bytes (should have 32-bit bits)
+            -> m (SBEPartialResult m (SBEMemory m))
+
 
     -- | @memAddDefine mem d blocks@ adds a definition of @d@ with block
     -- labels @blocks@ to the memory @mem@ and returns a pointer to
@@ -198,19 +209,8 @@ data SBE m = SBE
               -> MemType     -- ^ Type of value to allocate.
               -> BitWidth    -- ^ Bitwidth of umber of elements to allocate.
               -> SBETerm m   -- ^ Number of elements to allocate.
-              -> Alignment   -- ^ Alginment constraint.
+              -> Alignment   -- ^ Alignment constraint.
               -> m (AllocResult m)
-
-    -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
-    -- both of which must be aligned according to @align@ and must refer to
-    -- non-overlapping regions.
-  , memCopy :: SBEMemory m
-            -> SBETerm m -- ^ Destination pointer
-            -> SBETerm m -- ^ Source pointer
-            -> BitWidth  -- ^ Bitwidth for counting number of bits.
-            -> SBETerm m -- ^ Number of bytes to copy (should have
-            -> SBETerm m -- ^ Alignment in bytes (should have 32-bit bits)
-            -> m (SBEPartialResult m (SBEMemory m))
 
     -- | @memBranch mem@ records that this memory is for a path that is
     -- about to branch.  This function should have no impact on the memory state,

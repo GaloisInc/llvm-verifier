@@ -74,9 +74,24 @@ constTermEq :: Maybe Integer -> Integer -> Bool
 constTermEq (Just v) = (==v)
 constTermEq _ = const False
 
-type AllMemModelTest =
-  (Functor sbe)
-  => Simulator sbe IO Bool
+type SBEPropM a = forall sbe . Functor sbe => 
+       SBE sbe -> SBEMemory sbe -> Codebase sbe -> PropertyM IO a
+
+forAllMemModels :: forall a. Int -> L.Module -> SBEPropM a -> PropertyM IO [a]
+forAllMemModels _v mdl testProp = do
+  sequence
+    [ runTest =<< run (createBuddyModel dl)
+    , runTest =<< run (createDagModel dl)
+    , runTest =<< run (createSAWModel dl)
+    ]
+ where dl = parseDataLayout (L.modDataLayout mdl)
+       runTest :: Functor sbe => (SBE sbe,SBEMemory sbe) -> PropertyM IO a
+       runTest (sbe,mem) = do
+         cb <- run (mkCodebase sbe dl mdl)
+         testProp sbe mem cb
+
+
+type AllMemModelTest = Functor sbe => Simulator sbe IO Bool
 
 runAllMemModelTest :: Int -> FilePath -> AllMemModelTest -> PropertyM IO ()
 runAllMemModelTest v bcFile act = do
@@ -113,28 +128,33 @@ runTestLSSCommon nm createFn v mdl argv' hndlr = do
                           , mname = Nothing
                           }
 
+-- | Create buddy backend and initial memory.
+createBuddyModel :: DataLayout -> IO (SBE (BitIO (BitMemory Lit) Lit), BitMemory Lit)
+createBuddyModel dl = do
+  be <- createBitEngine
+  let sbe = let ?be = be in sbeBitBlast dl (buddyMemModel dl be)
+      mem = buddyInitMemory (defaultMemGeom dl)
+  return (sbe,mem)
+
+-- | Create buddy backend and initial memory.
+createDagModel :: DataLayout -> IO (SBE (BitIO (DagMemory Lit) Lit), DagMemory Lit)
+createDagModel dl = do
+  be <- createBitEngine
+  (mm,mem) <- createDagMemModel dl be (defaultMemGeom dl)
+  let sbe = let ?be = be in sbeBitBlast dl mm
+  return (sbe,mem)
+
+createSAWModel :: DataLayout -> IO (SBE (SAWBackend s), SAWMemory s)
+createSAWModel dl = createSAWBackend dl (defaultMemGeom dl)
 
 runTestLSSBuddy :: RunLSSTest (BitIO (BitMemory Lit) Lit)
-runTestLSSBuddy =
-  runTestLSSCommon "runTestLSSBuddy" $ \dl -> do
-    be <- createBitEngine
-    let sbe = let ?be = be in sbeBitBlast dl (buddyMemModel dl be)
-        mem = buddyInitMemory (defaultMemGeom dl)
-    return (sbe,mem)
-
+runTestLSSBuddy = runTestLSSCommon "runTestLSSBuddy" createBuddyModel
 
 runTestLSSDag :: RunLSSTest (BitIO (DagMemory Lit) Lit)
-runTestLSSDag =
-  runTestLSSCommon "runTestLSSDag" $ \dl -> do
-    be <- createBitEngine
-    (mm,mem) <- createDagMemModel dl be (defaultMemGeom dl)
-    let sbe = let ?be = be in sbeBitBlast dl mm
-    return (sbe,mem)
+runTestLSSDag = runTestLSSCommon "runTestLSSDag" createDagModel
 
 runTestSAWBackend :: RunLSSTest (SAWBackend s)
-runTestSAWBackend =
-  runTestLSSCommon "runTestLSSDag" $ \dl -> do
-    createSAWBackend dl (defaultMemGeom dl)
+runTestSAWBackend = runTestLSSCommon "runTestLSSDag" createSAWModel
 
 lssTest :: Int -> FilePath -> (Int -> L.Module -> PropertyM IO ()) -> (Args, Property)
 lssTest v bc act = test 1 False bc $ act v =<< testMDL (bc <.> "bc")
@@ -180,26 +200,6 @@ chkLSS mepsLen mexpectedRV _ _ execRslt = do
         Just{} -> fail $ "Missing return value"
     SymRV{} -> fail "Unexpected sym exec result"
   return True
-
-
-type SBEPropM a = forall sbe . Functor sbe => 
-  SBE sbe -> SBEMemory sbe -> Codebase sbe -> PropertyM IO a
-
-forAllMemModels :: forall a. Int -> L.Module -> SBEPropM a -> PropertyM IO [a]
-forAllMemModels _v mdl testProp = do
-  sequence
-    [ do be <- run createBitEngine
-         let pair = createBuddyAll be dl (defaultMemGeom dl)
-         runTest pair
-    , do pair <- run $ do
-           be <- createBitEngine
-           createDagAll be dl (defaultMemGeom dl)
-         runTest pair
-    ]
- where dl = parseDataLayout (L.modDataLayout mdl)
-       runTest (SBEPair sbe mem) = do
-         cb <- run $ mkCodebase sbe dl mdl
-         testProp sbe mem cb
 
 
 chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
