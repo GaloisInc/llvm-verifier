@@ -4,13 +4,18 @@
 {-# LANGUAGE TupleSections #-}
 module Verifier.LLVM.MemModel
  ( Type
+ , TypeF(..)
  , bitvectorType
  , floatType
  , doubleType
  , arrayType
  , mkStruct
+ , typeF
+ , Field
+ , fieldVal ,fieldPad
 
  , ValueCtorF(..)
+ , ViewF(..)
 
  , TermGenerator(..)
  , AddrDecomposeResult(..)
@@ -81,8 +86,8 @@ data TermGenerator m p c t = TG {
 
        , tgFalse :: c
        , tgTrue :: c
-       , tgEq :: p -> p -> m c
-       , tgLe :: p -> p -> m c
+       , tgPtrEq :: p -> p -> m c
+       , tgPtrLe :: p -> p -> m c
        , tgAnd :: c -> c -> m c
        , tgOr  :: c -> c -> m c
        , tgMuxCond :: c -> c -> c -> m c
@@ -129,8 +134,8 @@ genValue tg f = foldTermM (return . f) (tgApplyValueF tg)
 genCondVar :: (Applicative m, Monad m) => TermGenerator m p c t -> (v -> p) -> Cond v -> m c
 genCondVar tg f c =
   case c of
-    Eq x y  -> join $ tgEq tg <$> genValue tg f x <*> genValue tg f y
-    Le x y  -> join $ tgLe tg <$> genValue tg f x <*> genValue tg f y
+    Eq x y  -> join $ tgPtrEq tg <$> genValue tg f x <*> genValue tg f y
+    Le x y  -> join $ tgPtrLe tg <$> genValue tg f x <*> genValue tg f y
     And x y -> join $ tgAnd tg <$> genCondVar tg f x <*> genCondVar tg f y
 
 genValueCtor :: (Applicative m, Monad m)
@@ -395,7 +400,7 @@ offsetIsAllocated :: (Applicative m, Monad m, Eq p)
 offsetIsAllocated tg t o sz m = do
   (oc, oe) <- tgCheckedAddPtr tg o sz
   let step a asz fallback
-        | t == a = tgLe tg oe asz
+        | t == a = tgPtrLe tg oe asz
         | otherwise = fallback
   tgAnd tg oc =<< isAllocated' tg step (memAllocs m)
 
@@ -409,7 +414,7 @@ isAllocated tg p sz m = do
       let step a asz fallback =
             join $ tgOr tg 
               <$> (do ae <- tgAddPtr tg a asz
-                      join $ tgAnd tg <$> tgLe tg a p <*> tgLe tg pe ae)
+                      join $ tgAnd tg <$> tgPtrLe tg a p <*> tgPtrLe tg pe ae)
               <*> fallback
       tgAnd tg oc =<< isAllocated' tg step (memAllocs m)
     ConcreteOffset t o0 -> do
