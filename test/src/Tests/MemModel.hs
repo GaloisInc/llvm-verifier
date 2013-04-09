@@ -1,104 +1,235 @@
-{-# LANGUAGE ImplicitParams #-}
-{-# LANGUAGE Rank2Types #-}
-{-# LANGUAGE RecordWildCards #-}
-module Tests.MemModel where
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+module Tests.MemModel
+  ( TestCase
+  , runTestCase
+  , memModelTests
+  ) where
 
-import Data.Bits
-import Data.Int
-import qualified Data.Vector.Storable as LV
+import Control.Applicative
+import Control.Lens
+import Control.Monad (replicateM)
+import qualified Data.Vector as V
+import System.Random
 import Test.QuickCheck
+import Test.QuickCheck.Arbitrary
 import Test.QuickCheck.Monadic
 
-import qualified Text.LLVM.AST as LLVM
-import Verinf.Symbolic (createBitEngine)
-import Verinf.Symbolic.Lit
-import Verinf.Symbolic.Lit.Functional
+import Verifier.LLVM.MemModel.Common
 
-import Verifier.LLVM.BitBlastBackend
-import Verifier.LLVM.LLVMContext
+newtype CheckedNum a = CN { unCN :: a }
+  deriving (Random, Show)
 
-mmTest :: String
-       -> Int
-       -> (forall mem l . (Eq l, LV.Storable l)
-            => DataLayout
-            -> BitEngine l
-            -> SBE (BitIO mem l)
-            -> BitBlastMemModel mem l
-            -> mem
-            -> PropertyM IO ()) 
-       -> (Args, Property)
-mmTest testName n fn = 
-  ( stdArgs {maxSuccess = n}
-  , label testName $ monadicIO $ do
-      let dl = defaultDataLayout
-      let mg = MemGeom { 
-                   mgStack = (0x10,0x0)
-                 , mgCode = (0x0,0x0)
-                 , mgData = (0x0, 0x0)
-                 , mgHeap = (0x0,0x0)
-                 }
-      be <- run $ createBitEngine
-      (mm, mem) <- run $ createDagMemModel dl be mg
-      let ?be = be
-      fn dl be (sbeBitBlast dl mm) mm mem
-      run $ beFree be)
+instance (Bounded a,Integral a) => Num (CheckedNum a) where
+  CN x + CN y
+    | y > 0 && x > maxBound - y = CN maxBound
+    | y < 0 && x < minBound - y = CN minBound
+    | otherwise = CN (x + y)
+  CN x - CN y
+    | y < 0 && x > maxBound + y = CN maxBound
+    | y > 0 && x < minBound + y = CN minBound
+    | otherwise = CN (x - y)
+  CN x * CN y = fromInteger (toInteger x * toInteger y)
+  abs (CN x) = fromInteger (abs (toInteger x))
+  signum (CN x) = CN (signum x)
+  fromInteger x = CN r 
+    where minB :: Bounded a => a -> a
+          minB _ = minBound
+          maxB :: Bounded a => a -> a
+          maxB _ = maxBound
+          r = fromInteger (max (toInteger (minB r))
+                               (min (toInteger (maxB r)) x))
+
+-- | Make a random value greater than the input, but not too large.
+genBoundedSucc :: Size -> Gen Size
+genBoundedSucc l = (l+) <$> choose (0, min (maxBound - l) ms)
+  where ms = 20 -- Maximum size of range for quickcheck purposes.
+
+shrinkNonzeroSize :: Size -> [Size]
+shrinkNonzeroSize s = filter (/= 0) (shrinkIntegral s)
+
+shrinkNonemptyList :: (a -> [a]) -> [a] -> [[a]]
+shrinkNonemptyList f l = filter (not . null) (shrinkList f l)
 
 
-intType :: Int32 -> LLVM.Type
-intType w = LLVM.PrimType (LLVM.Integer w)
+addrNearby :: Addr -> Size -> Gen Addr
+addrNearby l s = unCN <$> choose (CN l - CN s, CN l + CN s)
 
--- | Generate bit vector from integer.
-bfi :: Int -> Integer -> LV.Vector Bool
-bfi w v = LV.generate w (testBit v)
+instance Arbitrary Range where
+  arbitrary = do
+    l <- arbitrary
+    R l <$> genBoundedSucc l
+
+-- | @rangeNearby l s@ returns a range starting in set [l-s, l+s),
+-- and with length up to 2*s.
+rangeNearby :: Size -> Size -> Gen Range
+rangeNearby l s = do
+  o <- addrNearby l s
+  R o <$> (unCN <$> choose (CN o, CN o + 2*CN s))
+
+instance Arbitrary Type where
+  arbitrary = frequency [ (4, arbBV)
+                        , (1, return floatType)
+                        , (1, return doubleType)
+                        , (1, arbArray)
+                        , (1, arbStruct) ]
+    where arbBV     = bitvectorType <$> choose (1,4)
+          arbArray  = arrayType <$> choose (1,4) <*> arbitrary
+          arbStruct = do
+             n <- choose (1,4)
+             let fldFn = (,) <$> arbitrary <*> choose (0,4)
+             mkStruct <$> V.replicateM n fldFn
+  shrink t =
+    case typeF t of
+      Bitvector s -> bitvectorType <$> shrinkNonzeroSize s
+      Float -> []
+      Double -> []
+      Array n v -> arrayType <$> shrinkNonzeroSize n <*> shrink v
+      Struct v -> do
+        let fldPair f = (f^.fieldVal, fieldPad f)
+            fldFn (tp,p) = (,) <$> shrink tp <*> shrinkIntegral p
+        mkStruct . V.fromList <$> shrinkNonemptyList fldFn (V.toList (fldPair <$> v))
+
+instance Arbitrary BasePreference where
+  arbitrary = do
+    i <- choose (0,2)
+    return $ case (i::Int) of
+               0 -> FixedLoad
+               1 -> FixedStore
+               _ -> NeitherFixed
+
+printEqn :: (Show a, Testable prop) => String -> a -> prop -> Property
+printEqn nm x = printTestCase (nm ++ " = " ++ show x) 
+
+forArbitraryVar :: (Arbitrary a, Show a, Testable prop) => String -> (a -> prop) -> Property
+forArbitraryVar nm prop = do
+  x <- arbitrary
+  shrinking shrink x $ \y ->
+    printEqn nm y (prop y)
+
+-- | Generates a named variable that will be printed if the test case fails.
+forVar :: (Show a, Testable prop) => String -> Gen a -> (a -> prop) -> Property
+forVar nm gen prop = gen >>= \v -> printEqn nm v (prop v)
+
+type TestCase = (String, Property)
+
+runTestCase :: TestCase -> IO ()
+runTestCase (nm,p) = do
+  putStr ("Running " ++ nm ++ "... ")
+  quickCheckWith stdArgs p
+
+mkTestCase :: Testable prop => String -> prop -> TestCase
+mkTestCase nm p = (nm, property p)
+
+rangeLoadTestCase :: String
+                  -> (Addr -> Type
+                           -> Range
+                           -> (ValueCtor (RangeLoad Addr) -> Property)
+                           -> Property)
+                  -> TestCase 
+rangeLoadTestCase nm fn = mkTestCase nm $
+  forArbitraryVar "l" $ \l ->
+  forArbitraryVar "tp" $ \tp ->
+  forVar "s" (rangeNearby l (typeSize tp)) $ \s ->
+  fn l tp s (checkRangeValueLoad l tp s)
+
+testMaybeEq :: (Eq v, Show v, Testable prop)
+            => String
+            -> Maybe v
+            -> v
+            -> prop
+            -> Property
+testMaybeEq nm Nothing _ prop =
+  printTestCase ("Missing " ++ show nm) prop
+testMaybeEq nm (Just v) expected prop
+  | v == expected = property prop
+  | otherwise = printEqn nm v False
+
+-- | Checks that the a value created has the correct type,
+-- all imports are in increasing order, and have correctly
+-- recorded whether they are in the store range.
+checkRangeValueLoad :: Addr -> Type -> Range -> ValueCtor (RangeLoad Addr) -> Property
+checkRangeValueLoad lo ltp s v = 
+    testMaybeEq "Return type" (typeOfValue (Just . rangeLoadType) v) ltp $
+    checkReads lo (valueImports v)
+  where le = typeEnd lo ltp
+        ec = evalContext lo ltp s
+
+        checkReads po [] = po <= le
+        checkReads po (OutOfRange o tp:r) =
+            po <= o && isDisjoint (R o e) s && checkReads e r 
+          where e = typeEnd o tp
+        checkReads po (InRange o tp:r) =
+            (po <= rStart s + o) && e <= _rEnd s && checkReads e r 
+          where e = rStart s + typeEnd o tp
+
+testRangeLoad :: TestCase
+testRangeLoad = rangeLoadTestCase "rangeLoad" $ \l tp s p -> 
+  p $ adjustOffset fromIntegral fromIntegral <$> rangeLoad l tp s
+
+testFixedOffsetRangeLoad :: TestCase
+testFixedOffsetRangeLoad =
+  rangeLoadTestCase "fixedOffsetRangeLoad" $ \l tp s p -> do
+    let ec = evalContext l tp s
+    p $ eval ec (fixedOffsetRangeLoad l tp (rStart s))
+
+testFixedSizeRangeLoad :: TestCase
+testFixedSizeRangeLoad =
+  rangeLoadTestCase "fixedSizeRangeLoad" $ \l tp s p -> do
+    forArbitraryVar "pref" $ \pref -> do
+    let ec = evalContext l tp s
+    p $ fmap (fromInteger . evalV ec) <$> eval ec (fixedSizeRangeLoad pref tp (rSize s))
+
+testSymbolicRangeLoad :: TestCase
+testSymbolicRangeLoad =
+  rangeLoadTestCase "symbolicRangeLoad" $ \l tp s p ->
+    forArbitraryVar "pref" $ \pref -> do
+    let ec = evalContext l tp s
+    p $ fmap (fromInteger . evalV ec) <$> eval ec (symbolicRangeLoad pref tp)
+
+valueLoadTestCase :: String
+                  -> (Addr -> Type 
+                           -> Addr
+                           -> Type
+                           -> (ValueCtor (ValueLoad Addr) -> Property)
+                           -> Property)
+                  -> TestCase
+valueLoadTestCase nm f = mkTestCase nm $
+  forArbitraryVar "lo" $ \lo ->
+  forArbitraryVar "ltp" $ \ltp ->
+  forArbitraryVar "so" $ \so ->
+  forArbitraryVar "stp" $ \stp -> do
+  f lo ltp so stp $ \v ->
+    printTestCase ("result = " ++ show v) $
+    property $ checkValueLoad lo ltp so stp v
+
+checkValueLoad :: Addr -> Type -> Addr -> Type -> ValueCtor (ValueLoad Addr) -> Bool
+checkValueLoad _ ltp _ _ v =
+    Just ltp == typeOfValue valueLoadType v
+
+testValueLoad :: TestCase
+testValueLoad = valueLoadTestCase "valueLoad" $ \l ltp s stp p ->
+  p $ valueLoad l ltp s (Var stp)
+
+testSymbolicValueLoad :: TestCase
+testSymbolicValueLoad = valueLoadTestCase "symbolicValueLoad" $ \l ltp s stp p ->
+  forArbitraryVar "pref" $ \pref -> do
+  let ec = evalContext l ltp (R s (s + typeSize stp))
+  let v = eval ec (symbolicValueLoad pref ltp (Var stp))
+  p (fmap (fromInteger . evalV ec) <$> v)
+
+
+testCases :: [TestCase]
+testCases =
+  [ testRangeLoad
+  , testFixedOffsetRangeLoad
+  , testFixedSizeRangeLoad
+  , testSymbolicRangeLoad
+
+  , testValueLoad
+  , testSymbolicValueLoad
+  ]
 
 memModelTests :: [(Args, Property)]
-memModelTests =
-  [ mmTest "symbolicTests" 1 $ \dl be sbe@SBE { .. } MemModel { .. } m0 -> do
-      let ptrWidth = ptrBitwidth dl
-      let ?be = be
-      let bytes = lVectorFromInt 8 7
-      let tTrue = sbeTruePred
-      cnt <- runSBE $ freshInt 1
-      -- Try allocating symbolic ammount.
-      AResult c0 ptr m1 <- run $ mmStackAlloc m0 1 cnt 0
-      assert (c0 == tTrue)
-      -- Try filling up rest of memory and testing stack allocation
-      -- failed.
-      do fill <- runSBE $ termInt sbe 4 0x0F
-         AResult c0' _ _ <- run $ mmStackAlloc m1 1 fill 1
-         assert =<< runSBE (evalPred [False] c0')
-      -- Test store to concrete address succeeds.
-      (c1, m2) <- run $ mmStore m1 ptr bytes 0
-      do assert =<< runSBE (evalPred [True] c1)
-      -- Test symbolic load succeeds under appropiate conditions.
-      do cntExt <- runSBE $ applyTypedExpr (SExt Nothing 1 cnt ptrWidth)
-         rptr <- runSBE $ applyTypedExpr (PtrAdd ptr cntExt)
-         (c2, _) <- run $ mmLoad m2 rptr 1 0 
-         assert =<< runSBE (evalPred [False] c2)
-  , mmTest "mergeTest" 1 $ \_lc be sbe@SBE { .. } MemModel { .. } m0 -> do
-      let ?be = be
-      let tTrue = sbeTruePred
-      -- Allocate space on stack.
-      cnt <- runSBE $ termInt sbe 8 1
-      m0' <- run $ mmRecordBranch m0
-      AResult c0 ptr m1 <- run $ mmStackAlloc m0' 1 cnt 0
-      assert (c0 == tTrue)
-      -- Store bytes
-      let lvi = lVectorFromInt
-      (ct, mt) <- run $ mmStore m1 ptr (lvi 8 1) 0
-      assert =<< runSBE (evalPred [] ct)
-      (cf, mf) <- run $ mmStore m1 ptr (lvi 8 0) 0
-      assert =<< runSBE (evalPred [] cf)
-      -- Merge
-      cond0 <- runSBE $ freshInt 1
-      cond <- runSBE $ applyIEq 1 cond0 =<< termInt sbe 1 1
-      m2 <- run $ mmMux cond mt mf
-      -- Check result of merge
-      (c2, v) <- run $ mmLoad m2 ptr 1 0 
-      assert (c2 == tTrue)
-      v1 <- run $ lEvalAig (LV.fromList [False]) v
-      v2 <- run $ lEvalAig (LV.fromList [True ]) v
-      assert (v1 == bfi 8 0)
-      assert (v2 == bfi 8 1)
-  ] 
- where runSBE = run . liftSBEBitBlast
+memModelTests = fn <$> testCases
+ where fn (nm,p) = (stdArgs, monadicIO (run (putStrLn nm)) >> p)

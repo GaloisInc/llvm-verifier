@@ -67,6 +67,8 @@ library
     Verifier.LLVM.BitBlastBackend
     Verifier.LLVM.DataLayout
     Verifier.LLVM.LLVMContext
+    Verifier.LLVM.MemModel
+    Verifier.LLVM.MemModel.Common
     Verifier.LLVM.Printf
     Verifier.LLVM.SAWBackend
     Verifier.LLVM.Simulator
@@ -133,6 +135,7 @@ executable Tests
     , llvm-pretty >= 0.1.1.0
     , mtl
     , pretty
+    , random
     , saw-core
     , transformers
     , vector
