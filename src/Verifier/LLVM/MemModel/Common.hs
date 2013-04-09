@@ -448,8 +448,8 @@ splitTypeValue :: Type   -- ^ Type of value to create
 splitTypeValue tp d subFn = assert (d > 0) $
   case typeF tp of
     Bitvector sz -> assert (d < sz) $
-      concatBV undefined (subFn 0 (bitvectorType d))
-               undefined (subFn d (bitvectorType (sz - d)))
+      concatBV d (subFn 0 (bitvectorType d))
+               (sz - d) (subFn d (bitvectorType (sz - d)))
     Float -> App (BVToFloat (subFn 0 (bitvectorType 4)))
     Double -> App (BVToDouble (subFn 0 (bitvectorType 8)))
     Array n0 etp -> assert (n0 > 0) $ do
@@ -466,12 +466,12 @@ splitTypeValue tp d subFn = assert (d > 0) $
           consPartial o n
             | part == 0 = subFn o (arrayType n etp)
             | n > 1 =
-                App $ ConsArray undefined
+                App $ ConsArray etp
                                 (subFn o etp)
-                                undefined
+                                (toInteger (n-1))
                                 (subFn (o+esz) (arrayType (n-1) etp))
             | otherwise = assert (n == 1) $
-                singletonArray undefined (subFn o etp)
+                singletonArray etp (subFn o etp)
       result
     Struct flds -> App $ MkStruct (fldFn <$> flds)
       where fldFn fld = (fld, subFn (fieldOffset fld) (fld^.fieldVal))
@@ -675,7 +675,7 @@ loadBitvector lo lw so v = do
   let le = lo + lw
   let ltp = bitvectorType lw
   let stp = fromMaybe (error ("loadBitvector given bad view " ++ show v)) (viewType v)
-  let retValue eo v' = valueLoad lo' (bitvectorType sz') eo v'
+  let retValue eo v' = (sz',valueLoad lo' (bitvectorType sz') eo v')
         where etp = fromMaybe (error ("Bad view " ++ show v')) (viewType v')
               esz = typeSize etp
               lo' = max lo eo
@@ -692,8 +692,8 @@ loadBitvector lo lw so v = do
         valueLoad lo ltp so (App (SelectLowBV lw (sw - lw) v))
     Float -> valueLoad lo ltp lo (App (FloatToBV v))
     Double -> valueLoad lo ltp lo (App (DoubleToBV v))
-    Array n tp -> foldl1 cv (val <$> r)
-      where cv x y = concatBV undefined x undefined y
+    Array n tp -> snd $ foldl1 cv (val <$> r)
+      where cv (wx,x) (wy,y) = (wx + wy, concatBV wx x wy y)
             esz = typeSize tp
             c0 = assert (esz > 0) $ (lo - so) `div` esz
             (c1,p1) = (le - so) `divMod` esz
@@ -701,8 +701,8 @@ loadBitvector lo lw so v = do
             r | p1 == 0 = assert (c1 > c0) [c0..c1-1]
               | otherwise = assert (c1 >= c0) [c0..c1]
             val i = retValue (so+i*esz) (App (ArrayElt n tp i v))
-    Struct sflds -> assert (not (null r)) $ foldl1 cv r
-      where cv x y = concatBV undefined x undefined y
+    Struct sflds -> assert (not (null r)) $ snd $ foldl1 cv r
+      where cv (wx,x) (wy,y) = (wx+wy, concatBV wx x wy y)
             r = concat (zipWith val [0..] (V.toList sflds))
             val i f = v1
               where eo = so + fieldOffset f
@@ -714,7 +714,7 @@ loadBitvector lo lw so v = do
                        | le <= ee = [] -- Nothing of load ends before padding.
                          -- Nothing if padding ends before load begins.
                        | ee+fieldPad f <= lo = [] 
-                       | otherwise = [Var badMem]
+                       | otherwise = [(p,Var badMem)]
                       where p = min (ee+fieldPad f) le - (max lo ee)
                             tpPad  = bitvectorType p
                             badMem = InvalidMemory tpPad
@@ -734,8 +734,8 @@ valueLoad lo ltp so v
   | otherwise =
     case typeF ltp of
       Bitvector lw -> loadBitvector lo lw so v
-      Float  -> App (BVToFloat  (valueLoad 0 ltp so v))
-      Double -> App (BVToDouble (valueLoad 0 ltp so v))
+      Float  -> App $ BVToFloat  $ valueLoad 0 (bitvectorType 4) so v
+      Double -> App $ BVToDouble $ valueLoad 0 (bitvectorType 8) so v
       Array ln tp ->
         let leSize = typeSize tp
             val i = valueLoad (lo+leSize*fromIntegral i) tp so v

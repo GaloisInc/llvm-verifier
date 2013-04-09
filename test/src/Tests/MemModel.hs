@@ -8,7 +8,6 @@ module Tests.MemModel
 
 import Control.Applicative
 import Control.Lens
-import Control.Monad (replicateM)
 import qualified Data.Vector as V
 import System.Random
 import Test.QuickCheck
@@ -153,8 +152,6 @@ checkRangeValueLoad lo ltp s v =
     testMaybeEq "Return type" (typeOfValue (Just . rangeLoadType) v) ltp $
     checkReads lo (valueImports v)
   where le = typeEnd lo ltp
-        ec = evalContext lo ltp s
-
         checkReads po [] = po <= le
         checkReads po (OutOfRange o tp:r) =
             po <= o && isDisjoint (R o e) s && checkReads e r 
