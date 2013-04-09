@@ -75,6 +75,8 @@ isAligned :: (w :: Nat) -> bitvector w -> bitvector 32 -> Bool;
 llvmAdd  :: (w :: Nat) -> binFn (bitvector w);
 llvmAddV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
 
+llvmAddNoOverflow :: (w :: Nat) -> bitvector w -> bitvector w -> #(Bool,bitvector w);
+
 llvmSub  :: (w :: Nat) -> binFn (value (IntType w));
 llvmSubV :: (n w :: Nat) -> binFn (value (VectorType n (IntType w)));
 

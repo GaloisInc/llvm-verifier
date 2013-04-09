@@ -12,6 +12,7 @@ import Tests.AES
 import Tests.Aggregates
 import Tests.Errors
 import Tests.IO
+import Tests.BitMemModel
 import Tests.MemModel
 import Tests.PrimOps
 import Tests.Symbolic
@@ -41,6 +42,7 @@ runTests chooseTest = do
                    , ("Symbolic", symTests)
                    , ("AES", aesTests)
                    , ("I/O", ioTests)
+                   , ("BitMemModel", bitMemModelTests)
                    , ("MemModel", memModelTests)
                    , ("Errors", errorTests)
                    ]

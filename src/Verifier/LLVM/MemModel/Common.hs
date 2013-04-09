@@ -2,33 +2,42 @@
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeSynonymInstances #-}
-module SymbolicMemModel 
+module Verifier.LLVM.MemModel.Common
  ( Addr
  , Size
+
+   -- * Range declarations.
  , Range(..)
  , isDisjoint
  , containedBy
  , rSize
+
+   -- * Term declarations
  , Term(..)
  , foldTermM
+ , ShowF(..)
+
+   -- * Type declarations
  , Type(..)
  , TypeF(..)
  , bitvectorType
+ , floatType
+ , doubleType
  , arrayType
  , mkStruct
  , typeEnd
  , Field
  , fieldVal
  , fieldPad
+
+   -- * Pointer declarations
  , Value
  , ValueF(..)
  , store
  , typeOfValue
  , Cond(..)
- , ShowF(..)
+
  , Mux
  , MuxF(..)
  , muxCond
@@ -36,30 +45,30 @@ module SymbolicMemModel
  , reduceMux
  , subCount
  , atomCount
-
- , Var(..)
-
- , ValueView
- , ViewF(..)
-
- , ValueCtor
- , ValueCtorF(..)
-
- , valueImports
- , BasePreference(..)
  , EvalContext
  , evalContext
  , evalV
  , eval
 
+ , Var(..)
+
+ , ValueCtor
+ , ValueCtorF(..)
+ , valueImports
+
+ , BasePreference(..)
+
  , RangeLoad(..)
- , readType
+ , rangeLoadType
  , adjustOffset
  , rangeLoad
  , RangeLoadMux
  , fixedOffsetRangeLoad
  , fixedSizeRangeLoad
  , symbolicRangeLoad
+
+ , ValueView
+ , ViewF(..)
 
  , ValueLoad(..)
  , valueLoadType
@@ -107,11 +116,11 @@ data Term f a = App (f (Term f a))
   deriving (Functor, Foldable, Traversable)
 
 class ShowF f where
-  showsF :: Show a => f a -> ShowS
+  showsPrecF :: Show a => Int -> f a -> ShowS
 
 instance (ShowF f, Show a)  => Show (Term f a) where
-  show (App f) = showsF f ""
-  show (Var x) = show x
+  showsPrec p (App f) = showParen (p >= 10) (showString "App " . showsPrecF 10 f)
+  showsPrec p (Var x) = showParen (p >= 10) (showString "Var " . showsPrec 10 x)
 
 -- | Traverse over variables in term.
 termVars:: Traversable f => Traversal (Term f a) (Term f b) a b
@@ -131,7 +140,7 @@ data ValueF v = Add v v
   deriving (Functor, Foldable, Traversable, Show)
 
 instance ShowF ValueF where
-  showsF t = shows t
+  showsPrecF = showsPrec
 
 type Value v = Term ValueF v
 
@@ -169,7 +178,7 @@ data MuxF c v = Mux c v v
  deriving (Functor, Foldable, Traversable, Show)
 
 instance Show c => ShowF (MuxF c) where
-  showsF t = shows t
+  showsPrecF = showsPrec
 
 type Mux c a = Term (MuxF c) a
 
@@ -305,6 +314,8 @@ fieldVal = lens _fieldVal (\s v -> s { _fieldVal = v })
 
 data TypeF v
    = Bitvector Size -- ^ Size of bitvector in bytes (must be > 0).
+   | Float
+   | Double
    | Array Size v
    | Struct (Vector (Field v))
  deriving (Eq,Show)
@@ -318,6 +329,8 @@ instance Show Type where
   showsPrec p t = showParen (p >= 10) $
     case typeF t of
       Bitvector w -> showString "bitvectorType " . shows w
+      Float -> showString "float"
+      Double -> showString "double"
       Array n tp -> showString "arrayType " . shows n . showString " " . showsPrec 10 tp
       Struct v -> showString "mkStruct " . shows (V.toList (fldFn <$> v))
         where fldFn f = (f^.fieldVal, fieldPad f)
@@ -326,11 +339,19 @@ mkType :: TypeF Type -> Type
 mkType tf = Type tf $
   case tf of
     Bitvector w -> w
+    Float -> 4
+    Double -> 8
     Array n e -> n * typeSize e
     Struct flds -> assert (V.length flds > 0) (fieldEnd (V.last flds))
 
 bitvectorType :: Size -> Type
 bitvectorType w = Type (Bitvector w) w
+
+floatType :: Type
+floatType = mkType Float
+
+doubleType :: Type
+doubleType = mkType Double
 
 arrayType :: Size -> Type -> Type
 arrayType n e = Type (Array n e) (n * typeSize e)
@@ -339,8 +360,8 @@ structType :: V.Vector (Field Type) -> Type
 structType flds = assert (V.length flds > 0) $
   Type (Struct flds) (fieldEnd (V.last flds))
 
-mkStruct :: [(Type,Size)] -> Type
-mkStruct l = structType (evalState (traverse fldFn (V.fromList l)) 0)
+mkStruct :: V.Vector (Type,Size) -> Type
+mkStruct l = structType (evalState (traverse fldFn l) 0)
   where fldFn (tp,p) = do
           o <- get
           put $! o + typeSize tp + p
@@ -354,6 +375,8 @@ typeEnd :: Addr -> Type -> Addr
 typeEnd a tp = seq a $
   case typeF tp of
     Bitvector w -> a + w
+    Float -> a + 4
+    Double -> a + 8
     Array n etp -> typeEnd (a + (n-1) * typeSize etp) etp
     Struct flds -> typeEnd (a + fieldOffset f) (f^.fieldVal)
       where f = V.last flds
@@ -362,67 +385,51 @@ typeEnd a tp = seq a $
 fieldEnd :: Field Type -> Size
 fieldEnd f = fieldOffset f + typeSize (f^.fieldVal) + fieldPad f
 
-
-data ViewF v
-     -- | Select low-order bytes in the bitvector.
-     -- The sizes include the number of low bytes, and the number of high bytes.
-   = SelectLowBV Size Size v
-     -- | Select the given number of high-order bytes in the bitvector.
-     -- The sizes include the number of low bytes, and the number of high bytes.
-   | SelectHighBV Size Size v
-
-   | ArrayElt Size Type Offset v
-
-   | FieldVal (Vector (Field Type)) Int v
-  deriving (Show, Functor, Foldable, Traversable)
-
-instance ShowF ViewF where
-  showsF = shows
-
-type ValueView v = Term ViewF v
-
-viewOpType :: ViewF (TypeF Type) -> Maybe Type
-viewOpType (SelectLowBV  u v tp) | Bitvector (u + v) == tp = pure $ bitvectorType u
-viewOpType (SelectHighBV u v tp) | Bitvector (u + v) == tp = pure $ bitvectorType v
-viewOpType (ArrayElt n etp i tp) | i < n && Array n etp == tp = pure $ etp
-viewOpType (FieldVal v i     tp) | Struct v == tp          = view fieldVal <$> (v V.!? i)
-viewOpType _ = Nothing
-
-viewType :: ValueView Type -> Maybe Type
-viewType (App vf) = viewOpType =<< traverse (fmap typeF . viewType) vf
-viewType (Var tp) = return tp
+-- Value constructor
 
 data ValueCtorF v
-   = ConcatBV v v
+   = -- | Concatentates two bitvectors.
+     -- The first bitvector contains values stored at the low-order byes
+     -- while the second contains values at the high-order bytes.  Thus, the
+     -- meaning of this depends on the endianness of the target architecture.
+     ConcatBV Size v Size v
+   | BVToFloat v
+   | BVToDouble v
      -- | Cons one value to beginning of array.
-   | ConsArray v v
-   | AppendArray v v
-   | SingletonArray v
+   | ConsArray Type v Integer v
+   | AppendArray Type Integer v Integer v
+   | SingletonArray Type v
    | MkArray Type (Vector v)
    | MkStruct (Vector (Field Type,v))
  deriving (Functor, Foldable, Traversable, Show)
 
 instance ShowF ValueCtorF where
-  showsF = shows
+  showsPrecF = showsPrec
 
 type ValueCtor a = Term ValueCtorF a
 
-concatBV :: ValueCtor a -> ValueCtor a -> ValueCtor a
-concatBV x y = App (ConcatBV x y)
+concatBV :: Size -> ValueCtor a -> Size -> ValueCtor a -> ValueCtor a
+concatBV xw x yw y = App (ConcatBV xw x yw y)
 
 -- | Returns imports in a Value Ctor
 valueImports :: ValueCtor a -> [a]
-valueImports (Var a) = [a]
-valueImports (App vcf) = concatOf folded (valueImports <$> vcf)
+valueImports = toListOf termVars
 
 typeOfValueF :: ValueCtorF (TypeF Type) -> Maybe Type
-typeOfValueF (ConcatBV (Bitvector xw) (Bitvector yw)) =
-  return (bitvectorType (xw + yw))
-typeOfValueF (ConsArray tp (Array n etp)) | tp == typeF etp =
-  return (arrayType (n+1) etp)
-typeOfValueF (AppendArray (Array m tp0) (Array n tp1))
-  | tp0 == tp1 = return (arrayType (m+n) tp0)
-typeOfValueF (SingletonArray etp) = return (arrayType 1 (mkType etp))
+typeOfValueF (ConcatBV xw xtp yw ytp)
+  | Bitvector xw == xtp && Bitvector yw == ytp =
+    return (bitvectorType (xw + yw))
+typeOfValueF (BVToFloat (Bitvector 4)) = return $ mkType Float
+typeOfValueF (BVToDouble (Bitvector 8)) = return $ mkType Double
+typeOfValueF (ConsArray tp tp' n (Array n' etp))
+  | typeF tp == tp' && (n,tp) == (toInteger n', etp) =
+    return (arrayType (fromInteger (n+1)) etp)
+typeOfValueF (AppendArray tp m (Array m' tp0) n (Array n' tp1))
+  | (m,tp) == (toInteger m', tp0)
+    && (n,tp) == (toInteger n', tp1) =
+      return (arrayType (fromInteger (m+n)) tp0)
+typeOfValueF (SingletonArray tp etp) | typeF tp == etp =
+  return (arrayType 1 tp)
 typeOfValueF (MkArray tp tps)
   | allOf folded (== typeF tp) tps =
     return (arrayType (fromIntegral (V.length tps)) tp) 
@@ -431,8 +438,7 @@ typeOfValueF (MkStruct ftps)
 typeOfValueF _ = Nothing
 
 typeOfValue :: (a -> Maybe Type) -> ValueCtor a -> Maybe Type
-typeOfValue f (App vcf) = typeOfValueF =<< traverse (fmap typeF . typeOfValue f) vcf
-typeOfValue f (Var i) = f i
+typeOfValue f = foldTermM f (typeOfValueF . fmap typeF)
 
 -- | Create value of type that splits at a particular byte offset.
 splitTypeValue :: Type   -- ^ Type of value to create
@@ -442,25 +448,40 @@ splitTypeValue :: Type   -- ^ Type of value to create
 splitTypeValue tp d subFn = assert (d > 0) $
   case typeF tp of
     Bitvector sz -> assert (d < sz) $
-      concatBV (subFn 0 (bitvectorType d)) (subFn d (bitvectorType (sz - d)))
+      concatBV undefined (subFn 0 (bitvectorType d))
+               undefined (subFn d (bitvectorType (sz - d)))
+    Float -> App (BVToFloat (subFn 0 (bitvectorType 4)))
+    Double -> App (BVToDouble (subFn 0 (bitvectorType 8)))
     Array n0 etp -> assert (n0 > 0) $ do
       let esz = typeSize etp
       let (c,part) = assert (esz > 0) $ d `divMod` esz
       let result
             | c > 0 = assert (c < n0) $
-              App $ AppendArray (subFn 0 (arrayType c etp))
+              App $ AppendArray etp
+                                (toInteger c)
+                                (subFn 0 (arrayType c etp))
+                                (toInteger (n0 - c))
                                 (consPartial (c * esz) (n0 - c)) 
             | otherwise = consPartial 0 n0
           consPartial o n
             | part == 0 = subFn o (arrayType n etp)
             | n > 1 =
-                App $ ConsArray (subFn o etp)
+                App $ ConsArray undefined
+                                (subFn o etp)
+                                undefined
                                 (subFn (o+esz) (arrayType (n-1) etp))
             | otherwise = assert (n == 1) $
-                App $ SingletonArray (subFn o etp)
+                App $ SingletonArray undefined (subFn o etp)
       result
     Struct flds -> App $ MkStruct (fldFn <$> flds)
       where fldFn fld = (fld, subFn (fieldOffset fld) (fld^.fieldVal))
+
+
+data BasePreference
+   = FixedLoad
+   | FixedStore
+   | NeitherFixed
+  deriving (Eq, Show)
 
 -- RangeLoad
 
@@ -471,15 +492,15 @@ data RangeLoad a
     | InRange a Type
   deriving (Functor, Foldable, Traversable, Show)
 
+rangeLoadType :: RangeLoad a -> Type
+rangeLoadType (OutOfRange _ tp) = tp
+rangeLoadType (InRange _ tp) = tp
+
 adjustOffset :: (a -> b)
              -> (a -> b)
              -> RangeLoad a -> RangeLoad b
 adjustOffset _ outFn (OutOfRange a tp) = OutOfRange (outFn a) tp
 adjustOffset inFn _  (InRange a tp) = InRange (inFn a) tp
-
-readType :: RangeLoad a -> Type 
-readType (OutOfRange _ tp) = tp
-readType (InRange _ tp) = tp
 
 rangeLoad :: Addr -> Type -> Range -> ValueCtor (RangeLoad Addr)
 rangeLoad lo ltp s@(R so se)
@@ -510,12 +531,6 @@ fixedOffsetRangeLoad l tp s
                   | otherwise = always $ loadVal i
        loadVal ssz = Var $ rangeLoad l tp (R s (s+ssz))
        loadFail = Var $ Var (OutOfRange l tp)
-
-data BasePreference
-   = FixedLoad
-   | FixedStore
-   | NeitherFixed
-  deriving (Eq, Show)
 
 -- | @fixLoadBeforeStoreOffset pref i k@ adjusts a pointer value that is relative
 -- the load address into a global pointer.  The code assumes that @load + i == store@.
@@ -606,6 +621,39 @@ symbolicRangeLoad pref tp =
         loadVal i j = Var $ loadFromStoreStart pref tp i j
         loadFail = Var (Var (OutOfRange load tp))
 
+-- ValueView
+
+type ValueView v = Term ViewF v
+
+data ViewF v
+     -- | Select low-order bytes in the bitvector.
+     -- The sizes include the number of low bytes, and the number of high bytes.
+   = SelectLowBV Size Size v
+     -- | Select the given number of high-order bytes in the bitvector.
+     -- The sizes include the number of low bytes, and the number of high bytes.
+   | SelectHighBV Size Size v
+   | FloatToBV v
+   | DoubleToBV v
+   | ArrayElt Size Type Offset v
+
+   | FieldVal (Vector (Field Type)) Int v
+  deriving (Show, Functor, Foldable, Traversable)
+
+instance ShowF ViewF where
+  showsPrecF = showsPrec
+
+viewOpType :: ViewF (TypeF Type) -> Maybe Type
+viewOpType (SelectLowBV  u v tp) | Bitvector (u + v) == tp = pure $ bitvectorType u
+viewOpType (SelectHighBV u v tp) | Bitvector (u + v) == tp = pure $ bitvectorType v
+viewOpType (FloatToBV tp)        | Float == tp  = pure $ bitvectorType 4
+viewOpType (DoubleToBV tp)       | Double == tp = pure $ bitvectorType 8
+viewOpType (ArrayElt n etp i tp) | i < n && Array n etp == tp = pure $ etp
+viewOpType (FieldVal v i     tp) | Struct v == tp          = view fieldVal <$> (v V.!? i)
+viewOpType _ = Nothing
+
+viewType :: ValueView Type -> Maybe Type
+viewType = foldTermM return (viewOpType . fmap typeF)
+
 -- ValueLoad
 
 data ValueLoad v
@@ -622,6 +670,55 @@ valueLoadType (OldMemory _ tp) = Just tp
 valueLoadType (LastStore v) = viewType v
 valueLoadType (InvalidMemory tp) = Just tp
 
+loadBitvector :: Addr -> Size -> Addr -> ValueView Type -> ValueCtor (ValueLoad Addr)
+loadBitvector lo lw so v = do
+  let le = lo + lw
+  let ltp = bitvectorType lw
+  let stp = fromMaybe (error ("loadBitvector given bad view " ++ show v)) (viewType v)
+  let retValue eo v' = valueLoad lo' (bitvectorType sz') eo v'
+        where etp = fromMaybe (error ("Bad view " ++ show v')) (viewType v')
+              esz = typeSize etp
+              lo' = max lo eo
+              sz' = min le (eo+esz) - lo'
+  case typeF stp of
+    Bitvector sw
+      | so < lo -> do
+        -- Number of bits to drop.
+        let d = lo - so
+        -- Store is before load.
+        valueLoad lo ltp lo (App (SelectHighBV d (sw - d) v))
+      | otherwise -> assert (lo == so && lw < sw) $
+        -- Load ends before store ends.
+        valueLoad lo ltp so (App (SelectLowBV lw (sw - lw) v))
+    Float -> valueLoad lo ltp lo (App (FloatToBV v))
+    Double -> valueLoad lo ltp lo (App (DoubleToBV v))
+    Array n tp -> foldl1 cv (val <$> r)
+      where cv x y = concatBV undefined x undefined y
+            esz = typeSize tp
+            c0 = assert (esz > 0) $ (lo - so) `div` esz
+            (c1,p1) = (le - so) `divMod` esz
+            -- Get range of indices to read.
+            r | p1 == 0 = assert (c1 > c0) [c0..c1-1]
+              | otherwise = assert (c1 >= c0) [c0..c1]
+            val i = retValue (so+i*esz) (App (ArrayElt n tp i v))
+    Struct sflds -> assert (not (null r)) $ foldl1 cv r
+      where cv x y = concatBV undefined x undefined y
+            r = concat (zipWith val [0..] (V.toList sflds))
+            val i f = v1
+              where eo = so + fieldOffset f
+                    ee = eo + typeSize (f^.fieldVal)
+                    v1 | le <= eo = v2
+                       | ee <= lo = v2
+                       | otherwise = retValue eo (App (FieldVal sflds i v)) : v2
+                    v2 | fieldPad f == 0 = []   -- Return no padding.
+                       | le <= ee = [] -- Nothing of load ends before padding.
+                         -- Nothing if padding ends before load begins.
+                       | ee+fieldPad f <= lo = [] 
+                       | otherwise = [Var badMem]
+                      where p = min (ee+fieldPad f) le - (max lo ee)
+                            tpPad  = bitvectorType p
+                            badMem = InvalidMemory tpPad
+
 -- | @valueLoad lo ltp so v@ returns a value with type @ltp@ from reading the
 -- value @v@.  The load address is @lo@ and the stored address is @so@.
 valueLoad :: Addr -> Type -> Addr -> ValueView Type -> ValueCtor (ValueLoad Addr)
@@ -630,52 +727,15 @@ valueLoad lo ltp so v
   | se <= lo = Var (OldMemory lo ltp) -- Store ends before load
     -- Load is before store.
   | lo < so  = splitTypeValue ltp (so - lo) (\o tp -> valueLoad (lo+o) tp so v)
-    -- Store ends before load ends.
+    -- Load ends after store ends.
   | se < le  = splitTypeValue ltp (le - se) (\o tp -> valueLoad (lo+o) tp so v)
   | (lo,ltp) == (so,stp) = Var (LastStore v)
+    -- 
   | otherwise =
     case typeF ltp of
-      Bitvector lw -> do
-        let retValue eo v' = valueLoad lo' (bitvectorType sz') eo v'
-                    where etp = fromMaybe (error ("Bad view " ++ show v')) (viewType v')
-                          esz = typeSize etp
-                          lo' = max lo eo
-                          sz' = min le (eo+esz) - lo'
-        case typeF stp of
-          Bitvector sw ->
-            if so < lo then do
-              -- Number of bits to drop.
-              let d = lo - so
-              -- Store is before load.
-              valueLoad lo ltp lo (App (SelectHighBV d (sw - d) v))
-            else assert (lo == so && lw < sw) $
-              -- Load ends before store ends.
-              valueLoad lo ltp so (App (SelectLowBV lw (sw - lw) v))
-          Array n tp -> foldl1 concatBV (val <$> r)
-            where esz = typeSize tp
-                  c0 = assert (esz > 0) $ (lo - so) `div` esz
-                  (c1,p1) = (le - so) `divMod` esz
-                  -- Get range of indices to read.
-                  r | p1 == 0 = assert (c1 > c0) [c0..c1-1]
-                    | otherwise = assert (c1 >= c0) [c0..c1]
-                  
-                  val i = retValue (so+i*esz) (App (ArrayElt n tp i v))
-          Struct sflds -> assert (not (null r)) $ foldl1 concatBV r
-            where r = concat (zipWith val [0..] (V.toList sflds))
-                  val i f = v1
-                   where eo = so + fieldOffset f
-                         ee = eo + typeSize (f^.fieldVal)
-                         v1 | le <= eo = v2
-                            | ee <= lo = v2
-                            | otherwise = retValue eo (App (FieldVal sflds i v)) : v2
-                         v2 | fieldPad f == 0 = []   -- Return no padding.
-                            | le <= ee = [] -- Nothing of load ends before padding.
-                              -- Nothing if padding ends before load begins.
-                            | ee+fieldPad f <= lo = [] 
-                            | otherwise = [Var badMem]
-                           where p = min (ee+fieldPad f) le - (max lo ee)
-                                 tpPad  = bitvectorType p
-                                 badMem = InvalidMemory tpPad
+      Bitvector lw -> loadBitvector lo lw so v
+      Float  -> App (BVToFloat  (valueLoad 0 ltp so v))
+      Double -> App (BVToDouble (valueLoad 0 ltp so v))
       Array ln tp ->
         let leSize = typeSize tp
             val i = valueLoad (lo+leSize*fromIntegral i) tp so v
