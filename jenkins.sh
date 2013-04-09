@@ -2,7 +2,7 @@
 PATH="$HOME/.cabal/bin:$(eval 'echo $'"$HASKELL_RUNTIME"):$TOOLS:$JDK16:$PATH"
 
 cabal update
-cabal install cabal-install
+cabal install cabal-dev
 cabal install alex
 cabal install happy
 cabal install c2hs
