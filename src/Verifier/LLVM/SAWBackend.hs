@@ -1,13 +1,12 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveFunctor #-}
-{- LANGUAGE DoAndIfThenElse #-}
-{- LANGUAGE ImplicitParams #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# OPTIONS_GHC -O0 #-}
 module Verifier.LLVM.SAWBackend
   ( SAWBackend
   , SAWMemory
@@ -384,59 +383,12 @@ mkBackendState dl sc = do
              , smGenerator = tg
              }
 
-{-
-sbsMkPtrConstant :: SAWBackendState s -> Integer -> IO (SharedTerm s)
-sbsMkPtrConstant sbs =
-  scBitvectorConst' (sbsContext sbs)
-                    (ptrBitwidth (sbsDataLayout sbs), sbsPtrWidth sbs)
-
--- | Attempts to decompose a term into an allocation and an offset.
-sbsDecomposePtr :: SAWBackendState s -> SharedTerm s -> IO (Maybe (SharedTerm s, SharedTerm s))
-sbsDecomposePtr sbs ptr =
-  case asApp2 ptr of
-    Just (f,b,o) | f == sbsPtrAddFn sbs -> do
-      s <- readIORef (sbsAllocations sbs)
-      return $ if Set.member b s then Just (b,o) else Nothing
-    _ -> return Nothing
-
--- | Attempt to parse the term as a constant integer.
-sbsIntAsConst :: SAWBackendState s -> BitWidth -> SharedTerm s -> IO (Maybe Integer)
-sbsIntAsConst sbs w t = scBitwidth sc w >>= \wt -> scIntAsConst' sc wt t
-  where sc = sbsContext sbs
--}
-
 -- | Attempt to parse the second term as a constant integer.
 -- The first term is the width of the term.
 scIntAsConst' :: SharedContext s -> SharedTerm s -> SharedTerm s -> IO (Maybe Integer)
 scIntAsConst' sc w t =
   fmap asNatLit $ join $
     scApplyLLVMLlvmIntValueNat sc ?? w ?? t
-
-{-
-type AllocInfo s = Maybe (SharedTerm s, SharedTerm s, SharedTerm s)
--}
-
-{-
--- | Attempt to decompose range.
-sbsAllocInfo :: SAWBackendState s -> SharedTerm s -> SharedTerm s -> IO (AllocInfo s)
-sbsAllocInfo sbs ptr sizeTerm = do
-  -- Attempt to decompose pointer.
-  dptr <- sbsDecomposePtr sbs ptr
-  -- Get allocation info if pointer can be decomposed
-  case dptr of
-    Just (b,o) -> do
-      (\e -> Just (b,o,e)) <$> sbsPtrAdd sbs o sizeTerm
-    Nothing -> return Nothing
--}
-
-{-
-adjustAlignment :: Int -> Alignment -> Alignment
-adjustAlignment off a = checkAlign 0
-  where checkAlign i | i == a = i
-                       -- Stop if offset is set at this bit. 
-                     | off `testBit` fromIntegral i = i
-                     | otherwise = checkAlign (i+1)
--}
 
 type SAWMem s = Mem (SharedTerm s) (SharedTerm s) (SharedTerm s)
 
@@ -553,30 +505,6 @@ createStructValue sc flds = do
   tp0 <- emptyFn fieldType
   view _2 <$> foldrMOf folded foldFn (0, eval0, tp0) flds
 
-{-
--- | Create a dummy value (of all zeros) for the given memtype.
-dummyValue :: SAWBackendState s -> MemType -> IO (SharedTerm s)
-dummyValue sbs tp0 = do
-  let dl = sbsDataLayout sbs
-  let sc = sbsContext sbs
-  let vecFn n tp = do
-       fn <- scApplyPreludeReplicate sc
-       join $ fn <$> scNat sc (toInteger n)
-                 <*> sbsMemType sbs tp
-                 <*> dummyValue sbs tp
-  case tp0 of
-    IntType w -> scBitvectorConst sc w 0
-    FloatType -> scFloat sc 0
-    DoubleType -> scDouble sc 0
-    PtrType{} -> scBitvectorConst sc (ptrBitwidth dl) 0
-    ArrayType n tp -> vecFn n tp
-    VecType n tp -> vecFn n tp
-    StructType si -> do
-      let valueFn fi = (fi, fiType fi)
-      ExprEvalFn evalFn <- createStructValue sbs (valueFn <$> siFields si)
-      evalFn (dummyValue sbs)
--}
-
 scApply2 :: SharedContext s
          -> SharedTerm s
          -> SharedTerm s
@@ -606,51 +534,6 @@ scApply4 :: SharedContext s
 scApply4 sc f w x y z = do
   g <- scApply3 sc f w x y 
   scApply sc g z
-
-{-
-scLazyIte :: SharedContext s
-          -> SharedTerm s -- ^ Condition
-          -> IO (SharedTerm s) -- ^ Type of result
-          -> IO (SharedTerm s) -- ^ Result if condition is true.
-          -> IO (SharedTerm s) -- ^ Result if condition is false.
-          -> IO (SharedTerm s) -- ^ Result if condition is false.
-scLazyIte sc c mtp mx my = do
-  case scViewAsBool c of
-    Just True -> mx
-    Just False -> my
-    Nothing -> join $ scApplyPreludeIte sc <*> mtp <*> pure c <*> mx <*> my
-
--- | Convert bits to bytes.
-bitsToBytes :: BitWidth -> Integer
-bitsToBytes w | w .&. 0x7 == 0 = toInteger w `shiftR` 3
-              | otherwise = error "SAW Backend only supports full byte memory accesses."
--}
-
-{-
--- | Returns true if two types have compatible SAWCore types.
-compatTypes :: DataLayout -> MemType -> MemType -> Bool
-compatTypes dl tp0 tp1 =
-  case (tp0, tp1) of
-    (IntType w0, IntType w1) -> w0 == w1
-    (IntType w0, PtrType{}) -> w0 == ptrBitwidth dl
-    (PtrType{}, IntType w1) -> ptrBitwidth dl == w1
-    (PtrType{}, PtrType{}) -> True
-    (FloatType, FloatType) -> True
-    (DoubleType, DoubleType) -> True
-    (ArrayType m tp0', ArrayType n tp1') -> m == n && compatTypes dl tp0' tp1'
-    (ArrayType m tp0',   VecType n tp1') -> m == n && compatTypes dl tp0' tp1'
-    (VecType m tp0',   ArrayType n tp1') -> m == n && compatTypes dl tp0' tp1'
-    (VecType m tp0',     VecType n tp1') -> m == n && compatTypes dl tp0' tp1'
-    (StructType si0, StructType si1) -> V.and $ V.zipWith fieldFn (siFields si0) (siFields si1)
-      where fieldFn fi0 fi1 = fiOffset fi0 == fiOffset fi1
-                           && compatTypes dl (fiType fi0) (fiType fi1)
-                           && fiPadding fi0 == fiPadding fi1
-    _ -> False
-
-scIntValueType :: SharedContext s -> BitWidth -> IO (SharedTerm s) 
-scIntValueType sc w = 
-  join $ scApplyLLVMValue sc <*> scIntType sc w
--}
 
 convertMemType :: DataLayout -> MemType -> Maybe Type
 convertMemType dl tp0 =
