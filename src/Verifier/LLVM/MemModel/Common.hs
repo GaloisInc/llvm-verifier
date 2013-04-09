@@ -398,7 +398,6 @@ data ValueCtorF v
      -- | Cons one value to beginning of array.
    | ConsArray Type v Integer v
    | AppendArray Type Integer v Integer v
-   | SingletonArray Type v
    | MkArray Type (Vector v)
    | MkStruct (Vector (Field Type,v))
  deriving (Functor, Foldable, Traversable, Show)
@@ -410,6 +409,9 @@ type ValueCtor a = Term ValueCtorF a
 
 concatBV :: Size -> ValueCtor a -> Size -> ValueCtor a -> ValueCtor a
 concatBV xw x yw y = App (ConcatBV xw x yw y)
+
+singletonArray :: Type -> ValueCtor a -> ValueCtor a
+singletonArray tp e = App (MkArray tp (V.singleton e))
 
 -- | Returns imports in a Value Ctor
 valueImports :: ValueCtor a -> [a]
@@ -428,8 +430,6 @@ typeOfValueF (AppendArray tp m (Array m' tp0) n (Array n' tp1))
   | (m,tp) == (toInteger m', tp0)
     && (n,tp) == (toInteger n', tp1) =
       return (arrayType (fromInteger (m+n)) tp0)
-typeOfValueF (SingletonArray tp etp) | typeF tp == etp =
-  return (arrayType 1 tp)
 typeOfValueF (MkArray tp tps)
   | allOf folded (== typeF tp) tps =
     return (arrayType (fromIntegral (V.length tps)) tp) 
@@ -471,7 +471,7 @@ splitTypeValue tp d subFn = assert (d > 0) $
                                 undefined
                                 (subFn (o+esz) (arrayType (n-1) etp))
             | otherwise = assert (n == 1) $
-                App $ SingletonArray undefined (subFn o etp)
+                singletonArray undefined (subFn o etp)
       result
     Struct flds -> App $ MkStruct (fldFn <$> flds)
       where fldFn fld = (fld, subFn (fieldOffset fld) (fld^.fieldVal))
