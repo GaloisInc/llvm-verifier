@@ -1475,9 +1475,6 @@ i64p   = PtrType (MemType i64)
 strTy :: MemType
 strTy = i8p
 
-voidPtr :: MemType
-voidPtr = PtrType VoidType
-
 registerLSSOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
 registerLSSOverrides = registerOverrides
   [ ("lss_abort",          voidFunDecl [strTy], abortHandler)

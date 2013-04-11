@@ -74,32 +74,28 @@ constTermEq :: Maybe Integer -> Integer -> Bool
 constTermEq (Just v) = (==v)
 constTermEq _ = const False
 
-type SBEPropM a = forall sbe . Functor sbe => 
-       SBE sbe -> SBEMemory sbe -> Codebase sbe -> PropertyM IO a
+type SBEPropM a = forall sbe . Functor sbe => Simulator sbe IO a
 
-forAllMemModels :: forall a. Int -> L.Module -> SBEPropM a -> PropertyM IO [a]
-forAllMemModels _v mdl testProp = do
+forAllMemModels :: forall a. Int -> FilePath -> SBEPropM a -> PropertyM IO [a]
+forAllMemModels v bcFile testProp = do
+  mdl <- run $ loadModule $ testsDir </> bcFile
+  let dl = parseDataLayout (L.modDataLayout mdl)
+  let runTest :: Functor sbe => (SBE sbe,SBEMemory sbe) -> PropertyM IO a
+      runTest (sbe,mem) = do
+        cb <- run (mkCodebase sbe dl mdl)
+        run $ do
+          runSimulator cb sbe mem defaultSEH Nothing $ withVerbosity v $ testProp
   sequence
-    [ runTest =<< run (createBuddyModel dl)
+    [ runTest =<< run (createSAWModel dl)
+    , runTest =<< run (createBuddyModel dl)
     , runTest =<< run (createDagModel dl)
-    , runTest =<< run (createSAWModel dl)
     ]
- where dl = parseDataLayout (L.modDataLayout mdl)
-       runTest :: Functor sbe => (SBE sbe,SBEMemory sbe) -> PropertyM IO a
-       runTest (sbe,mem) = do
-         cb <- run (mkCodebase sbe dl mdl)
-         testProp sbe mem cb
-
 
 type AllMemModelTest = Functor sbe => Simulator sbe IO Bool
 
 runAllMemModelTest :: Int -> FilePath -> AllMemModelTest -> PropertyM IO ()
 runAllMemModelTest v bcFile act = do
-  mdl <- run $ loadModule $ testsDir </> bcFile
-  assert . and =<< do
-    forAllMemModels v mdl $ \s m cb -> run $ do
-      runSimulator cb s m defaultSEH
-        Nothing (withVerbosity v act)
+  assert . and =<< forAllMemModels v bcFile act
 
 type RunLSSTest sbe = Int
                     -> L.Module
@@ -201,27 +197,6 @@ chkLSS mepsLen mexpectedRV _ _ execRslt = do
     SymRV{} -> fail "Unexpected sym exec result"
   return True
 
-
-chkBinCInt32Fn :: Maybe (Gen (Int32, Int32))
-               -> Int
-               -> FilePath
-               -> L.Symbol
-               -> (Int32 -> Int32 -> ExpectedRV Int32)
-               -> PropertyM IO ()
-chkBinCInt32Fn mgen v bc sym chkOp = do
-  forAllM (maybe arbitrary id mgen) $ \(x,y) -> do
-    runCInt32Fn v bc sym [x, y] (fromIntegral <$> x `chkOp` y)
-
-chkUnaryCInt32Fn :: Maybe (Gen Int32)
-                 -> Int
-                 -> FilePath
-                 -> L.Symbol
-                 -> (Int32 -> ExpectedRV Int32)
-                 -> PropertyM IO ()
-chkUnaryCInt32Fn mgen v bc sym chkOp =
-  forAllM (maybe arbitrary id mgen) $ \x -> do
-    runCInt32Fn v bc sym [x] (fromIntegral <$> chkOp x)
-
 chkNullaryCInt32Fn :: Int
                    -> FilePath
                    -> L.Symbol
@@ -230,7 +205,6 @@ chkNullaryCInt32Fn :: Int
 chkNullaryCInt32Fn v bc sym chkVal =
   runCInt32Fn v bc sym [] (fromIntegral <$> chkVal)
 
-
 runCInt32Fn :: Int
             -> FilePath
             -> L.Symbol
@@ -238,33 +212,27 @@ runCInt32Fn :: Int
             -> ExpectedRV Integer
             -> PropertyM IO ()
 runCInt32Fn v bcFile sym cargs erv = do
-  mdl <- run $ loadModule $ testsDir </> bcFile
-  void $ forAllMemModels v mdl $ \s m cb -> do
-    run $ do
-      runSimulator cb s m defaultSEH Nothing $ withVerbosity v $ do
-        sbe <- gets symBE
-        args <- forM cargs $ \x -> liftSBE $ termInt sbe 32 $ fromIntegral x
-        callDefine_ sym (Just i32) ((IntType 32,) <$> args)
-        let fn rv = asSignedInteger sbe 32 rv
-        mrv <- fmap fn <$> getProgramReturnValue
-        case erv of
-          RV chk ->
-            case mrv of
-              Nothing -> fail "Missing return value"
-              Just Nothing -> 
-                fail "Symbolic return value when constant expected."
-              Just (Just val)
-                | val == chk -> return ()
-                | otherwise -> 
-                  fail $ "Expected " ++ show chk ++ ", got " ++ show val
-          VoidRV ->
-            case mrv of
-              Nothing -> return ()
-              Just{} -> fail $ "Received return value when none expected."
-          AllPathsErr ->
-            case mrv of
-              Nothing -> return ()
-              Just{} -> fail "Received return value when all paths were expected to error."
+  void $ forAllMemModels v bcFile $ do
+    sbe <- gets symBE
+    args <- mapM (liftSBE . termInt sbe 32 . fromIntegral) cargs
+    callDefine_ sym (Just i32) ((IntType 32,) <$> args)
+    mrv <- getProgramReturnValue
+    case (erv,mrv) of
+      (RV{}, Nothing) -> fail "Missing return value"
+      (RV chk, Just rv) ->
+        case asSignedInteger sbe 32 rv of
+          Nothing -> fail $ "Symbolic return value when constant expected.\n"
+                              ++ show (prettyTermD sbe rv)
+          Just val ->
+            unless (val == chk) $
+              fail $ "Expected " ++ show chk ++ ", got " ++ show val
+
+      (VoidRV,Nothing) -> return ()
+      (VoidRV, Just{}) -> fail $ "Received return value when none expected."
+
+      (AllPathsErr, Nothing) -> return ()
+      (AllPathsErr, Just{}) ->
+        fail "Received return value when all paths were expected to error."
 
 -- possibly skip a test
 psk :: Int -> PropertyM IO () -> PropertyM IO ()
@@ -288,8 +256,6 @@ runMain' quiet v bc erv = do
   psk v $ chkNullaryCInt32Fn (if quiet then 0 else v) bc (L.Symbol "main") erv
 
 runMainVoid :: Int -> FilePath -> PropertyM IO ()
-runMainVoid v bc = psk v $ do
-  mdl <- run $ loadModule $ testsDir </> bc
-  void $ forAllMemModels 0 mdl $ \s m cb -> run $ do
-    runSimulator cb s m defaultSEH Nothing $ withVerbosity 0 $ do
-      callDefine_ (L.Symbol "main") Nothing []
+runMainVoid v bcFile = psk v $ do
+  void $ forAllMemModels 0 bcFile $ do
+    callDefine_ (L.Symbol "main") Nothing []

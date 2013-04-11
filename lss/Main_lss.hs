@@ -66,11 +66,12 @@ main = do
       putStrLn "Invalid backend specified.  Please choose 'bitblast', 'dag', or 'saw'."
       exitFailure
 
-  mdl <- case mname args of
-    Nothing -> do putStrLn $ "lss: No LLVM bitcode file provided. "
-                             ++ "Try --help for more information."
-                  exitFailure
-    Just nm -> loadModule nm
+  mdl <-
+    case mname args of
+      Nothing -> do putStrLn $ "lss: No LLVM bitcode file provided. "
+                               ++ "Try --help for more information."
+                    exitFailure
+      Just nm -> loadModule nm
 
   let dl = parseDataLayout $ L.modDataLayout mdl
   let mg = defaultMemGeom dl
@@ -83,7 +84,6 @@ main = do
         be <- createBitEngine
         return $ createBuddyAll be dl mg
       SAWBackendType -> uncurry SBEPair <$> createSAWBackend dl mg
-
   cb <- mkCodebase sbe dl mdl
 
   -- Print out translation when just asked to translate.

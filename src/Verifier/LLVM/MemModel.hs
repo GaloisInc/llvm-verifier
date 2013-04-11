@@ -149,7 +149,7 @@ applyView tg t = foldTermM (\_ -> return t) (tgApplyViewF tg)
 -- | Join all conditions in fold together.
 tgAll :: Monad m
       => TermGenerator m p c t
-      -> Getting (Dual (Endo (c -> m c))) s u c b
+      -> Getting (Dual (Endo (c -> m c))) s c
       -> s
       -> m c
 tgAll tg fld = foldrMOf fld (tgAnd tg) (tgTrue tg)
