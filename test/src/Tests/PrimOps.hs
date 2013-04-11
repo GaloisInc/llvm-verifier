@@ -28,21 +28,28 @@ import           Verifier.LLVM.Simulator
 
 primOpTests :: [(Args, Property)]
 primOpTests =
-  [ test 10  False "concrete int32 add"    $ int32add        1
-  , test 10  False "concrete int32 sqr"    $ int32sqr        1
-  , test 10  False "concrete int32 muladd" $ int32muladd     1
+  [ 
+{-
+    testBinaryPrim "int32_add" (+)
+  , testBinaryPrim "int32_muladd" $ \x y -> sqr (x + y)
+  , testUnaryPrim  "int32_square" arbitrary sqr
+  , testUnaryPrim  "factorial" (elements [0..12]) fact
+
   , test 10  False "direct int32 add"      $ dirInt32add     1
   , test 10  False "direct int32 mul"      $ dirInt32mul     1
   , test 10  False "direct int32 sdiv"     $ dirInt32sdiv    1
   , test 10  False "direct int32 udiv"     $ dirInt32udiv    1
   , test 10  False "direct int32 srem"     $ dirInt32srem    1
   , test 10  False "direct int32 urem"     $ dirInt32urem    1
-  , test  1  False "test-arith"            $ testArith       1
-  , test  1  False "test-branch"           $ testBranch      1
-  , test 10  False "test-factorial"        $ testFactorial   1
-  , test  1  False "test-call-voidrty"     $ testCallVR      1
-  , test  1  False "test-ptr-simple"       $
-      runMain 1 "test-ptr-simple.bc" (RV 99)
+-}
+    testMain "test-arith"  0
+  , testMain "test-branch" 0
+
+  , test  1  False "test-call-voidrty" $ 
+      runMainVoid 1 "test-call-voidrty.bc"
+
+  , testMain "test-ptr-simple" 99
+
   , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
   , test  1  False  "test-call-exit"       $ testCallExit    1
   , lssTestAll 0  "test-call-simple" [] $
@@ -73,19 +80,13 @@ primOpTests =
     -- verbosity of '0' turns the test into a successful no-op, but issues a
     -- warning.
 
-    int32add v        = primB v "int32_add"    Nothing $ \x y -> RV (x + y)
-    int32sqr v        = primU v "int32_square" Nothing $ RV . sqr
-    int32muladd v     = primB v "int32_muladd" Nothing $ \x y -> RV $ sqr (x + y)
-    testFactorial v   = primU v "factorial" (Just $ elements [0..12]) (RV . fact)
     dirInt32add v     = psk v $ chkArithBitEngineFn 32 True (Add False False) add
     dirInt32mul v     = psk v $ chkArithBitEngineFn 32 True (Mul False False) mul
     dirInt32sdiv v    = psk v $ chkArithBitEngineFn 32 True (SDiv False) idiv
     dirInt32udiv v    = psk v $ chkArithBitEngineFn 32 False (UDiv False) wdiv
     dirInt32srem v    = psk v $ chkArithBitEngineFn 32 True SRem irem
     dirInt32urem v    = psk v $ chkArithBitEngineFn 32 False URem wrem
-    testArith v       = runMain v "test-arith.bc" (RV 0)
-    testBranch v      = runMain v "test-branch.bc" (RV 0)
-    testCallVR v      = runMainVoid v "test-call-voidrty.bc"
+
     testSetupPtrArg v = psk v $ runAllMemModelTest v "test-primops.bc"
                                   testSetupPtrArgImpl
     testCallExit v    = runMain' True v "test-call-exit.bc" AllPathsErr
@@ -102,18 +103,28 @@ primOpTests =
     fact 0            = 1
     fact x            = x * fact (x-1)
 
-    primU v nm mg f = psk v $ chkUnaryCInt32Fn mg v "test-primops.bc" (L.Symbol nm) f
-    primB v nm mg f = psk v $ chkBinCInt32Fn   mg v "test-primops.bc" (L.Symbol nm) f
+    testUnaryPrim nm g f = do
+      let v = 1 -- verbosity
+      test 10 False ("test " ++ nm) $ do
+        forAllM g $ \x -> do
+          runCInt32Fn v "test-primops.bc" (L.Symbol nm) [x] (RV (toInteger (f x)))
+
+    testBinaryPrim nm f = do 
+      let v = 1 -- verbosity
+      test 10 False ("concrete " ++ nm) $
+        forAllM arbitrary $ \(x,y) ->
+          runCInt32Fn v "test-primops.bc" (L.Symbol nm) [x, y] (RV (toInteger (f x y)))
+
+    testMain nm ev = do
+      let v = 99 -- verbosity
+      test 1 False nm $ runMain v (nm ++ ".bc") (RV ev)
+
 
 chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a)
                     => BitWidth -> Bool -> IntArithOp -> (a -> a -> a)
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
   be <- run createBitEngine
---  let
--- (_,lc)  = buildLLVMContext
---                  (error "LLVM Context has no ident -> type relation defined")
---                  []
   let dl = defaultDataLayout
   let sbe = let ?be = be in sbeBitBlast dl (buddyMemModel dl be)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do

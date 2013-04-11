@@ -30,8 +30,10 @@ import Verifier.LLVM.Backend
 import Verifier.LLVM.MemModel
 
 import Verifier.SAW
+import Verifier.SAW.Conversion
 import Verifier.SAW.ParserUtils
 import Verifier.SAW.Prelude
+import Verifier.SAW.Rewriter
 
 #if __GLASGOW_HASKELL__ < 706
 -- | Strict version of modifyIORef
@@ -95,7 +97,6 @@ $(runDecWriter $ do
     prelude <- defineImport [|preludeModule|] preludeModule
     llvm <- defineModuleFromFile [prelude] "llvmModule" "saw/LLVM.sawcore"
     declareDefTermF prelude "ite"
-    declareDefTermF llvm "llvmAdd"
     declareSharedModuleFns "LLVM" (decVal llvm)
  )
 
@@ -116,20 +117,20 @@ scResizeTerm sc iw (rw,rt) v
   | otherwise = return v
 
 -- | Create a bitvector from a constant.
-scBitvectorConst :: SharedContext s
+scLLVMIntConst :: SharedContext s
                  -> BitWidth -- ^ Result width with corresponding term.
                  -> Integer -- ^ Value of bitvector.
                  -> IO (SharedTerm s)
-scBitvectorConst sc w v = do
+scLLVMIntConst sc w v = do
   wt <- scBitwidth sc w
-  scBitvectorConst' sc (w,wt) v
+  scLLVMIntConst' sc (w,wt) v
 
 -- | Create a bitvector from a constant.
-scBitvectorConst' :: SharedContext s
+scLLVMIntConst' :: SharedContext s
                   -> (BitWidth, SharedTerm s) -- ^ Result width with corresponding term.
                   -> Integer -- ^ Value of bitvector.
                   -> IO (SharedTerm s)
-scBitvectorConst' sc (w,wt) v = do
+scLLVMIntConst' sc (w,wt) v = do
   cfn <- scApplyLLVMLlvmIntConstant sc 
   cfn wt =<< scNat sc (v `mod` 2^(toInteger w))
 
@@ -278,7 +279,7 @@ mkBackendState dl sc = do
                                  Just o' -> ConcreteOffset b o'
                                  Nothing -> SymbolicOffset b o
               , tgPtrSizeDecompose = decomposeOffset
-              , tgConstPtr = scBitvectorConst' sc (ptrBitwidth dl, ptrWidth) . fromIntegral
+              , tgConstPtr = scLLVMIntConst' sc (ptrBitwidth dl, ptrWidth) . fromIntegral
               , tgAddPtr = ptrAdd
               , tgCheckedAddPtr = \x y -> (trueTerm,) <$> ptrAdd x y
               , tgSubPtr = ptrSub
@@ -291,7 +292,7 @@ mkBackendState dl sc = do
               , tgOr    = orFn
               , tgMuxCond = scApply3 sc boolMuxOp
 
-              , tgConstBitvector = \w -> scBitvectorConst sc (8*fromIntegral w)
+              , tgConstBitvector = \w -> scLLVMIntConst sc (8*fromIntegral w)
               , tgConstFloat  = scFloat sc
               , tgConstDouble = scDouble sc
               , tgApplyCtorF = \vcf ->
@@ -443,7 +444,7 @@ smAlloc sbs atp m mtp w cnt _ = do
   let dl = sbsDataLayout sbs
   let pw = ptrBitwidth dl
   let pwt = sbsPtrWidth sbs
-  tpSize <- scBitvectorConst' sc (pw,pwt) (toInteger (memTypeSize dl mtp))
+  tpSize <- scLLVMIntConst' sc (pw,pwt) (toInteger (memTypeSize dl mtp))
   -- Convert count to have same bitwidth as pointer.
   cnt' <- scResizeTerm sc w (pw,pwt) cnt
   -- Get total number of bytes.
@@ -684,8 +685,9 @@ typedExprEvalFn sbs expr0 = do
             -> (SharedTerm s -> IO (SharedTerm s))
             -> ExprEvalFn v (SharedTerm s)
       eval1 v fn = ExprEvalFn $ \eval -> liftIO . fn =<< eval v       
-  let evalBin x y op = ExprEvalFn $ \eval ->
-         liftIO . uncurry (scApply2 sc op) =<< both eval (x,y)
+  let evalBin x y op = evalBin' x y (scApply2 sc op)
+  let evalBin' x y f = ExprEvalFn $ \eval ->
+         liftIO . uncurry f =<< both eval (x,y)
   let mkVecLit mtp v = do
         tp <- join $ scApplyLLVMValue sc <*> sbsMemType sbs mtp
         return $ ExprEvalFn $ \eval -> liftIO . scVecLit sc tp =<< traverse eval v
@@ -728,13 +730,10 @@ typedExprEvalFn sbs expr0 = do
           extOp scApplyLLVMLlvmTrunc scApplyLLVMLlvmTruncV mn (iw - rw) rw v
         | otherwise = return $ ExprEvalFn $ (\eval -> eval v)
   case expr0 of
-    SValInteger w v ->      
-      constEvalFn <$> scBitvectorConst sc w v
-    SValFloat v  -> constEvalFn <$> scFloat sc v
-    SValDouble v -> constEvalFn <$> scDouble sc v
-    SValNull{} -> do
-      nullPtrFn <- scApplyLLVMLlvmNullPtr sc
-      constEvalFn <$> (nullPtrFn =<< scNat sc (toInteger (dl^.ptrSize)))
+    SValInteger w v  -> constEvalFn <$> scLLVMIntConst sc w v
+    SValFloat  v     -> constEvalFn <$> scFloat sc v
+    SValDouble v     -> constEvalFn <$> scDouble sc v
+    SValNull{}       -> constEvalFn <$> scLLVMIntConst sc (ptrBitwidth dl) 0
     SValArray  mtp v -> mkVecLit mtp v
     SValVector mtp v -> mkVecLit mtp v
     SValStruct si vals -> assert (siFieldCount si == V.length vals) $ do
@@ -743,61 +742,59 @@ typedExprEvalFn sbs expr0 = do
       case mn of
         Nothing -> do
           let defOp :: (SharedContext s -> IO (SharedTerm s -> IO (SharedTerm s)))
+                    -> BitWidth
                     -> IO (SharedTerm s -> SharedTerm s -> IO (SharedTerm s))
-              defOp fn = do
-                fmap (scApply2 sc) $ join $ fn sc <*> scBitwidth sc w
-          mkFn <-
+              defOp fn w' = do
+                fmap (scApply2 sc) $ join $ fn sc <*> scBitwidth sc w'
+          evalBin' x y <$>
             case iop of
               Add{}  -> sbsAdd sbs w
               Sub{}  -> sbsSub sbs w
-              Mul{}  -> defOp scApplyLLVMLlvmMul
-              UDiv{} -> defOp scApplyLLVMLlvmUDiv
-              SDiv{} -> defOp scApplyLLVMLlvmSDiv
-              URem   -> defOp scApplyLLVMLlvmURem
-              SRem   -> defOp scApplyLLVMLlvmSRem
-              Shl{}  -> defOp scApplyLLVMLlvmShl
-              Lshr{} -> defOp scApplyLLVMLlvmLShr
-              Ashr{} -> defOp scApplyLLVMLlvmAShr
-              And    -> defOp scApplyLLVMLlvmAnd
-              Or     -> defOp scApplyLLVMLlvmOr
-              Xor    -> defOp scApplyLLVMLlvmXor
-          return $ ExprEvalFn $ \eval -> do
-            liftIO . uncurry mkFn =<< both eval (x,y)          
+              Mul{}  -> defOp scApplyLLVMLlvmMul  w
+              UDiv{} -> defOp scApplyLLVMLlvmUDiv w
+              URem   -> defOp scApplyLLVMLlvmURem w
+              SDiv{} | w > 0 -> defOp scApplyLLVMLlvmSDiv (w-1)
+              SRem   | w > 0 -> defOp scApplyLLVMLlvmSRem (w-1)
+              Shl{}  -> defOp scApplyLLVMLlvmShl  w
+              Lshr{} -> defOp scApplyLLVMLlvmLShr (w-1)
+              Ashr{} -> defOp scApplyLLVMLlvmAShr w
+              And    -> defOp scApplyLLVMLlvmAnd  w
+              Or     -> defOp scApplyLLVMLlvmOr   w
+              Xor    -> defOp scApplyLLVMLlvmXor  w
+              _ -> fail "Illegal arguments to intArith"
         Just n  -> do
           let mkFnv =
                 case iop of
-                  Add{}  ->  scApplyLLVMLlvmAddV
-                  Sub{}  ->  scApplyLLVMLlvmSubV
-                  Mul{}  ->  scApplyLLVMLlvmMulV
+                  Add{}  -> scApplyLLVMLlvmAddV
+                  Sub{}  -> scApplyLLVMLlvmSubV
+                  Mul{}  -> scApplyLLVMLlvmMulV
                   UDiv{} -> scApplyLLVMLlvmUDivV
                   SDiv{} -> scApplyLLVMLlvmSDivV
                   URem   -> scApplyLLVMLlvmURemV
                   SRem   -> scApplyLLVMLlvmSRemV
-                  Shl{}  ->  scApplyLLVMLlvmShlV
+                  Shl{}  -> scApplyLLVMLlvmShlV
                   Lshr{} -> scApplyLLVMLlvmLShrV
                   Ashr{} -> scApplyLLVMLlvmAShrV
-                  And    ->  scApplyLLVMLlvmAndV
-                  Or     ->   scApplyLLVMLlvmOrV
-                  Xor    ->  scApplyLLVMLlvmXorV   
+                  And    -> scApplyLLVMLlvmAndV
+                  Or     -> scApplyLLVMLlvmOrV
+                  Xor    -> scApplyLLVMLlvmXorV   
           fmap (evalBin x y) $ join $
             mkFnv sc <*> scNat sc (toInteger n)
                      <*> scBitwidth sc w
-    PtrAdd x y -> do
-      let mkFn = scApplyLLVMLlvmAddPtr
-      fmap (evalBin x y) $ join $
-        mkFn sc <*> scNat sc (toInteger (dl^.ptrSize))
+    PtrAdd x y ->
+      evalBin' x y (tgAddPtr (smGenerator sbs))
     UAddWithOverflow w x y -> do
       let si = mkStructInfo dl False [IntType 1, IntType w]
       let [p0,p1] = V.toList $ fiPadding <$> siFields si
-      fn <- scApplyLLVMLlvmAddWithOverflow sc
+      fmap (evalBin' x y) $
+        scApplyLLVMLlvmAddWithOverflow sc
               <*> scBitwidth sc w
               <*> scNat sc (toInteger p0)
               <*> scNat sc (toInteger p1)
-      return $ ExprEvalFn $ \eval -> join $ (\xv yv -> liftIO $ fn xv yv) <$> eval x <*> eval y
     IntCmp op mn w x y -> do
         case mn of
           Nothing ->
-            fmap (evalBin x y) $ join $ mkFn sc <*> scBitwidth sc w
+            fmap (evalBin x y) $ mkFn sc =<< scBitwidth sc w
           Just n  ->
             fmap (evalBin x y) $ join $
               mkFnV sc <*> scNat sc (toInteger n)
@@ -851,8 +848,10 @@ createSAWBackend :: DataLayout
                  -> MemGeom
                  -> IO (SBE (SAWBackend s), SAWMemory s)
 createSAWBackend dl _mg = do
-
-  sc <- mkSharedContext llvmModule
+  sc0 <- mkSharedContext llvmModule
+  let conversions = bvConversions
+  simpSet <- scSimpset sc0 (allModuleDefs llvmModule) [] conversions
+  let sc = rewritingSharedContext sc0 simpSet
   boolType <- scPreludeBool sc
   t    <- scApplyPreludeTrue sc
   pNot <- scApplyPreludeNot sc
@@ -883,7 +882,7 @@ createSAWBackend dl _mg = do
                 , applyTypedExpr = \expr -> SAWBackend $ do
                     ExprEvalFn fn <- typedExprEvalFn sbs expr
                     fn return
-                , prettyTermD = nyi "prettyTermD"
+                , prettyTermD = scPrettyTermDoc
                 , asUnsignedInteger = asUnsignedBitvector
                 , asConcretePtr     = asUnsignedBitvector (ptrBitwidth dl)
                 , memDump      = nyi "memDump"
@@ -907,3 +906,13 @@ createSAWBackend dl _mg = do
                 , sbeRunIO   = runSAWBackend
                 }
   return (sbe, emptySAWMemory)
+
+_unused :: a
+_unused = undefined
+  scLLVMLLVMType
+  scLLVMStructValue
+  scApplyLLVMArithmeticWithOverflowResult
+  scApplyLLVMBinFn
+  scApplyLLVMBinRel
+  scApplyLLVMConsFieldType
+  scApplyLLVMEmptyFields
