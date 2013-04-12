@@ -437,9 +437,6 @@ smAlloc :: SAWBackendState s
         -> IO (AllocResult (SAWBackend s))
 smAlloc sbs atp m mtp w cnt _ = do
   let sc = sbsContext sbs
-  -- Create new variable for base address.
-  base <- scFreshGlobal sc "_" (sbsPtrType sbs)
-  modifyIORef' (sbsAllocations sbs) (Set.insert base)
   -- Get size of tp in bytes.
   let dl = sbsDataLayout sbs
   let pw = ptrBitwidth dl
@@ -452,11 +449,20 @@ smAlloc sbs atp m mtp w cnt _ = do
   mulOp <- mulFn pwt
   totalSize <- scApplyAll sc mulOp [cnt', tpSize]
   -- Get true predicate.
-  t <- scApplyPreludeTrue sc
-  -- Return memory with new change.
-  let m' = m & memState %~ allocMem atp base totalSize
+  t <- scApplyPreludeTrue sc  
+  -- Return allocation.
+  -- Create new variable for base address.
+  base <- allocPtr sbs
   -- Return successful allocation.
-  return $ AResult t base m'   
+  let m' = m & memState %~ allocMem atp base totalSize
+  return (AResult t base m')
+
+allocPtr :: SAWBackendState s -> IO (SharedTerm s)
+allocPtr sbs = do
+  -- Create new variable for base address.
+  base <- scFreshGlobal (sbsContext sbs) "_" (sbsPtrType sbs)
+  modifyIORef' (sbsAllocations sbs) (Set.insert base)
+  return base
 
 mergeEq :: (Ord k, Eq a) => Map k a -> Map k a -> Map k a
 mergeEq mx = Map.filterWithKey p
@@ -686,7 +692,7 @@ typedExprEvalFn sbs expr0 = do
             -> ExprEvalFn v (SharedTerm s)
       eval1 v fn = ExprEvalFn $ \eval -> liftIO . fn =<< eval v       
   let evalBin x y op = evalBin' x y (scApply2 sc op)
-  let evalBin' x y f = ExprEvalFn $ \eval ->
+      evalBin' x y f = ExprEvalFn $ \eval ->
          liftIO . uncurry f =<< both eval (x,y)
   let mkVecLit mtp v = do
         tp <- join $ scApplyLLVMValue sc <*> sbsMemType sbs mtp
@@ -744,7 +750,7 @@ typedExprEvalFn sbs expr0 = do
           let defOp :: (SharedContext s -> IO (SharedTerm s -> IO (SharedTerm s)))
                     -> BitWidth
                     -> IO (SharedTerm s -> SharedTerm s -> IO (SharedTerm s))
-              defOp fn w' = do
+              defOp fn w' =
                 fmap (scApply2 sc) $ join $ fn sc <*> scBitwidth sc w'
           evalBin' x y <$>
             case iop of
@@ -756,33 +762,33 @@ typedExprEvalFn sbs expr0 = do
               SDiv{} | w > 0 -> defOp scApplyLLVMLlvmSDiv (w-1)
               SRem   | w > 0 -> defOp scApplyLLVMLlvmSRem (w-1)
               Shl{}  -> defOp scApplyLLVMLlvmShl  w
-              Lshr{} -> defOp scApplyLLVMLlvmLShr (w-1)
-              Ashr{} -> defOp scApplyLLVMLlvmAShr w
+              Lshr{} -> defOp scApplyLLVMLlvmLShr w
+              Ashr{} | w > 0 -> defOp scApplyLLVMLlvmAShr (w-1)
               And    -> defOp scApplyLLVMLlvmAnd  w
               Or     -> defOp scApplyLLVMLlvmOr   w
               Xor    -> defOp scApplyLLVMLlvmXor  w
               _ -> fail "Illegal arguments to intArith"
         Just n  -> do
-          let mkFnv =
-                case iop of
-                  Add{}  -> scApplyLLVMLlvmAddV
-                  Sub{}  -> scApplyLLVMLlvmSubV
-                  Mul{}  -> scApplyLLVMLlvmMulV
-                  UDiv{} -> scApplyLLVMLlvmUDivV
-                  SDiv{} -> scApplyLLVMLlvmSDivV
-                  URem   -> scApplyLLVMLlvmURemV
-                  SRem   -> scApplyLLVMLlvmSRemV
-                  Shl{}  -> scApplyLLVMLlvmShlV
-                  Lshr{} -> scApplyLLVMLlvmLShrV
-                  Ashr{} -> scApplyLLVMLlvmAShrV
-                  And    -> scApplyLLVMLlvmAndV
-                  Or     -> scApplyLLVMLlvmOrV
-                  Xor    -> scApplyLLVMLlvmXorV   
-          fmap (evalBin x y) $ join $
-            mkFnv sc <*> scNat sc (toInteger n)
-                     <*> scBitwidth sc w
+          let defOp fn w' =
+                join $ fn sc <*> scNat sc (toInteger n) <*> scBitwidth sc w'
+          evalBin x y <$>
+            case iop of
+              Add{}  -> defOp scApplyLLVMLlvmAddV  w
+              Sub{}  -> defOp scApplyLLVMLlvmSubV  w
+              Mul{}  -> defOp scApplyLLVMLlvmMulV  w
+              UDiv{} -> defOp scApplyLLVMLlvmUDivV w
+              URem   -> defOp scApplyLLVMLlvmURemV w
+              SDiv{} | w > 0 -> defOp scApplyLLVMLlvmSDivV (w-1)
+              SRem   | w > 0 -> defOp scApplyLLVMLlvmSRemV (w-1)
+              Shl{}  -> defOp scApplyLLVMLlvmShlV  w
+              Lshr{} -> defOp scApplyLLVMLlvmLShrV w
+              Ashr{} | w > 0 -> defOp scApplyLLVMLlvmAShrV (w-1)
+              And    -> defOp scApplyLLVMLlvmAndV  w
+              Or     -> defOp scApplyLLVMLlvmOrV   w
+              Xor    -> defOp scApplyLLVMLlvmXorV  w
+              _ -> fail "Illegal arguments to intArith"
     PtrAdd x y ->
-      evalBin' x y (tgAddPtr (smGenerator sbs))
+      return $ evalBin' x y (tgAddPtr (smGenerator sbs))
     UAddWithOverflow w x y -> do
       let si = mkStructInfo dl False [IntType 1, IntType w]
       let [p0,p1] = V.toList $ fiPadding <$> siFields si
@@ -793,8 +799,8 @@ typedExprEvalFn sbs expr0 = do
               <*> scNat sc (toInteger p1)
     IntCmp op mn w x y -> do
         case mn of
-          Nothing ->
-            fmap (evalBin x y) $ mkFn sc =<< scBitwidth sc w
+          Nothing -> do
+            fmap (evalBin x y) $ join $ mkFn sc <*> scBitwidth sc w
           Just n  ->
             fmap (evalBin x y) $ join $
               mkFnV sc <*> scNat sc (toInteger n)
@@ -890,13 +896,21 @@ createSAWBackend dl _mg = do
                 , memStore     = lift5 (smStore sbs)
                 , memCopy      = lift6 (smCopy sbs)
                 , memAddDefine = lift3 (smAddDefine dl sc) 
-                , memInitGlobal = nyi "memInitGlobal"
+                , memInitGlobal =  \m mtp v -> SAWBackend $ do
+                   case convertMemType (sbsDataLayout sbs) mtp of
+                     Nothing -> fail "memtype given to smStore must be an even byte size."
+                     Just tp -> do
+                       ptr <- allocPtr sbs
+                       let tg = smGenerator sbs
+                       Just . (ptr,) <$> memState (allocAndWriteMem tg HeapAlloc ptr tp v) m
                 , codeLookupSymbol = ((SAWBackend . return) .) . smLookupSymbol
+
                 , stackAlloc     = lift5 (smAlloc sbs StackAlloc)
-                , stackPushFrame = \m ->
-                             SAWBackend $ return (t, m & memState %~ pushStackFrameMem)
-                , stackPopFrame  = SAWBackend . return . (memState %~ popStackFrameMem)
                 , heapAlloc      = lift5 (smAlloc sbs HeapAlloc)
+
+                , stackPushFrame = SAWBackend . return . (t,) . over memState pushStackFrameMem
+                , stackPopFrame  = SAWBackend . return . (memState %~ popStackFrameMem)
+
                 , memBranch      = SAWBackend . return . (memState %~ branchMem)
                 , memBranchAbort = SAWBackend . return . (memState %~ branchAbortMem)
                 , memMerge = \c x y -> SAWBackend $ return $ smMerge c x y
@@ -916,3 +930,13 @@ _unused = undefined
   scApplyLLVMBinRel
   scApplyLLVMConsFieldType
   scApplyLLVMEmptyFields
+  scApplyLLVMSingleField
+  scApplyLLVMSbvVecZipWith
+  scApplyLLVMMkOverflowResult
+  scApplyLLVMLiftVecBVRel
+  scApplyLLVMLiftVecSBVRel
+  scApplyLLVMBinVRel
+  scApplyLLVMBvMap
+  scApplyLLVMBvVecZipWith
+  scApplyLLVMLiftBVRel
+  scApplyLLVMLiftSBVRel

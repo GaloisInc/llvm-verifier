@@ -24,8 +24,10 @@ module Verifier.LLVM.MemModel
  , emptyMem
  , AllocType(..)
  , allocMem
+ , allocAndWriteMem
  , readMem
  , writeMem
+ , writeMem'
  , copyMem
  , pushStackFrameMem
  , popStackFrameMem
@@ -433,8 +435,18 @@ writeMem :: (Applicative m, Monad m, Eq p)
 writeMem tg p tp v m = do
   (,) <$> (do sz <- tgConstPtr tg (typeEnd 0 tp)
               isAllocated tg p sz m)
-      <*> (do pd <- tgPtrDecompose tg p
-              return $ m & memAddWrite (MemStore (p,pd) v tp))
+      <*> writeMem' tg p tp v m
+
+-- | Write memory without checking if it is allocated.
+writeMem' :: (Applicative m, Monad m, Eq p)
+          => TermGenerator m p c t
+          -> p
+          -> Type
+          -> t
+          -> Mem p c t
+          -> m (Mem p c t)
+writeMem' tg p tp v m = addWrite <$> tgPtrDecompose tg p
+  where addWrite pd = m & memAddWrite (MemStore (p,pd) v tp)
 
 -- | Perform a mem copy.
 copyMem :: (Applicative m, Monad m, Eq p)
@@ -459,6 +471,18 @@ allocMem :: AllocType -- ^ Type of allocation
          -> Mem p c t
 allocMem a b sz = memAddAlloc (Alloc a b sz)
 
+-- | Allocate space for memory
+allocAndWriteMem :: (Applicative m, Monad m, Eq p)
+                 => TermGenerator m p c t
+                 -> AllocType -- ^ Type of allocation 
+                 -> p -- ^ Base for allocation
+                 -> Type
+                 -> t -- Value to write
+                 -> Mem p c t 
+                 -> m (Mem p c t)
+allocAndWriteMem tg a b tp v m = do
+  sz <- tgConstPtr tg (typeEnd 0 tp)
+  writeMem' tg b tp v (m & memAddAlloc (Alloc a b sz))
 
 pushStackFrameMem :: Mem p c t -> Mem p c t
 pushStackFrameMem = memState %~ StackFrame emptyChanges
