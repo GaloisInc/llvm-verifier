@@ -20,6 +20,6 @@ git clone ssh://builder@src.galois.com/llvm-pretty ./build/llvm-pretty
 # git clone ssh://builder@src.galois.com/Aiger ./build/Aiger
 # cabal-dev add-source ./build/abcBridge
 # cabal-dev add-source ./build/Aiger
-cabal-dev install . ../Verinf ./build/abcBridge ./build/llvm-pretty --reinstall --build-tests
+cabal-dev install . ../Verinf ./build/abcBridge ./build/llvm-pretty --reinstall --enable-tests
 ./dist/build/test-llvm/test-llvm
 bash stage.sh
