@@ -29,7 +29,6 @@ import           Verifier.LLVM.Simulator
 primOpTests :: [(Args, Property)]
 primOpTests =
   [ 
-{-
     testBinaryPrim "int32_add" (+)
   , testBinaryPrim "int32_muladd" $ \x y -> sqr (x + y)
   , testUnaryPrim  "int32_square" arbitrary sqr
@@ -41,8 +40,7 @@ primOpTests =
   , test 10  False "direct int32 udiv"     $ dirInt32udiv    1
   , test 10  False "direct int32 srem"     $ dirInt32srem    1
   , test 10  False "direct int32 urem"     $ dirInt32urem    1
--}
-    testMain "test-arith"  0
+  , testMain "test-arith"  0
   , testMain "test-branch" 0
 
   , test  1  False "test-call-voidrty" $ 
