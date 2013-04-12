@@ -116,7 +116,7 @@ primOpTests =
           runCInt32Fn v "test-primops.bc" (L.Symbol nm) [x, y] (RV (toInteger (f x y)))
 
     testMain nm ev = do
-      let v = 99 -- verbosity
+      let v = 1 -- verbosity
       test 1 False nm $ runMain v (nm ++ ".bc") (RV ev)
 
 

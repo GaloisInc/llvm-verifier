@@ -69,7 +69,6 @@ sbvVecZipWith :: ((w :: Nat) -> binFn (bitvector (Succ w)))
 sbvVecZipWith f n w =
   vZipWith (bitvector (Succ w)) (bitvector (Succ w)) (bitvector (Succ w)) (f w) n; 
 
-
 llvmAdd  :: (w :: Nat) -> binFn (bitvector w);
 llvmAdd = bvAdd;
 
@@ -87,7 +86,6 @@ llvmMul = bvMul;
 
 llvmMulV :: (n w :: Nat) -> binFn (value (VectorType n (IntType w)));
 llvmMulV = bvVecZipWith bvMul;
-
 
 llvmUDiv  :: (w :: Nat) -> binFn (bitvector w);
 llvmUDiv = bvUDiv;
@@ -120,26 +118,17 @@ llvmShl w x y = bvShl w x (bvToNat w y);
 llvmShlV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
 llvmShlV = bvVecZipWith llvmShl;
 
-
 llvmLShr  :: (w :: Nat)   -> binFn (bitvector w);
 llvmLShr w x y = bvShr w x (bvToNat w y);
 
 llvmLShrV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
 llvmLShrV = bvVecZipWith llvmLShr;
 
+llvmAShr  :: (w :: Nat) -> binFn (bitvector (Succ w));
+llvmAShr w x y = bvSShr w x (bvToNat (Succ w) y);
 
-llvmAShr  :: (w :: Nat)
-          -> bitvector (Succ w)
-          -> bitvector w
-          -> bitvector (Succ w);
-llvmAShr w x y = bvSShr w x (bvToNat w y);
-
-llvmAShrV :: (n w :: Nat)
-          -> Vec n (bitvector (Succ w))
-          -> Vec n (bitvector w)
-          -> Vec n (bitvector (Succ w));
-llvmAShrV n w = 
-  vZipWith (bitvector (Succ w)) (bitvector w) (bitvector (Succ w)) (llvmAShr w) n; 
+llvmAShrV :: (n w :: Nat) -> binFn (Vec n (bitvector (Succ w)));
+llvmAShrV = sbvVecZipWith llvmAShr;
 
 llvmAnd  :: (w :: Nat)   -> binFn (bitvector w);
 llvmAnd = bvAnd;
