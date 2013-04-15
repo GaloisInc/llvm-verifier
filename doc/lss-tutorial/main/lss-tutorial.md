@@ -5,46 +5,91 @@
 Introduction
 ============
 
-This document describes how to use the Galois LLVM Symbolic
-Simulator's command-line interface, `lss`, to generate a formal model
-of a cryptographic algorithm compiled to LLVM from C, and to compare
-that model against a reference specification to verify that the LLVM
-version is correct. This brings benefits such as allowing programmers
-to experiment with efficient, customized implementations of an
-algorithm while retaining confidence that the changes do not affect
-the overall functionality.
+This document provides a step-by-step guide to using the command-line
+version of Galois' LLVM Symbolic Simulator, `lss`, to perform rigorous
+mathematical analysis of LLVM programs. To illustrate its use, we
+describe how to formally prove that an LLVM implementation of the AES
+block cipher algorithm is functionally equivalent to a reference
+specification. The ability to perform this sort of proof brings
+benefits such as allowing programmers to experiment with efficient,
+customized implementations of an algorithm while retaining confidence
+that the changes do not affect the overall functionality.
 
-We assume some knowledge of C, a basic understanding of LLVM, and a
-passing familiarity with cryptography. However, we do not assume
-familiarity with symbolic simulation, formal modeling, or theorem
-proving. We assume that the user has installed the LLVM 3.0 or 3.1
-toolchain (available from `http://llvm.org/releases`). Additionally,
-we assume that the user has installed the Cryptol tool set and the ABC
-logic synthesis system from UC Berkeley if she wishes to complete the
-equivalence checking portion of the tutorial. Installation and
-configuration of those tools is outside the scope of this tutorial.
+We assume knowledge of C, a basic understanding of LLVM and a passing
+familiarity with cryptography. However, we do not assume familiarity
+with symbolic simulation, formal modeling, or theorem proving.
+
+We assume that the user has installed the LLVM 3.0 or 3.1 toolchain
+(available from `http://llvm.org/releases`). Additionally,
+installation of the Cryptol tool set [^cryptol] and the ABC logic
+synthesis system from UC Berkeley [^abc] is necessary before
+completing the equivalence checking portion of the tutorial.
+Installation and configuration of those tools is outside the scope of
+this tutorial.
 
 In the examples of interaction with the simulator and other tools,
 lines beginning with a hash mark (`#`) or short text followed by an
 angle bracket (such as `abc 01>`) indicate command-line prompts, and
-the following text is input provided by the user. All other monospaced
-text is the output of the associated tool.
+the following text is input provided by the user. All other uses of
+monospaced text indicate representative output of running a program,
+or the contents of a program source file.
+
+[^abc]: Berkeley Logic Synthesis and Verification Group. {ABC}: A
+    System for Sequential Synthesis and Verification
+    <http://www.eecs.berkeley.edu/~alanmi/abc/>
+
+[^cryptol]: Galois, Inc. Cryptol. <http://corp.galois.com/cryptol>
 
 Setting up the Environment
 ==========================
 
 \label{sec:setup}
 
-Ensure that `clang`, `llvm-dis`, `llvm-ld`, `lvm-link`, etc., are in
-your path; these tools are part of the standard LLVM distribution.
-Similarly, make sure that the `lss` executable bundled with this
-document is in your path.
+Ensure that `clang`, `llvm-dis`, `lvm-link`, etc., are in your path;
+these tools are part of the standard LLVM distribution. Similarly,
+make sure that the `lss` executable bundled with this document is in
+your path.
+
+Currently, `lss` requires LLVM version 3.0 or 3.1. Due to frequent
+changes in the file format for LLVM bitcode, versions before 3.0 are
+not supported, and are unlikely to be supported in the future. Support
+for LLVM 3.2 is planned for the next release.
 
 All source code used by this tutorial can be found within the
 `tutorial/code` subdirectory of the release. There is a Makefile in
-that directory that can be used to compile everything with `clang`,
-link things together, and the `check` target can be used to start the
-equivalence checking process.
+that directory that can be used to compile everything with `clang` and
+link the resulting object files together. The `check` target can then
+be used to start the equivalence checking process. Alternatively, the
+next section describes how to manually run the appropriate LLVM tools.
+It can be skipped on a first reading.
+
+Generating Bitcode Files
+========================
+
+The most common way to generate LLVM bitcode files is through the
+`clang` C front-end, available as an optional add-on package to the
+LLVM distribution. The `clang` tool is also included in recent
+releases of Mac OS X.
+
+Given a C source file, `file.c`, the following command can be used to
+generate LLVM bitcode:
+
+    clang -c -emit-llvm file.c
+
+Note, however, that the resulting file is named `file.o` by default,
+and the LLVM tools sometimes work better with files that use the `.bc`
+extension. So you may want to rename `file.o` to `file.bc`, or use the
+command
+
+    clang -c -emit-llvm -o file.bc file.c
+
+The `lss` tool currently works on  a single bitcode file, whereas most
+C programs consist of many source  files, each of which compiles to an
+individual object (or bitcode) file.  In this context, the `llvm-link`
+tool can be useful. The  following command will combine `file1.bc` and
+`file2.bc` into `all.bc`.
+
+    llvm-link -o all.bc file1.bc file2.bc
 
 Symbolic Simulation
 ===================
