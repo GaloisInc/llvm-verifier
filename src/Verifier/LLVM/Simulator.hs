@@ -77,7 +77,8 @@ import           Control.Applicative
 import qualified Control.Exception         as CE
 import           Control.Lens hiding (act,from)
 import           Control.Monad.Error
-import           Control.Monad.State       hiding (State)
+import           Control.Monad.State.Class
+import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Map                  as M
 import           Data.Maybe
