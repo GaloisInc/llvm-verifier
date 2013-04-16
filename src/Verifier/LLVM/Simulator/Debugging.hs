@@ -32,6 +32,7 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.Error
 import Control.Monad.Trans
+import Control.Monad.State.Class
 import Control.Lens hiding (createInstance)
 
 import Data.Char
@@ -82,7 +83,7 @@ import Text.Read (readMaybe)
 
 -- | Add a breakpoint to @main@ in the current codebase
 breakOnMain :: (Functor m, Monad m) => Simulator sbe m ()
-breakOnMain = addBreakpoint (L.Symbol "main") BreakEntry
+breakOnMain = addBreakpoint (Symbol "main") BreakEntry
 
 -- | Given a step handler, return a new step handler that runs it when
 -- Symbol entry or Basic Block entry breakpoints are encountered
@@ -208,15 +209,15 @@ cmds :: (Functor m, Monad m, MonadIO m) => [Command sbe (Simulator sbe m)]
 cmds = [
     helpCmd
   , whereCmd
-  -- , localsCmd
-  -- , dumpCmd
-  -- , contCmd
+  , localsCmd
+  , dumpCmd
+  , contCmd
   -- , killCmd
   -- , satpathCmd
   -- , exitCmd
   -- , clearCmd
-  -- , stopinCmd
-  -- , clearinCmd
+  , stopinCmd
+  , clearinCmd
   -- , stopatCmd
   -- , clearatCmd
   -- , stoppcCmd
@@ -245,7 +246,10 @@ helpString cmds = render . vcat $
   , let invs = hsep . map text $ (cmdNames cmd ++ cmdArgs cmd)
   ]
 
-whereCmd :: (Functor m, Monad m, MonadIO m ) => Command sbe (Simulator sbe m)
+failHelp :: Monad m => m a
+failHelp = fail "invalid arguments; type 'help' for details"
+
+whereCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
 whereCmd = Cmd {
     cmdNames = ["where", "w"]
   , cmdArgs = []
@@ -258,6 +262,95 @@ whereCmd = Cmd {
         Just p -> dbugM . render . ppStackTrace . pathStack $ p
       return False
   }
+
+localsCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
+localsCmd = Cmd {
+    cmdNames = ["locals"]
+  , cmdArgs = []
+  , cmdDesc = "print local variables in current stack frame"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> do
+      mp <- preuse currentPathOfState
+      case mp of
+        Nothing -> dbugM "no active execution path"
+        Just p -> do
+          sbe <- gets symBE
+          dbugM . render $ ppRegMap sbe (p^.pathRegs)
+      return False
+  }
+
+dumpCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
+dumpCmd = let args = ["ctrlstk", "function", "memory"]
+          in Cmd {
+    cmdNames = ["dump", "d"]
+  , cmdArgs = args
+  , cmdDesc = "dump an object in the simulator"
+  , cmdCompletion = completeWordWithPrev Nothing " " $ \revleft word -> do
+      case length . words $ revleft of
+        -- only dump one thing at a time
+        1 -> return . map simpleCompletion . filter (word `isPrefixOf`) $ args
+        _ -> return []
+  , cmdAction = \_ args -> do
+      case args of
+        ["ctrlstk"] -> dumpCtrlStk
+        ["function"] -> do
+          mp <- preuse currentPathOfState
+          case mp of
+            Nothing -> fail "no active execution path"
+            Just p -> dumpSymDefine (gets codebase) (unSym . pathFuncSym $ p)
+        ["memory"] -> dumpMem 6 "memory"
+        _ -> dbugM $ "dump: unsupported object " ++ unwords args
+      return False
+  }
+
+contCmd :: Monad m => Command sbe m
+contCmd = Cmd {
+    cmdNames = ["cont", "c"]
+  , cmdArgs = []
+  , cmdDesc = "continue execution"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> return True
+  }
+
+
+stopinCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
+stopinCmd = Cmd {
+    cmdNames = ["stopin"]
+  , cmdArgs = ["<function_symbol>"]
+  , cmdDesc = "set a breakpoint at the entry to a function"
+  , cmdCompletion = funcSymCompletion
+  , cmdAction = \_ args ->
+      case args of
+        [arg] -> do
+          bps <- entriesForArg arg
+          forM_ bps $ uncurryN addBreakpoint
+          return False
+        _ -> failHelp
+  }
+
+clearinCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
+clearinCmd = Cmd {
+    cmdNames = ["clearin"]
+  , cmdArgs = ["<class id>.<method>[<type_descriptor>]"]
+  , cmdDesc = "clear a breakpoint at the entry to a function"
+  , cmdCompletion = funcSymCompletion
+  , cmdAction = \_ args ->
+      case args of
+        [arg] -> do
+          bps <- entriesForArg arg
+          forM_ bps $ uncurryN removeBreakpoint
+          return False
+        _ -> failHelp
+  }
+
+entriesForArg :: Monad m => String -> Simulator sbe m [(Symbol, Breakpoint)]
+entriesForArg arg = do
+  cb <- gets codebase
+  let sym = Symbol arg
+  case lookupFunctionType sym cb of
+    Nothing -> fail $ "unknown symbol: " ++ arg
+    Just _ -> return [(sym, BreakEntry)]
+
 
 completer :: forall sbe m . (Functor m, Monad m, MonadIO m)
           => CompletionFunc (Simulator sbe m)
@@ -278,6 +371,21 @@ completer (revleft, right) = do
     m :: M.Map String (Command sbe (Simulator sbe m))
     m = commandMap
 
+-- | Complete a function symbol as the current word
+funcSymCompletion :: (Functor m, Monad m, MonadIO m)
+                  => CompletionFunc (Simulator sbe m)
+funcSymCompletion = completeWordWithPrev Nothing " " fn
+  where
+    fn _revleft word = do
+      cb <- gets codebase
+      let syms = M.keys (cb^.cbFunctionTypes)
+      return . map simpleCompletion
+             . filter (word `isPrefixOf`)
+             . map unSym
+             $ syms
+
+unSym :: Symbol -> String
+unSym (Symbol str) = str
 
 -- NB: Currently only valid for SBEBitBlast mems
 sanityChecks ::
