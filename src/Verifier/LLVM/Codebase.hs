@@ -19,6 +19,7 @@ module Verifier.LLVM.Codebase
   , cbDataLayout
   , cbGlobalNameMap
   , cbFunctionType
+  , cbFunctionTypes
   , cbDefs
   , cbUndefinedFns
   , dumpSymDefine
