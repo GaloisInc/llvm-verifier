@@ -106,7 +106,9 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
       dbugM $ "Code range  : " ++ sr (mgCode mg)
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
-    when (startDebugger args) $ do breakOnMain; logBreakpoints
+    when (startDebugger args) $ do
+      enableDebugger
+      breakOnMain
     let mainSymbol = L.Symbol "main"
     argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
     --TODO: Verify main has expected signature.

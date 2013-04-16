@@ -21,6 +21,8 @@ semantics are loosely based on gdb.
 module Verifier.LLVM.Simulator.Debugging (
     breakOnMain
   , logBreakpoints
+  , enableDebugger
+  , debuggerREPL
   , runAtEntryBreakpoints
   , runAtTransientBreakpoints
   , sanityChecks
@@ -142,6 +144,140 @@ logBreakpoint mstmt = do
   let base = "hit breakpoint" <+> parens (ppSymbol sym)
       rest = maybe "" (\stmt -> colon <+> ppStmt stmt) mstmt
   dbugM . render $ base <> rest
+
+enableDebugger :: (Functor m, Monad m, MonadIO m, MonadException m)
+               => Simulator sbe m ()
+enableDebugger = do
+  evHandlers.onBlockEntry .= (runAtEntryBreakpoints $ \sb -> do
+    debuggerREPL Nothing)
+  evHandlers.onPreStep .= (runAtTransientBreakpoints $ \stmt -> do
+    debuggerREPL (Just stmt))
+
+debuggerREPL :: (Functor m, Monad m, MonadIO m, MonadException m)
+             => Maybe (SymStmt (SBETerm sbe))
+             -> Simulator sbe m ()
+debuggerREPL mstmt = do
+    logBreakpoint mstmt
+    let settings = setComplete completer $
+                     defaultSettings { historyFile = Just ".lssdb" }
+    runInputT settings loop
+  where loop = do
+          mline <- getInputLine "(lss) "
+          case mline of
+            Nothing -> return ()
+            Just "" -> do
+              -- repeat last command if nothing entered
+              hist <- getHistory
+              case historyLines hist of
+                (l:_) -> doCmd (words l)
+                _ -> loop
+            Just input -> doCmd (words input)
+        doCmd (cmd:args) = do
+          case M.lookup cmd commandMap of
+            Just cmd -> do
+              let go = cmdAction cmd mstmt args
+                  handleErr epe@(ErrorPathExc _ _) = throwError epe
+                  handleErr (UnknownExc (Just (FailRsn rsn))) = do
+                    dbugM $ "error: " ++ rsn
+                    return False
+                  handleErr _ = do dbugM "unknown error"; return False
+              continue <- lift $ catchError go handleErr
+              unless continue loop
+            Nothing -> do
+              outputStrLn $ "unknown command '" ++ cmd ++ "'"
+              outputStrLn $ "type 'help' for more info"
+              loop
+        doCmd [] = error "unreachable"
+
+data Command sbe m = Cmd {
+    cmdNames :: [String]
+  , cmdArgs :: [String]
+  , cmdDesc :: String
+  , cmdCompletion :: CompletionFunc m
+  , cmdAction :: Maybe (SymStmt (SBETerm sbe)) -> [String] -> m Bool
+  }
+
+commandMap :: (Functor m, Monad m, MonadIO m)
+           => M.Map String (Command sbe (Simulator sbe m))
+commandMap = M.fromList . concatMap expandNames $ cmds
+  where expandNames cmd = do
+          name <- cmdNames cmd
+          return (name, cmd)
+
+cmds :: (Functor m, Monad m, MonadIO m) => [Command sbe (Simulator sbe m)]
+cmds = [
+    helpCmd
+  , whereCmd
+  -- , localsCmd
+  -- , dumpCmd
+  -- , contCmd
+  -- , killCmd
+  -- , satpathCmd
+  -- , exitCmd
+  -- , clearCmd
+  -- , stopinCmd
+  -- , clearinCmd
+  -- , stopatCmd
+  -- , clearatCmd
+  -- , stoppcCmd
+  -- , clearpcCmd
+  -- , stepCmd
+  -- , stepupCmd
+  -- , stepiCmd
+  ]
+
+helpCmd :: forall sbe m . (Functor m, Monad m, MonadIO m)
+        => Command sbe (Simulator sbe m)
+helpCmd = Cmd {
+    cmdNames = ["help", "?"]
+  , cmdArgs = []
+  , cmdDesc = "show this help"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> do
+      dbugM $ helpString (cmds :: [Command sbe (Simulator sbe m)])
+      return False
+  }
+
+helpString :: [Command sbe m] -> String
+helpString cmds = render . vcat $
+  [ invs <> colon $$ nest 2 (text $ cmdDesc cmd)
+  | cmd <- cmds
+  , let invs = hsep . map text $ (cmdNames cmd ++ cmdArgs cmd)
+  ]
+
+whereCmd :: (Functor m, Monad m, MonadIO m ) => Command sbe (Simulator sbe m)
+whereCmd = Cmd {
+    cmdNames = ["where", "w"]
+  , cmdArgs = []
+  , cmdDesc = "print call stack"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> do
+      mp <- preuse currentPathOfState
+      case mp of
+        Nothing -> dbugM "no active execution path"
+        Just p -> dbugM . render . ppStackTrace . pathStack $ p
+      return False
+  }
+
+completer :: forall sbe m . (Functor m, Monad m, MonadIO m)
+          => CompletionFunc (Simulator sbe m)
+completer (revleft, right) = do
+    let (revword, revleft') = break isSpace revleft
+        word = reverse revword
+        cmdComps = map simpleCompletion . filter (word `isPrefixOf`) . M.keys $ m
+    case all isSpace revleft' of
+      True -> return (revleft', cmdComps)
+      False -> do
+        -- partial pattern ok:
+        --   not (all isSpace revleft') => not (null (words revleft))
+        let (cmd:args) = words (reverse revleft)
+        case M.lookup cmd m of
+          Nothing -> return (revleft, [])
+          Just c -> cmdCompletion c (revleft, right)
+  where
+    m :: M.Map String (Command sbe (Simulator sbe m))
+    m = commandMap
+
 
 -- NB: Currently only valid for SBEBitBlast mems
 sanityChecks ::

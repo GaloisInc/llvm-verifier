@@ -64,6 +64,7 @@ module Verifier.LLVM.Simulator.Common
   , pathRegs
   , pathMem
   , pathAssertions
+  , pathStack
   , ppPath
   , ppPathLoc
 
@@ -80,6 +81,7 @@ module Verifier.LLVM.Simulator.Common
   , onPreStep
   , onBlockEntry
 
+  , ppStackTrace
   , ppTuple
   ) where
 
@@ -88,10 +90,15 @@ import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens hiding (act)
 import Control.Monad.Error
-import Control.Monad.State hiding (State)
+import Control.Monad.State.Class
+import Control.Monad.Trans.State.Strict (StateT)
+
 import qualified Data.Map  as M
 import Data.Maybe
 import qualified Data.Set  as S
+
+import System.Console.Haskeline.MonadException (MonadException)
+
 import Text.PrettyPrint.HughesPJ
 
 import Verifier.LLVM.AST
@@ -107,6 +114,7 @@ newtype Simulator sbe m a =
     , MonadIO
     , MonadState (State sbe m)
     , MonadError (InternalExc sbe m)
+    , MonadException
     )
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
@@ -625,6 +633,9 @@ ppPathLoc _ p =
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
+
+ppStackTrace :: [CallFrame term] -> Doc
+ppStackTrace = braces . vcat . map (ppSymbol . cfFuncSym)
 
 ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
 ppRegMap sbe mp =
