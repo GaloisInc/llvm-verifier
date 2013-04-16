@@ -50,6 +50,7 @@ main = do
             , xlate    = def &= help "Prints the symbolic AST translation to stdout, and then terminates."
             , mname    = def &= typ "Fully-linked .bc containing main()"
                              &= Args.args
+            , startDebugger = def &= help "Break and enter the LSS debugger when running main"
             }
             &= summary ("LLVM Symbolic Simulator (lss) 0.2b Feb 2013. "
                         ++ "Copyright 2011-2012 Galois, Inc. All rights reserved.")

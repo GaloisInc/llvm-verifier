@@ -10,14 +10,21 @@ semantics are loosely based on gdb.
 
 -}
 
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies       #-}
-{-# LANGUAGE RankNTypes       #-}
-{-# LANGUAGE ViewPatterns     #-}
+{-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE ViewPatterns        #-}
 
-module Verifier.LLVM.Simulator.Debugging (sanityChecks) where
+module Verifier.LLVM.Simulator.Debugging (
+    breakOnMain
+  , logBreakpoints
+  , runAtEntryBreakpoints
+  , runAtTransientBreakpoints
+  , sanityChecks
+  ) where
 
 import Control.Applicative
 import Control.Monad
@@ -42,6 +49,7 @@ import Text.PrettyPrint
 
 import qualified Text.LLVM.AST as L
 
+import Verifier.LLVM.Backend
 import Verifier.LLVM.Simulator
 import Verifier.LLVM.Simulator.Common
 
@@ -74,7 +82,66 @@ import Text.Read (readMaybe)
 breakOnMain :: (Functor m, Monad m) => Simulator sbe m ()
 breakOnMain = addBreakpoint (L.Symbol "main") BreakEntry
 
+-- | Given a step handler, return a new step handler that runs it when
+-- Symbol entry or Basic Block entry breakpoints are encountered
+runAtEntryBreakpoints :: (Functor m, Monad m)
+                      => (SymBlock (SBETerm sbe) -> Simulator sbe m ())
+                      -> SymBlock (SBETerm sbe)
+                      -> Simulator sbe m ()
+runAtEntryBreakpoints sh sb = do
+  mp <- preuse currentPathOfState
+  case pathFuncSym <$> mp of
+    Nothing -> return ()
+    Just sym -> do
+      mbps <- M.lookup sym <$> use breakpoints
+      let atBB = Just True == (S.member (BreakBBEntry (sbId sb)) <$> mbps)
+          atEntry = (sbId sb == initSymBlockID)
+                      && (Just True == (S.member BreakEntry <$> mbps))
+      when (atBB || atEntry) $ sh sb
 
+-- | Check whether we're at a transient breakpoint, and if so,
+-- deactivate it and return 'True'
+runAtTransientBreakpoints :: (Functor m, Monad m)
+                          => (SymStmt (SBETerm sbe) -> Simulator sbe m ())
+                          -> SymStmt (SBETerm sbe)
+                          -> Simulator sbe m ()
+runAtTransientBreakpoints sh stmt = do
+  mp <- preuse currentPathOfState
+  sym <- case pathFuncSym <$> mp of
+    Nothing -> fail "no current function symbol"
+    Just sym -> return sym
+  let rember bp = do
+        tbps <- use trBreakpoints
+        if S.member bp tbps
+          then do trBreakpoints %= S.delete bp
+                  return True
+          else return False
+      handleStep = rember BreakNextStmt
+      handleRet = case stmt of
+                    Return _ -> rember (BreakReturnFrom sym)
+                    _        -> return False
+  callSH <- or <$> sequence [handleStep, handleRet]
+  when callSH $ sh stmt
+
+logBreakpoints :: (Functor m, Monad m, MonadIO m)
+               => Simulator sbe m ()
+logBreakpoints = do
+  evHandlers.onBlockEntry .= (runAtEntryBreakpoints $ \sb -> do
+    logBreakpoint Nothing)
+  evHandlers.onPreStep .= (runAtTransientBreakpoints $ \stmt -> do
+    logBreakpoint (Just stmt))
+
+logBreakpoint :: (Functor m, Monad m, MonadIO m)
+              => Maybe (SymStmt (SBETerm sbe))
+              -> Simulator sbe m ()
+logBreakpoint mstmt = do
+  mp <- preuse currentPathOfState
+  sym <- case pathFuncSym <$> mp of
+    Nothing -> fail "no current function symbol"
+    Just sym -> return sym
+  let base = "hit breakpoint" <+> parens (ppSymbol sym)
+      rest = maybe "" (\stmt -> colon <+> ppStmt stmt) mstmt
+  dbugM . render $ base <> rest
 
 -- NB: Currently only valid for SBEBitBlast mems
 sanityChecks ::
@@ -85,12 +152,14 @@ sanityChecks ::
   => SEH sbe m
 sanityChecks = SEH
   {
-    onPreStep         = \_ -> return ()
+    _onPreStep        = \_ -> return ()
   , onPostStep        = \_ -> return ()
+  , _onBlockEntry     = \_ -> return ()
+  , onBlockExit       = \_ -> return ()
   , onMkGlobTerm      = \_ -> return ()
   , onPostOverrideReg = return ()
 
-  , onPreGlobInit = \_ _ -> return ()
+  , onPreGlobInit     = \_ _ -> return ()
 
 {-
   , onPreGlobInit = \g (Typed ty gdata) -> do

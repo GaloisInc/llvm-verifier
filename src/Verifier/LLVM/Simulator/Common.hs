@@ -48,6 +48,9 @@ module Verifier.LLVM.Simulator.Common
   , returnCurrentPath
   , markCurrentPathAsError
 
+  , currentPathOfState
+  , currentPathMem
+
   , SymBlockID
 
   , RegMap
@@ -63,7 +66,7 @@ module Verifier.LLVM.Simulator.Common
   , pathAssertions
   , ppPath
   , ppPathLoc
-  
+
   , FailRsn(FailRsn)
   , ppFailRsn
 
@@ -73,14 +76,10 @@ module Verifier.LLVM.Simulator.Common
 
   , ErrorPath(EP, epRsn, epPath)
   , InternalExc(ErrorPathExc, UnknownExc)
-  , SEH( SEH
-       , onPostOverrideReg
-       , onPreStep
-       , onPostStep
-       , onMkGlobTerm
-       , onPreGlobInit
-       , onPostGlobInit
-       )
+  , SEH(..)
+  , onPreStep
+  , onBlockEntry
+
   , ppTuple
   ) where
 
@@ -178,11 +177,14 @@ trBreakpoints f s = (\v -> s { _trBreakpoints = v }) <$> f (_trBreakpoints s)
 -- | Types of breakpoints (kind of boring for now, but maybe with a
 -- DWARF parser we can do more...)
 data Breakpoint = BreakEntry
+                -- ^ Break when entering this symbol
+                | BreakBBEntry SymBlockID
+                -- ^ Break when entering a basic block
   deriving (Eq, Ord, Show)
 
 -- | Transient breakpoints for interactive debugging
-data TransientBreakpoint = BreakNextInsn
-                         -- ^ Break at the next instruction
+data TransientBreakpoint = BreakNextStmt
+                         -- ^ Break at the next statement
                          | BreakReturnFrom Symbol
                          -- ^ Break when returning from a function
   deriving (Eq, Ord, Show)
@@ -221,6 +223,14 @@ data CS sbe
 currentPath :: Simple Lens (CS sbe) (Path sbe)
 currentPath f (FinishedCS p) = FinishedCS <$> f p
 currentPath f (ActiveCS acs) = ActiveCS <$> activePath f acs
+
+-- | Traversal for current path of simulator state.
+currentPathOfState :: Simple Traversal (State sbe m) (Path sbe)
+currentPathOfState = ctrlStk . _Just . currentPath
+
+-- | Traversal for current path memory if any.
+currentPathMem :: Simple Traversal (State sbe m) (SBEMemory sbe)
+currentPathMem = currentPathOfState . pathMem
 
 initialCtrlStk :: SBE sbe -> SBEMemory sbe -> CS sbe
 initialCtrlStk sbe mem = FinishedCS p
@@ -477,9 +487,13 @@ data SEH sbe m = SEH
     -- | Invoked after function overrides have been registered
     onPostOverrideReg :: Simulator sbe m ()
     -- | Invoked before each instruction executes
-  , onPreStep         :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
+  , _onPreStep         :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked after each instruction executes
   , onPostStep        :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
+    -- | Invoked when entering a basic block
+  , _onBlockEntry      :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
+    -- | Invoked when leaving a basic block
+  , onBlockExit       :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked before construction of a global term value
   , onMkGlobTerm      :: Global (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked before memory model initialization of global data
@@ -487,6 +501,12 @@ data SEH sbe m = SEH
     -- | Invoked after memory model initialization of global data
   , onPostGlobInit    :: Global (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
   }
+
+onPreStep :: Simple Lens (SEH sbe m) (SymStmt (SBETerm sbe) -> Simulator sbe m ())
+onPreStep = lens _onPreStep (\seh sh -> seh { _onPreStep = sh })
+
+onBlockEntry :: Simple Lens (SEH sbe m) (SymBlock (SBETerm sbe) -> Simulator sbe m ())
+onBlockEntry = lens _onBlockEntry (\seh sh -> seh { _onBlockEntry = sh })
 
 -- | A handler for a function override. This gets the function symbol as an
 -- argument so that one function can potentially be used to override multiple

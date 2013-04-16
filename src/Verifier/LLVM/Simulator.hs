@@ -105,10 +105,6 @@ withActiveCS f = do
   cs' <- liftIO (f cs)
   ctrlStk ?= cs'
 
--- | Traversal for current path of simulator state.
-currentPathOfState :: Simple Traversal (State sbe m) (Path sbe)
-currentPathOfState = ctrlStk . _Just . currentPath
-
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
 -- that the control stack is empty or the top entry of the control stack has no
 -- pending paths recorded.
@@ -121,10 +117,6 @@ modifyPathRegs :: (Functor m, Monad m)
 modifyPathRegs f = do
   Just p <- preuse currentPathOfState
   currentPathOfState .= over pathRegs f p
-
--- | Traversal for current path memory if any.
-currentPathMem :: Simple Traversal (State sbe m) (SBEMemory sbe)
-currentPathMem = currentPathOfState . pathMem
 
 -- @getMem@ yields the memory model of the current path if any.
 getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
@@ -482,7 +474,9 @@ run = do
           errorPath $ "This path is infeasible"
         let sym = pathFuncSym p
         Just def <- lookupDefine sym <$> gets codebase
-        runStmts $ sbStmts $ lookupSymBlock def pcb
+        let sb = lookupSymBlock def pcb
+        use (evHandlers.onBlockEntry) >>= ($sb)
+        runStmts . sbStmts $ sb
       run
   where
     handleError (ErrorPathExc _rsn s) = do
@@ -750,6 +744,8 @@ defaultSEH = SEH
                (\_   -> return ())
                (\_   -> return ())
                (\_   -> return ())
+               (\_   -> return ())
+               (\_   -> return ())
                (\_ _ -> return ())
                (\_ _ -> return ())
 
@@ -981,7 +977,7 @@ dbugStep stmt = do
                    _ -> ""
                  ++ show (ppStmt stmt)
 --  repl
-  cb1 onPreStep stmt
+  cb1 (view onPreStep) stmt
   step stmt
   cb1 onPostStep stmt
   whenVerbosity (>=5) dumpCtrlStk
