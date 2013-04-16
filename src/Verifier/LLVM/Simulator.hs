@@ -81,6 +81,7 @@ import           Control.Monad.State       hiding (State)
 import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Map                  as M
 import           Data.Maybe
+import qualified Data.Set                  as S
 import           Data.String
 import qualified Data.Vector               as V
 import           Numeric                   (showHex)
@@ -162,6 +163,8 @@ runSimulator cb sbe mem seh mopts m = do
                     , _errorPaths  = []
                     , _pathCounter = 1
                     , _aigOutputs  = []
+                    , _breakpoints = M.empty
+                    , _trBreakpoints = S.empty
                     }
   ea <- flip evalStateT newSt $ runErrorT $ runSM $ do
     initGlobals

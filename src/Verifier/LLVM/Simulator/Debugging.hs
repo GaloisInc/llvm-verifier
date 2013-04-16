@@ -1,12 +1,80 @@
+{- |
+Module           : $Header$
+Description      : Debugger implementation for LSS
+Stability        : provisional
+Point-of-contact : acfoltzer
+
+Debugger for the LLVM Symbolic Simulator. This module provides
+implementations of the 'SEH' event handlers. Commands and their
+semantics are loosely based on gdb.
+
+-}
+
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies       #-}
 {-# LANGUAGE RankNTypes       #-}
 {-# LANGUAGE ViewPatterns     #-}
 
-module Verifier.LLVM.Simulator.Debugging where
-import           Control.Monad.Trans
-import           Verifier.LLVM.Simulator.Common
+module Verifier.LLVM.Simulator.Debugging (sanityChecks) where
+
+import Control.Applicative
+import Control.Monad
+import Control.Monad.Error
+import Control.Monad.Trans
+import Control.Lens hiding (createInstance)
+
+import Data.Char
+import Data.List
+import Data.List.Split
+import qualified Data.Map as M
+import qualified Data.Set as S
+import Data.Tuple.Curry
+import Data.Word (Word16)
+
+import System.Console.Haskeline
+import System.Console.Haskeline.Completion
+import System.Console.Haskeline.History
+import System.Exit
+
+import Text.PrettyPrint
+
+import qualified Text.LLVM.AST as L
+
+import Verifier.LLVM.Simulator
+import Verifier.LLVM.Simulator.Common
+
+#if __GLASGOW_HASKELL__ < 706
+import qualified Text.ParserCombinators.ReadP as P
+import qualified Text.Read as R
+readEither :: Read a => String -> Either String a
+readEither s =
+  case [ x | (x,"") <- R.readPrec_to_S read' R.minPrec s ] of
+    [x] -> Right x
+    []  -> Left "Prelude.read: no parse"
+    _   -> Left "Prelude.read: ambiguous parse"
+ where
+  read' =
+    do x <- R.readPrec
+       R.lift P.skipSpaces
+       return x
+
+-- | Parse a string using the 'Read' instance.
+-- Succeeds if there is exactly one valid result.
+readMaybe :: Read a => String -> Maybe a
+readMaybe s = case readEither s of
+                Left _  -> Nothing
+                Right a -> Just a
+#else
+import Text.Read (readMaybe)
+#endif
+
+-- | Add a breakpoint to @main@ in the current codebase
+breakOnMain :: (Functor m, Monad m) => Simulator sbe m ()
+breakOnMain = addBreakpoint (L.Symbol "main") BreakEntry
+
+
 
 -- NB: Currently only valid for SBEBitBlast mems
 sanityChecks ::

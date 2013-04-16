@@ -28,6 +28,13 @@ module Verifier.LLVM.Simulator.Common
   , errorPaths
   , pathCounter
   , aigOutputs
+  , breakpoints
+  , trBreakpoints
+
+  , Breakpoint(..)
+  , TransientBreakpoint(..)
+  , addBreakpoint
+  , removeBreakpoint
 
   , CS(..)
   , ActiveCS
@@ -84,6 +91,8 @@ import Control.Lens hiding (act)
 import Control.Monad.Error
 import Control.Monad.State hiding (State)
 import qualified Data.Map  as M
+import Data.Maybe
+import qualified Data.Set  as S
 import Text.PrettyPrint.HughesPJ
 
 import Verifier.LLVM.AST
@@ -131,6 +140,8 @@ data State sbe m = State
   , _pathCounter  :: Integer         -- ^ Name supply for paths
   , _aigOutputs   :: [(MemType,SBETerm sbe)]   -- ^ Current list of AIG outputs, discharged
                                      -- via lss_write_aiger() sym api calls
+  , _breakpoints :: M.Map Symbol (S.Set Breakpoint)
+  , _trBreakpoints :: S.Set TransientBreakpoint
   }
 
 ctrlStk :: Simple Lens (State sbe m) (Maybe (CS sbe))
@@ -156,6 +167,26 @@ pathCounter f s = (\v -> s { _pathCounter = v }) <$> f (_pathCounter s)
 
 aigOutputs :: Simple Lens (State sbe m) [(MemType,SBETerm sbe)]
 aigOutputs f s = (\v -> s { _aigOutputs = v }) <$> f (_aigOutputs s)
+
+breakpoints :: Simple Lens (State sbe m) (M.Map Symbol (S.Set Breakpoint))
+breakpoints f s = (\v -> s { _breakpoints = v }) <$> f (_breakpoints s)
+
+trBreakpoints :: Simple Lens (State sbe m) (S.Set TransientBreakpoint)
+trBreakpoints f s = (\v -> s { _trBreakpoints = v }) <$> f (_trBreakpoints s)
+
+
+-- | Types of breakpoints (kind of boring for now, but maybe with a
+-- DWARF parser we can do more...)
+data Breakpoint = BreakEntry
+  deriving (Eq, Ord, Show)
+
+-- | Transient breakpoints for interactive debugging
+data TransientBreakpoint = BreakNextInsn
+                         -- ^ Break at the next instruction
+                         | BreakReturnFrom Symbol
+                         -- ^ Break when returning from a function
+  deriving (Eq, Ord, Show)
+
 
 -- | Action to perform when branch.
 data BranchAction sbe
@@ -480,6 +511,30 @@ type VoidOverrideHandler sbe m
 
 voidOverride :: Functor m => VoidOverrideHandler sbe m -> Override sbe m
 voidOverride f = Override (\s r a -> Nothing <$ f s r a)
+
+--------------------------------------------------------------------------------
+-- Breakpoints
+
+addBreakpoint :: (Functor m, Monad m)
+              => Symbol
+              -> Breakpoint
+              -> Simulator sbe m ()
+addBreakpoint = toggleBreakpoint S.insert
+
+removeBreakpoint :: (Functor m, Monad m)
+                 => Symbol
+                 -> Breakpoint
+                 -> Simulator sbe m ()
+removeBreakpoint = toggleBreakpoint S.delete
+
+toggleBreakpoint :: (Functor m, Monad m)
+                 => (Breakpoint -> S.Set Breakpoint -> S.Set Breakpoint)
+                 -> Symbol
+                 -> Breakpoint
+                 -> Simulator sbe m ()
+toggleBreakpoint fn sym bp = do
+  bps <- fromMaybe S.empty <$> uses breakpoints (M.lookup sym)
+  breakpoints %= M.insert sym (fn bp bps)
 
 --------------------------------------------------------------------------------
 -- Misc typeclass instances
