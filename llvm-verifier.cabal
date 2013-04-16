@@ -49,12 +49,15 @@ library
     , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
     , fingertree
+    , haskeline >= 0.7
     , lens
     , llvm-pretty >= 0.1.2.0
     , mtl
     , pretty
     , saw-core
+    , split >= 0.2
     , transformers
+    , tuple >= 0.2
     , vector
     , Verinf
 
