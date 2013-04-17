@@ -224,8 +224,8 @@ cmds = [
   , stopCmd
   , clearCmd
   -- , stepCmd
-  -- , stepupCmd
-  -- , stepiCmd
+  , stepupCmd
+  , stepiCmd
   ]
 
 helpCmd :: forall sbe m . (Functor sbe, Functor m, Monad m, MonadIO m)
@@ -389,6 +389,33 @@ bpsForArg arg = do
   case M.lookup sbid (sdBody def) of
     Nothing -> fail $ "unknown basic block: " ++ arg
     Just _ -> return [(Symbol sym, BreakBBEntry sbid)]
+
+stepupCmd :: (Functor m, Monad m) => Command sbe (Simulator sbe m)
+stepupCmd = Cmd {
+    cmdNames = ["stepup"]
+  , cmdArgs = []
+  , cmdDesc = "execute until the current function returns to its caller (may not happen for tail calls)"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> do
+      mp <- preuse currentPathOfState
+      case mp of
+        Nothing -> fail "no active execution path"
+        Just p ->
+          trBreakpoints %= S.insert (BreakReturnFrom (pathFuncSym p))
+      return True
+  }
+
+stepiCmd :: (Functor m, Monad m) => Command sbe (Simulator sbe m)
+stepiCmd = Cmd {
+    cmdNames = ["stepi", "si"]
+  , cmdArgs = []
+  , cmdDesc = "execute current symbolic statement"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> do
+      trBreakpoints %= S.insert BreakNextStmt
+      return True
+  }
+
 
 completer :: forall sbe m . (Functor sbe, Functor m, Monad m, MonadIO m)
           => CompletionFunc (Simulator sbe m)
