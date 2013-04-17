@@ -31,7 +31,6 @@ module Verifier.LLVM.Simulator.Debugging (
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Error
-import Control.Monad.Trans
 import Control.Monad.State.Class
 import Control.Lens hiding (createInstance)
 
@@ -39,20 +38,15 @@ import Data.Char
 import Data.List
 import Data.List.Split
 import qualified Data.Map as M
-import Data.Maybe
 import qualified Data.Set as S
 import Data.String
 import Data.Tuple.Curry
-import Data.Word (Word16)
 
 import System.Console.Haskeline
-import System.Console.Haskeline.Completion
 import System.Console.Haskeline.History
 import System.Exit
 
 import Text.PrettyPrint
-
-import qualified Text.LLVM.AST as L
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Simulator
@@ -178,8 +172,8 @@ debuggerREPL msb mstmt = do
                 (l:_) -> doCmd (words l)
                 _ -> loop
             Just input -> doCmd (words input)
-        doCmd (cmd:args) = do
-          case M.lookup cmd commandMap of
+        doCmd (cmdStr:args) = do
+          case M.lookup cmdStr commandMap of
             Just cmd -> do
               let go = cmdAction cmd mstmt args
                   handleErr epe@(ErrorPathExc _ _) = throwError epe
@@ -190,7 +184,7 @@ debuggerREPL msb mstmt = do
               continue <- lift $ catchError go handleErr
               unless continue loop
             Nothing -> do
-              outputStrLn $ "unknown command '" ++ cmd ++ "'"
+              outputStrLn $ "unknown command '" ++ cmdStr ++ "'"
               outputStrLn $ "type 'help' for more info"
               loop
         doCmd [] = error "unreachable"
@@ -241,9 +235,9 @@ helpCmd = Cmd {
   }
 
 helpString :: [Command sbe m] -> String
-helpString cmds = render . vcat $
+helpString cs = render . vcat $
   [ invs <> colon $$ nest 2 (text $ cmdDesc cmd)
-  | cmd <- cmds
+  | cmd <- cs
   , let invs = hsep . map text $ (cmdNames cmd ++ cmdArgs cmd)
   ]
 
@@ -281,15 +275,17 @@ localsCmd = Cmd {
   }
 
 dumpCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
-dumpCmd = let args = ["ctrlstk", "block", "function", "memory"]
+dumpCmd = let arglist = ["ctrlstk", "block", "function", "memory"]
           in Cmd {
     cmdNames = ["dump", "d"]
-  , cmdArgs = args
+  , cmdArgs = arglist
   , cmdDesc = "dump an object in the simulator"
   , cmdCompletion = completeWordWithPrev Nothing " " $ \revleft word -> do
       case length . words $ revleft of
         -- only dump one thing at a time
-        1 -> return . map simpleCompletion . filter (word `isPrefixOf`) $ args
+        1 -> return . map simpleCompletion
+                    . filter (word `isPrefixOf`)
+                    $ arglist
         _ -> return []
   , cmdAction = \_ args -> do
       case args of
@@ -308,7 +304,7 @@ dumpCmd = let args = ["ctrlstk", "block", "function", "memory"]
           case mp of
             Nothing -> fail "no active execution path"
             Just p -> dumpSymDefine (gets codebase) (unSym . pathFuncSym $ p)
-        ["memory"] -> dumpMem 6 "memory"
+        ["memory"] -> dumpMem 0 "memory"
         _ -> dbugM $ "dump: unsupported object " ++ unwords args
       return False
   }
@@ -376,7 +372,6 @@ bpsForArg :: (Functor sbe, Functor m, Monad m, MonadIO m)
           => String
           -> Simulator sbe m [(Symbol, Breakpoint)]
 bpsForArg arg = do
-  cb <- gets codebase
   let (sym, bbid) = break (== '%') arg
   def <- lookupSymbolDef (Symbol sym)
   let failbbid = fail $ "unexpected basic block identifier: " ++ bbid
@@ -428,7 +423,7 @@ completer (revleft, right) = do
       False -> do
         -- partial pattern ok:
         --   not (all isSpace revleft') => not (null (words revleft))
-        let (cmd:args) = words (reverse revleft)
+        let (cmd:_) = words (reverse revleft)
         case M.lookup cmd m of
           Nothing -> return (revleft, [])
           Just c -> cmdCompletion c (revleft, right)
@@ -444,7 +439,7 @@ funcSymCompletion = completeWordWithPrev Nothing " " fn
     fn _revleft word = do
       cb <- gets codebase
       let syms = map unSym $ M.keys (cb^.cbFunctionTypes)
-          strictPrefixOf pre xs = pre `isPrefixOf` xs && pre /= xs
+          strictPrefixOf p xs = p `isPrefixOf` xs && p /= xs
           matches = filter (word `strictPrefixOf`) syms
       case matches of
         -- still working on a function symbol
