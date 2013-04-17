@@ -39,7 +39,9 @@ import Data.Char
 import Data.List
 import Data.List.Split
 import qualified Data.Map as M
+import Data.Maybe
 import qualified Data.Set as S
+import Data.String
 import Data.Tuple.Curry
 import Data.Word (Word16)
 
@@ -130,35 +132,38 @@ logBreakpoints :: (Functor m, Monad m, MonadIO m)
                => Simulator sbe m ()
 logBreakpoints = do
   evHandlers.onBlockEntry .= (runAtEntryBreakpoints $ \sb -> do
-    logBreakpoint Nothing)
+    logBreakpoint (Just sb) Nothing)
   evHandlers.onPreStep .= (runAtTransientBreakpoints $ \stmt -> do
-    logBreakpoint (Just stmt))
+    logBreakpoint Nothing (Just stmt))
 
 logBreakpoint :: (Functor m, Monad m, MonadIO m)
-              => Maybe (SymStmt (SBETerm sbe))
+              => Maybe (SymBlock (SBETerm sbe))
+              -> Maybe (SymStmt (SBETerm sbe))
               -> Simulator sbe m ()
-logBreakpoint mstmt = do
+logBreakpoint msb mstmt = do
   mp <- preuse currentPathOfState
   sym <- case pathFuncSym <$> mp of
     Nothing -> fail "no current function symbol"
     Just sym -> return sym
-  let base = "hit breakpoint" <+> parens (ppSymbol sym)
-      rest = maybe "" (\stmt -> colon <+> ppStmt stmt) mstmt
-  dbugM . render $ base <> rest
+  let psym = "hit breakpoint" <+> parens (ppSymbol sym)
+      pblock = maybe "" (\sb -> ppSymBlockID . sbId $ sb) msb
+      pstmt = maybe "" (\stmt -> colon <+> ppStmt stmt) mstmt
+  dbugM . render $ psym <> pblock <> pstmt
 
-enableDebugger :: (Functor m, Monad m, MonadIO m, MonadException m)
+enableDebugger :: (Functor sbe, Functor m, Monad m, MonadIO m, MonadException m)
                => Simulator sbe m ()
 enableDebugger = do
   evHandlers.onBlockEntry .= (runAtEntryBreakpoints $ \sb -> do
-    debuggerREPL Nothing)
+    debuggerREPL (Just sb) Nothing)
   evHandlers.onPreStep .= (runAtTransientBreakpoints $ \stmt -> do
-    debuggerREPL (Just stmt))
+    debuggerREPL Nothing (Just stmt))
 
-debuggerREPL :: (Functor m, Monad m, MonadIO m, MonadException m)
-             => Maybe (SymStmt (SBETerm sbe))
+debuggerREPL :: (Functor sbe, Functor m, Monad m, MonadIO m, MonadException m)
+             => Maybe (SymBlock (SBETerm sbe))
+             -> Maybe (SymStmt (SBETerm sbe))
              -> Simulator sbe m ()
-debuggerREPL mstmt = do
-    logBreakpoint mstmt
+debuggerREPL msb mstmt = do
+    logBreakpoint msb mstmt
     let settings = setComplete completer $
                      defaultSettings { historyFile = Just ".lssdb" }
     runInputT settings loop
@@ -198,14 +203,15 @@ data Command sbe m = Cmd {
   , cmdAction :: Maybe (SymStmt (SBETerm sbe)) -> [String] -> m Bool
   }
 
-commandMap :: (Functor m, Monad m, MonadIO m)
+commandMap :: (Functor sbe, Functor m, Monad m, MonadIO m)
            => M.Map String (Command sbe (Simulator sbe m))
 commandMap = M.fromList . concatMap expandNames $ cmds
   where expandNames cmd = do
           name <- cmdNames cmd
           return (name, cmd)
 
-cmds :: (Functor m, Monad m, MonadIO m) => [Command sbe (Simulator sbe m)]
+cmds :: (Functor sbe, Functor m, Monad m, MonadIO m)
+     => [Command sbe (Simulator sbe m)]
 cmds = [
     helpCmd
   , whereCmd
@@ -215,19 +221,14 @@ cmds = [
   -- , killCmd
   -- , satpathCmd
   -- , exitCmd
-  -- , clearCmd
-  , stopinCmd
-  , clearinCmd
-  -- , stopatCmd
-  -- , clearatCmd
-  -- , stoppcCmd
-  -- , clearpcCmd
+  , stopCmd
+  , clearCmd
   -- , stepCmd
   -- , stepupCmd
   -- , stepiCmd
   ]
 
-helpCmd :: forall sbe m . (Functor m, Monad m, MonadIO m)
+helpCmd :: forall sbe m . (Functor sbe, Functor m, Monad m, MonadIO m)
         => Command sbe (Simulator sbe m)
 helpCmd = Cmd {
     cmdNames = ["help", "?"]
@@ -280,7 +281,7 @@ localsCmd = Cmd {
   }
 
 dumpCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
-dumpCmd = let args = ["ctrlstk", "function", "memory"]
+dumpCmd = let args = ["ctrlstk", "block", "function", "memory"]
           in Cmd {
     cmdNames = ["dump", "d"]
   , cmdArgs = args
@@ -293,6 +294,15 @@ dumpCmd = let args = ["ctrlstk", "function", "memory"]
   , cmdAction = \_ args -> do
       case args of
         ["ctrlstk"] -> dumpCtrlStk
+        ["block"] -> do
+          mp <- preuse currentPathOfState
+          case mp of
+            Nothing -> fail "no active execution path"
+            Just p -> do
+              let sym = pathFuncSym p
+                  Just pcb = pathCB p
+              Just def <- lookupDefine sym <$> gets codebase
+              dbugM . render . ppSymBlock $ lookupSymBlock def pcb
         ["function"] -> do
           mp <- preuse currentPathOfState
           case mp of
@@ -313,46 +323,57 @@ contCmd = Cmd {
   }
 
 
-stopinCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
-stopinCmd = Cmd {
-    cmdNames = ["stopin"]
-  , cmdArgs = ["<function_symbol>"]
-  , cmdDesc = "set a breakpoint at the entry to a function"
+stopCmd :: (Functor sbe, Functor m, Monad m, MonadIO m)
+        => Command sbe (Simulator sbe m)
+stopCmd = Cmd {
+    cmdNames = ["stop"]
+  , cmdArgs = ["<function_symbol>[%block.id]"]
+  , cmdDesc = "set a breakpoint at a function; if no block is specified, break at the entry to the function"
   , cmdCompletion = funcSymCompletion
   , cmdAction = \_ args ->
       case args of
         [arg] -> do
-          bps <- entriesForArg arg
+          bps <- bpsForArg arg
           forM_ bps $ uncurryN addBreakpoint
           return False
         _ -> failHelp
   }
 
-clearinCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
-clearinCmd = Cmd {
-    cmdNames = ["clearin"]
-  , cmdArgs = ["<class id>.<method>[<type_descriptor>]"]
-  , cmdDesc = "clear a breakpoint at the entry to a function"
+clearCmd :: (Functor sbe, Functor m, Monad m, MonadIO m)
+         => Command sbe (Simulator sbe m)
+clearCmd = Cmd {
+    cmdNames = ["clear"]
+  , cmdArgs = ["<function_symbol>[%block.id]"]
+  , cmdDesc = "clear a breakpoint at a function"
   , cmdCompletion = funcSymCompletion
   , cmdAction = \_ args ->
       case args of
         [arg] -> do
-          bps <- entriesForArg arg
+          bps <- bpsForArg arg
           forM_ bps $ uncurryN removeBreakpoint
           return False
         _ -> failHelp
   }
 
-entriesForArg :: Monad m => String -> Simulator sbe m [(Symbol, Breakpoint)]
-entriesForArg arg = do
+bpsForArg :: (Functor sbe, Functor m, Monad m, MonadIO m)
+          => String
+          -> Simulator sbe m [(Symbol, Breakpoint)]
+bpsForArg arg = do
   cb <- gets codebase
-  let sym = Symbol arg
-  case lookupFunctionType sym cb of
-    Nothing -> fail $ "unknown symbol: " ++ arg
-    Just _ -> return [(sym, BreakEntry)]
+  let (sym, bbid) = break (== '%') arg
+  def <- lookupSymbolDef (Symbol sym)
+  let failbbid = fail $ "unexpected basic block identifier: " ++ bbid
+  (name, n) <- case splitOn "." . reverse . drop 1 $ bbid of
+                 [] -> fail bbid
+                 (nstr:rest) -> do
+                   n <- maybe failbbid return (readMaybe nstr)
+                   return (reverse . intercalate "." $ rest, n)
+  let sbid = symBlockID (fromString name) n
+  case M.lookup sbid (sdBody def) of
+    Nothing -> fail $ "unknown basic block: " ++ arg
+    Just _ -> return [(Symbol sym, BreakBBEntry sbid)]
 
-
-completer :: forall sbe m . (Functor m, Monad m, MonadIO m)
+completer :: forall sbe m . (Functor sbe, Functor m, Monad m, MonadIO m)
           => CompletionFunc (Simulator sbe m)
 completer (revleft, right) = do
     let (revword, revleft') = break isSpace revleft
@@ -368,21 +389,41 @@ completer (revleft, right) = do
           Nothing -> return (revleft, [])
           Just c -> cmdCompletion c (revleft, right)
   where
-    m :: M.Map String (Command sbe (Simulator sbe m))
+    m :: Functor sbe => M.Map String (Command sbe (Simulator sbe m))
     m = commandMap
 
 -- | Complete a function symbol as the current word
-funcSymCompletion :: (Functor m, Monad m, MonadIO m)
+funcSymCompletion :: (Functor sbe, Functor m, Monad m, MonadIO m)
                   => CompletionFunc (Simulator sbe m)
 funcSymCompletion = completeWordWithPrev Nothing " " fn
   where
     fn _revleft word = do
       cb <- gets codebase
-      let syms = M.keys (cb^.cbFunctionTypes)
-      return . map simpleCompletion
-             . filter (word `isPrefixOf`)
-             . map unSym
-             $ syms
+      let syms = map unSym $ M.keys (cb^.cbFunctionTypes)
+          strictPrefixOf pre xs = pre `isPrefixOf` xs && pre /= xs
+          matches = filter (word `strictPrefixOf`) syms
+      case matches of
+        -- still working on a function symbol
+        _:_ -> return . map (notFinished . simpleCompletion) $ matches
+        -- otherwise completing a block name, so figure out which
+        -- functions we completed so far
+        [] -> do
+          let matches' = filter (`isPrefixOf` word) syms
+          concat <$> forM matches' (\sym -> do
+            def <- lookupSymbolDef (Symbol sym)
+            -- expect bbids in their pretty-printed form
+            let bbids = filter (/= "init")
+                      . map (render . ppSymBlockID)
+                      . M.keys . sdBody $ def
+                cleanup = notFinished . simpleCompletion . (sym ++)
+            case stripPrefix sym word of
+              Just prefix -> do
+                return . map cleanup . filter (prefix `isPrefixOf`) $ bbids
+              Nothing ->
+                return . map cleanup $ bbids)
+
+notFinished :: Completion -> Completion
+notFinished c = c { isFinished = False }
 
 unSym :: Symbol -> String
 unSym (Symbol str) = str
