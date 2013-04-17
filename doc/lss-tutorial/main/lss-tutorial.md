@@ -20,7 +20,7 @@ familiarity with cryptography. However, we do not assume familiarity
 with symbolic simulation, formal modeling, or theorem proving.
 
 We assume that the user has installed the LLVM 3.0 or 3.1 toolchain
-(available from `http://llvm.org/releases`). Additionally,
+^[Available from <http://llvm.org/releases>]. Additionally,
 installation of the Cryptol tool set [^cryptol] and the ABC logic
 synthesis system from UC Berkeley [^abc] is necessary before
 completing the equivalence checking portion of the tutorial.
@@ -123,9 +123,9 @@ world, or to assume that the input could be completely arbitrary, and
 reason about what the program would do for any possible input.
 
 The LLVM Symbolic Simulator can evaluate simple output methods, such
-as the ubiquitous `printf()`. If the value printed depends on the
-value of a symbolic input variable, a bit-level textual representation
-is shown with '?' marks to denote symbolic bits.
+as the ubiquitous `printf`. If the value printed depends on the value
+of a symbolic input variable, a bit-level textual representation is
+shown with the `?` character used to denote symbolic bits.
 
 The LLVM Symbolic Simulator provides a set of special functions for
 performing operations on symbolic values, and for emitting the formal
@@ -143,9 +143,9 @@ there are some files and directories of note. The file
 the symbolic inputs to the AES128 block encrypt function;
 `aes128BlockEncrypt.[ch]` contains the block encrypt function
 implementation; the `sym-api` subdirectory contains copies of the
-``sigfuns API'' header and implementation files; finally, the `ref`
-subdirectory includes the cryptol reference specification and
-equivalence checking script.
+header and implementation files for the API used to interact with the
+symbolic simulator; finally, the `ref` subdirectory includes the
+cryptol reference specification and equivalence checking script.
 
 Let's start with `aes128BlockEncrypt_driver.c`. This code creates a
 simple wrapper around the `aes128BlockEncrypt` function. We will use
@@ -198,11 +198,11 @@ include only a subset of the symbolic variables in the program.
 
 The formal model that the simulator generates takes the form of an
 And-Inverter Graph (AIG), which is a way of representing a boolean
-function purely in terms of the logical operations ``and'' and
-``not''. The simplicity of this representation makes the models easy
-to reason about, and to compare to models from other sources. However,
-the same simplicity means that the model files can be very large in
-comparison to the input source code.
+function purely in terms of the logical operations "and" and "not".
+The simplicity of this representation makes the models easy to reason
+about, and to compare to models from other sources. However, the same
+simplicity means that the model files can be very large in comparison
+to the input source code.
 
 Running the Simulator
 =====================
@@ -212,7 +212,16 @@ section, we can use the `lss` command, which forms the command-line
 front end of the LLVM Symbolic Simulator. At minimum, it needs to know
 where to find a fully-linked LLVM bitcode containing a `main`
 function. Typing `make` inside the code subdirectory will produce a
-file called `aes.bc` that meets these criteria.
+file called `aes.bc` that meets these criteria. It works by running
+the following commands:
+
+    clang -emit-llvm -I<INC> -c aes128BlockEncrypt.c -o aes128BlockEncrypt.bc
+    clang -emit-llvm -I<INC> -c aes128BlockEncrypt_driver.c \
+      -o aes128BlockEncrypt_driver.bc
+    llvm-link aes128BlockEncrypt.bc aes128BlockEncrypt_driver.bc -o aes.bc
+
+Where `<INC>` is replaced with the directory containing the symbolic
+simulator API header file.
 
 The following command will then run `lss` to create a formal model:
 
@@ -231,7 +240,7 @@ itself, and LLVM-Sym, the language to which LLVM programs are
 translated by `lss`. For example, let's say we've compiled the AES128
 driver code by hand:
 
-    clang -emit-llvm -I./sym-api -c aes128BlockEncrypt_driver.c \
+    clang -emit-llvm -I<INC> -c aes128BlockEncrypt_driver.c \
       -o aes128BlockEncrypt_driver.bc
 
 To see the LLVM assembly langugage representation of this program, one
@@ -245,7 +254,7 @@ the LLVM-Sym representation, the `--xlate` option may be supplied to
 `lss`. This option causes the LLVM-Sym representation to be displayed
 to stdout; the user may redirect output when convenient:
 
-    lss --xlate aes128BlockEncrypt_driver.bc > aes128BlockEncrypt_driver.xlate
+    lss --xlate aes128BlockEncrypt_driver.bc > aes128BlockEncrypt_driver.sym
 
 When viewing debugging output from `lss`, program locations are
 currently shown in reference to the LLVM-Sym representation, so it is
@@ -257,22 +266,22 @@ Verifying the Formal Model Using Cryptol
 One easy way to verify an LLVM implementation against a reference
 specification is via the Cryptol tool set. Cryptol is a
 domain-specific language created by Galois for the purpose of writing
-high-level but precise specifications of cryptographic algorithms
-[@cryptol]. The Cryptol tool set has built-in support for checking the
-equivalence of different Cryptol implementations, as well as comparing
-Cryptol implementations to external formal models.
+high-level but precise specifications of cryptographic algorithms. The
+Cryptol tool set has built-in support for checking the equivalence of
+different Cryptol implementations, as well as comparing Cryptol
+implementations to external formal models.
 
 This tutorial comes with a handful of Cryptol files, most notably
 `Rijndael.cry` and `equivAES.cry`. The former is a Cryptol
-specification of the Rijndael cipher. In particular, it contains the
-function `blockEncrypt` which should have equivalent functionality to
-the `aes128BlockEncrypt` function in our C source. Well, nearly
-equivalent: we write a small wrapper around this function, as can be
-seen in `equivAES.cry` that reorders the bytes of the inputs and
-outputs as needed to the form expected by the `blockEncrypt` function.
-This essentially makes the calling convention and data layout
-assumptions of both functions identical before attempting to show
-equivalence.
+specification of the AES (a.k.a. Rijndael) cipher. In particular, it
+contains the function `blockEncrypt` which should have equivalent
+functionality to the `aes128BlockEncrypt` function in our C source.
+Well, nearly equivalent: we write a small wrapper around this
+function, as can be seen in `equivAES.cry` that reorders the bytes of
+the inputs and outputs as needed to the form expected by the
+`blockEncrypt` function. This essentially makes the calling convention
+and data layout assumptions of both functions identical before
+attempting to show equivalence.
 
 To compare the functionality of the two implementations, we have
 several options. As mentioned earlier, formal models can be evaluated
@@ -281,14 +290,14 @@ techniques to show equivalence for all possible inputs. The contents
 of `equivAES.cry` show how to compare the formal model of the C
 implementation against the Cryptol reference specification.
 
-````
+```
 ...
 extern AIG llvm_aes("../aes.aig") : ([4][32], [4][32]) -> [4][32];
 theorem MatchesRef : {pt key}. llvm_aes (pt, key) == blockEncryptref_c (pt, key);
 blockEncryptref_c : ([4][32], [4][32]) -> [4][32];
 blockEncryptref_c (x, y) = ...
 ...
-````
+```
 
 The `extern AIG` line makes the contents of `aes.aig` available as a
 function called `llvm_aes` that takes two 4x32-bit values as input and
@@ -300,7 +309,7 @@ inputs.
 We can load `equivAES.cry` into the Cryptol tool set, yielding the
 following output:
 
-````
+```
 # cryptol equivAES.cry
 Cryptol version 1.8.22, Copyright (C) 2004-2011 Galois, Inc.
                                             www.cryptol.net
@@ -315,26 +324,26 @@ Loading "equivAES.cry"..
 Checking case 100 of 100 (100.00%)
 100 tests passed OK
 [Coverage: 0.00%. (100/11579208923731619542357098500868790785326998466564056...)]
-````
+```
 
 By default, the Cryptol interpreter processes every `theorem`
 declaration by automatically evaluating the associated expression on a
-series of random values, and ensuring that it always yields ``true''.
-In this case, it tried 100 random key and plaintext values, and the
-two functions yielded the same output in each case. However, the
-number of possible inputs is immense, so 100 test cases barely
-scratches the surface.
+series of random values, and ensuring that it always yields `True`. In
+this case, it tried 100 random key and plaintext values, and the two
+functions yielded the same output in each case. However, the number of
+possible inputs is immense, so 100 test cases barely scratches the
+surface.
 
 To gain a higher degree of confidence that the functions do have the
 same functionality for all possible inputs, we can attempt to prove
 their equivalence deductively. From Cryptol's command line:
 
-````
+```
 equivAES> :set symbolic
 equivAES> :prove MatchesRef
 Q.E.D.
 equivAES> :fm blockEncryptref_c "aes-ref.aig"
-````
+```
 
 This tells the Cryptol interpreter to switch to symbolic simulation
 mode (which is one way it can generate formal models from Cryptol
@@ -355,7 +364,7 @@ Verifying the Formal Model Using ABC
 ====================================
 
 ABC is a tool for logic synthesis and verification developed by
-researchers at UC Berkeley [@abc]. It can perform a wide variety of
+researchers at UC Berkeley. It can perform a wide variety of
 transformations and queries on logic circuits, including those in the
 AIG form discussed earlier.
 
@@ -382,12 +391,12 @@ checked for validity using a SAT solver of your choice.
 The AES driver in `aes128BlockEncrypt_driver.c` contains the following
 line:
 
-````
+```
 lss_write_cnf(pt[0] != ct[0] &&
               pt[1] != ct[1] &&
               pt[2] != ct[2] &&
               pt[3] != ct[3], "noleaks.cnf");
-````
+```
 
 This call instructs LSS to write CNF clauses built from the expression
 given as the first argument (in this case, an assertion that the plain
@@ -400,3 +409,6 @@ We can now use a SAT solver to prove that AES will never encrypt plain
 text into identical cipher text (given sufficient time!):
 
     # picosat noleaks.cnf
+
+Note that we do not guarantee that any currently-available SAT solver
+can prove this theorem in a reasonable amount of time.
