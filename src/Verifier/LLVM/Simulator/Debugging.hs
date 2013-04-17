@@ -218,9 +218,9 @@ cmds = [
   , localsCmd
   , dumpCmd
   , contCmd
-  -- , killCmd
+  , killCmd
   -- , satpathCmd
-  -- , exitCmd
+  , exitCmd
   , stopCmd
   , clearCmd
   -- , stepCmd
@@ -322,6 +322,23 @@ contCmd = Cmd {
   , cmdAction = \_ _ -> return True
   }
 
+killCmd :: (Functor sbe, Functor m, MonadIO m) => Command sbe (Simulator sbe m)
+killCmd = Cmd {
+    cmdNames = ["kill"]
+  , cmdArgs = ["[<msg>]"]
+  , cmdDesc = "kill the current execution path"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ -> errorPath . unwords
+  }
+
+exitCmd :: MonadIO m => Command sbe m
+exitCmd = Cmd {
+    cmdNames = ["exit", "quit", "q"]
+  , cmdArgs = []
+  , cmdDesc = "exit LSS"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> liftIO $ exitWith ExitSuccess
+  }
 
 stopCmd :: (Functor sbe, Functor m, Monad m, MonadIO m)
         => Command sbe (Simulator sbe m)

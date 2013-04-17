@@ -51,6 +51,7 @@ module Verifier.LLVM.Simulator
   , liftSBE
   , withSBE
   , withSBE'
+  , errorPath
   -- * Memory operations
   , alloca
   , load
