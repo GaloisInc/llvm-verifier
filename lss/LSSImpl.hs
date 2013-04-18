@@ -43,6 +43,7 @@ data LSS = LSS
   , xlate         :: Bool
   , mname         :: Maybe String
   , startDebugger :: Bool
+  , satBranches   :: Bool
   } deriving (Show, Data, Typeable)
 
 newtype DbugLvl = DbugLvl { unD :: Int32 }
@@ -122,7 +123,7 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
         let mval = asUnsignedInteger sbe undefined rv
         return $ maybe (SymRV eps mm rv) (\x -> (ConcRV eps mm x)) mval
   where
-    opts        = Just $ LSSOpts (errpaths args)
+    opts        = Just $ LSSOpts (errpaths args) (satBranches args)
     seh'        = defaultSEH
 
 buildArgv ::
