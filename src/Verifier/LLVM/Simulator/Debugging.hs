@@ -213,7 +213,7 @@ cmds = [
   , dumpCmd
   , contCmd
   , killCmd
-  -- , satpathCmd
+  , satpathCmd
   , exitCmd
   , stopCmd
   , clearCmd
@@ -335,6 +335,25 @@ exitCmd = Cmd {
   , cmdDesc = "exit LSS"
   , cmdCompletion = noCompletion
   , cmdAction = \_ _ -> liftIO $ exitWith ExitSuccess
+  }
+
+satpathCmd :: (Functor sbe, Functor m, MonadIO m)
+           => Command sbe (Simulator sbe m)
+satpathCmd = Cmd {
+    cmdNames = ["satpath", "sat"]
+  , cmdArgs = []
+  , cmdDesc = "check whether the current path's assertions are satisfiable, killing this path if they are not"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> do
+      (Just p) <- preuse currentPathOfState
+      sbe <- gets symBE
+      sat <- liftSBE $ termSAT sbe (p^.pathAssertions)
+      case sat of
+        UnSat -> do dbugM "path assertions unsatisfiable; killed"
+                    errorPath "path assertions unsatisfiable: killed by debugger"
+        Sat _ -> dbugM "path assertions satisfiable"
+        Unknown -> dbugM "pat assertions possibly satisfiable"
+      return False
   }
 
 stopCmd :: (Functor sbe, Functor m, Monad m, MonadIO m)
