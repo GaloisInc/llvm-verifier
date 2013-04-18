@@ -6,10 +6,11 @@ Point-of-contact : jhendrix
 -}
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
-module Verifier.LLVM.Simulator.Common 
+module Verifier.LLVM.Simulator.Common
   ( Simulator(SM)
   , runSM
   , dumpCtrlStk
@@ -83,6 +84,7 @@ module Verifier.LLVM.Simulator.Common
 
   , ppStackTrace
   , ppTuple
+  , ppBreakpoints
   ) where
 
 import Control.Applicative hiding (empty)
@@ -650,6 +652,18 @@ ppRegMap sbe mp =
 
 ppTuple :: [Doc] -> Doc
 ppTuple = parens . hcat . punctuate comma
+
+ppBreakpoint :: Breakpoint -> Doc
+ppBreakpoint BreakEntry          = "init"
+ppBreakpoint (BreakBBEntry sbid) = ppSymBlockID sbid
+
+ppBreakpoints :: M.Map Symbol (S.Set Breakpoint) -> Doc
+ppBreakpoints m =
+  hang "breakpoints set:" 2 . vcat $
+    [ text sym <> ppBreakpoint bp
+    | (Symbol sym, bps) <- M.toList m
+    , bp <- S.toList bps
+    ]
 
 -----------------------------------------------------------------------------------------
 -- Debugging

@@ -139,10 +139,10 @@ logBreakpoint msb mstmt = do
   sym <- case pathFuncSym <$> mp of
     Nothing -> fail "no current function symbol"
     Just sym -> return sym
-  let psym = "hit breakpoint" <+> parens (ppSymbol sym)
+  let psym = ppSymbol sym
       pblock = maybe "" (\sb -> ppSymBlockID . sbId $ sb) msb
       pstmt = maybe "" (\stmt -> colon <+> ppStmt stmt) mstmt
-  dbugM . render $ psym <> pblock <> pstmt
+  dbugM . render $ "at" <+> (psym <> pblock <> pstmt) <> colon
 
 enableDebugger :: (Functor sbe, Functor m, Monad m, MonadIO m, MonadException m)
                => Simulator sbe m ()
@@ -217,6 +217,7 @@ cmds = [
   , exitCmd
   , stopCmd
   , clearCmd
+  , infoCmd
   -- , stepCmd
   , stepupCmd
   , stepiCmd
@@ -385,6 +386,23 @@ bpsForArg arg = do
     Nothing -> fail $ "unknown basic block: " ++ arg
     Just _ -> return [(Symbol sym, BreakBBEntry sbid)]
 
+infoCmd :: MonadIO m => Command sbe (Simulator sbe m)
+infoCmd = Cmd {
+    cmdNames = ["info"]
+  , cmdArgs = []
+  , cmdDesc = "list breakpoints"
+  , cmdCompletion = noCompletion
+  , cmdAction = \_ _ -> dumpBPs >> return False
+  }
+
+dumpBPs :: MonadIO m => Simulator sbe m ()
+dumpBPs = do
+  bps <- use breakpoints
+  if all S.null (M.elems bps)
+     then dbugM "no breakpoints set"
+     else dbugM . render . ppBreakpoints $ bps
+
+
 stepupCmd :: (Functor m, Monad m) => Command sbe (Simulator sbe m)
 stepupCmd = Cmd {
     cmdNames = ["stepup"]
@@ -438,7 +456,11 @@ funcSymCompletion = completeWordWithPrev Nothing " " fn
   where
     fn _revleft word = do
       cb <- gets codebase
-      let syms = map unSym $ M.keys (cb^.cbFunctionTypes)
+      ovrs <- map unSym . M.keys <$> use fnOverrides
+      let isOverride = (`elem` ovrs)
+          syms = filter (not . isOverride)
+               . map unSym
+               $ M.keys (cb^.cbFunctionTypes)
           strictPrefixOf p xs = p `isPrefixOf` xs && p /= xs
           matches = filter (word `strictPrefixOf`) syms
       case matches of
@@ -449,17 +471,20 @@ funcSymCompletion = completeWordWithPrev Nothing " " fn
         [] -> do
           let matches' = filter (`isPrefixOf` word) syms
           concat <$> forM matches' (\sym -> do
-            def <- lookupSymbolDef (Symbol sym)
-            -- expect bbids in their pretty-printed form
-            let bbids = filter (/= "init")
-                      . map (render . ppSymBlockID)
-                      . M.keys . sdBody $ def
-                cleanup = notFinished . simpleCompletion . (sym ++)
-            case stripPrefix sym word of
-              Just prefix -> do
-                return . map cleanup . filter (prefix `isPrefixOf`) $ bbids
-              Nothing ->
-                return . map cleanup $ bbids)
+            mdef <- lookupDefine (Symbol sym) <$> gets codebase
+            case mdef of
+              Nothing -> return []
+              Just def -> do
+                -- expect bbids in their pretty-printed form
+                let bbids = filter (/= "init")
+                          . map (render . ppSymBlockID)
+                          . M.keys . sdBody $ def
+                    cleanup = notFinished . simpleCompletion . (sym ++)
+                case stripPrefix sym word of
+                  Just prefix -> do
+                    return . map cleanup . filter (prefix `isPrefixOf`) $ bbids
+                  Nothing ->
+                    return . map cleanup $ bbids)
 
 notFinished :: Completion -> Completion
 notFinished c = c { isFinished = False }
