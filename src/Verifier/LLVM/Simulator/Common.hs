@@ -17,7 +17,7 @@ module Verifier.LLVM.Simulator.Common
 
   , GlobalMap
 
-  , LSSOpts(LSSOpts, optsErrorPathDetails)
+  , LSSOpts(LSSOpts, optsErrorPathDetails, optsSatAtBranches)
   , defaultLSSOpts
 
   , State(..)
@@ -127,11 +127,15 @@ type OvrMap sbe m  = M.Map Symbol (Override sbe m, Bool {- user override? -})
 -- | Symbolic simulator options
 data LSSOpts = LSSOpts {
     optsErrorPathDetails :: Bool
+  , optsSatAtBranches    :: Bool
+  -- ^ use a SAT-checking backend at branches, pruning unfeasable paths
   }
 
 -- | Default simulator options
 defaultLSSOpts :: LSSOpts
-defaultLSSOpts = LSSOpts False
+defaultLSSOpts = LSSOpts { optsErrorPathDetails = False
+                         , optsSatAtBranches    = False
+                         }
 
 -- | Symbolic simulator state
 data State sbe m = State

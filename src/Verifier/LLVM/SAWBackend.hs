@@ -54,7 +54,7 @@ preludeBVNatTermF :: TermF t
 preludeBVNatTermF = FTermF $ GlobalDef (mkIdent preludeModuleName "bvNat")
 
 nyi :: String -> a
-nyi nm = error $ "Not yet implemented: " ++ show nm
+nyi nm = error $ "(SAW backend) Not yet implemented: " ++ show nm
 
 scBitwidth :: SharedContext s -> BitWidth -> IO (SharedTerm s)
 scBitwidth sc w = scNat sc (toInteger w)
@@ -876,7 +876,7 @@ createSAWBackend dl _mg = do
                 , applyPredIte = lift3 pIte
                 , applyIte = \tp x y z -> SAWBackend $ do
                     fmap Right $ join $
-                      iteFn <$> (join $ scApplyLLVMValue sc <*> sbsMemType sbs tp) 
+                      iteFn <$> (join $ scApplyLLVMValue sc <*> sbsMemType sbs tp)
                             ?? x
                             ?? y
                             ?? z
@@ -914,6 +914,9 @@ createSAWBackend dl _mg = do
                 , memBranch      = SAWBackend . return . (memState %~ branchMem)
                 , memBranchAbort = SAWBackend . return . (memState %~ branchAbortMem)
                 , memMerge = \c x y -> SAWBackend $ return $ smMerge c x y
+
+                -- TODO: SAT checking for SAW backend
+                , termSAT    = nyi "termSAT"
                 , writeAiger = nyi "writeAiger"
                 , writeCnf   = nyi "writeCnf"
                 , evalAiger  = nyi "evalAiger"

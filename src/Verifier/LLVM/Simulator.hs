@@ -648,11 +648,35 @@ step (Return mtv) = do
 step (PushPendingExecution bid cond ml elseStmts) = do
   sbe <- gets symBE
   c <- evalCond cond
-  case asBool sbe c of
-   -- Don't bother with elseStmts as condition is true. q
+  opts <- gets lssOpts
+  Just p <- preuse currentPathOfState
+  tsat <- if optsSatAtBranches opts
+             then do a' <- liftSBE $ applyAnd sbe c (p^.pathAssertions)
+                     liftSBE $ termSAT sbe a'
+             else return Unknown
+  fsat <- if optsSatAtBranches opts
+             then do cnot <- liftSBE $ applyBNot sbe c
+                     a' <- liftSBE $ applyAnd sbe cnot (p^.pathAssertions)
+                     liftSBE $ termSAT sbe a'
+             else return Unknown
+  -- exclude paths which are definitely unsat. If both are unsat, we
+  -- probably couldn't have gotten here, so just throw an error path
+  -- right away
+  when (tsat == UnSat && fsat == UnSat) $ do
+    dbugM' 3 "both branch conditions unsatisfiable -- should have been caught earlier"
+    errorPath "no satisfiable assertions at branch point"
+
+  -- fall through to else branch if true condition is unsat
+  let b = if tsat /= UnSat then asBool sbe c else Just False
+  case b of
+   -- Don't bother with elseStmts as condition is true.
    Just True  -> setCurrentBlock bid
+   -- Don't bother with elseStmts if negated condition is unsat
+   Nothing | fsat == UnSat -> setCurrentBlock bid
    -- Don't bother with pending path as condition is false.
    Just False -> runStmts elseStmts
+   -- Don't bother with pending path as condition is unsat
+   Nothing | tsat == UnSat -> runStmts elseStmts
    Nothing -> do
      nm <- use pathCounter
      pathCounter += 1

@@ -1690,7 +1690,7 @@ sbeBitBlast dl mm = sbe
           , applyIte         = \_ c x y -> return $ muxTerm c x y
           , freshInt         = \w -> BitIO $
               IntTerm <$> LV.replicateM w (beMakeInputLit be)
-          
+
           , typedExprEval    = \expr ->
              return $ ExprEvalFn $ \eval -> liftIO . applyExpr dl =<< traverse eval expr
           , applyTypedExpr   = BitIO . applyExpr dl
@@ -1718,6 +1718,11 @@ sbeBitBlast dl mm = sbe
           , heapAlloc        = \m eltTp _ cnt a ->
               BitIO $ mmHeapAlloc mm m (memTypeSize dl eltTp) cnt a
           , memCopy          = BitIO `c6` mmMemCopy mm
+
+          , termSAT          =
+              case beCheckSat be of
+                Nothing  -> BitIO . return . const Unknown
+                Just sat -> BitIO . sat
           , writeAiger       = \f ts ->
               BitIO $ beWriteAigerV be f $ flattenTerm . snd <$> ts
           , evalAiger        = BitIO `c3` evalAigerImpl dl
