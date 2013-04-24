@@ -1,3 +1,4 @@
+set -e
 # Jenkins should have "cd LLVM && bash jenkins.sh"
 PATH="$HOME/.cabal/bin:$(eval 'echo $'"$HASKELL_RUNTIME"):$TOOLS:$JDK16:$PATH"
 
