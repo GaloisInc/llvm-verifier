@@ -89,7 +89,8 @@ import qualified Data.Vector               as V
 import           Numeric                   (showHex)
 import           System.Exit
 import           System.IO
-import           Text.PrettyPrint
+import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
+
 
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
@@ -315,12 +316,12 @@ runNormalSymbol normalRetID calleeSym mreg args = do
      processMemCond fr c
   return args
   where
-    err doc = error $ "callDefine/bindArgs: " ++ render doc
+    err doc = error $ "callDefine/bindArgs: " ++ show doc
 
     bindArgs formals actuals
       | length formals /= length actuals =
           err $ text "incorrect number of actual parameters"
-            $+$ text "formals: " <> text (show (fst <$> formals))
+            <$$> text "formals: " <> text (show (fst <$> formals))
       | otherwise =
           foldr (uncurry bindArg) M.empty (formals `zip` actuals)
     bindArg (r,tp) v = M.insert r (v,tp)
@@ -1034,7 +1035,7 @@ repl = do
 dbugTerm :: (MonadIO m, Functor m) => String -> SBETerm sbe -> Simulator sbe m ()
 dbugTerm desc t = do
   d <- withSBE' $ \s -> prettyTermD s t
-  dbugM $ desc ++ ": " ++ render d
+  dbugM $ desc ++ ": " ++ show d
 
 _nowarn_unused :: a
 _nowarn_unused = undefined

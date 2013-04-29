@@ -179,11 +179,14 @@ binVRel n tp = Vec n tp -> Vec n tp -> Vec n (bitvector 1);
 
 liftBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
           -> (w :: Nat) -> binRel (bitvector w);
-liftBVRel f w x y = [f w x y];
+--liftBVRel f w x y = [f w x y];
+liftBVRel f w x y = ite (bitvector 1) (f w x y) (bvNat 1 1) (bvNat 1 0);
+
 
 liftSBVRel :: ((w :: Nat) -> bitvector (Succ w) -> bitvector (Succ w) -> Bool)
           -> (w :: Nat) -> binRel (bitvector (Succ w));
-liftSBVRel f w x y = [f w x y];
+--liftSBVRel f w x y = [f w x y];
+liftSBVRel f w x y = ite (bitvector 1) (f w x y) (bvNat 1 1) (bvNat 1 0);
 
 liftVecBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
              -> (n w :: Nat)
@@ -204,6 +207,13 @@ liftVecSBVRel f n w =
            (bitvector 1)
            (liftSBVRel f w)
            n;
+
+
+llvmIeqBool :: (w :: Nat) -> bitvector w -> bitvector w -> Bool;
+llvmIeqBool = bvEq;
+
+llvmIuleBool :: (w :: Nat) -> bitvector w -> bitvector w -> Bool;
+llvmIuleBool = bvule;
 
 llvmIeq llvmIne :: (w :: Nat)   -> binRel (bitvector w);
 llvmIeq = liftBVRel bvEq;
@@ -316,3 +326,41 @@ llvmIntToDouble = bvToDouble;
 
 llvmDoubleToInt :: Double -> bitvector 64;
 llvmDoubleToInt = doubleToBV;
+
+-- These rules are unsound in general:
+
+bvule_sameL :: (n :: Nat)
+            -> (x y z :: bitvector n) 
+            -> Eq Bool
+                  (bvule n x (bvAdd n x z))
+                  True;
+
+bvule_sameR :: (n :: Nat)
+            -> (x y z :: bitvector n) 
+            -> Eq Bool
+                  (bvule n (bvAdd n x y) x)
+                  (bvEq n y (bvNat n 0));
+
+bvule_same2 :: (n :: Nat)
+            -> (x y z :: bitvector n) 
+            -> Eq Bool
+                  (bvule n (bvAdd n x y) (bvAdd n x z))
+                  (bvule n y z);
+
+bveq_sameL :: (n :: Nat)
+            -> (x y z :: bitvector n) 
+            -> Eq Bool
+                  (bvEq n x (bvAdd n x z))
+                  (bvEq n (bvNat n 0) z);
+
+bveq_sameR :: (n :: Nat)
+            -> (x y z :: bitvector n) 
+            -> Eq Bool
+                  (bvEq n (bvAdd n x y) x)
+                  (bvEq n y (bvNat n 0));
+
+bveq_same2 :: (n :: Nat)
+            -> (x y z :: bitvector n) 
+            -> Eq Bool
+                  (bvEq n (bvAdd n x y) (bvAdd n x z))
+                  (bvEq n y z);

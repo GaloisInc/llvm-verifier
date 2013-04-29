@@ -86,9 +86,12 @@ forAllMemModels v bcFile testProp = do
         run $ do
           runSimulator cb sbe mem defaultSEH Nothing $ withVerbosity v $ testProp
   sequence
-    [ runTest =<< run (createBuddyModel dl)
+    [ 
+{-
+runTest =<< run (createBuddyModel dl)
     , runTest =<< run (createDagModel dl)
---    , runTest =<< run (createSAWModel dl)
+-}
+      runTest =<< run (createSAWModel dl)
     ]
 
 type AllMemModelTest = Functor sbe => Simulator sbe IO Bool
@@ -122,6 +125,8 @@ runTestLSSCommon nm createFn v mdl argv' hndlr = do
                           , errpaths = False
                           , xlate = False
                           , mname = Nothing
+                          , startDebugger = False
+                          , satBranches = False
                           }
 
 -- | Create buddy backend and initial memory.

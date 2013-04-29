@@ -31,7 +31,8 @@ module Verifier.LLVM.Backend
 import           Control.Applicative ((<$>))
 import           Data.Bits (testBit)
 import qualified Data.Vector as V
-import           Text.PrettyPrint.HughesPJ
+import Text.PrettyPrint.Leijen hiding ((<$>))
+
 
 import Verinf.Symbolic (beCheckSat, SatResult(..))
 

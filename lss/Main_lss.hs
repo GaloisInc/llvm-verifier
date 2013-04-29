@@ -22,7 +22,7 @@ import           Text.ParserCombinators.Parsec
 import           Verinf.Symbolic                 (createBitEngine)
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
-import           Text.PrettyPrint
+import           Text.PrettyPrint.Leijen hiding ((<$>))
 
 import           LSSImpl
 
@@ -102,7 +102,7 @@ main = do
       case mr of
         Left d -> putStrLn $ show $ text "Error:" <+> d
         Right (warnings,sd) -> do
-          mapM_ (\w -> putStrLn $ show $ text "Warning:" $$ nest 2 w) warnings
+          mapM_ (\w -> putStrLn $ show $ text "Warning:" <$$> nest 2 w) warnings
           putStrLn $ show $ ppSymDefine sd
     let via s f = mapM_ (putStrLn . show  . f) (s mdl)
     exitWith ExitSuccess
