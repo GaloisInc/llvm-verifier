@@ -45,7 +45,8 @@ import Data.Maybe
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as L
 import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
-import           Text.PrettyPrint.HughesPJ
+import Text.PrettyPrint.Leijen hiding ((<$>))
+
 
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
@@ -54,7 +55,7 @@ import           Verifier.LLVM.Backend
 
 -- | This function is called whenever lifting fails due to an internal error.
 liftError :: Doc -> a
-liftError d = error (render d)
+liftError d = error (show d)
 
 -- LLVMTranslationInfo {{{1
 -- | Information about basic block and control-flow graph used during
@@ -237,7 +238,7 @@ zeroExpr tp0 =
 unsupportedStmt :: (?sbe :: SBE sbe)
                 => L.Stmt -> BlockGenerator sbe (SymStmt (SBETerm sbe))
 unsupportedStmt stmt = do
-  addWarning $ text "Unsupported instruction: " <+> L.ppStmt stmt
+  addWarning $ text "Unsupported instruction: " <+> text (show (L.ppStmt stmt))
   return (BadSymStmt stmt)
 
 liftGEP :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
@@ -523,7 +524,7 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
         impl [] idx il = liftError $
                          text "Missing terminal instruction in block" <+>
                          int idx <+>
-                         text "after generating the following statements:" $$
+                         text "after generating the following statements:" <$$>
                          (nest 2 . vcat $ ppStmt <$> il)
         impl [stmt@(Effect (L.Ret tpv) _)] idx il = do
           symStmt <- trySymStmt stmt $ do
@@ -637,7 +638,7 @@ liftDefine d
   where mfd = FunDecl <$> liftRetType (L.defRetType d)
                       <*> traverse liftMemType (L.typedType <$> L.defArgs d)
                       <*> pure False 
-        symd = L.ppSymbol (L.defName d)
+        symd = ppSymbol (L.defName d)
 
 -- Test code {{{1
 {-

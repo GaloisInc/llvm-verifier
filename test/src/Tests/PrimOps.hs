@@ -28,8 +28,7 @@ import           Verifier.LLVM.Simulator
 
 primOpTests :: [(Args, Property)]
 primOpTests =
-  [ 
-    testBinaryPrim "int32_add" (+)
+  [ testBinaryPrim "int32_add" (+)
   , testBinaryPrim "int32_muladd" $ \x y -> sqr (x + y)
   , testUnaryPrim  "int32_square" arbitrary sqr
   , testUnaryPrim  "factorial" (elements [0..12]) fact
@@ -45,11 +44,16 @@ primOpTests =
 
   , test  1  False "test-call-voidrty" $ 
       runMainVoid 1 "test-call-voidrty.bc"
-
   , testMain "test-ptr-simple" 99
 
-  , test  1  False "test-setup-ptr-arg"    $ testSetupPtrArg 1
-  , test  1  False  "test-call-exit"       $ testCallExit    1
+  , test  1  False "test-setup-ptr-arg"    $ do
+      let v = 1 -- verbosity
+      runAllMemModelTest v "test-primops.bc" testSetupPtrArgImpl
+
+  , test  1  False  "test-call-exit"       $ do
+      let v = 1 -- verbosity
+      runMain' True v "test-call-exit.bc" AllPathsErr
+
   , lssTestAll 0  "test-call-simple" [] $
       chkLSS Nothing (Just 1)
   , lssTestAll 0 "ctests/test-call-alloca" [] $
@@ -85,10 +89,6 @@ primOpTests =
     dirInt32srem v    = psk v $ chkArithBitEngineFn 32 True SRem irem
     dirInt32urem v    = psk v $ chkArithBitEngineFn 32 False URem wrem
 
-    testSetupPtrArg v = psk v $ runAllMemModelTest v "test-primops.bc"
-                                  testSetupPtrArgImpl
-    testCallExit v    = runMain' True v "test-call-exit.bc" AllPathsErr
-
     add, mul, idiv, irem :: Int32 -> Int32 -> Int32
     add               = (+)
     mul               = (*)
@@ -98,6 +98,7 @@ primOpTests =
     wdiv              = div
     wrem              = rem
     sqr x             = x * x
+
     fact 0            = 1
     fact x            = x * fact (x-1)
 

@@ -11,7 +11,7 @@ import           System.Environment
 import           System.Process
 import           System.Directory
 import           System.FilePath
-import           Text.PrettyPrint.HughesPJ
+import           Text.PrettyPrint.Leijen hiding ((<$>))
 import qualified Text.LLVM                      as LLVM
 
 import           Verifier.LLVM.AST

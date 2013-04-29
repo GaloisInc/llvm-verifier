@@ -101,7 +101,7 @@ import qualified Data.Set  as S
 
 import System.Console.Haskeline.MonadException (MonadException)
 
-import Text.PrettyPrint.HughesPJ
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
@@ -591,8 +591,8 @@ ppCtrlStk :: SBE sbe -> Maybe (CS sbe) -> Doc
 ppCtrlStk _ Nothing = text "All paths failed"
 ppCtrlStk sbe (Just (FinishedCS p)) = ppPath sbe p
 ppCtrlStk sbe (Just (ActiveCS (ACS p h))) =
-  text "Active path:" $$
-  ppPath sbe p $$
+  text "Active path:" <$$>
+  ppPath sbe p <$$>
   ppPathHandler sbe h
 
 ppMergeInfo :: MergeInfo -> Doc
@@ -603,17 +603,17 @@ ppMergeInfo (PostdomInfo n b) =
 
 ppBranchAction :: SBE sbe -> BranchAction sbe -> Doc
 ppBranchAction sbe (BARunFalse c p) = 
-  text "runFalse" <+> prettyPredD sbe c $$
+  text "runFalse" <+> prettyPredD sbe c <$$>
   nest 2 (ppPath sbe p)
 ppBranchAction sbe (BAFalseComplete a c p) =
-  text "falseComplete" <+> prettyPredD sbe c $$
-  nest 2 (text "assumptions:" <+> prettyPredD sbe a) $$
+  text "falseComplete" <+> prettyPredD sbe c <$$>
+  nest 2 (text "assumptions:" <+> prettyPredD sbe a) <$$>
   nest 2 (ppPath sbe p)
 
 ppPathHandler :: SBE sbe -> PathHandler sbe -> Doc
 ppPathHandler sbe (BranchHandler info act h) = 
-  text "on" <+> ppMergeInfo info <+> text "do" $$
-  nest 2 (ppBranchAction sbe act) $$
+  text "on" <+> ppMergeInfo info <+> text "do" <$$>
+  nest 2 (ppBranchAction sbe act) <$$>
   ppPathHandler sbe h
 ppPathHandler _ StopHandler = text "stop"
 
@@ -627,7 +627,7 @@ ppPath sbe p =
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
   <>  colon
-  $+$ nest 2 (text "Locals:" $+$ nest 2 (ppRegMap sbe (p^.pathRegs)))
+  <$$> nest 2 (text "Locals:" <$$> nest 2 (ppRegMap sbe (p^.pathRegs)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
 
 -- Prints just the path's location and path constraints
@@ -658,16 +658,16 @@ ppTuple :: [Doc] -> Doc
 ppTuple = parens . hcat . punctuate comma
 
 ppBreakpoint :: Breakpoint -> Doc
-ppBreakpoint BreakEntry          = "init"
+ppBreakpoint BreakEntry          = text "init"
 ppBreakpoint (BreakBBEntry sbid) = ppSymBlockID sbid
 
 ppBreakpoints :: M.Map Symbol (S.Set Breakpoint) -> Doc
-ppBreakpoints m =
-  hang "breakpoints set:" 2 . vcat $
-    [ text sym <> ppBreakpoint bp
-    | (Symbol sym, bps) <- M.toList m
-    , bp <- S.toList bps
-    ]
+ppBreakpoints m = text "breakpoints set:" <$$> hang 2 (vcat d)
+  where d = [ text sym <> ppBreakpoint bp
+            | (Symbol sym, bps) <- M.toList m
+            , bp <- S.toList bps
+            ]
+
 
 -----------------------------------------------------------------------------------------
 -- Debugging

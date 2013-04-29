@@ -33,7 +33,6 @@ import Control.Monad
 import Control.Monad.Error
 import Control.Monad.State.Class
 import Control.Lens hiding (createInstance)
-
 import Data.Char
 import Data.List
 import Data.List.Split
@@ -41,12 +40,11 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.String
 import Data.Tuple.Curry
-
 import System.Console.Haskeline
 import System.Console.Haskeline.History
 import System.Exit
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import Text.PrettyPrint
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Simulator
@@ -140,9 +138,9 @@ logBreakpoint msb mstmt = do
     Nothing -> fail "no current function symbol"
     Just sym -> return sym
   let psym = ppSymbol sym
-      pblock = maybe "" (\sb -> ppSymBlockID . sbId $ sb) msb
-      pstmt = maybe "" (\stmt -> colon <+> ppStmt stmt) mstmt
-  dbugM . render $ "at" <+> (psym <> pblock <> pstmt) <> colon
+      pblock = maybe (text "") (\sb -> ppSymBlockID . sbId $ sb) msb
+      pstmt = maybe (text "") (\stmt -> colon <+> ppStmt stmt) mstmt
+  dbugM . show $ text "at" <+> (psym <> pblock <> pstmt) <> colon
 
 enableDebugger :: (Functor sbe, Functor m, Monad m, MonadIO m, MonadException m)
                => Simulator sbe m ()
@@ -236,8 +234,8 @@ helpCmd = Cmd {
   }
 
 helpString :: [Command sbe m] -> String
-helpString cs = render . vcat $
-  [ invs <> colon $$ nest 2 (text $ cmdDesc cmd)
+helpString cs = show . vcat $
+  [ invs <> colon <$$> nest 2 (text $ cmdDesc cmd)
   | cmd <- cs
   , let invs = hsep . map text $ (cmdNames cmd ++ cmdArgs cmd)
   ]
@@ -255,7 +253,7 @@ whereCmd = Cmd {
       mp <- preuse currentPathOfState
       case mp of
         Nothing -> dbugM "no active execution path"
-        Just p -> dbugM . render . ppStackTrace . pathStack $ p
+        Just p -> dbugM . show . ppStackTrace . pathStack $ p
       return False
   }
 
@@ -271,7 +269,7 @@ localsCmd = Cmd {
         Nothing -> dbugM "no active execution path"
         Just p -> do
           sbe <- gets symBE
-          dbugM . render $ ppRegMap sbe (p^.pathRegs)
+          dbugM . show $ ppRegMap sbe (p^.pathRegs)
       return False
   }
 
@@ -299,7 +297,7 @@ dumpCmd = let arglist = ["ctrlstk", "block", "function", "memory"]
               let sym = pathFuncSym p
                   Just pcb = pathCB p
               Just def <- lookupDefine sym <$> gets codebase
-              dbugM . render . ppSymBlock $ lookupSymBlock def pcb
+              dbugM . show . ppSymBlock $ lookupSymBlock def pcb
         ["function"] -> do
           mp <- preuse currentPathOfState
           case mp of
@@ -419,7 +417,7 @@ dumpBPs = do
   bps <- use breakpoints
   if all S.null (M.elems bps)
      then dbugM "no breakpoints set"
-     else dbugM . render . ppBreakpoints $ bps
+     else dbugM . show . ppBreakpoints $ bps
 
 
 stepupCmd :: (Functor m, Monad m) => Command sbe (Simulator sbe m)
@@ -496,7 +494,7 @@ funcSymCompletion = completeWordWithPrev Nothing " " fn
               Just def -> do
                 -- expect bbids in their pretty-printed form
                 let bbids = filter (/= "init")
-                          . map (render . ppSymBlockID)
+                          . map (show . ppSymBlockID)
                           . M.keys . sdBody $ def
                     cleanup = notFinished . simpleCompletion . (sym ++)
                 case stripPrefix sym word of

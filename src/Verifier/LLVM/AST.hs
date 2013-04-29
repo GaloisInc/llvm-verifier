@@ -16,9 +16,9 @@ module Verifier.LLVM.AST
   , SymBlockID
   , ExprEvalFn(..)
   , L.Symbol(..)
-  , L.ppSymbol
+  , ppSymbol
   , L.Ident(..)
-  , L.ppIdent
+  , ppIdent
   , L.BlockLabel
   , L.ICmpOp(..)
   , SymValue(..)
@@ -52,7 +52,7 @@ module Verifier.LLVM.AST
   , symBlockID
   , symBlockLabel
   , module Verifier.LLVM.LLVMContext
-  , L.commas
+  , commas
   ) where
 
 import Control.Applicative (Applicative, (<$>))
@@ -60,16 +60,21 @@ import Control.Lens hiding (op)
 import Control.Monad.IO.Class
 import Data.Foldable
 import Data.Int
-import Data.List (intersperse)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import qualified Text.LLVM.AST as L
-import Text.PrettyPrint.HughesPJ
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.LLVM.LLVMContext
 import Verifier.LLVM.Utils
+
+ppIdent :: L.Ident -> Doc
+ppIdent = text . show . L.ppIdent
+
+ppSymbol :: L.Symbol -> Doc
+ppSymbol = text . show . L.ppSymbol
 
 -- | A fake entry label to represent the function that calls a user function.
 entrySymbol :: L.Symbol
@@ -82,7 +87,7 @@ entryRetNormalID = NamedBlock (L.Named $ L.Ident "__galois_entry_ret_normal") (-
 
 -- | Intersperse commas into document.
 commas :: [Doc] -> Doc
-commas ds = hcat (intersperse (comma <> space) ds)
+commas = hsep . punctuate (char ',')
 
 -- | Identifier for a function.
 type FuncID = L.Symbol
@@ -112,7 +117,7 @@ symBlockLabel _                = Nothing
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc
 ppSymBlockID InitBlock = text "init"
-ppSymBlockID (NamedBlock b n) = L.ppLabel b <> char '.' <> int n
+ppSymBlockID (NamedBlock b n) = text (show (L.ppLabel b)) <> char '.' <> int n
 
 -- | NUW flag used with addition, subtraction, multiplication, and left shift to
 -- indicates that unsigned overflow is undefined.
@@ -140,17 +145,23 @@ data IntArithOp
   | Or
   | Xor
 
+ppExact :: ExactFlag -> Doc
+ppExact = text . show . L.ppExact
+
+ppSignBits :: NUWFlag -> NSWFlag -> Doc
+ppSignBits nuw nsw = text $ show $ L.ppSignBits nuw nsw
+
 ppIntArithOp :: IntArithOp -> Doc
-ppIntArithOp (Add nuw nsw) = text "add" <+> L.ppSignBits nuw nsw
-ppIntArithOp (Sub nuw nsw) = text "sub" <+> L.ppSignBits nuw nsw
-ppIntArithOp (Mul nuw nsw) = text "mul" <+> L.ppSignBits nuw nsw
-ppIntArithOp (UDiv e)      = text "udiv" <+> L.ppExact e
-ppIntArithOp (SDiv e)      = text "sdiv" <+> L.ppExact e
+ppIntArithOp (Add nuw nsw) = text "add" <+> ppSignBits nuw nsw
+ppIntArithOp (Sub nuw nsw) = text "sub" <+> ppSignBits nuw nsw
+ppIntArithOp (Mul nuw nsw) = text "mul" <+> ppSignBits nuw nsw
+ppIntArithOp (UDiv e)      = text "udiv" <+> ppExact e
+ppIntArithOp (SDiv e)      = text "sdiv" <+> ppExact e
 ppIntArithOp URem          = text "urem"
 ppIntArithOp SRem          = text "srem"
-ppIntArithOp (Shl nuw nsw) = text "shl" <+> L.ppSignBits nuw nsw
-ppIntArithOp (Lshr e)      = text "lshr" <+> L.ppExact e
-ppIntArithOp (Ashr e)      = text "ashr" <+> L.ppExact e
+ppIntArithOp (Shl nuw nsw) = text "shl" <+> ppSignBits nuw nsw
+ppIntArithOp (Lshr e)      = text "lshr" <+> ppExact e
+ppIntArithOp (Ashr e)      = text "ashr" <+> ppExact e
 ppIntArithOp And           = text "and"
 ppIntArithOp Or            = text "or"
 ppIntArithOp Xor           = text "xor"
@@ -233,7 +244,7 @@ ppTypedExpr ppConv ppValue tpExpr =
       UAddWithOverflow w x y -> text ("@llvm.uadd.with.overflow.i" ++ show w)
         <> parens (ppValue x <> comma <+> ppValue y)
       IntCmp op mn w x y ->
-         text "icmp" <+> L.ppICmpOp op <+> tp <+> ppValue x <> comma <+> ppValue y
+         text "icmp" <+> text (show (L.ppICmpOp op)) <+> tp <+> ppValue x <> comma <+> ppValue y
        where tp  = maybe ppIntType ppIntVector mn w
 
       Trunc mn iw v rw    -> ppConv "trunc"    (ppMIntType mn iw) v (ppMIntType mn rw)
@@ -251,7 +262,7 @@ ppTypedExpr ppConv ppValue tpExpr =
       SValFloat i -> float i 
       SValNull{} -> text "null"
       SValArray _ es -> brackets $ commas $ V.toList $ ppValue <$> es
-      SValStruct si values -> L.structBraces (commas fl)
+      SValStruct si values -> structBraces (commas fl)
         where fn tp v = ppMemType tp <+> ppValue v
               fl = V.toList $ V.zipWith fn (siFieldTypes si) values
       SValVector _ es -> brackets $ commas $ V.toList $ ppValue <$> es
@@ -276,8 +287,8 @@ data SymValue t
 ppSymValue :: SymValue t -> Doc
 ppSymValue = go
   where ppConv nm itp v rtp = text nm <+> parens (itp <+> go v <+> text "to" <+> rtp) 
-        go (SValIdent i) = L.ppIdent i
-        go (SValSymbol s) = L.ppSymbol s
+        go (SValIdent i) = ppIdent i
+        go (SValSymbol s) = ppSymbol s
         go (SValExpr te _) = ppTypedExpr ppConv go te
 
 -- | Expression in Symbolic instruction set.
@@ -344,20 +355,20 @@ ppStmt :: SymStmt t -> Doc
 ppStmt (PushCallFrame fn args res retTgt)
   = text "pushCallFrame" <+> ppSymValue fn
   <> parens (commas (ppSymValue . snd <$> args))
-  <+> maybe (text "void") (\(tp,v) -> ppMemType tp <+> L.ppIdent v) res
+  <+> maybe (text "void") (\(tp,v) -> ppMemType tp <+> ppIdent v) res
   <+> text "returns to" <+> ppSymBlockID retTgt
 ppStmt (Return mv) = text "return" <+> maybe empty ppSymValue mv
 ppStmt (PushPendingExecution b c ml rest) =
     text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
-      $+$ vcat (fmap ppStmt rest)
+      <$$> vcat (fmap ppStmt rest)
   where loc = maybe (text "return") ppSymBlockID ml
 ppStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
-ppStmt (Assign v _ e) = L.ppIdent v <+> char '=' <+> ppSymExpr e
+ppStmt (Assign v _ e) = ppIdent v <+> char '=' <+> ppSymExpr e
 ppStmt (Store tp v addr a) =
   text "store" <+> ppMemType tp <+> ppSymValue v <> comma
                <+> ppSymValue addr <> ppAlign a
 ppStmt Unreachable = text "unreachable"
-ppStmt (BadSymStmt s) = L.ppStmt s
+ppStmt (BadSymStmt s) = text (show (L.ppStmt s))
 
 data SymBlock t = SymBlock {
          sbId :: SymBlockID -- ^ Identifier for block (unique within definition).
@@ -365,7 +376,7 @@ data SymBlock t = SymBlock {
        }
 
 ppSymBlock :: SymBlock t -> Doc
-ppSymBlock sb = ppSymBlockID (sbId sb) $+$ nest 2 (vcat (ppStmt <$> sbStmts sb))
+ppSymBlock sb = ppSymBlockID (sbId sb) <$$> nest 2 (vcat (ppStmt <$> sbStmts sb))
 
 -- | Symbolically lifted version of a LLVM definition.
 data SymDefine t = SymDefine {
@@ -384,8 +395,8 @@ lookupSymBlock sd sid =
 ppSymDefine :: SymDefine t -> Doc
 ppSymDefine d = text "define"
               <+> ppRetType (sdRetType d)
-              <+> L.ppSymbol (sdName d)
-              <> parens (commas ((\(i,tp) -> ppMemType tp <+> L.ppIdent i) <$> sdArgs d))
+              <+> ppSymbol (sdName d)
+              <> parens (commas ((\(i,tp) -> ppMemType tp <+> ppIdent i) <$> sdArgs d))
               <+> char '{'
-              $+$ vcat (map ppSymBlock (Map.elems (sdBody d)))
-              $+$ char '}'
+              <$$> vcat (map ppSymBlock (Map.elems (sdBody d)))
+              <$$> char '}'

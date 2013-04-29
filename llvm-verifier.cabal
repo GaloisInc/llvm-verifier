@@ -53,12 +53,12 @@ library
     , lens
     , llvm-pretty >= 0.1.2.0
     , mtl
-    , pretty
     , saw-core
     , split >= 0.2
     , transformers
     , tuple >= 0.2
     , vector
+    , wl-pprint
     , Verinf
 
   hs-source-dirs: src
@@ -109,7 +109,7 @@ executable lss
     , llvm-verifier
     , mtl
     , parsec >= 2.1.0.1
-    , pretty
+    , wl-pprint
     , vector
     , Verinf
 
@@ -127,12 +127,12 @@ executable bcdump
   build-depends:
       base >= 4
     , bytestring
+    , directory
     , filepath
     , llvm-pretty
     , llvm-verifier
-    , pretty
-    , directory
     , process
+    , wl-pprint
 
 test-suite test-llvm
   type:       exitcode-stdio-1.0
@@ -155,13 +155,16 @@ test-suite test-llvm
     , data-binary-ieee754 >= 0.4.2
     , filepath
     , fingertree
+    , haskeline >= 0.7
     , lens >= 3.9
     , llvm-pretty >= 0.1.1.0
     , mtl
-    , pretty
     , random
     , saw-core
+    , split
+    , tuple
     , transformers
     , vector
+    , wl-pprint
     , QuickCheck >= 2.4.1
     , Verinf
