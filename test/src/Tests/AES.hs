@@ -28,7 +28,7 @@ aesTests :: [(Args, Property)]
 aesTests =
   [
     test 1 False "test-aes128-concrete" $ do
-      let v = 3 -- verbosity
+      let v = 1 -- verbosity
       runAllMemModelTest v "aes128BlockEncrypt.bc" aes128ConcreteImpl
   ]
 
@@ -48,9 +48,6 @@ aes128ConcreteImpl = do
   Just mem <- getProgramFinalMem
   ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr 2
   sbe <- gets symBE
-  liftIO $ do
-    putStrLn $ "AES Result"
-    print $ prettyTermD sbe ctarr
   ctVals <- forM [0..3] $ \i ->
     withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt 4 i32 ctarr i)
   return (ctVals == fmap Just ctChks)
