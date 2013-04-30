@@ -800,12 +800,12 @@ typedExprEvalFn sbs expr0 = do
               URem   -> defOp scApplyLLVMLlvmURemV w
               SDiv{} | w > 0 -> defOp scApplyLLVMLlvmSDivV (w-1)
               SRem   | w > 0 -> defOp scApplyLLVMLlvmSRemV (w-1)
-              Shl{}  -> defOp scApplyLLVMLlvmShlV  w
-              Lshr{} -> defOp scApplyLLVMLlvmLShrV w
+              Shl{}          -> defOp scApplyLLVMLlvmShlV  w
+              Lshr{}         -> defOp scApplyLLVMLlvmLShrV w
               Ashr{} | w > 0 -> defOp scApplyLLVMLlvmAShrV (w-1)
-              And    -> defOp scApplyLLVMLlvmAndV  w
-              Or     -> defOp scApplyLLVMLlvmOrV   w
-              Xor    -> defOp scApplyLLVMLlvmXorV  w
+              And            -> defOp scApplyLLVMLlvmAndV  w
+              Or             -> defOp scApplyLLVMLlvmOrV   w
+              Xor            -> defOp scApplyLLVMLlvmXorV  w
               _ -> fail "Illegal arguments to intArith"
     PtrAdd x y ->
       return $ evalBin' x y (MM.tgAddPtr (smGenerator sbs))
@@ -820,39 +820,41 @@ typedExprEvalFn sbs expr0 = do
     IntCmp op mn w x y -> do
         case mn of
           Nothing -> do
-            let defOp mkFn = fmap (evalBin x y) $ join $ mkFn sc <*> scBitwidth sc w
+            let defOp mkFn w' = fmap (evalBin x y) $ join $ mkFn sc <*> scBitwidth sc w'
             case op of
-              Ieq  -> defOp scApplyLLVMLlvmIeq
-              Ine  -> defOp scApplyLLVMLlvmIne
-              Iugt -> defOp scApplyLLVMLlvmIugt
-              Iuge -> defOp scApplyLLVMLlvmIuge
-              Iult -> defOp scApplyLLVMLlvmIult
-              Iule -> defOp scApplyLLVMLlvmIule
-              Isgt -> defOp scApplyLLVMLlvmIsgt
-              Isge -> defOp scApplyLLVMLlvmIsge
-              Islt -> defOp scApplyLLVMLlvmIslt
-              Isle -> defOp scApplyLLVMLlvmIsle
+              Ieq  -> defOp scApplyLLVMLlvmIeq  w
+              Ine  -> defOp scApplyLLVMLlvmIne w
+              Iugt -> defOp scApplyLLVMLlvmIugt w
+              Iuge -> defOp scApplyLLVMLlvmIuge w 
+              Iult -> defOp scApplyLLVMLlvmIult w 
+              Iule -> defOp scApplyLLVMLlvmIule w
+              Isgt | w > 0 -> defOp scApplyLLVMLlvmIsgt (w-1)
+              Isge | w > 0 -> defOp scApplyLLVMLlvmIsge (w-1)
+              Islt | w > 0 -> defOp scApplyLLVMLlvmIslt (w-1)
+              Isle | w > 0 -> defOp scApplyLLVMLlvmIsle (w-1)
+              _ -> fail "Illegal arguments to signed comparison"
           Just n  -> do
-            let defOp mkFnV = fmap (evalBin x y) $ join $
+            let defOp mkFnV w' = fmap (evalBin x y) $ join $
                    mkFnV sc <*> scNat sc (toInteger n)
-                            <*> scBitwidth sc w
+                            <*> scBitwidth sc w'
             case op of
-              Ieq  -> defOp scApplyLLVMLlvmIeqV
-              Ine  -> defOp scApplyLLVMLlvmIneV
-              Iugt -> defOp scApplyLLVMLlvmIugtV
-              Iuge -> defOp scApplyLLVMLlvmIugeV
-              Iult -> defOp scApplyLLVMLlvmIultV
-              Iule -> defOp scApplyLLVMLlvmIuleV
-              Isgt -> defOp scApplyLLVMLlvmIsgtV
-              Isge -> defOp scApplyLLVMLlvmIsgeV
-              Islt -> defOp scApplyLLVMLlvmIsltV
-              Isle -> defOp scApplyLLVMLlvmIsleV
+              Ieq  -> defOp scApplyLLVMLlvmIeqV  w
+              Ine  -> defOp scApplyLLVMLlvmIneV  w
+              Iugt -> defOp scApplyLLVMLlvmIugtV w
+              Iuge -> defOp scApplyLLVMLlvmIugeV w
+              Iult -> defOp scApplyLLVMLlvmIultV w
+              Iule -> defOp scApplyLLVMLlvmIuleV w
+              Isgt | w > 0 -> defOp scApplyLLVMLlvmIsgtV (w-1)
+              Isge | w > 0 -> defOp scApplyLLVMLlvmIsgeV (w-1)
+              Islt | w > 0 -> defOp scApplyLLVMLlvmIsltV (w-1)
+              Isle | w > 0 -> defOp scApplyLLVMLlvmIsleV (w-1)
+              _ -> fail "Illegal arguments to signed comparison"
     Trunc mn iw v rw -> assert (iw >= rw) $
       extOp scApplyLLVMLlvmTrunc scApplyLLVMLlvmTruncV mn (iw - rw) rw v
     ZExt mn iw v rw -> assert (iw <= rw) $
       extOp scApplyLLVMLlvmZExt  scApplyLLVMLlvmZExtV  mn (rw - iw) iw v
     SExt mn iw v rw -> assert (iw <= rw) $
-      extOp scApplyLLVMLlvmSExt scApplyLLVMLlvmSExtV mn (rw - iw) iw v
+      extOp scApplyLLVMLlvmSExt scApplyLLVMLlvmSExtV mn (rw - iw) (iw - 1) v
     PtrToInt mn _ v rw -> resizeOp mn (ptrBitwidth dl) rw v
     IntToPtr mn iw v _ -> resizeOp mn iw (ptrBitwidth dl) v
     Select mn c tp x y -> do 
@@ -931,7 +933,32 @@ createSAWBackend dl _mg = do
         where defPred d = defIdent d `Set.notMember` excludedDefs
               excludedDefs = Set.fromList
                 [ "Prelude.append"
+                , "Prelude.bvAdd"
+                , "Prelude.bvAddWithCarry"
+                , "Prelude.bvSub"
+                , "Prelude.bvMul"
+                , "Prelude.bvUDiv"
+                , "Prelude.bvURem"
+                , "Prelude.bvSDiv"
+                , "Prelude.bvSRem"
+                , "Prelude.Shl"
+                , "Prelude.Shr"
+                , "Prelude.SShr"
+                , "Prelude.bvNot"
+                , "Prelude.bvAnd"
+                , "Prelude.bvOr"
+                , "Prelude.bvXor"
+                , "Prelude.bvMbit"
                 , "Prelude.bvEq"
+                , "Prelude.bvugt"
+                , "Prelude.bvuge"
+                , "Prelude.bvult"
+                , "Prelude.bvule"
+                , "Prelude.bvsgt"
+                , "Prelude.bvsge"
+                , "Prelude.bvslt"
+                , "Prelude.bvsle"
+                , "Prelude.bvTrunc"
                 , "Prelude.bvUExt"
                 , "Prelude.bvSExt"
                 , "Prelude.vTake"
@@ -945,7 +972,8 @@ createSAWBackend dl _mg = do
             , "LLVM.bveq_same2"
             ]
   let conversions =
-        bvConversions
+        natConversions
+        ++ bvConversions
         ++ vecConversions
         ++ [getStructElt]
   

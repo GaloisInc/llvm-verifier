@@ -179,13 +179,11 @@ binVRel n tp = Vec n tp -> Vec n tp -> Vec n (bitvector 1);
 
 liftBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
           -> (w :: Nat) -> binRel (bitvector w);
---liftBVRel f w x y = [f w x y];
 liftBVRel f w x y = ite (bitvector 1) (f w x y) (bvNat 1 1) (bvNat 1 0);
 
 
 liftSBVRel :: ((w :: Nat) -> bitvector (Succ w) -> bitvector (Succ w) -> Bool)
           -> (w :: Nat) -> binRel (bitvector (Succ w));
---liftSBVRel f w x y = [f w x y];
 liftSBVRel f w x y = ite (bitvector 1) (f w x y) (bvNat 1 1) (bvNat 1 0);
 
 liftVecBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
