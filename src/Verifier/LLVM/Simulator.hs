@@ -287,8 +287,8 @@ lookupSymbolDef sym = do
   case mdef of
     Just def -> return def
     Nothing  -> do
-      fail $ "Failed to find definition for symbol "
-                      ++ show (ppSymbol sym) ++ " in codebase."
+      errorPath $ "Failed to find definition for symbol "
+                     ++ show (ppSymbol sym) ++ " in codebase."
 
 runNormalSymbol ::
   ( MonadIO m
