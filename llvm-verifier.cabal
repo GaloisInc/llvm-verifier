@@ -59,6 +59,7 @@ library
     , tuple >= 0.2
     , vector
     , wl-pprint
+    , MaybeT
     , Verinf
 
   hs-source-dirs: src
@@ -133,6 +134,7 @@ executable bcdump
     , llvm-verifier
     , process
     , wl-pprint
+    , Verinf
 
 test-suite test-llvm
   type:       exitcode-stdio-1.0
@@ -166,5 +168,6 @@ test-suite test-llvm
     , transformers
     , vector
     , wl-pprint
+    , MaybeT
     , QuickCheck >= 2.4.1
     , Verinf

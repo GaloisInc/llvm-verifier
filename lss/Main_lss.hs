@@ -77,15 +77,15 @@ main = do
 
   let dl = parseDataLayout $ L.modDataLayout mdl
   let mg = defaultMemGeom dl
+  be <- createBitEngine
   SBEPair sbe mem <- 
     case backEnd of
       BitBlastDagBased -> do
-        be <- createBitEngine
         createDagAll be dl mg
       BitBlastBuddyAlloc -> do
-        be <- createBitEngine
         return $ createBuddyAll be dl mg
-      SAWBackendType -> uncurry SBEPair <$> createSAWBackend dl mg
+      SAWBackendType -> do
+        uncurry SBEPair <$> createSAWBackend be dl mg
   cb <- mkCodebase sbe dl mdl
 
   -- Print out translation when just asked to translate.
