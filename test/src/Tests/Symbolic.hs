@@ -25,7 +25,7 @@ symTests =
       runAllMemModelTest v "test-sym-simple.bc" $
         trivBranchImpl "trivial_branch" (0,1)
   , test 1 False "test-trivial-symbolic-read"    $ do
-      let v = 10
+      let v = 1
       runAllMemModelTest v "test-sym-simple.bc" $
         trivBranchImpl "sym_read" (99,42)
   , lssTest 0 "ctests/test-symbolic-alloc" $ \v cb -> do
