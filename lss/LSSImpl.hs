@@ -64,12 +64,6 @@ data ExecRslt sbe crt
   | SymRV    [ErrorPath sbe] (Maybe (SBEMemory sbe)) (SBETerm sbe)
   | ConcRV   [ErrorPath sbe] (Maybe (SBEMemory sbe)) crt
 
-type ExecRsltHndlr sbe crt a =
-     SBE sbe          -- ^ SBE that was used used during a test
-  -> SBEMemory sbe    -- ^ Typed initial memory that was used during a test
-  -> ExecRslt sbe crt -- ^ Execution results; final memory is embedded here
-  -> IO a
-
 lssImpl :: Functor sbe
         => SBE sbe
         -> SBEMemory sbe

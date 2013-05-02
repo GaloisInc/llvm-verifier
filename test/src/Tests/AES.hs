@@ -14,7 +14,7 @@ module Tests.AES (aesTests) where
 
 import           Control.Applicative
 import           Control.Monad (forM)
-import           Control.Monad.State (gets, liftIO)
+import           Control.Monad.State (gets)
 import           Test.QuickCheck
 import           Tests.Common
 import qualified Text.LLVM               as L
@@ -49,7 +49,7 @@ aes128ConcreteImpl = do
   ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr 2
   sbe <- gets symBE
   ctVals <- forM [0..3] $ \i ->
-    withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt 4 i32 ctarr i)
+    liftSBE $ getVal sbe <$> applyTypedExpr sbe (GetConstArrayElt 4 i32 ctarr i)
   return (ctVals == fmap Just ctChks)
   where
     getVal :: SBE sbe -> SBETerm sbe -> Maybe Integer

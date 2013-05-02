@@ -18,6 +18,7 @@ module Verifier.LLVM.MemModel
  , ViewF(..)
 
  , TermGenerator(..)
+ , tgMuxPair
  , AddrDecomposeResult(..)
 
  , Mem

@@ -20,6 +20,8 @@ import           Verifier.LLVM.SAWBackend
 import           Verifier.LLVM.Simulator.SimUtils
 import           Verifier.LLVM.Translation
 
+import Verinf.Symbolic (createBitEngine)
+
 main :: IO ()
 main = do
   files <- getArgs
@@ -43,7 +45,8 @@ main = do
   mdl <- loadModule bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
   let dl = parseDataLayout $ LLVM.modDataLayout mdl
   let mg = defaultMemGeom dl
-  (sbe, _) <- createSAWBackend dl mg
+  be <- createBitEngine
+  (sbe, _) <- createSAWBackend be dl mg
   cb <- mkCodebase sbe dl mdl
 
   banners $ "llvm-pretty module"
