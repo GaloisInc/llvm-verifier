@@ -29,6 +29,8 @@ module Verifier.LLVM.DataLayout
     -- ** MemType
   , MemType(..)
   , ppMemType
+  , i1, i8, i16, i32, i64
+  , i8p, i16p, i32p, i64p
     -- ** Function type information.
   , FunDecl(..)
   , RetType
@@ -317,6 +319,18 @@ ppMemType mtp =
     VecType n tp  -> ppVectorType n (ppMemType tp)
     StructType si -> ppStructInfo si
 
+i1, i8, i16, i32, i64 :: MemType
+i1     = IntType 1
+i8     = IntType 8
+i16    = IntType 16
+i32    = IntType 32
+i64    = IntType 64
+
+i8p, i16p, i32p, i64p :: MemType
+i8p    = PtrType (MemType i8)
+i16p   = PtrType (MemType i16)
+i32p   = PtrType (MemType i32)
+i64p   = PtrType (MemType i64)
 
 -- | Alignment restriction in bytes.
 data FunDecl = FunDecl { fdRetType  :: !RetType
@@ -486,3 +500,5 @@ siDropLastField si
   | otherwise = Just (si', V.last (siFields si))
  where si' = mkStructInfo (siDataLayout si) (siIsPacked si) flds'
        flds' = V.toList $ V.init $ siFieldTypes si
+
+

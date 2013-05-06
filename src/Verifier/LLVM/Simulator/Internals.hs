@@ -6,11 +6,12 @@ Point-of-contact : jhendrix
 -}
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
-module Verifier.LLVM.Simulator.Common
+module Verifier.LLVM.Simulator.Internals
   ( Simulator(SM)
   , runSM
   , dumpCtrlStk
@@ -69,18 +70,44 @@ module Verifier.LLVM.Simulator.Common
   , ppPath
   , ppPathLoc
 
+    -- * Symbolic helpers
+  , liftSBE
+  , withSBE
+  , withSBE'
+  , getDL
+  , withDL
+  , unlessQuiet
+  , tellUser
+    
+    -- * Term helpers
+  , ptrInc
+   
   , FailRsn(FailRsn)
   , ppFailRsn
 
   , Override(Override, Redirect)
   , VoidOverrideHandler
+  , StdOvd
+  , checkTypeCompat
   , voidOverride
+  , registerOverride
+  , tryRegisterOverride
+  , OverrideEntry
+  , registerOverrides
 
   , ErrorPath(EP, epRsn, epPath)
   , InternalExc(ErrorPathExc, UnknownExc)
   , SEH(..)
   , onPreStep
   , onBlockEntry
+  , errorPath
+  , wrongArguments
+ 
+    -- * Memory primitives
+  , memFailRsn
+  , processMemCond
+  , store
+
 
   , ppStackTrace
   , ppTuple
@@ -538,13 +565,11 @@ data Override sbe m
   | Redirect Symbol
 
 type VoidOverrideHandler sbe m
-  =  Symbol              -- ^ Callee symbol
-  -> Maybe (MemType, Ident)     -- ^ Callee return register
-  -> [(MemType,SBETerm sbe)] -- ^ Callee arguments
+  =  [(MemType,SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m ()
 
 voidOverride :: Functor m => VoidOverrideHandler sbe m -> Override sbe m
-voidOverride f = Override (\s r a -> Nothing <$ f s r a)
+voidOverride f = Override (\_ _ a -> Nothing <$ f a)
 
 --------------------------------------------------------------------------------
 -- Breakpoints
@@ -669,6 +694,35 @@ ppBreakpoints m = text "breakpoints set:" <$$> hang 2 (vcat d)
             ]
 
 
+--------------------------------------------------------------------------------
+-- SBE lifters and helpers
+
+liftSBE :: Monad m => sbe a -> Simulator sbe m a
+liftSBE sa = ($ sa) =<< gets liftSymBE
+
+withSBE :: (Functor m, Monad m) => (SBE sbe -> sbe a) -> Simulator sbe m a
+withSBE f = liftSBE . f =<< gets symBE
+
+withSBE' :: (Functor m, Monad m) => (SBE sbe -> a) -> Simulator sbe m a
+withSBE' f = f <$> gets symBE
+
+getDL :: Monad m => Simulator sbe m DataLayout
+getDL = gets (cbDataLayout . codebase)
+
+withDL :: (Functor m, MonadIO m) => (DataLayout -> a) -> Simulator sbe m a
+withDL f = f <$> getDL
+
+-----------------------------------------------------------------------------------------
+-- Term operations and helpers
+
+ptrInc :: (Functor m, MonadIO m)
+        => SBETerm sbe -> Simulator sbe m (SBETerm sbe)
+ptrInc x = do
+  sbe <- gets symBE
+  w <- ptrBitwidth <$> getDL
+  y <- liftSBE $ termInt sbe w 1
+  liftSBE $ applyTypedExpr sbe (PtrAdd x y)
+
 -----------------------------------------------------------------------------------------
 -- Debugging
 
@@ -676,3 +730,152 @@ dumpCtrlStk :: (MonadIO m) => Simulator sbe m ()
 dumpCtrlStk = do
   (sbe, cs) <- gets (symBE A.&&& view ctrlStk)
   banners $ show $ ppCtrlStk sbe cs
+
+unlessQuiet :: MonadIO m => Simulator sbe m () -> Simulator sbe m ()
+unlessQuiet act = getVerbosity >>= \v -> unless (v == 0) act
+
+-- For user feedback that gets silenced when verbosity = 0.
+tellUser :: (MonadIO m) => String -> Simulator sbe m ()
+tellUser msg = unlessQuiet $ dbugM msg
+
+--------------------------------------------------------------------------------
+-- Error handling
+
+errorPath ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  ) => String -> Simulator sbe m a
+errorPath rsn = do
+  s <- get
+  let sbe = symBE s
+  let Just (ActiveCS cs) = s^.ctrlStk
+  let p = cs^.activePath
+  -- Log error path  
+  whenVerbosity (>=3) $ do
+    dbugM $ "Error path encountered: " ++ rsn
+    dbugM $ show $ ppPath sbe p
+  mcs <- liftIO $ markCurrentPathAsError sbe cs
+  let s' = s & ctrlStk .~ mcs
+             & errorPaths %~ (EP (FailRsn rsn) p:)
+  -- Merge negation of assumptions in current path into conditions on merge frame.
+  -- NB: Since we've set up the control stack for the next invocation of
+  -- run, and explicitly captured the error path, we need to be sure to
+  -- ship that modified state back to the catch site so it execution can
+  -- continue correctly.
+  throwError $ ErrorPathExc (FailRsn rsn) s'
+
+wrongArguments :: (Functor sbe, Functor m, MonadIO m) => String -> Simulator sbe m a
+wrongArguments nm = errorPath $ nm ++ ": wrong number of arguments"
+
+memFailRsn :: SBE sbe -> String -> [SBETerm sbe] -> String
+memFailRsn sbe desc terms = show $ text desc <+> ppTuple pts
+  --TODO: See if we can get a reasonable location for the failure.
+  where pts = map (prettyTermD sbe) terms
+
+
+-- | Handle a condition returned by the memory model
+processMemCond ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => String -> SBEPred sbe -> Simulator sbe m ()
+processMemCond rsn cond = do
+  sbe <- gets symBE
+  case asBool sbe cond of
+    Just True  -> return ()
+    Just False -> errorPath rsn
+    _ -> do
+      Just cs <- use ctrlStk
+      let p = cs^.currentPath
+      -- TODO: provide more detail here?
+      whenVerbosity (>= 6) $ do
+        tellUser $ "Warning: Obtained symbolic validity result from memory model."
+        tellUser $ "This means that certain memory accesses were valid only on some paths."
+        tellUser $ "In this case, the symbolic validity result was encountered at:"
+        tellUser $ show $ ppPathLoc sbe p
+        tellUser ""
+      p' <- liftSBE $ pathAssertions (applyAnd sbe cond) p
+      ctrlStk ?= set currentPath p' cs 
+
+store ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => MemType -> SBETerm sbe -> SBETerm sbe -> Alignment -> Simulator sbe m ()
+store tp val dst a = do
+  sbe <- gets symBE
+  -- Update memory.
+  Just m <- preuse currentPathMem
+  (c, m') <- liftSBE $ memStore sbe m dst tp val a
+  currentPathMem .= m'
+  -- Update symbolic condition.
+  let fr = memFailRsn sbe "Invalid store address: " [dst]
+  processMemCond fr c
+
+--------------------------------------------------------------------------------
+-- Override handling
+
+type StdOvd m sbe =
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => Override sbe m
+
+checkTypeCompat :: Monad m
+                => Symbol
+                -> FunDecl -- ^ Declaration of function to be overriden.
+                -> String -- ^ Name of override function
+                -> FunDecl -- ^ Type of override function
+                -> Simulator sbe m ()      
+checkTypeCompat fnm (FunDecl frtn fargs fva) tnm (FunDecl trtn targs tva) = do
+  lc <- gets (cbLLVMContext . codebase)
+  let ?lc = lc
+  let nm = show . ppSymbol
+  let e rsn = error $ "Attempt to replace " ++ nm fnm
+                     ++ " with function " ++ tnm ++ " that " ++ rsn
+  let ppTypes :: [MemType] -> String
+      ppTypes tys = show (parens (commas (ppMemType <$> tys)))
+  unless (fargs == targs) $ e $ "has different argument types.\n" 
+    ++ "  Argument types of " ++ nm fnm ++ ": " ++ ppTypes fargs ++ "\n"
+    ++ "  Argument types of " ++ tnm ++ ": " ++ ppTypes targs ++ "\n"
+  unless (frtn == trtn) $ e $ "has a different return type.\n"
+    ++ "  Return type of " ++ nm fnm ++ ": " ++ show (ppRetType frtn) ++ "\n"
+    ++ "  Return type of " ++ tnm ++ ": " ++ show (ppRetType trtn) ++ "\n"
+  when (fva && not tva) $ e $ "does not accept varargs.\n"
+  when (not fva && tva) $ e $ "allows varargs.\n"
+
+registerOverride :: Monad m => Symbol -> FunDecl -> Override sbe m -> Simulator sbe m ()
+registerOverride sym decl handler = do
+  cb <- gets codebase
+  case cb^.cbFunctionType sym of
+    Nothing -> return ()
+    Just fd -> do
+      checkTypeCompat sym fd "override" decl
+      fnOverrides . at sym ?= (handler, False)
+
+-- | Registers an override if a function with the given name has the
+-- right type.
+tryRegisterOverride :: MonadIO m
+                    => Symbol
+                       -- | Returns override if function matches expection.
+                    -> (FunDecl -> Maybe (Override sbe m))
+                    -> Simulator sbe m ()
+tryRegisterOverride nm act = do
+  cb <- gets codebase
+  -- Lookup function
+  case cb^.cbFunctionType nm of
+    Nothing -> return ()
+    Just d ->
+      case act d of -- Try getting override
+        Just ovd -> registerOverride nm d ovd
+        Nothing -> tellUser $ "Warning: " ++ show nm ++ " has an unexpected type."
+
+type OverrideEntry sbe m = (Symbol, FunDecl, Override sbe m)
+
+registerOverrides :: Monad m => [OverrideEntry sbe m] -> Simulator sbe m ()
+registerOverrides = mapM_ fn
+  where fn (sym, fd, handler) = registerOverride sym fd handler

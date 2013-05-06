@@ -171,6 +171,9 @@ data SAWBackendState s l =
            , sbsContext :: SharedContext s
              -- | Cache used for bitblasting shared terms.
            , sbsBCache :: BCache l
+             -- | Stores list of fresh variables and their associated terms with
+             -- most recently allocated variables first.
+           , sbsVars :: IORef [(BitWidth,VarIndex)]
              -- | Allocations added.
            , sbsAllocations :: SharedTermSetRef s
              -- | Width of pointers in bits as a nat.
@@ -205,7 +208,8 @@ mkBackendState :: forall s l .
                -> SharedContext s
                -> IO (SAWBackendState s l)
 mkBackendState dl be sc = do
-  bc <- newBCache be Map.empty 
+  bc <- newBCache be Map.empty
+  vars <- newIORef []
   allocs <- newIORef Set.empty
   ptrWidth <- scBitwidth sc (ptrBitwidth dl)
   addFn <- scApplyLLVMLlvmAdd sc
@@ -385,6 +389,7 @@ mkBackendState dl be sc = do
   return SBS { sbsDataLayout = dl
              , sbsContext = sc
              , sbsBCache  = bc
+             , sbsVars    = vars
              , sbsAllocations  = allocs
              , sbsPtrWidth     = ptrWidth
              , sbsPtrType      = ptrType
@@ -960,6 +965,21 @@ splitByWidths v [] | V.null v = Just []
 splitByWidths v (w:wl) = (i:) <$> splitByWidths v' wl
   where (i,v') = V.splitAt (fromIntegral w) v
 
+
+scEvalTerm :: SAWBackendState s l -> [Bool] -> SharedTerm s -> IO (SharedTerm s)
+scEvalTerm sbs inputs t = do
+  (widths,varIndices) <- unzip <$> readIORef (sbsVars sbs)
+  case splitByWidths (V.fromList inputs) widths of
+    Nothing -> fail "Incorrect number of inputs"
+    Just wv -> do
+      let sc = sbsContext sbs
+      -- Make list of integers contants
+      vals <- zipWithM (scLLVMIntConst sc) widths (intFromBV <$> wv)
+      -- Create map of variable indices to integers.
+      let m = Map.fromList (varIndices `zip` vals)
+      -- Return instantiated t.
+      scInstantiateExt sc m t
+
 -- | Create a SAW backend.
 createSAWBackend :: (Eq l, Storable l)
                  => BitEngine l
@@ -980,9 +1000,9 @@ createSAWBackend be dl _mg = do
                 , "Prelude.bvURem"
                 , "Prelude.bvSDiv"
                 , "Prelude.bvSRem"
-                , "Prelude.Shl"
-                , "Prelude.Shr"
-                , "Prelude.SShr"
+                , "Prelude.bvShl"
+                , "Prelude.bvShr"
+                , "Prelude.bvSShr"
                 , "Prelude.bvNot"
                 , "Prelude.bvAnd"
                 , "Prelude.bvOr"
@@ -1026,7 +1046,6 @@ createSAWBackend be dl _mg = do
   simpSet <- scSimpset sc0 activeDefs eqs conversions
   let sc = rewritingSharedContext sc0 simpSet
   sbs <- mkBackendState dl be sc
-  vars <- newIORef []
 
   boolType <- scPreludeBool sc
   true <- scApplyPreludeTrue sc
@@ -1050,11 +1069,16 @@ createSAWBackend be dl _mg = do
                     Right <$> iteFn tpt x y z
                 , LLVM.asBool = SAW.asBool
                 , prettyPredD = scPrettyTermDoc
-                , evalPred = nyi "evalPred"
+                , evalPred = \inputs t -> SAWBackend $ do
+                    t' <- scEvalTerm sbs inputs t
+                    case SAW.asBool t' of
+                      Just b -> return b
+                      Nothing ->
+                        fail $ "Could not evaluate predicate as Boolean:\n" ++ show t'
                 , freshInt = \w -> SAWBackend $ do
                     vtp <- valueFn =<< intTypeFn =<< scBitwidth sc w
                     i <- scFreshGlobalVar sc
-                    modifyIORef' vars ((w,i):)
+                    modifyIORef' (sbsVars sbs) ((w,i):)
                     t <- scFlatTermF sc (ExtCns (EC i "_" vtp))
                     void $ bitBlastWith (sbsBCache sbs) t
                     return t
@@ -1098,18 +1122,9 @@ createSAWBackend be dl _mg = do
                 -- TODO: SAT checking for SAW backend
                 , termSAT    = nyi "termSAT"
                 , writeAiger = lift2 (scWriteAiger sbs)
-                , writeCnf   = nyi "writeCnf"
-                , evalAiger  = \inputs _ t -> SAWBackend $ do
-                    (widths,varIndices) <- unzip <$> readIORef vars
-                    case splitByWidths (V.fromList inputs) widths of
-                      Nothing -> fail "Incorrect number of inputs"
-                      Just wv -> do
-                        -- Make list of integers contants
-                        vals <- zipWithM (scLLVMIntConst sc) widths (intFromBV <$> wv)
-                        -- Create map of variable indices to integers.
-                        let m = Map.fromList (varIndices `zip` vals)
-                        -- Return instantiated t.
-                        scInstantiateExt sc m t
+                , writeCnf   = do
+                    nyi "writeCnf"
+                , evalAiger  = \inputs _ t -> SAWBackend $ scEvalTerm sbs inputs t
                 , sbeRunIO   = runSAWBackend
                 }
   return (sbe, emptySAWMemory)
