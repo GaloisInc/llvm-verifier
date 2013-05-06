@@ -113,10 +113,11 @@ getPath :: (Functor m, Monad m)
 getPath = preuse currentPathOfState
 
 modifyPathRegs :: (Functor m, Monad m)
-                => (RegMap (SBETerm sbe) -> RegMap (SBETerm sbe)) -> Simulator sbe m ()
+               => (RegMap (SBETerm sbe) -> RegMap (SBETerm sbe))
+               -> Simulator sbe m ()
 modifyPathRegs f = do
   Just p <- preuse currentPathOfState
-  currentPathOfState .= over pathRegs f p
+  currentPathOfState .= pathRegs %~ f p
 
 -- @getMem@ yields the memory model of the current path if any.
 getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
@@ -417,7 +418,7 @@ run = do
 -- LLVM-Sym operations
 
 assignReg :: (Functor m, MonadIO m)
-       => Ident -> MemType -> SBETerm sbe -> Simulator sbe m ()
+          => Ident -> MemType -> SBETerm sbe -> Simulator sbe m ()
 assignReg reg tp v = modifyPathRegs $ at reg ?~ (v,tp)
 
 -- | Evaluate condition in current path.
