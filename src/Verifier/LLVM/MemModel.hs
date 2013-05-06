@@ -18,6 +18,7 @@ module Verifier.LLVM.MemModel
  , ViewF(..)
 
  , TermGenerator(..)
+ , tgMuxPair
  , AddrDecomposeResult(..)
 
  , Mem
@@ -34,28 +35,34 @@ module Verifier.LLVM.MemModel
  , branchMem
  , branchAbortMem
  , mergeMem
+ , MemPrettyPrinter(..)
+ , ppMem
+ , ppType
  ) where
 
 import Control.Applicative
 import Control.Lens
 import Control.Monad
 import Data.Maybe
-import Data.Monoid
+import Data.Monoid hiding ((<>))
 import qualified Data.Vector as V
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.LLVM.MemModel.Common
 
 data AddrDecomposeResult t
-  = Symbolic t
-  | ConcreteOffset t Integer
-  | SymbolicOffset t t
-
+   = Symbolic t
+   | ConcreteOffset t Integer
+   | SymbolicOffset t t
+  deriving (Show)
+  
 adrVar :: AddrDecomposeResult t -> Maybe t
 adrVar Symbolic{} = Nothing
 adrVar (ConcreteOffset v _) = Just v
 adrVar (SymbolicOffset v _) = Just v
 
 data AllocType = StackAlloc | HeapAlloc
+  deriving (Show)
 
 -- | Stores writeable memory allocations.
 data MemAlloc p c
@@ -93,7 +100,6 @@ data TermGenerator m p c t = TG {
        , tgAnd :: c -> c -> m c
        , tgOr  :: c -> c -> m c
        , tgMuxCond :: c -> c -> c -> m c
-
 
        , tgConstBitvector :: Size -> Integer -> m t
        , tgConstFloat  :: Float -> m t
@@ -195,19 +201,19 @@ evalMuxValueCtor tg tp vf subFn =
 readMemCopy :: forall m p c t .
                (Applicative m, Monad m, Eq p)
             => TermGenerator m p c t
-            -> p
+            -> (p, AddrDecomposeResult p)
             -> Type
-            -> (p,AddrDecomposeResult p)
+            -> (p, AddrDecomposeResult p)
             -> p
             -> (p,Maybe Integer)
-            -> (Type -> p -> m (c,t))
+            -> (Type -> (p, AddrDecomposeResult p) -> m (c,t))
             -> m (c,t)
-readMemCopy tg l tp (d,dd) src (sz,szd) readPrev = do
-  ld <- tgPtrDecompose tg l
+readMemCopy tg (l,ld) tp (d,dd) src (sz,szd) readPrev' = do
   let varFn :: Var -> p
       varFn Load = l
       varFn Store = d
       varFn StoreSize = sz
+  let readPrev tp' p = readPrev' tp' . (p,) =<< tgPtrDecompose tg p
   case (ld, dd) of
     -- Offset if known
     ( ConcreteOffset lv lo
@@ -228,7 +234,7 @@ readMemCopy tg l tp (d,dd) src (sz,szd) readPrev = do
     -- We know variables are disjoint.
     _ | Just lv <- adrVar ld
       , Just sv <- adrVar dd
-      , lv /= sv -> readPrev tp l
+      , lv /= sv -> readPrev' tp (l,ld)
       -- Symbolic offsets
     _ -> do
       let subFn :: RangeLoad (Value Var) -> m (c,t)
@@ -248,20 +254,20 @@ readMemCopy tg l tp (d,dd) src (sz,szd) readPrev = do
 readMemStore :: forall m p c t .
                (Applicative m, Monad m, Eq p)
             => TermGenerator m p c t
-            -> p
+            -> (p,AddrDecomposeResult p)
             -> Type
             -> (p,AddrDecomposeResult p)
             -> t
             -> Type
-            -> (Type -> p -> m (c,t))
+            -> (Type -> (p, AddrDecomposeResult p) -> m (c,t))
             -> m (c,t)
-readMemStore tg l ltp (d,dd) t stp readPrev = do
-  ld <- tgPtrDecompose tg l
+readMemStore tg (l,ld) ltp (d,dd) t stp readPrev' = do
   ssz <- tgConstPtr tg (typeSize stp)
   let varFn :: Var -> p
       varFn Load = l
       varFn Store = d
       varFn StoreSize = ssz
+  let readPrev tp p = readPrev' tp . (p,) =<< tgPtrDecompose tg p
   case (ld, dd) of
     -- Offset if known
     ( ConcreteOffset lv lo
@@ -277,7 +283,7 @@ readMemStore tg l ltp (d,dd) t stp readPrev = do
     -- We know variables are disjoint.
     _ | Just lv <- adrVar ld
       , Just sv <- adrVar dd
-      , lv /= sv -> readPrev ltp l
+      , lv /= sv -> readPrev' ltp (l,ld)
       -- Symbolic offsets
     _ -> do
       let subFn :: ValueLoad (Value Var) -> m (c,t)
@@ -296,11 +302,13 @@ readMem :: (Applicative m, Monad m, Eq p)
         -> Type
         -> Mem p c t
         -> m (c,t)
-readMem tg l tp m = readMem' tg l tp (memWrites m)
+readMem tg l tp m = do
+  ld <- tgPtrDecompose tg l
+  readMem' tg (l,ld) tp (memWrites m)
 
 readMem' :: (Applicative m, Monad m, Eq p)
          => TermGenerator m p c t
-         -> p
+         -> (p, AddrDecomposeResult p)
          -> Type
          -> [MemWrite p c t]
          -> m (c,t)
@@ -308,9 +316,9 @@ readMem' tg _ tp [] = badLoad tg tp
 readMem' tg l tp (h:r) = do
   let readPrev tp' l' = readMem' tg l' tp' r
   case h of
-    MemCopy dst src sz ->
+    MemCopy dst src sz -> do
       readMemCopy tg l tp dst src sz readPrev
-    MemStore dst v stp ->
+    MemStore dst v stp -> do
       readMemStore tg l tp dst v stp readPrev
     WriteMerge c xr yr -> do
       join $ tgMuxPair tg c tp
@@ -510,3 +518,73 @@ mergeMem c x y =
     (BranchFrame a s, BranchFrame b _) ->
       let s' = s & memStateLastChanges %~ prependChanges (muxChanges c a b)
        in x & memState .~ s'
+    _ -> error "mergeMem given unexpected memories"
+
+ppMemState :: (d -> Doc) -> MemState d -> Doc
+ppMemState f (EmptyMem d) =
+  text "Base memory" <$$>
+  nest 2 (f d)
+ppMemState f (StackFrame d ms) =
+  text "Stack frame" <$$>
+  nest 2 (f d) <$$>
+  ppMemState f ms
+ppMemState f (BranchFrame d ms) =
+  text "Branch frame" <$$>
+  nest 2 (f d) <$$>
+  ppMemState f ms
+
+data MemPrettyPrinter p c t = 
+  PP { ppPtr  :: Int -> p -> Doc
+     , ppCond :: Int -> c -> Doc
+     , ppTerm :: Int -> t -> Doc
+     }
+
+-- | Pretty print type.
+ppType :: Type -> Doc
+ppType tp = 
+  case typeF tp of
+    Bitvector w -> text ('i': show w)
+    Float -> text "float"
+    Double -> text "double"
+    Array n etp -> brackets (text (show n) <+> char 'x' <+> ppType etp)
+    Struct flds -> braces $ hsep $ punctuate (char ',') $ V.toList $ ppFld <$> flds
+      where ppFld f = ppType (f^.fieldVal)
+
+ppMerge :: MemPrettyPrinter p c t
+        -> (v -> Doc)
+        -> c
+        -> [v]
+        -> [v]
+        -> Doc
+ppMerge pp vpp c x y = nest 2 $
+  text "Condition:" <$$>
+  nest 2 (ppCond pp 0 c) <$$>
+  text "True Branch:"  <$$>
+  nest 2 (vcat $ vpp <$> x) <$$>
+  text "False Branch:" <$$>
+  nest 2 (vcat $ vpp <$> y)
+
+ppAlloc :: MemPrettyPrinter p c t -> MemAlloc p c -> Doc
+ppAlloc pp (Alloc atp base sz) =
+  text (show atp) <+> ppPtr pp 10 base <+> ppPtr pp 10 sz
+ppAlloc pp (AllocMerge c x y) =
+  text "merge" <$$>
+  ppMerge pp (ppAlloc pp) c x y
+
+ppWrite :: MemPrettyPrinter p c t -> MemWrite p c t -> Doc
+ppWrite pp (MemCopy (d,_) s (l,_)) =
+  text "memcopy" <+> ppPtr pp 10 d <+> ppPtr pp 10 s <+> ppPtr pp 10 l
+ppWrite pp (MemStore (d,_) v _) =
+  char '*' <> ppPtr pp 10 d <+> text ":=" <+> ppTerm pp 10 v
+ppWrite pp (WriteMerge c x y) =
+  text "merge" <$$> ppMerge pp (ppWrite pp) c x y
+
+ppMemChanges :: MemPrettyPrinter p c t -> MemChanges p c t -> Doc
+ppMemChanges pp (al,wl) =
+  text "Allocations:" <$$>
+  nest 2 (vcat (ppAlloc pp <$> al)) <$$>
+  text "Writes:" <$$>
+  nest 2 (vcat (ppWrite pp <$> wl))
+
+ppMem :: MemPrettyPrinter p c t -> Mem p c t -> Doc
+ppMem pp m = ppMemState (ppMemChanges pp) (m^.memState)

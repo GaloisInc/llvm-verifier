@@ -51,6 +51,7 @@ module Verifier.LLVM.Simulator
   , liftSBE
   , withSBE
   , withSBE'
+  , errorPath
   -- * Memory operations
   , alloca
   , load
@@ -77,16 +78,19 @@ import           Control.Applicative
 import qualified Control.Exception         as CE
 import           Control.Lens hiding (act,from)
 import           Control.Monad.Error
-import           Control.Monad.State       hiding (State)
+import           Control.Monad.State.Class
+import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Map                  as M
 import           Data.Maybe
+import qualified Data.Set                  as S
 import           Data.String
 import qualified Data.Vector               as V
 import           Numeric                   (showHex)
 import           System.Exit
 import           System.IO
-import           Text.PrettyPrint
+import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
+
 
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
@@ -104,10 +108,6 @@ withActiveCS f = do
   cs' <- liftIO (f cs)
   ctrlStk ?= cs'
 
--- | Traversal for current path of simulator state.
-currentPathOfState :: Simple Traversal (State sbe m) (Path sbe)
-currentPathOfState = ctrlStk . _Just . currentPath
-
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
 -- that the control stack is empty or the top entry of the control stack has no
 -- pending paths recorded.
@@ -120,10 +120,6 @@ modifyPathRegs :: (Functor m, Monad m)
 modifyPathRegs f = do
   Just p <- preuse currentPathOfState
   currentPathOfState .= over pathRegs f p
-
--- | Traversal for current path memory if any.
-currentPathMem :: Simple Traversal (State sbe m) (SBEMemory sbe)
-currentPathMem = currentPathOfState . pathMem
 
 -- @getMem@ yields the memory model of the current path if any.
 getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
@@ -162,6 +158,8 @@ runSimulator cb sbe mem seh mopts m = do
                     , _errorPaths  = []
                     , _pathCounter = 1
                     , _aigOutputs  = []
+                    , _breakpoints = M.empty
+                    , _trBreakpoints = S.empty
                     }
   ea <- flip evalStateT newSt $ runErrorT $ runSM $ do
     initGlobals
@@ -290,7 +288,7 @@ lookupSymbolDef sym = do
     Just def -> return def
     Nothing  -> do
       errorPath $ "Failed to find definition for symbol "
-                        ++ show (ppSymbol sym) ++ " in codebase."
+                     ++ show (ppSymbol sym) ++ " in codebase."
 
 runNormalSymbol ::
   ( MonadIO m
@@ -318,12 +316,12 @@ runNormalSymbol normalRetID calleeSym mreg args = do
      processMemCond fr c
   return args
   where
-    err doc = error $ "callDefine/bindArgs: " ++ render doc
+    err doc = error $ "callDefine/bindArgs: " ++ show doc
 
     bindArgs formals actuals
       | length formals /= length actuals =
           err $ text "incorrect number of actual parameters"
-            $+$ text "formals: " <> text (show (fst <$> formals))
+            <$$> text "formals: " <> text (show (fst <$> formals))
       | otherwise =
           foldr (uncurry bindArg) M.empty (formals `zip` actuals)
     bindArg (r,tp) v = M.insert r (v,tp)
@@ -479,7 +477,9 @@ run = do
           errorPath $ "This path is infeasible"
         let sym = pathFuncSym p
         Just def <- lookupDefine sym <$> gets codebase
-        runStmts $ sbStmts $ lookupSymBlock def pcb
+        let sb = lookupSymBlock def pcb
+        use (evHandlers.onBlockEntry) >>= ($sb)
+        runStmts . sbStmts $ sb
       run
   where
     handleError (ErrorPathExc _rsn s) = do
@@ -649,11 +649,35 @@ step (Return mtv) = do
 step (PushPendingExecution bid cond ml elseStmts) = do
   sbe <- gets symBE
   c <- evalCond cond
-  case asBool sbe c of
-   -- Don't bother with elseStmts as condition is true. q
+  opts <- gets lssOpts
+  Just p <- preuse currentPathOfState
+  tsat <- if optsSatAtBranches opts
+             then do a' <- liftSBE $ applyAnd sbe c (p^.pathAssertions)
+                     liftSBE $ termSAT sbe a'
+             else return Unknown
+  fsat <- if optsSatAtBranches opts
+             then do cnot <- liftSBE $ applyBNot sbe c
+                     a' <- liftSBE $ applyAnd sbe cnot (p^.pathAssertions)
+                     liftSBE $ termSAT sbe a'
+             else return Unknown
+  -- exclude paths which are definitely unsat. If both are unsat, we
+  -- probably couldn't have gotten here, so just throw an error path
+  -- right away
+  when (tsat == UnSat && fsat == UnSat) $ do
+    dbugM' 3 "both branch conditions unsatisfiable -- should have been caught earlier"
+    errorPath "no satisfiable assertions at branch point"
+
+  -- fall through to else branch if true condition is unsat
+  let b = if tsat /= UnSat then asBool sbe c else Just False
+  case b of
+   -- Don't bother with elseStmts as condition is true.
    Just True  -> setCurrentBlock bid
+   -- Don't bother with elseStmts if negated condition is unsat
+   Nothing | fsat == UnSat -> setCurrentBlock bid
    -- Don't bother with pending path as condition is false.
    Just False -> runStmts elseStmts
+   -- Don't bother with pending path as condition is unsat
+   Nothing | tsat == UnSat -> runStmts elseStmts
    Nothing -> do
      nm <- use pathCounter
      pathCounter += 1
@@ -744,6 +768,8 @@ cb2 f x y = join $ gets (f . view evHandlers) <*> pure x <*> pure y
 defaultSEH :: Monad m => SEH sbe m
 defaultSEH = SEH
                (return ())
+               (\_   -> return ())
+               (\_   -> return ())
                (\_   -> return ())
                (\_   -> return ())
                (\_   -> return ())
@@ -978,7 +1004,7 @@ dbugStep stmt = do
                    _ -> ""
                  ++ show (ppStmt stmt)
 --  repl
-  cb1 onPreStep stmt
+  cb1 (view onPreStep) stmt
   step stmt
   cb1 onPostStep stmt
   whenVerbosity (>=5) dumpCtrlStk
@@ -1009,7 +1035,7 @@ repl = do
 dbugTerm :: (MonadIO m, Functor m) => String -> SBETerm sbe -> Simulator sbe m ()
 dbugTerm desc t = do
   d <- withSBE' $ \s -> prettyTermD s t
-  dbugM $ desc ++ ": " ++ render d
+  dbugM $ desc ++ ": " ++ show d
 
 _nowarn_unused :: a
 _nowarn_unused = undefined

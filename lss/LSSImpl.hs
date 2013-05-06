@@ -33,14 +33,17 @@ import           Verifier.LLVM.Backend
 import           Verifier.LLVM.Codebase
 import           Verifier.LLVM.Simulator
 import           Verifier.LLVM.Simulator.Common
+import           Verifier.LLVM.Simulator.Debugging
 
 data LSS = LSS
-  { dbug    :: DbugLvl
-  , argv     :: String
-  , backend  :: Maybe String
-  , errpaths :: Bool
-  , xlate    :: Bool
-  , mname    :: Maybe String
+  { dbug          :: DbugLvl
+  , argv          :: String
+  , backend       :: Maybe String
+  , errpaths      :: Bool
+  , xlate         :: Bool
+  , mname         :: Maybe String
+  , startDebugger :: Bool
+  , satBranches   :: Bool
   } deriving (Show, Data, Typeable)
 
 newtype DbugLvl = DbugLvl { unD :: Int32 }
@@ -60,12 +63,6 @@ data ExecRslt sbe crt
   = NoMainRV [ErrorPath sbe] (Maybe (SBEMemory sbe))
   | SymRV    [ErrorPath sbe] (Maybe (SBEMemory sbe)) (SBETerm sbe)
   | ConcRV   [ErrorPath sbe] (Maybe (SBEMemory sbe)) crt
-
-type ExecRsltHndlr sbe crt a =
-     SBE sbe          -- ^ SBE that was used used during a test
-  -> SBEMemory sbe    -- ^ Typed initial memory that was used during a test
-  -> ExecRslt sbe crt -- ^ Execution results; final memory is embedded here
-  -> IO a
 
 lssImpl :: Functor sbe
         => SBE sbe
@@ -104,6 +101,9 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
       dbugM $ "Code range  : " ++ sr (mgCode mg)
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
+    when (startDebugger args) $ do
+      enableDebugger
+      breakOnMain
     let mainSymbol = L.Symbol "main"
     argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
     --TODO: Verify main has expected signature.
@@ -117,7 +117,7 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
         let mval = asUnsignedInteger sbe undefined rv
         return $ maybe (SymRV eps mm rv) (\x -> (ConcRV eps mm x)) mval
   where
-    opts        = Just $ LSSOpts (errpaths args)
+    opts        = Just $ LSSOpts (errpaths args) (satBranches args)
     seh'        = defaultSEH
 
 buildArgv ::

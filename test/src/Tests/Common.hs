@@ -8,7 +8,6 @@
 {-# LANGUAGE ViewPatterns         #-}
 module Tests.Common 
   ( module Tests.Common
-  , ExecRsltHndlr
   , PropertyM
   , view
   ) where
@@ -86,9 +85,12 @@ forAllMemModels v bcFile testProp = do
         run $ do
           runSimulator cb sbe mem defaultSEH Nothing $ withVerbosity v $ testProp
   sequence
-    [ runTest =<< run (createBuddyModel dl)
+    [ 
+{-
+runTest =<< run (createBuddyModel dl)
     , runTest =<< run (createDagModel dl)
---    , runTest =<< run (createSAWModel dl)
+-}
+      runTest =<< run (createSAWModel dl)
     ]
 
 type AllMemModelTest = Functor sbe => Simulator sbe IO Bool
@@ -96,6 +98,12 @@ type AllMemModelTest = Functor sbe => Simulator sbe IO Bool
 runAllMemModelTest :: Int -> FilePath -> AllMemModelTest -> PropertyM IO ()
 runAllMemModelTest v bcFile act = do
   assert . and =<< forAllMemModels v bcFile act
+
+type ExecRsltHndlr sbe crt a =
+     SBE sbe          -- ^ SBE that was used used during a test
+  -> SBEMemory sbe    -- ^ Typed initial memory that was used during a test
+  -> ExecRslt sbe crt -- ^ Execution results; final memory is embedded here
+  -> IO a
 
 type RunLSSTest sbe = Int
                     -> L.Module
@@ -122,6 +130,8 @@ runTestLSSCommon nm createFn v mdl argv' hndlr = do
                           , errpaths = False
                           , xlate = False
                           , mname = Nothing
+                          , startDebugger = False
+                          , satBranches = False
                           }
 
 -- | Create buddy backend and initial memory.
@@ -140,8 +150,10 @@ createDagModel dl = do
   let sbe = let ?be = be in sbeBitBlast dl mm
   return (sbe,mem)
 
-createSAWModel :: DataLayout -> IO (SBE (SAWBackend s), SAWMemory s)
-createSAWModel dl = createSAWBackend dl (defaultMemGeom dl)
+createSAWModel :: DataLayout -> IO (SBE (SAWBackend s Lit), SAWMemory s)
+createSAWModel dl = do
+  be <- createBitEngine
+  createSAWBackend be dl (defaultMemGeom dl)
 
 runTestLSSBuddy :: RunLSSTest (BitIO (BitMemory Lit) Lit)
 runTestLSSBuddy = runTestLSSCommon "runTestLSSBuddy" createBuddyModel
@@ -149,7 +161,7 @@ runTestLSSBuddy = runTestLSSCommon "runTestLSSBuddy" createBuddyModel
 runTestLSSDag :: RunLSSTest (BitIO (DagMemory Lit) Lit)
 runTestLSSDag = runTestLSSCommon "runTestLSSDag" createDagModel
 
-runTestSAWBackend :: RunLSSTest (SAWBackend s)
+runTestSAWBackend :: RunLSSTest (SAWBackend s Lit)
 runTestSAWBackend = runTestLSSCommon "runTestLSSDag" createSAWModel
 
 lssTest :: Int -> FilePath -> (Int -> L.Module -> PropertyM IO ()) -> (Args, Property)

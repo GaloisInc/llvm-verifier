@@ -19,6 +19,7 @@ module Verifier.LLVM.Codebase
   , cbDataLayout
   , cbGlobalNameMap
   , cbFunctionType
+  , cbFunctionTypes
   , cbDefs
   , cbUndefinedFns
   , dumpSymDefine
@@ -33,11 +34,12 @@ module Verifier.LLVM.Codebase
 
 where
 
-import           Control.Applicative
+import Control.Applicative
 import Control.Lens
-import           Control.Monad
+import Control.Monad
 import Control.Monad.State
-import           Text.PrettyPrint.HughesPJ
+import Text.PrettyPrint.Leijen hiding ((<$>))
+
 import qualified Control.Exception              as CE
 import qualified Data.ByteString                as BS
 import qualified Data.LLVM.BitCode              as BC
@@ -157,7 +159,7 @@ mkCodebase sbe dl mdl = do
                              <*> mapM liftMemType (L.decArgs d)
                              <*> pure (L.decVarArgs d)
            case mtp of
-             Nothing -> liftIO $ warn $ text "Skipping import of" <+> L.ppSymbol (L.decName d)
+             Nothing -> liftIO $ warn $ text "Skipping import of" <+> ppSymbol (L.decName d)
                           <> text "; Unsupported type."
              Just tp -> cbFunctionType (L.decName d) ?= tp
          -- Add globals
@@ -167,7 +169,7 @@ mkCodebase sbe dl mdl = do
              tp <- liftMemType' (L.globalType lg)
              Global sym tp <$> liftValue tp (L.globalValue lg)
            case mg of
-             Nothing -> liftIO $ warn $ text "Skipping definition of" <+> L.ppSymbol sym
+             Nothing -> liftIO $ warn $ text "Skipping definition of" <+> ppSymbol sym
                           <> text "; Unsupported type."
              Just g -> modify $ cbGlobalNameMap . at sym ?~ Left g
 
