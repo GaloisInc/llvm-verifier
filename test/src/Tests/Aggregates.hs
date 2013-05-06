@@ -26,9 +26,13 @@ aggTests =
   [
     test 1 False "test-array-index-base"            $ arrayBaseIdx     1
   , test 1 False "test-array-index-offset"          $ arrayOffsetIdx   1
-  , test 1 False "test-array-1d-initializer"        $ arrayInit1D      1
+  , test 1 False "test-array-1d-initializer"        $ do
+      let v = 1 -- verbosity
+      testArrays v "onedim_init" (RV 3)
   , test 1 False "test-array-2d-initializer"        $ arrayInit2D      1
-  , test 1 False "test-array-mat4x4-mult"           $ arrayMat4x4      1
+  , test 1 False "test-array-mat4x4-mult"           $ do
+      let v = 1 -- verbosity
+      chkNullaryCInt32Fn v "test-mat4x4.bc" (Symbol "matrix_mul_4x4") (RV 304)
   , test 1 False "test-struct-init-and-access"      $ 
       runStruct 1 structInitAccessImpl
   , test 1 False "test-array-of-structs"            $
@@ -40,14 +44,10 @@ aggTests =
   -}
   ]
   where
-    arrayBaseIdx v        = t1 v "arr1" (RV 42)
-    arrayOffsetIdx v      = t1 v "arr2" (RV 141)
-    arrayInit1D v         = t1 v "onedim_init" (RV 3)
-    arrayInit2D v         = t1 v "twodim_init" (RV 21)
-    arrayMat4x4 v         = t2 v "matrix_mul_4x4" (RV 304)
-    t1                    = mkNullaryTest "test-arrays.bc"
-    t2                    = mkNullaryTest "test-mat4x4.bc"
-    mkNullaryTest bc v nm = psk v . chkNullaryCInt32Fn v bc (Symbol nm)
+    arrayBaseIdx v        = testArrays v "arr1" (RV 42)
+    arrayOffsetIdx v      = testArrays v "arr2" (RV 141)
+    arrayInit2D v         = testArrays v "twodim_init" (RV 21)
+    testArrays v nm       = chkNullaryCInt32Fn v "test-arrays.bc" (Symbol nm)
     runStruct v           = \(f :: AllMemModelTest) ->
                               runAllMemModelTest v "test-structs.bc" f
 
@@ -65,9 +65,9 @@ structInitAccessImpl = do
       by <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 1)
       let bxc = asSignedInteger sbe 32 bx
           byc = asSignedInteger sbe  8 by
-      return $ bxc `constTermEq` 42
+      return $ bxc == Just 42
                &&
-               byc `constTermEq` fromIntegral (fromEnum 'z')
+               byc == Just (fromIntegral (fromEnum 'z'))
 
 structArrayImpl :: AllMemModelTest
 structArrayImpl = do

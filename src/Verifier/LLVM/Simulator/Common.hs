@@ -6,17 +6,18 @@ Point-of-contact : jhendrix
 -}
 
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
-module Verifier.LLVM.Simulator.Common 
+module Verifier.LLVM.Simulator.Common
   ( Simulator(SM)
   , runSM
   , dumpCtrlStk
 
   , GlobalMap
 
-  , LSSOpts(LSSOpts, optsErrorPathDetails)
+  , LSSOpts(LSSOpts, optsErrorPathDetails, optsSatAtBranches)
   , defaultLSSOpts
 
   , State(..)
@@ -28,6 +29,13 @@ module Verifier.LLVM.Simulator.Common
   , errorPaths
   , pathCounter
   , aigOutputs
+  , breakpoints
+  , trBreakpoints
+
+  , Breakpoint(..)
+  , TransientBreakpoint(..)
+  , addBreakpoint
+  , removeBreakpoint
 
   , CS(..)
   , ActiveCS
@@ -40,6 +48,9 @@ module Verifier.LLVM.Simulator.Common
   , jumpCurrentPath
   , returnCurrentPath
   , markCurrentPathAsError
+
+  , currentPathOfState
+  , currentPathMem
 
   , SymBlockID
 
@@ -54,9 +65,10 @@ module Verifier.LLVM.Simulator.Common
   , pathRegs
   , pathMem
   , pathAssertions
+  , pathStack
   , ppPath
   , ppPathLoc
-  
+
   , FailRsn(FailRsn)
   , ppFailRsn
 
@@ -66,15 +78,13 @@ module Verifier.LLVM.Simulator.Common
 
   , ErrorPath(EP, epRsn, epPath)
   , InternalExc(ErrorPathExc, UnknownExc)
-  , SEH( SEH
-       , onPostOverrideReg
-       , onPreStep
-       , onPostStep
-       , onMkGlobTerm
-       , onPreGlobInit
-       , onPostGlobInit
-       )
+  , SEH(..)
+  , onPreStep
+  , onBlockEntry
+
+  , ppStackTrace
   , ppTuple
+  , ppBreakpoints
   ) where
 
 import Control.Applicative hiding (empty)
@@ -82,9 +92,16 @@ import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens hiding (act)
 import Control.Monad.Error
-import Control.Monad.State hiding (State)
+import Control.Monad.State.Class
+import Control.Monad.Trans.State.Strict (StateT)
+
 import qualified Data.Map  as M
-import Text.PrettyPrint.HughesPJ
+import Data.Maybe
+import qualified Data.Set  as S
+
+import System.Console.Haskeline.MonadException (MonadException)
+
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
@@ -99,6 +116,7 @@ newtype Simulator sbe m a =
     , MonadIO
     , MonadState (State sbe m)
     , MonadError (InternalExc sbe m)
+    , MonadException
     )
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
@@ -109,11 +127,15 @@ type OvrMap sbe m  = M.Map Symbol (Override sbe m, Bool {- user override? -})
 -- | Symbolic simulator options
 data LSSOpts = LSSOpts {
     optsErrorPathDetails :: Bool
+  , optsSatAtBranches    :: Bool
+  -- ^ use a SAT-checking backend at branches, pruning unfeasable paths
   }
 
 -- | Default simulator options
 defaultLSSOpts :: LSSOpts
-defaultLSSOpts = LSSOpts False
+defaultLSSOpts = LSSOpts { optsErrorPathDetails = False
+                         , optsSatAtBranches    = False
+                         }
 
 -- | Symbolic simulator state
 data State sbe m = State
@@ -131,6 +153,8 @@ data State sbe m = State
   , _pathCounter  :: Integer         -- ^ Name supply for paths
   , _aigOutputs   :: [(MemType,SBETerm sbe)]   -- ^ Current list of AIG outputs, discharged
                                      -- via lss_write_aiger() sym api calls
+  , _breakpoints :: M.Map Symbol (S.Set Breakpoint)
+  , _trBreakpoints :: S.Set TransientBreakpoint
   }
 
 ctrlStk :: Simple Lens (State sbe m) (Maybe (CS sbe))
@@ -156,6 +180,29 @@ pathCounter f s = (\v -> s { _pathCounter = v }) <$> f (_pathCounter s)
 
 aigOutputs :: Simple Lens (State sbe m) [(MemType,SBETerm sbe)]
 aigOutputs f s = (\v -> s { _aigOutputs = v }) <$> f (_aigOutputs s)
+
+breakpoints :: Simple Lens (State sbe m) (M.Map Symbol (S.Set Breakpoint))
+breakpoints f s = (\v -> s { _breakpoints = v }) <$> f (_breakpoints s)
+
+trBreakpoints :: Simple Lens (State sbe m) (S.Set TransientBreakpoint)
+trBreakpoints f s = (\v -> s { _trBreakpoints = v }) <$> f (_trBreakpoints s)
+
+
+-- | Types of breakpoints (kind of boring for now, but maybe with a
+-- DWARF parser we can do more...)
+data Breakpoint = BreakEntry
+                -- ^ Break when entering this symbol
+                | BreakBBEntry SymBlockID
+                -- ^ Break when entering a basic block
+  deriving (Eq, Ord, Show)
+
+-- | Transient breakpoints for interactive debugging
+data TransientBreakpoint = BreakNextStmt
+                         -- ^ Break at the next statement
+                         | BreakReturnFrom Symbol
+                         -- ^ Break when returning from a function
+  deriving (Eq, Ord, Show)
+
 
 -- | Action to perform when branch.
 data BranchAction sbe
@@ -190,6 +237,14 @@ data CS sbe
 currentPath :: Simple Lens (CS sbe) (Path sbe)
 currentPath f (FinishedCS p) = FinishedCS <$> f p
 currentPath f (ActiveCS acs) = ActiveCS <$> activePath f acs
+
+-- | Traversal for current path of simulator state.
+currentPathOfState :: Simple Traversal (State sbe m) (Path sbe)
+currentPathOfState = ctrlStk . _Just . currentPath
+
+-- | Traversal for current path memory if any.
+currentPathMem :: Simple Traversal (State sbe m) (SBEMemory sbe)
+currentPathMem = currentPathOfState . pathMem
 
 initialCtrlStk :: SBE sbe -> SBEMemory sbe -> CS sbe
 initialCtrlStk sbe mem = FinishedCS p
@@ -446,9 +501,13 @@ data SEH sbe m = SEH
     -- | Invoked after function overrides have been registered
     onPostOverrideReg :: Simulator sbe m ()
     -- | Invoked before each instruction executes
-  , onPreStep         :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
+  , _onPreStep         :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked after each instruction executes
   , onPostStep        :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
+    -- | Invoked when entering a basic block
+  , _onBlockEntry      :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
+    -- | Invoked when leaving a basic block
+  , onBlockExit       :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked before construction of a global term value
   , onMkGlobTerm      :: Global (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked before memory model initialization of global data
@@ -456,6 +515,12 @@ data SEH sbe m = SEH
     -- | Invoked after memory model initialization of global data
   , onPostGlobInit    :: Global (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
   }
+
+onPreStep :: Simple Lens (SEH sbe m) (SymStmt (SBETerm sbe) -> Simulator sbe m ())
+onPreStep = lens _onPreStep (\seh sh -> seh { _onPreStep = sh })
+
+onBlockEntry :: Simple Lens (SEH sbe m) (SymBlock (SBETerm sbe) -> Simulator sbe m ())
+onBlockEntry = lens _onBlockEntry (\seh sh -> seh { _onBlockEntry = sh })
 
 -- | A handler for a function override. This gets the function symbol as an
 -- argument so that one function can potentially be used to override multiple
@@ -482,6 +547,30 @@ voidOverride :: Functor m => VoidOverrideHandler sbe m -> Override sbe m
 voidOverride f = Override (\s r a -> Nothing <$ f s r a)
 
 --------------------------------------------------------------------------------
+-- Breakpoints
+
+addBreakpoint :: (Functor m, Monad m)
+              => Symbol
+              -> Breakpoint
+              -> Simulator sbe m ()
+addBreakpoint = toggleBreakpoint S.insert
+
+removeBreakpoint :: (Functor m, Monad m)
+                 => Symbol
+                 -> Breakpoint
+                 -> Simulator sbe m ()
+removeBreakpoint = toggleBreakpoint S.delete
+
+toggleBreakpoint :: (Functor m, Monad m)
+                 => (Breakpoint -> S.Set Breakpoint -> S.Set Breakpoint)
+                 -> Symbol
+                 -> Breakpoint
+                 -> Simulator sbe m ()
+toggleBreakpoint fn sym bp = do
+  bps <- fromMaybe S.empty <$> uses breakpoints (M.lookup sym)
+  breakpoints %= M.insert sym (fn bp bps)
+
+--------------------------------------------------------------------------------
 -- Misc typeclass instances
 
 instance MonadIO m => LogMonad (Simulator sbe m) where
@@ -502,8 +591,8 @@ ppCtrlStk :: SBE sbe -> Maybe (CS sbe) -> Doc
 ppCtrlStk _ Nothing = text "All paths failed"
 ppCtrlStk sbe (Just (FinishedCS p)) = ppPath sbe p
 ppCtrlStk sbe (Just (ActiveCS (ACS p h))) =
-  text "Active path:" $$
-  ppPath sbe p $$
+  text "Active path:" <$$>
+  ppPath sbe p <$$>
   ppPathHandler sbe h
 
 ppMergeInfo :: MergeInfo -> Doc
@@ -514,17 +603,17 @@ ppMergeInfo (PostdomInfo n b) =
 
 ppBranchAction :: SBE sbe -> BranchAction sbe -> Doc
 ppBranchAction sbe (BARunFalse c p) = 
-  text "runFalse" <+> prettyPredD sbe c $$
+  text "runFalse" <+> prettyPredD sbe c <$$>
   nest 2 (ppPath sbe p)
 ppBranchAction sbe (BAFalseComplete a c p) =
-  text "falseComplete" <+> prettyPredD sbe c $$
-  nest 2 (text "assumptions:" <+> prettyPredD sbe a) $$
+  text "falseComplete" <+> prettyPredD sbe c <$$>
+  nest 2 (text "assumptions:" <+> prettyPredD sbe a) <$$>
   nest 2 (ppPath sbe p)
 
 ppPathHandler :: SBE sbe -> PathHandler sbe -> Doc
 ppPathHandler sbe (BranchHandler info act h) = 
-  text "on" <+> ppMergeInfo info <+> text "do" $$
-  nest 2 (ppBranchAction sbe act) $$
+  text "on" <+> ppMergeInfo info <+> text "do" <$$>
+  nest 2 (ppBranchAction sbe act) <$$>
   ppPathHandler sbe h
 ppPathHandler _ StopHandler = text "stop"
 
@@ -538,7 +627,7 @@ ppPath sbe p =
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
   <>  colon
-  $+$ nest 2 (text "Locals:" $+$ nest 2 (ppRegMap sbe (p^.pathRegs)))
+  <$$> nest 2 (text "Locals:" <$$> nest 2 (ppRegMap sbe (p^.pathRegs)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
 
 -- Prints just the path's location and path constraints
@@ -550,6 +639,9 @@ ppPathLoc _ p =
                  <> char '/'
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
+
+ppStackTrace :: [CallFrame term] -> Doc
+ppStackTrace = braces . vcat . map (ppSymbol . cfFuncSym)
 
 ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
 ppRegMap sbe mp =
@@ -564,6 +656,18 @@ ppRegMap sbe mp =
 
 ppTuple :: [Doc] -> Doc
 ppTuple = parens . hcat . punctuate comma
+
+ppBreakpoint :: Breakpoint -> Doc
+ppBreakpoint BreakEntry          = text "init"
+ppBreakpoint (BreakBBEntry sbid) = ppSymBlockID sbid
+
+ppBreakpoints :: M.Map Symbol (S.Set Breakpoint) -> Doc
+ppBreakpoints m = text "breakpoints set:" <$$> hang 2 (vcat d)
+  where d = [ text sym <> ppBreakpoint bp
+            | (Symbol sym, bps) <- M.toList m
+            , bp <- S.toList bps
+            ]
+
 
 -----------------------------------------------------------------------------------------
 -- Debugging

@@ -49,7 +49,8 @@ import           Data.Map                  (Map)
 import           Data.Set                  (Set)
 import           Verifier.LLVM.Backend
 import           Numeric                   (showHex)
-import           Text.PrettyPrint.HughesPJ
+import Text.PrettyPrint.Leijen hiding ((<$>), align)
+
 import           Verinf.Symbolic.Lit
 import           Verinf.Symbolic.Lit.Functional
 import qualified Data.Map                  as Map
@@ -335,8 +336,8 @@ termToBytes dl tp0 t0 = do
     (ArrayType _ tp, ArrayTerm v)  -> joinN (termToBytes dl tp <$> v)
     (VecType _ tp,   VecTerm v)    -> joinN (termToBytes dl tp <$> v)
     (StructType si,  StructTerm v) -> joinN $ V.zipWith (termToBytes dl) (siFieldTypes si) v
-    _ -> error $ show $ text "internalError: termToBytes given mismatched arguments:" $$
-           nest 2 (text "Type:" <+> ppMemType tp0 $$
+    _ -> error $ show $ text "internalError: termToBytes given mismatched arguments:" <$$>
+           nest 2 (text "Type:" <+> ppMemType tp0 <$$>
                    text "Term:" <+> ppBitTerm t0)
            
 {-
@@ -488,12 +489,12 @@ ppStorage mranges be = impl 0 Nothing
                      <+> parens (text "allocated:" <+> pl al <> comma
                                  <+> text "initialized:" <+> pl il)
     impl a (Just doc) (SDefine sym)  =
-      whenInRange a $ item doc a $ L.ppSymbol sym
+      whenInRange a $ item doc a $ ppSymbol sym
     impl a (Just doc) (SBlock s l)
       = whenInRange a $ item doc a 
-      $ L.ppSymbol s <> char '/' <> L.ppLabel l
+      $ ppSymbol s <> char '/' <> text (show (L.ppLabel l))
     impl _ (Just doc) SUnallocated   = doc
-    item doc addr desc               = doc $+$ text (showHex addr "") <> colon <+> desc
+    item doc addr desc               = doc <$$> text (showHex addr "") <> colon <+> desc
     pl = let ?be = be in lPrettyLit
     whenInRange a doc = case mranges of
       Nothing     -> doc
@@ -699,15 +700,15 @@ bmStackGrowsUp bm = bmStackAddr bm <= bmStackEnd bm
 bmDump :: (Eq l, LV.Storable l)
   => BitEngine l -> Bool -> BitMemory l -> Maybe [Range Addr] -> IO ()
 bmDump be sparse bm mranges = do
-  banners $ render $
-    text "Memory Model Dump"
-    $+$ text "Stack Range:" <+> text (h $ bmStackAddr bm) <> comma <+> text (h $ bmStackEnd bm)
-    $+$ text "Code Range:"  <+> text (h $ bmCodeAddr bm) <> comma <+> text (h $ bmCodeEnd bm)
-    $+$ text "Data Range:"  <+> text (h $ bmDataAddr bm) <> comma <+> text (h $ bmDataEnd bm)
-    $+$ text "Heap Range:"  <+> text (h $ bmHeapAddr bm) <> comma <+> text (h $ bmHeapEnd bm)
-    $+$ text "Frame pointers:" <+> hcat (punctuate comma (map text $ map hx $ bmStackFrames bm))
-    $+$ text "Storage:"
-    $+$ (if sparse then ppStorage mranges else ppStorageShow) be (bmStorage bm)
+  banners $ show $
+    text "Memory Model Dump" <$$>
+    text "Stack Range:" <+> text (h $ bmStackAddr bm) <> comma <+> text (h $ bmStackEnd bm) <$$>
+    text "Code Range:"  <+> text (h $ bmCodeAddr bm) <> comma <+> text (h $ bmCodeEnd bm) <$$>
+    text "Data Range:"  <+> text (h $ bmDataAddr bm) <> comma <+> text (h $ bmDataEnd bm) <$$>
+    text "Heap Range:"  <+> text (h $ bmHeapAddr bm) <> comma <+> text (h $ bmHeapEnd bm) <$$>
+    text "Frame pointers:" <+> hcat (punctuate comma (map text $ map hx $ bmStackFrames bm)) <$$>
+    text "Storage:" <$$> 
+    (if sparse then ppStorage mranges else ppStorageShow) be (bmStorage bm)
   where
     h s  = showHex s ""
     hx s = "0x" ++ h s
@@ -1104,7 +1105,7 @@ dmDump _ mem _ = do
   -- Steps: Build list of memory addresses to print out.
   let allNodes = lfp (dmMemArgs . dmNodeApp) (Set.singleton mem)
   forM_ (Set.toList allNodes) $ \m -> do
-    putStrLn $ render $ prettyMemIdx m <> colon <+> dmPrintApp (dmNodeApp m)
+    putStrLn $ show $ prettyMemIdx m <> colon <+> dmPrintApp (dmNodeApp m)
 
 -- | @loadBytes be mem ptr size@ returns term representing all the bits with given size.
 dmLoadBytes :: (?be :: BitEngine l, Ord l, LV.Storable l)
@@ -1690,7 +1691,7 @@ sbeBitBlast dl mm = sbe
           , applyIte         = \_ c x y -> return $ muxTerm c x y
           , freshInt         = \w -> BitIO $
               IntTerm <$> LV.replicateM w (beMakeInputLit be)
-          
+
           , typedExprEval    = \expr ->
              return $ ExprEvalFn $ \eval -> liftIO . applyExpr dl =<< traverse eval expr
           , applyTypedExpr   = BitIO . applyExpr dl
@@ -1718,6 +1719,11 @@ sbeBitBlast dl mm = sbe
           , heapAlloc        = \m eltTp _ cnt a ->
               BitIO $ mmHeapAlloc mm m (memTypeSize dl eltTp) cnt a
           , memCopy          = BitIO `c6` mmMemCopy mm
+
+          , termSAT          =
+              case beCheckSat be of
+                Nothing  -> BitIO . return . const Unknown
+                Just sat -> BitIO . sat
           , writeAiger       = \f ts ->
               BitIO $ beWriteAigerV be f $ flattenTerm . snd <$> ts
           , evalAiger        = BitIO `c3` evalAigerImpl dl
@@ -1734,7 +1740,7 @@ ppBitTerm (DoubleTerm v) = text (show v)
 ppBitTerm (PtrTerm t) = text "p" <> lPrettyLV t
 ppBitTerm (ArrayTerm v) = brackets $ commas $ V.toList $ ppBitTerm <$> v
 ppBitTerm (VecTerm v) = brackets $ commas $ V.toList $ ppBitTerm <$> v
-ppBitTerm (StructTerm v) = L.structBraces $ commas $ V.toList $ ppBitTerm <$> v
+ppBitTerm (StructTerm v) = structBraces $ commas $ V.toList $ ppBitTerm <$> v
 
 liftBinIntRel :: (LV.Storable l)
               => (LV.Vector l -> LV.Vector l -> IO l)

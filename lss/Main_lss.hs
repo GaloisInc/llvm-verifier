@@ -22,7 +22,7 @@ import           Text.ParserCombinators.Parsec
 import           Verinf.Symbolic                 (createBitEngine)
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
-import           Text.PrettyPrint
+import           Text.PrettyPrint.Leijen hiding ((<$>))
 
 import           LSSImpl
 
@@ -50,6 +50,8 @@ main = do
             , xlate    = def &= help "Prints the symbolic AST translation to stdout, and then terminates."
             , mname    = def &= typ "Fully-linked .bc containing main()"
                              &= Args.args
+            , startDebugger = def &= help "Break and enter the LSS debugger when running main"
+            , satBranches   = def &= help "With a supported symbolic backend, always check satisfiability of symbolic path assertions at branches"
             }
             &= summary ("LLVM Symbolic Simulator (lss) 0.2b Feb 2013. "
                         ++ "Copyright 2011-2012 Galois, Inc. All rights reserved.")
@@ -75,15 +77,15 @@ main = do
 
   let dl = parseDataLayout $ L.modDataLayout mdl
   let mg = defaultMemGeom dl
+  be <- createBitEngine
   SBEPair sbe mem <- 
     case backEnd of
       BitBlastDagBased -> do
-        be <- createBitEngine
         createDagAll be dl mg
       BitBlastBuddyAlloc -> do
-        be <- createBitEngine
         return $ createBuddyAll be dl mg
-      SAWBackendType -> uncurry SBEPair <$> createSAWBackend dl mg
+      SAWBackendType -> do
+        uncurry SBEPair <$> createSAWBackend be dl mg
   cb <- mkCodebase sbe dl mdl
 
   -- Print out translation when just asked to translate.
@@ -100,7 +102,7 @@ main = do
       case mr of
         Left d -> putStrLn $ show $ text "Error:" <+> d
         Right (warnings,sd) -> do
-          mapM_ (\w -> putStrLn $ show $ text "Warning:" $$ nest 2 w) warnings
+          mapM_ (\w -> putStrLn $ show $ text "Warning:" <$$> nest 2 w) warnings
           putStrLn $ show $ ppSymDefine sd
     let via s f = mapM_ (putStrLn . show  . f) (s mdl)
     exitWith ExitSuccess

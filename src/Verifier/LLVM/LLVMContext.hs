@@ -37,7 +37,8 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Text.LLVM         as L
-import Text.PrettyPrint
+import Text.PrettyPrint.Leijen hiding ((<$>))
+
 
 import Verifier.LLVM.DataLayout
 
@@ -94,8 +95,8 @@ runTC pdl initMap m = over _1 tcsErrors . view swapped $ runState m tcs0
 tcsErrors :: TCState -> [Doc]
 tcsErrors tcs = (ppUnsupported <$> Set.toList (tcsUnsupported tcs))
              ++ (ppUnresolvable <$> Set.toList (tcsUnresolvable tcs))
-  where ppUnsupported tp = text "Unsupported type:" <+> L.ppType tp
-        ppUnresolvable i = text "Could not resolve identifier:" <+> L.ppIdent i
+  where ppUnsupported tp = text "Unsupported type:" <+> text (show (L.ppType tp))
+        ppUnresolvable i = text "Could not resolve identifier:" <+> text (show (L.ppIdent i))
  
 -- | Type lifter contains types that could not be parsed.
 type TC = State TCState

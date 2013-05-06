@@ -8,7 +8,8 @@ module Verifier.LLVM.DataLayout
   ( Size
   , Offset
   , Alignment
-
+    -- * Utilities
+  , structBraces
     -- * Data layout declarations.
   , DataLayout
   , EndianForm(..)
@@ -64,7 +65,7 @@ import Data.Vector (Vector)
 import qualified Data.Vector as V
 import Data.Word (Word32, Word64)
 import qualified Text.LLVM as L
-import Text.PrettyPrint
+import Text.PrettyPrint.Leijen hiding ((<$>))
 import Verifier.LLVM.Utils
 
 -- | Performs a binary search on a range of ints.
@@ -290,9 +291,9 @@ data SymType
 
 ppSymType :: SymType -> Doc
 ppSymType (MemType tp) = ppMemType tp
-ppSymType (Alias i) = L.ppIdent i
+ppSymType (Alias i) = text (show (L.ppIdent i))
 ppSymType (FunType d) = ppFunDecl d
-ppSymType (UnsupportedType tp) = L.ppType tp    
+ppSymType (UnsupportedType tp) = text (show (L.ppType tp)) 
 ppSymType VoidType = text "void"
 
 -- | LLVM Types supported by simulator with a defined size and alignment.
@@ -347,7 +348,7 @@ varArgsFunDecl rtp tps = FunDecl { fdRetType = Just rtp
                                  }
 
 ppFunDecl :: FunDecl -> Doc
-ppFunDecl (FunDecl rtp args va) = rdoc <> parens (L.commas (fmap ppMemType args ++ vad))
+ppFunDecl (FunDecl rtp args va) = rdoc <> parens (commas (fmap ppMemType args ++ vad))
   where rdoc = maybe (text "void") ppMemType rtp
         vad = if va then [text "..."] else []
 
@@ -467,9 +468,15 @@ siIndexOfOffset si o = binarySearch f 0 (V.length flds)
                e | i+1 == V.length flds = structSize si
                  | otherwise = fiOffset (flds V.! i)
 
+commas :: [Doc] -> Doc
+commas = hsep . punctuate (char ',')
+
+structBraces :: Doc -> Doc
+structBraces b = char '{' <+> b <+> char '}'
+
 -- | Pretty print struct info.
 ppStructInfo :: StructInfo -> Doc
-ppStructInfo si = L.structBraces $ L.commas (V.toList fields)
+ppStructInfo si = structBraces $ commas (V.toList fields)
   where fields = ppMemType <$> siFieldTypes si
 
 -- | Removes the last field from a struct if at least one field exists.

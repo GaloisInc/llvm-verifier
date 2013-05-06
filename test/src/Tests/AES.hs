@@ -15,7 +15,6 @@ module Tests.AES (aesTests) where
 import           Control.Applicative
 import           Control.Monad (forM)
 import           Control.Monad.State (gets)
-import           Data.Maybe
 import           Test.QuickCheck
 import           Tests.Common
 import qualified Text.LLVM               as L
@@ -28,11 +27,11 @@ import           Verifier.LLVM.Simulator.Debugging
 aesTests :: [(Args, Property)]
 aesTests =
   [
-    test 1 False "test-aes128-concrete" $ aes128Concrete 1
+    test 1 False "test-aes128-concrete" $ do
+      let v = 1 -- verbosity
+      runAllMemModelTest v "aes128BlockEncrypt.bc" aes128ConcreteImpl
   ]
-  where
-    aes128Concrete v = psk v $ runAES v aes128ConcreteImpl
-    runAES v         = runAllMemModelTest v "aes128BlockEncrypt.bc"
+
 
 aes128ConcreteImpl :: forall sbe . Functor sbe => Simulator sbe IO Bool
 aes128ConcreteImpl = do
@@ -48,12 +47,13 @@ aes128ConcreteImpl = do
     callDefine (L.Symbol "aes128BlockEncrypt") Nothing args
   Just mem <- getProgramFinalMem
   ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr 2
+  sbe <- gets symBE
   ctVals <- forM [0..3] $ \i ->
-    withSBE $ \s -> getVal s <$> applyTypedExpr s (GetConstArrayElt 4 i32 ctarr i)
-  return (ctVals == ctChks)
+    liftSBE $ getVal sbe <$> applyTypedExpr sbe (GetConstArrayElt 4 i32 ctarr i)
+  return (ctVals == fmap Just ctChks)
   where
-    getVal :: SBE sbe -> SBETerm sbe -> Integer
-    getVal s v = fromJust $ asUnsignedInteger s 32 v
+    getVal :: SBE sbe -> SBETerm sbe -> Maybe Integer
+    getVal s v = asUnsignedInteger s 32 v
     initArr :: [Integer] -> Simulator sbe IO (MemType,SBETerm sbe)
     initArr xs = do
        sbe <- gets symBE

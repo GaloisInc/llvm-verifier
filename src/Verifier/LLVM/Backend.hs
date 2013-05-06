@@ -24,12 +24,17 @@ module Verifier.LLVM.Backend
   , termInt
   , termAdd
   , asSignedInteger
+  , beCheckSat
+  , SatResult(..)
   ) where
 
 import           Control.Applicative ((<$>))
 import           Data.Bits (testBit)
 import qualified Data.Vector as V
-import           Text.PrettyPrint.HughesPJ
+import Text.PrettyPrint.Leijen hiding ((<$>))
+
+
+import Verinf.Symbolic (beCheckSat, SatResult(..))
 
 import Verifier.LLVM.AST
 
@@ -225,10 +230,10 @@ data SBE m = SBE
     -- and merge frames.
   , memMerge :: SBEPred m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
 
-  -- | @term SAT t@ returns @True@ if @t@ is satisfiable, @False@
-  -- otherwise. TODO: eventually return a satisfying assignment.
-  -- TODO: define SatResult
-  --, termSAT :: SBETerm m -> m SatResult
+  -- | @predSAT t@ returns a 'Sym.SatResult' for the given
+  -- predicate. If the current backend does not support SAT checking,
+  -- returns 'Unknown' and prints a warning
+  , termSAT :: SBEPred m -> m SatResult
 
     ----------------------------------------------------------------------------
     -- Output functions

@@ -21,14 +21,13 @@ module Verifier.LLVM.Utils
   , ppArrayType
   , ppVectorType
   , ppIntVector
-  , ppTypeVector
   ) where
 
 import Data.Bits (Bits(..))
 import Data.Int (Int32)
 import qualified Text.LLVM     as L
-import Text.LLVM.AST
-import Text.PrettyPrint.HughesPJ
+import Text.LLVM.AST hiding (angles)
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
 -- | Returns true if number is a power of two.
 isPow2 :: (Bits a, Num a) => a -> Bool
@@ -84,6 +83,3 @@ ppVectorType n e = angles (int n <+> char 'x' <+> e)
 
 ppIntVector :: Int -> BitWidth -> Doc
 ppIntVector n w = ppVectorType n (ppIntType w)
-
-ppTypeVector :: Int -> L.Type -> Doc
-ppTypeVector n e = ppVectorType n (L.ppType e)
