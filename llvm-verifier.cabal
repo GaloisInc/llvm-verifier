@@ -71,13 +71,15 @@ library
     Verifier.LLVM.BitBlastBackend
     Verifier.LLVM.DataLayout
     Verifier.LLVM.LLVMContext
+    Verifier.LLVM.LLVMIntrinsics
     Verifier.LLVM.MemModel
     Verifier.LLVM.MemModel.Common
     Verifier.LLVM.Printf
     Verifier.LLVM.SAWBackend
     Verifier.LLVM.Simulator
-    Verifier.LLVM.Simulator.Common
+    Verifier.LLVM.Simulator.Primitives
     Verifier.LLVM.Simulator.Debugging
+    Verifier.LLVM.Simulator.Internals
     Verifier.LLVM.Simulator.SimUtils
     Verifier.LLVM.Translation
     Verifier.LLVM.Utils

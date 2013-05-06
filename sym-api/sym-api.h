@@ -34,7 +34,7 @@ uint64_t *lss_fresh_array_uint64 (uint32_t size, uint64_t def, uint64_t *defs) N
 /* This familiy of functions allows incremental designation of AIG
    outputs; the collected AIG outputs are cleared upon writing the AIG
    via the lss_write_aiger() function. */
-void lss_aiger_add_output_uint8(uint8_t sym)   NO_INL;
+void lss_aiger_add_output_uint8( uint8_t  sym) NO_INL;
 void lss_aiger_add_output_uint16(uint16_t sym) NO_INL;
 void lss_aiger_add_output_uint32(uint32_t sym) NO_INL;
 void lss_aiger_add_output_uint64(uint64_t sym) NO_INL;
@@ -43,10 +43,26 @@ void lss_aiger_add_output_array_uint16(uint16_t *sym, uint32_t size) NO_INL;
 void lss_aiger_add_output_array_uint32(uint32_t *sym, uint32_t size) NO_INL;
 void lss_aiger_add_output_array_uint64(uint64_t *sym, uint32_t size) NO_INL;
     
-/* Write collected AIG outputs (i.e., those collected via the
+/* Write collected outputs (i.e., those collected via the
    lss_aiger_add_output* functions).  Note that upon return from this
    function, the list of collected outputs is cleared. */
 void lss_write_aiger(char *filename) NO_INL;
+
+
+struct SMTLIB_file;
+
+typedef struct SMTLIB_file SMT_LIB_file;
+
+SMTLIB_file* lss_SMTLIB_open(const char* path);
+void lss_SMTLIB_assert_uint8(SMTLIB_file*,  uint8_t v);
+void lss_SMTLIB_close(SMTLIB_file* file);
+
+/**
+ * Write collected outputs to an SMTLib file, and clear outputs.
+ *
+ * @param filename Path to write SMTLIB file to.
+ */
+void lss_write_smt(char* filename) NO_INL;
 
 void lss_write_aiger_uint8  (uint8_t  sym, char *filename) NO_INL;
 void lss_write_aiger_uint16 (uint16_t sym, char *filename) NO_INL;
@@ -84,7 +100,8 @@ void lss_eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
                                   uint8_t *input_bits, uint32_t input_size)
     NO_INL;
 
-void lss_write_cnf(uint32_t sym, char *filename) NO_INL;
+
+void lss_write_cnf(uint32_t sym, const char *filename) NO_INL;
 
 void lss_override_function_by_name(char *from, char *to) NO_INL;
 void lss_override_function_by_addr(void *from, void *to) NO_INL;
