@@ -117,7 +117,7 @@ modifyPathRegs :: (Functor m, Monad m)
                -> Simulator sbe m ()
 modifyPathRegs f = do
   Just p <- preuse currentPathOfState
-  currentPathOfState .= pathRegs %~ f p
+  currentPathOfState .= over pathRegs f p
 
 -- @getMem@ yields the memory model of the current path if any.
 getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
