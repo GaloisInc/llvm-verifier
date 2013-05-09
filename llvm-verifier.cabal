@@ -77,7 +77,6 @@ library
     Verifier.LLVM.Printf
     Verifier.LLVM.SAWBackend
     Verifier.LLVM.Simulator
-    Verifier.LLVM.Simulator.Primitives
     Verifier.LLVM.Simulator.Debugging
     Verifier.LLVM.Simulator.Internals
     Verifier.LLVM.Simulator.SimUtils
