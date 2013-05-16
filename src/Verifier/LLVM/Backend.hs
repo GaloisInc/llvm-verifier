@@ -244,7 +244,7 @@ data SBE m = SBE
 
     -- | @writeCnf f t@ writes a CNF representation of @t /= 0@ into
     -- file @f@.
-  , writeCnf :: String -> BitWidth -> SBETerm m -> m [Int]
+  , writeCnf :: String -> BitWidth -> SBETerm m -> m [Maybe Int]
 
     -- | @evalAiger inps tp t@ evaluates an AIG with the given concrete inputs;
     -- result is always a concrete term.  The term @t@ has type @tp@.
