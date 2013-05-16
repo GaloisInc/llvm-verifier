@@ -950,7 +950,7 @@ scWriteAiger sbs path terms = do
     Nothing -> fail "Could not write Aig as term could not be bitblasted."
     Just bits -> do
       let v = flattenBValue <$> bits
-      beWriteAigerV (bcEngine bc) path v
+      beWriteAigerV (bcEngine bc) path (LV.concat v)
 
 intFromBV :: V.Vector Bool -> Integer
 intFromBV v = go 0 0

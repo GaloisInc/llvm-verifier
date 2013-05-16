@@ -39,7 +39,7 @@ import           Control.Applicative       ((<$>), (<$))
 import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
 import           Control.Lens hiding (ix, op)
-import           Control.Monad (ap, liftM, unless, when)
+import           Control.Monad (ap, unless, when)
 import           Control.Monad.IO.Class
 import           Data.Binary.IEEE754
 import           Data.Bits
@@ -1725,11 +1725,11 @@ sbeBitBlast dl mm = sbe
                 Nothing  -> BitIO . return . const Unknown
                 Just sat -> BitIO . sat
           , writeAiger       = \f ts ->
-              BitIO $ beWriteAigerV be f $ flattenTerm . snd <$> ts
+              BitIO $ beWriteAigerV be f (LV.concat (flattenTerm . snd <$> ts))
           , evalAiger        = BitIO `c3` evalAigerImpl dl
           , writeCnf         = \f _ t -> BitIO $ do
               let ?be = be in
-                LV.toList `liftM` beWriteCNF be f [] (lIsZero (flattenTerm t))
+                V.toList <$> beWriteCNF be f mempty (lIsZero (flattenTerm t))
           , sbeRunIO = liftSBEBitBlast 
           }
 
