@@ -50,7 +50,7 @@ library
     , data-binary-ieee754 >= 0.4.2
     , fingertree
     , haskeline >= 0.7
-    , lens
+    , lens >= 3.9
     , llvm-pretty >= 0.1.2.0
     , mtl
     , saw-core
@@ -106,7 +106,7 @@ executable lss
   build-depends:
       base >= 4
     , cmdargs >= 0.8
-    , lens
+    , lens >= 3.9
     , llvm-pretty >= 0.1.1.0
     , llvm-verifier
     , mtl
