@@ -4,12 +4,10 @@
 module Tests.BitMemModel (bitMemModelTests) where
 
 import Data.Bits
-import Data.Int
 import qualified Data.Vector.Storable as LV
 import Test.QuickCheck
 import Test.QuickCheck.Monadic
 
-import qualified Text.LLVM.AST as LLVM
 import Verinf.Symbolic (createBitEngine)
 import Verinf.Symbolic.Lit
 import Verinf.Symbolic.Lit.Functional
@@ -43,9 +41,6 @@ mmTest testName n fn =
       fn dl be (sbeBitBlast dl mm) mm mem
       run $ beFree be)
 
-
-intType :: Int32 -> LLVM.Type
-intType w = LLVM.PrimType (LLVM.Integer w)
 
 -- | Generate bit vector from integer.
 bfi :: Int -> Integer -> LV.Vector Bool

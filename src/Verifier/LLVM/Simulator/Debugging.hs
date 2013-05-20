@@ -48,7 +48,7 @@ import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Simulator
-import Verifier.LLVM.Simulator.Common
+import Verifier.LLVM.Simulator.Internals
 
 #if __GLASGOW_HASKELL__ < 706
 import qualified Text.ParserCombinators.ReadP as P

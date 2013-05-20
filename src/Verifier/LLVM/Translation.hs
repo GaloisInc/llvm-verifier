@@ -143,6 +143,56 @@ blockPhiMap blocks =
     [ (l, parsePhiStmts sl)
     | L.BasicBlock { L.bbLabel = (_bbid, l), L.bbStmts = sl } <- blocks ]
 
+-- Lift attempt declaration.
+
+-- | Computation that attempts to lift LLVM values to symbolic representation.
+newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: IO (Either String a) }
+
+instance Functor LiftAttempt where
+  fmap f (LiftAttempt m) = LiftAttempt $ over _Right f <$> m
+
+instance Applicative LiftAttempt where
+  pure = LiftAttempt . return . Right 
+  LiftAttempt fm <*> LiftAttempt vm = LiftAttempt $ do
+   mf <- fm 
+   case mf of
+     -- Stop execution at error.
+     Left e -> return (Left e)
+     -- Evaluate function.
+     Right f -> over _Right f <$> vm
+
+instance Monad LiftAttempt where
+  LiftAttempt m >>= h = LiftAttempt $ m >>= either (return . Left) (unLiftAttempt . h)
+  return = pure
+  fail = LiftAttempt . return . Left
+
+instance MonadIO LiftAttempt where
+  liftIO = LiftAttempt . fmap Right
+
+runLiftAttempt :: LiftAttempt a -> IO (Maybe a)
+runLiftAttempt (LiftAttempt m) = either (\_ -> Nothing) Just <$> m
+
+liftMaybe :: Maybe a -> LiftAttempt a
+liftMaybe = LiftAttempt . return . maybe (Left "") Right
+
+unsupportedStmt :: (?sbe :: SBE sbe)
+                => L.Stmt -> BlockGenerator sbe (SymStmt (SBETerm sbe))
+unsupportedStmt stmt = do
+  addWarning $ text "Unsupported instruction: " <+> text (show (L.ppStmt stmt))
+  return (BadSymStmt stmt)
+
+trySymStmt :: (?sbe :: SBE sbe)
+           => L.Stmt
+           -> LiftAttempt (SymStmt (SBETerm sbe))
+           -> BlockGenerator sbe (SymStmt (SBETerm sbe))
+trySymStmt stmt (LiftAttempt m) = do
+  mr <- liftIO m
+  case mr of
+    Right s -> return s
+    Left{} -> unsupportedStmt stmt
+
+-- Lift operations
+
 liftTypedValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
                => L.Typed L.Value -> LiftAttempt (SymValue (SBETerm sbe))
 liftTypedValue (L.Typed tp v) = flip liftValue v =<< liftMemType' tp
@@ -158,10 +208,11 @@ liftStringValue s = mkSValExpr . SValArray tp =<< traverse toChar (V.fromList s)
        toChar c = mkSValExpr (SValInteger 8 (toInteger (fromEnum c)))
 
 liftValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
-             => MemType -> L.Value -> LiftAttempt (SymValue (SBETerm sbe))
+          => MemType -- ^ Expected type of value.
+          -> L.Value -- ^ LLVM Value to lift.
+          -> LiftAttempt (SymValue (SBETerm sbe))
 liftValue (IntType w) (L.ValInteger x) =
   mkSValExpr $ SValInteger w x
-
 liftValue (IntType 1) (L.ValBool x) =
   mkSValExpr $ SValInteger 1 (if x then 1 else 0)
 liftValue FloatType  (L.ValFloat x) =
@@ -205,11 +256,11 @@ liftValue rtp (L.ValConstExpr ce)  =
         _ -> fail "Could not interpret constant expression"
     _ -> fail "Could not interpret constant expression"
 liftValue tp L.ValUndef = zeroValue tp
-liftValue _ L.ValLabel{} = fail "Could not interpret label"
+liftValue _  L.ValLabel{} = fail "Could not interpret label"
 liftValue tp L.ValZeroInit = zeroValue tp
-liftValue _ L.ValAsm{} = fail "Could not interpret asm."
-liftValue _ L.ValMd{} = fail "Could not interpret metadata."
-liftValue _ _ = fail "Could not interpret LLVM value"
+liftValue _  L.ValAsm{} = fail "Could not interpret asm."
+liftValue _  L.ValMd{} = fail "Could not interpret metadata."
+liftValue _  _ = fail "Could not interpret LLVM value"
 
 -- | Lift a bitcast expression.
 liftBitcast :: (?lc :: LLVMContext)
@@ -234,12 +285,6 @@ zeroExpr tp0 =
     ArrayType n tp -> SValArray tp . V.replicate (fromIntegral n) <$> zeroValue tp
     VecType n tp  -> SValVector tp . V.replicate (fromIntegral n) <$> zeroValue tp
     StructType si -> SValStruct si <$> traverse zeroValue (siFieldTypes si)
-
-unsupportedStmt :: (?sbe :: SBE sbe)
-                => L.Stmt -> BlockGenerator sbe (SymStmt (SBETerm sbe))
-unsupportedStmt stmt = do
-  addWarning $ text "Unsupported instruction: " <+> text (show (L.ppStmt stmt))
-  return (BadSymStmt stmt)
 
 liftGEP :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
         => Bool 
@@ -298,51 +343,10 @@ liftAlign :: (?lc :: LLVMContext) => MemType -> Maybe L.Align -> Alignment
 liftAlign _ (Just a) | a /= 0 = fromIntegral a
 liftAlign tp _ = memTypeAlign (llvmDataLayout ?lc) tp
 
-newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: IO (Either String a) }
-
-instance Functor LiftAttempt where
-  fmap f (LiftAttempt m) = LiftAttempt $ over _Right f <$> m
-
-instance Applicative LiftAttempt where
-  pure = LiftAttempt . return . Right 
-  LiftAttempt fm <*> LiftAttempt vm = LiftAttempt $ do
-   mf <- fm 
-   case mf of
-     -- Stop execution at error.
-     Left e -> return (Left e)
-     -- Evaluate function.
-     Right f -> over _Right f <$> vm
-
-instance Monad LiftAttempt where
-  LiftAttempt m >>= h = LiftAttempt $ m >>= either (return . Left) (unLiftAttempt . h)
-  return = pure
-  fail = LiftAttempt . return . Left
-
-instance MonadIO LiftAttempt where
-  liftIO = LiftAttempt . fmap Right
-
-runLiftAttempt :: LiftAttempt a -> IO (Maybe a)
-runLiftAttempt (LiftAttempt m) = either (\_ -> Nothing) Just <$> m
-
-liftMaybe :: Maybe a -> LiftAttempt a
-liftMaybe Nothing  = LiftAttempt (return (Left ""))
-liftMaybe (Just v) = LiftAttempt (return (Right v))
-
 liftMemType' :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => L.Type
              -> LiftAttempt MemType
 liftMemType' tp = liftMaybe (liftMemType tp)
-
-trySymStmt :: (?sbe :: SBE sbe)
-           => L.Stmt
-           -> LiftAttempt (SymStmt (SBETerm sbe))
-           -> BlockGenerator sbe (SymStmt (SBETerm sbe))
-trySymStmt stmt (LiftAttempt m) = do
-  mr <- liftIO m
-  case mr of
-    Right s -> return s
-    Left{} -> unsupportedStmt stmt
-
 
 liftStmt :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
          => L.Stmt  
