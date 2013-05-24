@@ -1724,8 +1724,10 @@ sbeBitBlast dl mm = sbe
               case beCheckSat be of
                 Nothing  -> BitIO . return . const Unknown
                 Just sat -> BitIO . sat
-          , writeAiger       = \f ts ->
-              BitIO $ beWriteAigerV be f (LV.concat (flattenTerm . snd <$> ts))
+          , writeAiger       = \f ts -> BitIO $ do
+              inputs <- beInputLits be
+              let outputs = LV.concat (flattenTerm . snd <$> ts)
+              beWriteAigerV be f inputs outputs
           , evalAiger        = BitIO `c3` evalAigerImpl dl
           , writeCnf         = \f _ t -> BitIO $ do
               let ?be = be in

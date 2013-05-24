@@ -34,7 +34,7 @@ import Verifier.SAW.BitBlast
 import Verifier.SAW.Conversion
 import Verifier.SAW.ParserUtils as SAW
 import Verifier.SAW.Prelude
-import Verifier.SAW.Recognizer
+import Verifier.SAW.Recognizer as SAW
 import Verifier.SAW.Rewriter
 
 import Verifier.LLVM.AST
@@ -76,7 +76,7 @@ asUnsignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
 asUnsignedBitvector w s2 = do
   (s1, vt) <- asApp s2
   (s0, wt) <- asApp s1
-  when (asTermF  s0 /= preludeBVNatTermF) Nothing
+  when (unwrapTermF  s0 /= preludeBVNatTermF) Nothing
   when (asNatLit wt /= Just (toInteger w)) Nothing
   asNatLit vt
 
