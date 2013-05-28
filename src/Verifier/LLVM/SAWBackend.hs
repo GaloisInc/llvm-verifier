@@ -935,7 +935,7 @@ getStructElt =
                    <:> asFinValLit -- Index
                   )
                 (\(((((), _), _), s), (i,_)) -> 
-                   mkAny <$> structElt s i)
+                   return <$> structElt s i)
 
 
 scWriteAiger :: (Eq l, Storable l)
