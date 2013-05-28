@@ -173,7 +173,7 @@ data SAWBackendState s l =
            , sbsBCache :: BCache l
              -- | Stores list of fresh variables and their associated terms with
              -- most recently allocated variables first.
-           , sbsVars :: IORef [(BitWidth,VarIndex)]
+           , sbsVars :: IORef [(BitWidth,VarIndex, BValue l)]
              -- | Allocations added.
            , sbsAllocations :: SharedTermSetRef s
              -- | Width of pointers in bits as a nat.
@@ -208,7 +208,7 @@ mkBackendState :: forall s l .
                -> SharedContext s
                -> IO (SAWBackendState s l)
 mkBackendState dl be sc = do
-  bc <- newBCache be Map.empty
+  bc <- newBCache be
   vars <- newIORef []
   allocs <- newIORef Set.empty
   ptrWidth <- scBitwidth sc (ptrBitwidth dl)
@@ -949,8 +949,10 @@ scWriteAiger sbs path terms = do
   case mbits of
     Nothing -> fail "Could not write Aig as term could not be bitblasted."
     Just bits -> do
-      let v = flattenBValue <$> bits
-      beWriteAigerV (bcEngine bc) path (LV.concat v)
+      inputValues <- fmap (view _3) <$> readIORef (sbsVars sbs)
+      let inputs  = LV.concat $ flattenBValue <$> inputValues
+      let outputs = LV.concat $ flattenBValue <$> bits
+      beWriteAigerV (bcEngine bc) path inputs outputs
 
 intFromBV :: V.Vector Bool -> Integer
 intFromBV v = go 0 0
@@ -968,7 +970,7 @@ splitByWidths v (w:wl) = (i:) <$> splitByWidths v' wl
 
 scEvalTerm :: SAWBackendState s l -> [Bool] -> SharedTerm s -> IO (SharedTerm s)
 scEvalTerm sbs inputs t = do
-  (widths,varIndices) <- unzip <$> readIORef (sbsVars sbs)
+  (widths,varIndices,_) <- unzip3 <$> readIORef (sbsVars sbs)
   case splitByWidths (V.fromList inputs) widths of
     Nothing -> fail "Incorrect number of inputs"
     Just wv -> do
@@ -1078,9 +1080,9 @@ createSAWBackend be dl _mg = do
                 , freshInt = \w -> SAWBackend $ do
                     vtp <- valueFn =<< intTypeFn =<< scBitwidth sc w
                     i <- scFreshGlobalVar sc
-                    modifyIORef' (sbsVars sbs) ((w,i):)
                     t <- scFlatTermF sc (ExtCns (EC i "_" vtp))
-                    void $ bitBlastWith (sbsBCache sbs) t
+                    Just lits <- bitBlastWith (sbsBCache sbs) t
+                    modifyIORef' (sbsVars sbs) ((w,i,lits):)                    
                     return t
                 , typedExprEval = typedExprEvalFn sbs
                 , applyTypedExpr = \expr -> SAWBackend $ do
