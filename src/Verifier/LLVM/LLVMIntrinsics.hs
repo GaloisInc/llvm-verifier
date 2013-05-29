@@ -4,7 +4,6 @@ module Verifier.LLVM.LLVMIntrinsics
   ( registerLLVMIntrinsicOverrides
   ) where
 
-import Control.Applicative
 import Control.Lens hiding (act,from)
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
@@ -15,13 +14,12 @@ import Verifier.LLVM.Backend
 import Verifier.LLVM.DataLayout
 import Verifier.LLVM.Simulator.Internals
 
-
 uaddWithOverflowIntrinsic :: BitWidth -> StdOvd m sbe
-uaddWithOverflowIntrinsic w = Override $ \_ mregs args ->
-  case (mregs, args) of
-    (Just _, [(_,x), (_,y)]) -> do
+uaddWithOverflowIntrinsic w = override $ \args ->
+  case args of
+    [(_,x), (_,y)] -> do
       sbe <- gets symBE
-      fmap Just $ liftSBE $ applyTypedExpr sbe (UAddWithOverflow w x y)
+      liftSBE $ applyTypedExpr sbe (UAddWithOverflow w x y)
     _ -> wrongArguments "llvm.uadd.with.overflow"
 
 memcpyIntrinsic :: BitWidth -> StdOvd m sbe
@@ -53,13 +51,13 @@ memsetIntrinsic lenWidth = voidOverride $ \args -> do
     _ -> wrongArguments "llvm.memset"
 
 objectsizeIntrinsic :: BitWidth -> StdOvd m sbe
-objectsizeIntrinsic w = Override $ \_ _ args ->
+objectsizeIntrinsic w = override $ \args ->
   case args of
     [_, (_,maxOrMin)] -> do
       sbe <- gets symBE
       case asUnsignedInteger sbe 1 maxOrMin of
         Nothing -> errorPath $ "llvm.objectsize expects concrete 2nd parameter"
-        Just v  -> Just <$> liftSBE (termInt sbe w tv)
+        Just v  -> liftSBE (termInt sbe w tv)
           where tv = if v == 0 then -1 else 0
     _ -> wrongArguments "llvm.objectsize"
 

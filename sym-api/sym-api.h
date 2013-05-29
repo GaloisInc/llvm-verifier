@@ -49,20 +49,34 @@ void lss_aiger_add_output_array_uint64(uint64_t *sym, uint32_t size) NO_INL;
 void lss_write_aiger(char *filename) NO_INL;
 
 
-struct SMTLIB_file;
+  //struct SMTLIB2_file;
 
-typedef struct SMTLIB_file SMT_LIB_file;
-
-SMTLIB_file* lss_SMTLIB_open(const char* path);
-void lss_SMTLIB_assert_uint8(SMTLIB_file*,  uint8_t v);
-void lss_SMTLIB_close(SMTLIB_file* file);
+typedef struct SMTLIB2_file SMTLIB2_file;
 
 /**
- * Write collected outputs to an SMTLib file, and clear outputs.
+ * Create an SMTLIB2 file to write to.
  *
- * @param filename Path to write SMTLIB file to.
+ * @param path Path to write SMTLIB file to.
  */
-void lss_write_smt(char* filename) NO_INL;
+SMTLIB2_file* lss_SMTLIB2_create(const char* path) NO_INL;
+
+/**
+ * Add assertion that @v@ is non-zero.
+ *
+ * @param v Value to check.
+ */
+void lss_SMTLIB2_assert_nonzero_uint8(SMTLIB2_file* file,  uint8_t v) NO_INL;
+
+/**
+ * Add a check-sat command to SMTLIB file.
+ */
+void lss_SMTLIB2_check_sat(SMTLIB2_file* file) NO_INL;
+
+/**
+ * Close SMTLIB2 file and flush all outputs to it.
+ */ 
+void lss_SMTLIB2_close(SMTLIB2_file* file) NO_INL;
+
 
 void lss_write_aiger_uint8  (uint8_t  sym, char *filename) NO_INL;
 void lss_write_aiger_uint16 (uint16_t sym, char *filename) NO_INL;
