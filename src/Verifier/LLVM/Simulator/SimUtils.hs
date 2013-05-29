@@ -11,9 +11,7 @@ module Verifier.LLVM.Simulator.SimUtils
   , banners'
   , dbugM
   , dbugM'
-  )
-
-where
+  ) where
 
 import Control.Monad.Trans
 import Verinf.Utils.LogMonad

@@ -81,6 +81,7 @@ module Verifier.LLVM.Simulator.Internals
     
     -- * Term helpers
   , ptrInc
+  , strTy
    
   , FailRsn(FailRsn)
   , ppFailRsn
@@ -90,6 +91,7 @@ module Verifier.LLVM.Simulator.Internals
   , StdOvd
   , checkTypeCompat
   , voidOverride
+  , override
   , registerOverride
   , tryRegisterOverride
   , OverrideEntry
@@ -106,8 +108,12 @@ module Verifier.LLVM.Simulator.Internals
     -- * Memory primitives
   , memFailRsn
   , processMemCond
+  , alloca
+  , load
+  , loadString
+  , resolveFunPtrTerm
   , store
-
+  , dumpMem
 
   , ppStackTrace
   , ppTuple
@@ -553,8 +559,8 @@ onBlockEntry = lens _onBlockEntry (\seh sh -> seh { _onBlockEntry = sh })
 -- argument so that one function can potentially be used to override multiple
 -- symbols.
 type OverrideHandler sbe m
-  =  Symbol              -- ^ Callee symbol
-  -> Maybe (MemType, Ident)     -- ^ Callee return register
+  =  Symbol                  -- ^ Callee symbol
+  -> Maybe (MemType, Ident)  -- ^ Callee return register
   -> [(MemType,SBETerm sbe)] -- ^ Callee arguments
   -> Simulator sbe m (Maybe (SBETerm sbe))
 
@@ -570,6 +576,11 @@ type VoidOverrideHandler sbe m
 
 voidOverride :: Functor m => VoidOverrideHandler sbe m -> Override sbe m
 voidOverride f = Override (\_ _ a -> Nothing <$ f a)
+
+override :: Functor m
+         => ([(MemType, SBETerm sbe)] -> Simulator sbe m (SBETerm sbe))
+         -> Override sbe m
+override f = Override (\_ _ a -> Just <$> f a)
 
 --------------------------------------------------------------------------------
 -- Breakpoints
@@ -723,6 +734,9 @@ ptrInc x = do
   y <- liftSBE $ termInt sbe w 1
   liftSBE $ applyTypedExpr sbe (PtrAdd x y)
 
+strTy :: MemType
+strTy = i8p
+
 -----------------------------------------------------------------------------------------
 -- Debugging
 
@@ -799,6 +813,79 @@ processMemCond rsn cond = do
       p' <- liftSBE $ pathAssertions (applyAnd sbe cond) p
       ctrlStk ?= set currentPath p' cs 
 
+alloca ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  )
+  => MemType
+  -> BitWidth
+  -> SBETerm sbe
+  -> Alignment
+  -> Simulator sbe m (SBETerm sbe)
+alloca ty szw sztm a = do
+  Just m <- preuse currentPathMem
+  sbe <- gets symBE
+  rslt <- liftSBE $ stackAlloc sbe m ty szw sztm a
+  case rslt of
+    ASymbolicCountUnsupported  -> errorPath $
+      "Stack allocation only supports a concrete element count "
+        ++ "(try a different memory model?)"
+    AResult c t m' -> do
+      currentPathMem .= m'
+      let fr = memFailRsn sbe ("Failed alloca allocation of type " ++ show (ppMemType ty)) []
+      processMemCond fr c
+      return t
+
+-- | Load value at addr in current path.
+load ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => MemType -> SBETerm sbe -> Alignment -> Simulator sbe m (SBETerm sbe)
+load tp addr a = do
+  sbe <- gets symBE
+  Just mem <- preuse currentPathMem
+  (cond, v) <- liftSBE $ memLoad sbe mem tp addr a
+  let fr = memFailRsn sbe "Invalid load address" [addr]
+  processMemCond fr cond
+  return v
+
+-- | Load a null-termianted string at given address.
+-- May fail if a symbolic byte is found.
+loadString ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => String -> SBETerm sbe -> Simulator sbe m String
+loadString nm ptr = do
+    -- Load ptr, ptr+1, until zero byte, convert each into char,
+    -- assemble into list
+    cs <- go ptr
+    return $ map (toEnum . fromEnum) $ cs
+  where go addr = do
+          t <- load i8 addr 0
+          sbe <- gets symBE
+          addr' <- ptrInc addr
+          case asUnsignedInteger sbe undefined t of
+            Nothing -> do
+              errorPath $
+                 "Encountered a symbolic byte in " ++ nm ++ "."
+            Just 0 -> return []
+            Just v -> (v:) <$> go addr'
+
+resolveFunPtrTerm ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  )
+  => SBETerm sbe -> Simulator sbe m LookupSymbolResult
+resolveFunPtrTerm fp = do
+  Just m <- preuse currentPathMem
+  withSBE $ \s -> codeLookupSymbol s m fp
+
 store ::
   ( Functor m
   , MonadIO m
@@ -814,6 +901,13 @@ store tp val dst a = do
   -- Update symbolic condition.
   let fr = memFailRsn sbe "Invalid store address: " [dst]
   processMemCond fr c
+
+dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
+dumpMem v msg =
+  whenVerbosity (>=v) $ do
+    dbugM $ msg ++ ":"
+    Just m <- preuse currentPathMem
+    withSBE (\s -> memDump s m Nothing)
 
 --------------------------------------------------------------------------------
 -- Override handling
