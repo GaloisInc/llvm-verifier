@@ -14,16 +14,18 @@ Point-of-contact : jhendrix
 {-# OPTIONS_GHC -fno-warn-orphans       #-}
 module Verifier.LLVM.LLVMContext
   ( module Verifier.LLVM.DataLayout
-  , AliasMap
-  , mkAliasMap
+  , compatMemTypes
+  , compatRetTypes
+  , compatMemTypeLists
   , LLVMContext
+  , llvmContextFromModel
   , mkLLVMContext
   , llvmDataLayout
   , llvmAliasMap
+  , lookupAlias
   , liftMemType
   , liftRetType
   , asMemType
-  , asRetType
   , Addr
   , MemGeom(..)
   , defaultMemGeom
@@ -32,41 +34,15 @@ module Verifier.LLVM.LLVMContext
 import Control.Applicative
 import Control.Lens
 import Control.Monad.State (State, runState, MonadState(..), modify)
-import           Data.Map (Map)
+import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import qualified Data.Vector as V
 import qualified Text.LLVM         as L
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-
 import Verifier.LLVM.DataLayout
-
-instance (?lc :: LLVMContext) => Eq FunDecl where
-  FunDecl xr xa xv == FunDecl yr ya yv = (xr,xa,xv) == (yr,ya,yv)
-
-instance (?lc :: LLVMContext) => Eq SymType where
-  MemType x == MemType y = x == y
-  Alias i == y = maybe False (== y) (lookupAlias i)
-  x == Alias i = maybe False (x ==) (lookupAlias i)
-  FunType x == FunType y = x == y
-  UnsupportedType{} == UnsupportedType{} = True
-  VoidType == VoidType = True
-  _ == _ = False
-
-instance (?lc :: LLVMContext) => Eq MemType where
-  IntType x == IntType y = x == y
-  FloatType == FloatType = True
-  DoubleType == DoubleType = True
-  PtrType x == PtrType y = x == y
-  ArrayType xn xt == ArrayType yn yt = (xn,xt) == (yn,yt)
-  VecType   xn xt == VecType   yn yt = (xn,xt) == (yn,yt)
-  StructType x == StructType y = x == y
-  _ == _ = False
-
-instance (?lc :: LLVMContext) => Eq StructInfo where
-  x == y = (siIsPacked x, siFieldTypes x)
-        == (siIsPacked y, siFieldTypes y)
 
 data IdentStatus
   = Resolved SymType
@@ -74,15 +50,15 @@ data IdentStatus
   | Pending L.Type
 
 data TCState = TCS { tcsDataLayout :: DataLayout
-                   , tcsMap :: Map L.Ident IdentStatus 
+                   , tcsMap :: Map Ident IdentStatus 
                      -- | Set of types encountered that are not supported by
                      -- the 
                    , tcsUnsupported :: Set L.Type
-                   , tcsUnresolvable :: Set L.Ident
+                   , tcsUnresolvable :: Set Ident
                    }
 
 runTC :: DataLayout
-      -> Map L.Ident IdentStatus
+      -> Map Ident IdentStatus
       -> TC a
       -> ([Doc], a)
 runTC pdl initMap m = over _1 tcsErrors . view swapped $ runState m tcs0
@@ -106,7 +82,7 @@ recordUnsupported tp = modify fn
   where fn tcs = tcs { tcsUnsupported = Set.insert tp (tcsUnsupported tcs) }
 
 -- | Returns the type bound to an identifier.
-tcIdent :: L.Ident -> TC SymType
+tcIdent :: Ident -> TC SymType
 tcIdent i = do
   im <- tcsMap <$> get
   let retUnsupported = tp <$ modify fn
@@ -177,36 +153,47 @@ tcStruct packed fldTys = do
   pdl <- tcsDataLayout <$> get
   fmap (mkStructInfo pdl packed) . sequence <$> mapM tcMemType fldTys
 
-type AliasMap = Map L.Ident SymType
+type AliasMap = Map Ident SymType
 
 data LLVMContext = LLVMContext
   { llvmDataLayout :: DataLayout
   , llvmAliasMap  :: AliasMap
   }
 
-lookupAlias :: (?lc :: LLVMContext) => L.Ident -> Maybe SymType
+instance Show LLVMContext where
+  show = show . ppLLVMContext 
+
+ppLLVMContext :: LLVMContext -> Doc
+ppLLVMContext lc =
+    vcat (ppAlias <$> Map.toList (llvmAliasMap lc))
+  where ppAlias (i,tp) = ppIdent i <+> equals <+> ppSymType tp
+
+lookupAlias :: (?lc :: LLVMContext) => Ident -> Maybe SymType
 lookupAlias i = llvmAliasMap ?lc ^. at i
 
-asMemType :: AliasMap -> SymType -> Maybe MemType
-asMemType _ (MemType mt) = return mt
-asMemType m (Alias i) = asMemType m =<< (m ^. at i)
-asMemType _ _ = Nothing
+asMemType :: (?lc :: LLVMContext) => SymType -> Maybe MemType
+asMemType (MemType mt) = return mt
+asMemType (Alias i) = asMemType =<< lookupAlias i
+asMemType _ = Nothing
 
-asRetType :: AliasMap -> SymType -> Maybe RetType
-asRetType _ (MemType mt) = Just (Just mt)
-asRetType _ VoidType = Just Nothing
-asRetType m (Alias i) = asRetType m =<< (m ^. at i)
-asRetType _ _ = Nothing
+asRetType :: (?lc :: LLVMContext) => SymType -> Maybe RetType
+asRetType (MemType mt) = Just (Just mt)
+asRetType VoidType = Just Nothing
+asRetType (Alias i) = asRetType =<< lookupAlias i
+asRetType _ = Nothing
 
--- | Returns the type alias map for the given types.
-mkAliasMap :: DataLayout -> [L.TypeDecl]  -> ([Doc], AliasMap)
-mkAliasMap dl decls = runTC dl (Pending <$> Map.fromList tps) $ do
-    Map.fromList <$> traverse (_2 tcType) tps
+-- | Creates an LLVMContext directly from a model.  Errors reported
+-- in first argument.
+llvmContextFromModel :: L.Module -> ([Doc], LLVMContext)
+llvmContextFromModel mdl = mkLLVMContext dl (L.modTypes mdl)
+  where dl = parseDataLayout $ L.modDataLayout mdl
+
+-- | Creates an LLVMContext from a parsed data layout and lists of types.
+mkLLVMContext :: DataLayout -> [L.TypeDecl]  -> ([Doc], LLVMContext)
+mkLLVMContext dl decls =
+    runTC dl (Pending <$> Map.fromList tps) $ do
+      LLVMContext dl . Map.fromList <$> traverse (_2 tcType) tps
   where tps = [ (L.typeName d, L.typeValue d) | d <- decls ]
-
--- | Returns an LLVM context and types that are not supported by symbolic simulator.
-mkLLVMContext :: DataLayout -> AliasMap -> LLVMContext
-mkLLVMContext = LLVMContext
 
 liftType :: (?lc :: LLVMContext) => L.Type -> Maybe SymType
 liftType tp | null edocs = Just stp
@@ -215,12 +202,70 @@ liftType tp | null edocs = Just stp
         (edocs,stp) = runTC (llvmDataLayout ?lc) m0 $ tcType tp
 
 liftMemType :: (?lc :: LLVMContext) => L.Type -> Maybe MemType
-liftMemType tp = asMemType (llvmAliasMap ?lc) =<< liftType tp
+liftMemType tp = asMemType =<< liftType tp
 
 liftRetType :: (?lc :: LLVMContext) => L.Type -> Maybe RetType
-liftRetType tp = asRetType (llvmAliasMap ?lc) =<< liftType tp
+liftRetType tp = asRetType =<< liftType tp
 
--- Memery Geometry
+compatStructInfo :: (?lc :: LLVMContext) => StructInfo -> StructInfo -> Bool
+compatStructInfo x y =
+  siIsPacked x == siIsPacked y &&
+    compatMemTypeVectors (siFieldTypes x) (siFieldTypes y)
+
+-- | Returns true if types are bit-level compatible.
+-- 
+compatMemTypes :: (?lc :: LLVMContext) => MemType -> MemType -> Bool
+compatMemTypes x0 y0 =
+  case (x0, y0) of
+    (IntType x, IntType y) -> x == y
+    (FloatType, FloatType) -> True
+    (DoubleType, DoubleType) -> True
+    (PtrType{}, PtrType{})   -> True
+    (ArrayType xn xt, ArrayType yn yt) ->
+      xn == yn && xt `compatMemTypes` yt
+    (VecType   xn xt, VecType   yn yt) ->
+      xn == yn && xt `compatMemTypes` yt
+    (StructType x, StructType y) -> x `compatStructInfo` y
+    _ -> False
+
+compatRetTypes :: (?lc :: LLVMContext) => RetType -> RetType -> Bool
+compatRetTypes Nothing Nothing = True
+compatRetTypes (Just x) (Just y) = compatMemTypes x y
+compatRetTypes _ _ = False
+
+compatMemTypeLists :: (?lc :: LLVMContext) => [MemType] -> [MemType] -> Bool
+compatMemTypeLists [] [] = True
+compatMemTypeLists (x:xl) (y:yl) = 
+  compatMemTypes x y && compatMemTypeLists xl yl
+compatMemTypeLists _ _ = False
+
+compatMemTypeVectors :: (?lc :: LLVMContext) => V.Vector MemType -> V.Vector MemType -> Bool
+compatMemTypeVectors x y =
+  V.length x == V.length y &&
+  allOf traverse (uncurry compatMemTypes) (V.zip x y)
+
+{-
+compatFunDecls :: (?lc :: LLVMContext) => FunDecl -> FunDecl -> Bool
+compatFunDecls x y =
+  (fdRetType x `compatRetTypes` fdRetType y) &&
+  (fdArgTypes x `compatMemTypeLists` fdArgTypes y) &&
+  (fdVarArgs x == fdVarArgs y)  
+-}
+
+{-
+compatSymTypes :: (?lc :: LLVMContext) => SymType -> SymType -> Bool
+compatSymTypes x0 y0 =
+  case (x0, y0) of
+    (MemType x, MemType y) -> compatMemTypes x y
+    (Alias i, y) -> maybe False (`compatSymTypes` y) (lookupAlias i)
+    (x, Alias i) -> maybe False (x `compatSymTypes`) (lookupAlias i)
+    (FunType x, FunType y) -> compatFunDecls x y
+    (UnsupportedType{}, UnsupportedType{}) -> True
+    (VoidType, VoidType) -> True
+    (_,_) -> False
+-}
+
+-- Memory Geometry
 
 type Addr = Integer
 

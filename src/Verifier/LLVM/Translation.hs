@@ -269,7 +269,7 @@ liftBitcast :: (?lc :: LLVMContext)
             -> MemType -- ^ Result argument type
             -> LiftAttempt (SymValue t)
 liftBitcast PtrType{} v PtrType{} = return v
-liftBitcast itp v rtp | itp == rtp = return v
+liftBitcast itp v rtp | itp `compatMemTypes` rtp = return v
 liftBitcast _ _ _ = fail "Symbolic simulator does not support bitcast."
 
 zeroValue :: (?sbe :: SBE sbe) => MemType -> LiftAttempt (SymValue (SBETerm sbe))
@@ -308,7 +308,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
           return (tp, PtrAdd sv args)
         go args (ArrayType _ etp) r = goArray args etp r
         go args (PtrType tp) r = do
-          mtp <- liftMaybe $ asMemType (llvmAliasMap ?lc) tp
+          mtp <- liftMaybe $ asMemType tp
           goArray args mtp r
         go args (StructType si) r = goStruct args si r
         go _ _ _ = gepFailure
@@ -435,7 +435,7 @@ liftStmt stmt = do
           retExpr (PtrType (MemType tp)) $ Alloca tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) malign -> do
           tp@(PtrType etp0) <- liftMemType' tp0
-          etp <- liftMaybe $ asMemType (llvmAliasMap ?lc) etp0
+          etp <- liftMaybe $ asMemType etp0
           v <- liftValue tp ptr
           retExpr etp (Load v etp (liftAlign etp malign))
         L.ICmp op (L.Typed tp0 u) v -> do

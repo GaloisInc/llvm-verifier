@@ -933,10 +933,11 @@ checkTypeCompat fnm (FunDecl frtn fargs fva) tnm (FunDecl trtn targs tva) = do
                      ++ " with function " ++ tnm ++ " that " ++ rsn
   let ppTypes :: [MemType] -> String
       ppTypes tys = show (parens (commas (ppMemType <$> tys)))
-  unless (fargs == targs) $ e $ "has different argument types.\n" 
-    ++ "  Argument types of " ++ nm fnm ++ ": " ++ ppTypes fargs ++ "\n"
-    ++ "  Argument types of " ++ tnm ++ ": " ++ ppTypes targs ++ "\n"
-  unless (frtn == trtn) $ e $ "has a different return type.\n"
+  unless (compatMemTypeLists fargs targs) $
+    e $ "has different argument types.\n" 
+      ++ "  Argument types of " ++ nm fnm ++ ": " ++ ppTypes fargs ++ "\n"
+      ++ "  Argument types of " ++ tnm ++ ": " ++ ppTypes targs ++ "\n"
+  unless (compatRetTypes frtn trtn) $ e $ "has a different return type.\n"
     ++ "  Return type of " ++ nm fnm ++ ": " ++ show (ppRetType frtn) ++ "\n"
     ++ "  Return type of " ++ tnm ++ ": " ++ show (ppRetType trtn) ++ "\n"
   when (fva && not tva) $ e $ "does not accept varargs.\n"

@@ -63,15 +63,13 @@ data Global t = Global { globalSym :: !L.Symbol
 type GlobalNameMap t = M.Map L.Symbol (Either (Global t) (SymDefine t))
 
 data Codebase sbe = Codebase {
-    cbDataLayout :: DataLayout
-  , cbAliasMap :: AliasMap
+    cbLLVMContext :: LLVMContext
   , _cbGlobalNameMap :: GlobalNameMap (SBETerm sbe)
   , _cbFunctionTypes :: M.Map L.Symbol FunDecl
   }
 
--- | Return llvm context within codebase.
-cbLLVMContext :: Codebase sbe -> LLVMContext
-cbLLVMContext cb = mkLLVMContext (cbDataLayout cb) (cbAliasMap cb)
+cbDataLayout :: Codebase sbe -> DataLayout
+cbDataLayout = llvmDataLayout . cbLLVMContext
 
 cbGlobalNameMap :: Simple Lens (Codebase sbe) (GlobalNameMap (SBETerm sbe))
 cbGlobalNameMap = lens _cbGlobalNameMap sfn
@@ -134,14 +132,13 @@ mkCodebase sbe dl mdl = do
   mapM_ warn err0
   execStateT go cb0
  where warn msg = putStrLn $ show $ text "Warning:" <+> msg
-       (err0, am) = mkAliasMap dl (L.modTypes mdl)
-       cb0 = Codebase { cbDataLayout = dl
-                      , cbAliasMap = am
+       (err0, lc) = mkLLVMContext dl (L.modTypes mdl)
+       cb0 = Codebase { cbLLVMContext = lc
                       , _cbGlobalNameMap = M.empty
                       , _cbFunctionTypes = M.empty
                       }
        go = do
-         let ?lc = mkLLVMContext dl am
+         let ?lc = lc
          let ?sbe = sbe
          -- Add definitions
          forM_ (L.modDefines mdl) $ \d -> do

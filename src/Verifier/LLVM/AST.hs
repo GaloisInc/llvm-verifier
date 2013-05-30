@@ -17,8 +17,6 @@ module Verifier.LLVM.AST
   , ExprEvalFn(..)
   , L.Symbol(..)
   , ppSymbol
-  , L.Ident(..)
-  , ppIdent
   , L.BlockLabel
   , L.ICmpOp(..)
   , SymValue(..)
@@ -69,9 +67,6 @@ import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.LLVM.LLVMContext
 import Verifier.LLVM.Utils
-
-ppIdent :: L.Ident -> Doc
-ppIdent = text . show . L.ppIdent
 
 ppSymbol :: L.Symbol -> Doc
 ppSymbol = text . show . L.ppSymbol

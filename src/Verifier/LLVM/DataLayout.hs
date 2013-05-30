@@ -55,6 +55,9 @@ module Verifier.LLVM.DataLayout
   , siFields
   , siIndexOfOffset
   , siDropLastField
+    -- * Re-exports
+  , L.Ident(..)
+  , ppIdent
   ) where
 
 import Control.Applicative ((<$>))
@@ -69,6 +72,9 @@ import Data.Word (Word32, Word64)
 import qualified Text.LLVM as L
 import Text.PrettyPrint.Leijen hiding ((<$>))
 import Verifier.LLVM.Utils
+
+ppIdent :: L.Ident -> Doc
+ppIdent = text . show . L.ppIdent
 
 -- | Performs a binary search on a range of ints.
 binarySearch :: (Int -> Ordering)

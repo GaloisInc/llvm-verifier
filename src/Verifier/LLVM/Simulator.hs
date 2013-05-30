@@ -229,7 +229,7 @@ callDefine calleeSym t args = do
   let retReg = (,entryRsltReg) <$> sdRetType def
   lc <- gets (cbLLVMContext . codebase)
   let ?lc = lc
-  unless (t == sdRetType def) $
+  unless (compatRetTypes t (sdRetType def)) $
     dbugM $ show $
       text "Warning: callDefine given incorrect return type of"
               <+> ppRetType t
