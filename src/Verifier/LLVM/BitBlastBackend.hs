@@ -250,7 +250,7 @@ data BitTerm l
     | VecTerm (V.Vector (BitTerm l))
       -- | Could be packed or unpacked struct.
     | StructTerm (V.Vector (BitTerm l))
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 lPrettyLit :: (?be :: BitEngine l) => l -> Doc
 lPrettyLit x | x `lEqLit` lFalse = text "False"
@@ -1730,8 +1730,9 @@ sbeBitBlast dl mm = sbe
               beWriteAigerV be f inputs outputs
           , evalAiger        = BitIO `c3` evalAigerImpl dl
           , writeCnf         = \f _ t -> BitIO $ do
-              let ?be = be in
-                V.toList <$> beWriteCNF be f mempty (lIsZero (flattenTerm t))
+              let ?be = be
+              V.toList <$> beWriteCNF be f mempty (lIsZero (flattenTerm t))
+          , createSMTLIB2Script = Nothing
           , sbeRunIO = liftSBEBitBlast 
           }
 

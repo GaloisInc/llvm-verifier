@@ -32,9 +32,10 @@ import qualified Data.Vector.Storable as LV
 import Verifier.SAW as SAW
 import Verifier.SAW.BitBlast
 import Verifier.SAW.Conversion
+import qualified Verifier.SAW.Export.SMT.Version2 as SMT2
 import Verifier.SAW.ParserUtils as SAW
 import Verifier.SAW.Prelude
-import Verifier.SAW.Recognizer as SAW
+import qualified Verifier.SAW.Recognizer as R
 import Verifier.SAW.Rewriter
 
 import Verifier.LLVM.AST
@@ -74,11 +75,11 @@ scBitvectorType sc wt = ($ wt) =<< scApplyPreludeBitvector sc
 
 asUnsignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
 asUnsignedBitvector w s2 = do
-  (s1, vt) <- asApp s2
-  (s0, wt) <- asApp s1
+  (s1, vt) <- R.asApp s2
+  (s0, wt) <- R.asApp s1
   when (unwrapTermF  s0 /= preludeBVNatTermF) Nothing
-  when (asNatLit wt /= Just (toInteger w)) Nothing
-  asNatLit vt
+  when (R.asNatLit wt /= Just (toInteger w)) Nothing
+  R.asNatLit vt
 
 scFloat :: SharedContext s -> Float -> IO (SharedTerm s)
 scFloat sc v = scTermF sc (FTermF (FloatLit v))
@@ -162,8 +163,8 @@ type SharedTermSetRef s = IORef (Set (SharedTerm s))
 
 asApp2 :: SharedTerm s -> Maybe (SharedTerm s, SharedTerm s, SharedTerm s)
 asApp2 t = do
-  (t1,a2) <- asApp t
-  (t0,a1) <- asApp t1
+  (t1,a2) <- R.asApp t
+  (t0,a1) <- R.asApp t1
   return (t0,a1,a2)
 
 data SAWBackendState s l =
@@ -418,7 +419,7 @@ mkBackendState dl be sc = do
 -- The first term is the width of the term.
 scIntAsConst' :: SharedContext s -> SharedTerm s -> SharedTerm s -> IO (Maybe Integer)
 scIntAsConst' sc w t =
-  fmap asNatLit $ join $
+  fmap R.asNatLit $ join $
     scApplyLLVMLlvmIntValueNat sc ?? w ?? t
 
 type SAWMem s = MM.Mem (SharedTerm s) (SharedTerm s) (SharedTerm s)
@@ -595,7 +596,7 @@ applyMuxToLeaves :: (Applicative m, Monad m, Termlike t)
                  -> t -> m a
 applyMuxToLeaves mux action = go
   where go t =
-          case asMux t of
+          case R.asMux t of
             Nothing -> action t
             Just (_ :*: b :*: x :*: y) -> join $ mux b <$> go x <*> go y
 
@@ -905,38 +906,28 @@ typedExprEvalFn sbs expr0 = do
       it <- scFinConst sc (toInteger i) (toInteger n)
       return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt mtp val it) =<< eval a
 
-
-asCtorApp :: Termlike t => SAW.Ident -> t -> Maybe [t]
-asCtorApp i (unwrapTermF -> FTermF (CtorApp i' l)) | i == i' = return l
-asCtorApp _ _ = Nothing
-
 -- | Returns value and rest out of construct.
-asConsStruct :: SharedTerm s -> Maybe (SharedTerm s, SharedTerm s)
-asConsStruct t6 = do
-  [_, _, _, _, v, r] <- asCtorApp "LLVM.ConsStruct" t6
+asConsStruct :: (Monad m, Termlike t) => t -> m (t, t)
+asConsStruct t = do
+  ("LLVM.ConsStruct", [_, _, _, _, v, r]) <- R.asCtor t
   return (v,r)
 
-asConsStruct' t = r
-  where r = asConsStruct t
-
 structElt :: SharedTerm s -> Integer -> Maybe (SharedTerm s)
-structElt t 0 = fst <$> asConsStruct' t
+structElt t 0 = fst <$> asConsStruct t
 structElt t i = assert (i > 0) $ do
-  (_,r) <- asConsStruct' t
+  (_,r) <- asConsStruct t
   structElt r (i-1)
 
 getStructElt :: Conversion (SharedTerm s)
-getStructElt =
-  Conversion $
-    thenMatcher (matchGlobalDef "LLVM.llvmStructElt" 
+getStructElt = Conversion $ 
+    thenMatcher (asGlobalDef "LLVM.llvmStructElt" 
                    <:> asAny
                    <:> asAny       -- Types
                    <:> asAny   -- Struct 
                    <:> asFinValLit -- Index
                   )
-                (\(((((), _), _), s), (i,_)) -> 
+                (\(_ :*: _ :*: s :*: (i,_)) -> 
                    return <$> structElt s i)
-
 
 scWriteAiger :: (Eq l, Storable l)
              => SAWBackendState s l
@@ -1069,11 +1060,11 @@ createSAWBackend be dl _mg = do
                 , applyIte = \tp x y z -> SAWBackend $ do
                     tpt <- join $ scApplyLLVMValue sc <*> sbsMemType sbs tp
                     Right <$> iteFn tpt x y z
-                , LLVM.asBool = SAW.asBool
+                , LLVM.asBool = R.asBool
                 , prettyPredD = scPrettyTermDoc
                 , evalPred = \inputs t -> SAWBackend $ do
                     t' <- scEvalTerm sbs inputs t
-                    case SAW.asBool t' of
+                    case R.asBool t' of
                       Just b -> return b
                       Nothing ->
                         fail $ "Could not evaluate predicate as Boolean:\n" ++ show t'
@@ -1126,6 +1117,18 @@ createSAWBackend be dl _mg = do
                 , writeAiger = lift2 (scWriteAiger sbs)
                 , writeCnf   = do
                     nyi "writeCnf"
+                , createSMTLIB2Script = Just $ SAWBackend $ do
+                    ref <- newIORef (SMT2.emptyWriterState sc "QF_AUFBV" SMT2.bitvectorRules)
+                    let runSMT2Writer a = SAWBackend $ do
+                          s <- readIORef ref
+                          s' <- execStateT a s
+                          writeIORef ref $! s'
+                    return SMTLIB2Script {
+                              addSMTLIB2Assert = runSMT2Writer . SMT2.assert
+                            , addSMTLIB2CheckSat = runSMT2Writer SMT2.checkSat
+                            , writeSMTLIB2ToFile = \p -> do
+                                writeFile p . SMT2.render =<< readIORef ref 
+                            }
                 , evalAiger  = \inputs _ t -> SAWBackend $ scEvalTerm sbs inputs t
                 , sbeRunIO   = runSAWBackend
                 }

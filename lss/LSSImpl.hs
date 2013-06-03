@@ -67,7 +67,7 @@ data ExecRslt sbe crt
   | SymRV    [ErrorPath sbe] (Maybe (SBEMemory sbe)) (SBETerm sbe)
   | ConcRV   [ErrorPath sbe] (Maybe (SBEMemory sbe)) crt
 
-lssImpl :: Functor sbe
+lssImpl :: (Functor sbe, Ord (SBETerm sbe))
         => SBE sbe
         -> SBEMemory sbe
         -> Codebase sbe
@@ -85,7 +85,7 @@ lssImpl sbe mem cb argv0 args = do
     mg    = defaultMemGeom (cbDataLayout cb)
 
 
-runBitBlast :: Functor sbe
+runBitBlast :: (Functor sbe, Ord (SBETerm sbe))
             => SBE sbe -- ^ SBE to use
             -> SBEMemory sbe     -- ^ SBEMemory to use
             -> Codebase sbe

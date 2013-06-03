@@ -73,13 +73,13 @@ constTermEq :: Maybe Integer -> Integer -> Bool
 constTermEq (Just v) = (==v)
 constTermEq _ = const False
 
-type SBEPropM a = forall sbe . Functor sbe => Simulator sbe IO a
+type SBEPropM a = forall sbe . (Functor sbe, Ord (SBETerm sbe)) => Simulator sbe IO a
 
 forAllMemModels :: forall a. Int -> FilePath -> SBEPropM a -> PropertyM IO [a]
 forAllMemModels v bcFile testProp = do
   mdl <- run $ loadModule $ testsDir </> bcFile
   let dl = parseDataLayout (L.modDataLayout mdl)
-  let runTest :: Functor sbe => (SBE sbe,SBEMemory sbe) -> PropertyM IO a
+  let runTest :: (Functor sbe, Ord (SBETerm sbe)) => (SBE sbe,SBEMemory sbe) -> PropertyM IO a
       runTest (sbe,mem) = do
         cb <- run (mkCodebase sbe dl mdl)
         run $ do
@@ -111,7 +111,7 @@ type RunLSSTest sbe = Int
                     -> ExecRsltHndlr sbe Integer Bool
                     -> PropertyM IO ()
 
-runTestLSSCommon :: Functor sbe
+runTestLSSCommon :: (Functor sbe, Ord (SBETerm sbe))
                  => String
                  -> (DataLayout -> IO (SBE sbe, SBEMemory sbe))
                  -> RunLSSTest sbe

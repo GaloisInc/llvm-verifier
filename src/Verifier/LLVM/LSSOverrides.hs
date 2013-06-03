@@ -13,7 +13,8 @@ import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
-import qualified Data.Map                  as M
+import Data.IORef
+import qualified Data.Map                  as Map
 import Data.String
 import System.IO
 import Text.PrettyPrint.Leijen (nest)
@@ -94,29 +95,30 @@ type StdOvdEntry sbe m =
   )
   => OverrideEntry sbe m
 
-overrideByName :: StdOvdEntry sbe m
-overrideByName = do
-  voidOverrideEntry "lss_override_function_by_name" [strTy, strTy] $ \args ->
+lss_override_function_by_name :: StdOvdEntry sbe m
+lss_override_function_by_name = do
+  let nm = "lss_override_function_by_name"
+  voidOverrideEntry (fromString nm) [strTy, strTy] $ \args ->
     case args of
-      [(PtrType{}, fromNamePtr), (PtrType{}, toNamePtr)] -> do
-        src <- fromString <$> loadString "lss_override_function_by_name from" fromNamePtr
-        tgt <- fromString <$> loadString "lss_override_function_by_name to" toNamePtr
+      [(_, fromNamePtr), (_, toNamePtr)] -> do
+        src <- fromString <$> loadString (nm ++ " from") fromNamePtr
+        tgt <- fromString <$> loadString (nm ++ " to") toNamePtr
         src `userRedirectTo` tgt
-      _ -> wrongArguments "lss_override_function_by_name"
+      _ -> wrongArguments nm
 
-overrideByAddr :: StdOvdEntry sbe m
-overrideByAddr = do
+lss_override_function_by_addr :: StdOvdEntry sbe m
+lss_override_function_by_addr = do
   voidOverrideEntry "lss_override_function_by_addr" [strTy, strTy] $ \args ->
     case args of
       [(PtrType{}, fromPtr), (PtrType{}, toPtr)] -> do
         syms <- both resolveFunPtrTerm (fromPtr, toPtr)
         case syms of
           (LookupResult src, LookupResult tgt) -> src `userRedirectTo` tgt
-          _ -> errorPath "overrideByAddr: Failed to resolve function pointer"
+          _ -> errorPath "lss_override_function_by_addr: Failed to resolve function pointer"
       _ -> wrongArguments "lss_override_function_by_addr"
 
-overrideIntrinsic :: StdOvdEntry sbe m
-overrideIntrinsic = do
+lss_override_llvm_intrinsic :: StdOvdEntry sbe m
+lss_override_llvm_intrinsic = do
   voidOverrideEntry "lss_override_llvm_intrinsic" [strTy, strTy] $ \args ->
     case args of
       [(PtrType{}, nmPtr), (PtrType{}, fp)] -> do
@@ -124,23 +126,23 @@ overrideIntrinsic = do
         msym <- resolveFunPtrTerm fp
         case msym of
           LookupResult sym -> nm `userRedirectTo` sym
-          _ -> errorPath "overrideIntrinsic: Failed to resolve function pointer"
+          _ -> errorPath "lss_override_llvm_intrinsic: Failed to resolve function pointer"
       _ -> wrongArguments "lss_override_llvm_intrinsic"
 
 
-overrideResetByAddr :: StdOvdEntry sbe m
-overrideResetByAddr =
+lss_override_reset_by_addr :: StdOvdEntry sbe m
+lss_override_reset_by_addr =
   voidOverrideEntry "lss_override_reset_by_addr" [strTy] $ \args ->
     case args of
       [(PtrType{},fp)] -> do
         msym <- resolveFunPtrTerm fp
         case msym of
           LookupResult sym -> sym `userRedirectTo` sym
-          _ -> errorPath "overrideResetByAddr: Failed to resolve function pointer"
+          _ -> errorPath "lss_override_reset_by_addr: Failed to resolve function pointer"
       _ -> wrongArguments "lss_override_reset_by_addr"
 
-overrideResetByName :: StdOvdEntry sbe m
-overrideResetByName = 
+lss_override_reset_by_name :: StdOvdEntry sbe m
+lss_override_reset_by_name = 
   voidOverrideEntry "lss_override_reset_by_name" [strTy] $ \args ->
     case args of
       [(PtrType{}, fnNamePtr)] -> do
@@ -150,11 +152,11 @@ overrideResetByName =
 
 -- TODO (?): We may want to avoid retraction of overridden intrinsics, since
 -- presumably the user always wants the overridden version.
-overrideResetAll :: StdOvdEntry sbe m
-overrideResetAll =
+lss_override_reset_all :: StdOvdEntry sbe m
+lss_override_reset_all =
   voidOverrideEntry "lss_override_reset_all" [] $ \_ -> do
     ovds <- use fnOverrides
-    forM_ (M.assocs ovds) $ \(sym, (_, userOvd)) ->
+    forM_ (Map.assocs ovds) $ \(sym, (_, userOvd)) ->
       when userOvd $ do
         fnOverrides . at sym .= Nothing
 
@@ -170,8 +172,8 @@ userRedirectTo src tgt = do
       checkTypeCompat src fd (show (ppSymbol tgt)) td
       fnOverrides . at src ?= (Redirect tgt, True)
 
-printSymbolic :: StdOvdEntry sbe m
-printSymbolic = do
+lss_print_symbolic :: StdOvdEntry sbe m
+lss_print_symbolic = do
   voidOverrideEntry "lss_print_symbolic" [i8p] $ \args ->
     case args of
       [(_,ptr)] -> do
@@ -180,27 +182,26 @@ printSymbolic = do
         liftIO $ print d
       _ -> wrongArguments "lss_print_symbolic"
 
-
-abortHandler :: StdOvdEntry sbe m
-abortHandler = voidOverrideEntry "lss_abort" [strTy] $ \args ->
+lss_abort :: StdOvdEntry sbe m
+lss_abort = voidOverrideEntry "lss_abort" [strTy] $ \args ->
   case args of
     [(_,tv)] -> do
       msg <- loadString "abort message" tv
       errorPath $ "lss_abort(): " ++ msg
     _ -> errorPath "Incorrect number of parameters passed to lss_abort()"
 
-showMemOverride :: StdOvdEntry sbe m
-showMemOverride = voidOverrideEntry "lss_show_mem" [] $ \_ -> do
+lss_show_mem :: StdOvdEntry sbe m
+lss_show_mem = voidOverrideEntry "lss_show_mem" [] $ \_ -> do
   unlessQuiet $ dumpMem 1 "lss_show_mem()"
 
-showPathOverride :: StdOvdEntry sbe m
-showPathOverride = voidOverrideEntry "lss_show_path" [] $ \_ -> do
+lss_show_path :: StdOvdEntry sbe m
+lss_show_path = voidOverrideEntry "lss_show_path" [] $ \_ -> do
   Just p <- preuse currentPathOfState
   sbe <- gets symBE
   unlessQuiet $ dbugM $ show $ nest 2 $ ppPath sbe p
 
-userSetVerbosityOverride :: StdOvdEntry sbe m
-userSetVerbosityOverride = voidOverrideEntry "lss_set_verbosity" [i32] $ \args ->
+lss_set_verbosity :: StdOvdEntry sbe m
+lss_set_verbosity = voidOverrideEntry "lss_set_verbosity" [i32] $ \args ->
   case args of
     [(_,v)] -> do
       sbe <- gets symBE
@@ -209,16 +210,16 @@ userSetVerbosityOverride = voidOverrideEntry "lss_set_verbosity" [i32] $ \args -
         Just v'' -> setVerbosity (fromIntegral v'')
     _ -> errorPath "Incorrect number of parameters passed to lss_set_verbosity"
 
-freshInt' :: BitWidth -> StdOvdEntry sbe m
-freshInt' n = do
+lss_fresh_uint :: BitWidth -> StdOvdEntry sbe m
+lss_fresh_uint n = do
   let nm = fromString $ "lss_fresh_uint" ++ show n
       itp = IntType n
   overrideEntry nm itp [itp] $ \_ -> withSBE (flip freshInt n)
 
--- | @freshIntArray n@ returns an override that yields an array of integers,
+-- | @lss_fresh_array_uint n@ returns an override that yields an array of integers,
 -- each with with @n@ bits.
-freshIntArray :: BitWidth -> StdOvdEntry sbe m
-freshIntArray n = do
+lss_fresh_array_uint :: BitWidth -> StdOvdEntry sbe m
+lss_fresh_array_uint n = do
   let nm = fromString $ "lss_fresh_array_uint" ++ show n
       itp = IntType n
       ptp = PtrType (MemType itp)
@@ -237,8 +238,8 @@ freshIntArray n = do
           Nothing -> errorPath "lss_fresh_array_uint called with symbolic size"
       _ -> wrongArguments "lss_fresh_array_uint"
 
-addAigOutput :: BitWidth -> StdOvdEntry sbe m
-addAigOutput n = do
+lss_aiger_add_output_uint :: BitWidth -> StdOvdEntry sbe m
+lss_aiger_add_output_uint n = do
   let nm = fromString $ "lss_aiger_add_output_uint" ++ show n
   let tp = IntType n
   voidOverrideEntry nm [tp] $ \args ->
@@ -246,13 +247,13 @@ addAigOutput n = do
       [(_,t)] -> aigOutputs %= ((tp,t):)
       _   -> wrongArguments (show nm)
 
-addAigArrayOutput :: BitWidth -- ^ Width of array that target points to.
+lss_aiger_add_output_array_uint :: BitWidth -- ^ Width of array that target points to.
                   -> StdOvdEntry sbe m
-addAigArrayOutput n = do
-  let nm = fromString $ "lss_aiger_add_output_array_uint" ++ show n
+lss_aiger_add_output_array_uint n = do
+  let nm = "lss_aiger_add_output_array_uint" ++ show n
   let itp = IntType n
   let ptp = PtrType (MemType itp)
-  voidOverrideEntry nm [ptp, i32] $ \args ->
+  voidOverrideEntry (fromString nm) [ptp, i32] $ \args ->
     case args of
       [(_,tptr), (_, sizeTm)] -> do
         sbe <- gets symBE
@@ -261,44 +262,44 @@ addAigArrayOutput n = do
             let tp = ArrayType (fromInteger size) itp
             arrTm <- load tp tptr 0
             aigOutputs %= ((tp,arrTm):)
-          Nothing -> errorPath "lss_aiger_add_output_array called with symbolic size"
-      _ -> wrongArguments "lss_aiger_add_output_array"
+          Nothing -> errorPath $ nm ++ " called with symbolic size."
+      _ -> wrongArguments nm
 
-writeIntAiger :: BitWidth -> StdOvdEntry sbe m
-writeIntAiger n = do
-  let nm = fromString $ "lss_write_aiger_uint" ++ show n
+lss_write_aiger_uint :: BitWidth -> StdOvdEntry sbe m
+lss_write_aiger_uint n = do
+  let nm = "lss_write_aiger_uint" ++ show n
   let itp = IntType n
-  voidOverrideEntry nm [itp, strTy] $ \args ->
+  voidOverrideEntry (fromString nm) [itp, strTy] $ \args ->
     case args of
       [(_,t), (_,fptr)] -> do
-        file <- loadString "lss_write_aiger_uint file" fptr
+        file <- loadString (nm ++ " file") fptr
         checkAigFile file
         sbe <- gets symBE
         liftSBE (writeAiger sbe file [(itp,t)])
-      _ -> wrongArguments "lss_write_aiger_uint"
+      _ -> wrongArguments nm
 
-writeIntArrayAiger :: BitWidth -> StdOvdEntry sbe m
-writeIntArrayAiger n = do
-  let nm = fromString $ "lss_write_aiger_array_uint" ++ show n
+lss_write_aiger_array_uint :: BitWidth -> StdOvdEntry sbe m
+lss_write_aiger_array_uint n = do
+  let nm = "lss_write_aiger_array_uint" ++ show n
   let itp = IntType n
   let ptp = PtrType (MemType itp)
-  voidOverrideEntry nm [ptp, i32, strTy] $ \args ->
+  voidOverrideEntry (fromString nm) [ptp, i32, strTy] $ \args ->
     case args of
       [(_, tptr), (_, sizeTm), (_, fptr)] -> do
         sbe <- gets symBE
         case asUnsignedInteger sbe 32 sizeTm of
           Just size -> do
-            file <- loadString "lss_write_aiger_array_uint" fptr
+            file <- loadString nm fptr
             checkAigFile file
             let tp = ArrayType (fromInteger size) itp
             arrTm <- load tp tptr 0
             liftSBE $ writeAiger sbe file [(tp,arrTm)]
           Nothing ->
-            errorPath "lss_write_aiger_array_uint called with symbolic size"
-      _ -> wrongArguments "lss_write_aiger_array_uint"
+            errorPath $ nm ++ " called with symbolic size"
+      _ -> wrongArguments nm
 
-writeCollectedAigerOutputs :: StdOvdEntry sbe m
-writeCollectedAigerOutputs =
+lss_write_aiger :: StdOvdEntry sbe m
+lss_write_aiger =
   voidOverrideEntry "lss_write_aiger" [strTy] $ \args ->
     case args of
     [(_,fptr)] -> do
@@ -312,21 +313,21 @@ writeCollectedAigerOutputs =
     _ -> wrongArguments "lss_write_aiger"
 
 -- | Eval aiger override the argument is the type of the first argument.
-evalAigerOverride :: BitWidth -> StdOvdEntry m sbe
-evalAigerOverride n = do
-  let nm = fromString $ "lss_eval_aiger_uint" ++ show n
+lss_eval_aiger_uint :: BitWidth -> StdOvdEntry m sbe
+lss_eval_aiger_uint n = do
+  let nm = "lss_eval_aiger_uint" ++ show n
   let itp = IntType n
-  overrideEntry nm itp [itp, i8p, i32] $ \args ->
+  overrideEntry (fromString nm) itp [itp, i8p, i32] $ \args ->
     case args of
       [(_,tm), (_, p), (_,szTm)] -> do
-        bools <- getEvalInputs "lss_eval_aiger" p szTm
+        bools <- getEvalInputs nm p szTm
         sbe <- gets symBE
         liftSBE $ evalAiger sbe bools itp tm
-      _ -> wrongArguments "lss_eval_aiger"
+      _ -> wrongArguments nm
 
-evalAigerArray :: BitWidth -- ^ Width of array elements.
+lss_eval_aiger_array_uint :: BitWidth -- ^ Width of array elements.
                -> StdOvdEntry sbe m
-evalAigerArray n = do
+lss_eval_aiger_array_uint n = do
   let nm = fromString $ "lss_eval_aiger_array_uint" ++ show n
   let itp = IntType n
   let ptp = PtrType (MemType itp)
@@ -352,8 +353,8 @@ evalAigerArray n = do
 
 -- CNF {{{
 
-writeCNF :: StdOvdEntry sbe m
-writeCNF =
+lss_write_cnf :: StdOvdEntry sbe m
+lss_write_cnf =
   voidOverrideEntry "lss_write_cnf" [i32, strTy] $ \args ->
     case args of
       [(IntType w, t), (PtrType{},fptr)] | w == 32 -> do
@@ -366,61 +367,88 @@ writeCNF =
 ptrToSMTLIB2 :: MemType
 ptrToSMTLIB2 = PtrType VoidType -- (UnsupportedType L.Opague)
 
-lss_SMTLIB2_create :: StdOvdEntry sbe m
-lss_SMTLIB2_create =
-  overrideEntry "lss_SMTLIB2_create" ptrToSMTLIB2 [strTy] $ \args -> do
-    let [path] = args
-    undefined path
+registerSMTLIB2Overrides ::
+  forall sbe m . (Functor m, MonadIO m, Functor sbe,  Ord (SBETerm sbe))
+    => Simulator sbe m ()
+registerSMTLIB2Overrides = do
+  scriptsRef <- liftIO $ newIORef (Map.empty :: Map.Map (SBETerm sbe) (SMTLIB2Script sbe))
+  let getScript :: String -> SBETerm sbe -> Simulator sbe m (SMTLIB2Script sbe)
+      getScript nm p = do
+        scriptsMap <- liftIO $ readIORef scriptsRef
+        case Map.lookup p scriptsMap of
+          Nothing -> errorPath $ nm ++ ": Could not resolve pointer to script."
+          Just s -> return s
+  registerOverrides
+    [ overrideEntry "lss_SMTLIB2_create" ptrToSMTLIB2 [] $ \_ -> do
+        sbe <- gets symBE
+        -- Create variable for pointer.
+        cnt1 <- liftSBE $ termInt sbe 32 1
+        rslt <- malloc (PtrType VoidType) 32 cnt1
+        -- Update scriptsRef to store new variable.
+        case createSMTLIB2Script sbe of
+          Nothing -> errorPath "lss_SMTLIB2_create: Backend does not support SMTLIB generation."
+          Just creator -> do
+            script <- liftSBE creator
+            liftIO $ do 
+              scriptsMap <- readIORef scriptsRef
+              writeIORef scriptsRef $! Map.insert rslt script scriptsMap
+            -- Return pointer
+            return rslt
+    , voidOverrideEntry "lss_SMTLIB2_assert_nonzero_uint8" [ptrToSMTLIB2, i8] $ \args -> do
+        sbe <- gets symBE
+        let [(_,sp),(_,v)] = args
+        s <- getScript "lss_SMTLIB2_assert_nonzero_uint8" sp
+        zero <- liftSBE $ termInt sbe 8 0 
+        isZero <- liftSBE $ applyIEq sbe 8 v zero
+        nz <- liftSBE $ applyBNot sbe isZero
+        liftSBE $ addSMTLIB2Assert s nz
+    , voidOverrideEntry "lss_SMTLIB2_check_sat" [ptrToSMTLIB2] $ \args -> do
+        let [(_,sp)] = args
+        s <- getScript "lss_SMTLIB2_check_sat" sp
+        liftSBE $ addSMTLIB2CheckSat s
+    , voidOverrideEntry "lss_SMTLIB2_write" [ptrToSMTLIB2, strTy] $ \args -> do
+        let [(_,sp),(_,pathPtr)] = args
+        path <- loadString "lss_SMTLIB2_write" pathPtr
+        s <- getScript "lss_SMTLIB2_write" sp
+        liftIO $ writeSMTLIB2ToFile s path
+    , voidOverrideEntry "lss_SMTLIB2_free" [ptrToSMTLIB2] $ \args -> liftIO $ do
+        let [(_,sp)] = args
+        scriptsMap <- readIORef scriptsRef
+        writeIORef scriptsRef $! Map.delete sp scriptsMap
+    ]
 
-lss_SMTLIB2_assert_nonzero_uint8 :: StdOvdEntry sbe m
-lss_SMTLIB2_assert_nonzero_uint8 =
-  voidOverrideEntry "lss_SMTLIB2_assert_nonzero_uint8" [ptrToSMTLIB2, i8] $ \args ->
-    undefined args
- 
-lss_SMTLIB2_check_sat :: StdOvdEntry sbe m
-lss_SMTLIB2_check_sat =
-  voidOverrideEntry "lss_SMTLIB2_check_sat" [ptrToSMTLIB2] $ \args ->
-    undefined args
-
-lss_SMTLIB2_close :: StdOvdEntry sbe m
-lss_SMTLIB2_close =
-  voidOverrideEntry "lss_SMTLIB2_close" [ptrToSMTLIB2] $ \args ->
-    undefined args
-
-registerLSSOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
+registerLSSOverrides :: (Functor m, MonadIO m, Functor sbe, Ord (SBETerm sbe))
+                     => Simulator sbe m ()
 registerLSSOverrides = do
   let groundOverrides =
-        [ abortHandler
-        , printSymbolic
-        , overrideByAddr
-        , overrideByName
-        , overrideIntrinsic
-        , overrideResetByAddr
-        , overrideResetByName
-        , overrideResetAll
-        , showPathOverride
-        , showMemOverride
-        , userSetVerbosityOverride
-        , writeCollectedAigerOutputs
-        , writeCNF
-          -- * SMTLIB2 functions
-        , lss_SMTLIB2_create
-        , lss_SMTLIB2_assert_nonzero_uint8
-        , lss_SMTLIB2_check_sat
-        , lss_SMTLIB2_close
+        [ lss_write_aiger
+        , lss_write_cnf
+          -- Override support
+        , lss_override_function_by_addr
+        , lss_override_function_by_name
+        , lss_override_llvm_intrinsic
+        , lss_override_reset_by_addr
+        , lss_override_reset_by_name
+        , lss_override_reset_all
+          -- Debugging suport
+        , lss_print_symbolic
+        , lss_abort
+        , lss_show_path
+        , lss_show_mem
+        , lss_set_verbosity
         ]
       polyOverrides =
-        [ freshInt'
-        , freshIntArray
-        , addAigOutput
-        , addAigArrayOutput
-        , writeIntAiger
-        , writeIntArrayAiger
-        , evalAigerOverride
-        , evalAigerArray
+        [ lss_fresh_uint
+        , lss_fresh_array_uint
+        , lss_aiger_add_output_uint
+        , lss_aiger_add_output_array_uint
+        , lss_write_aiger_uint
+        , lss_write_aiger_array_uint
+        , lss_eval_aiger_uint
+        , lss_eval_aiger_array_uint
         ]
       polySizes = [8, 16, 32, 64]
   registerOverrides $
-      groundOverrides
-      ++ [ f i | f <- polyOverrides, i <- polySizes ]
-
+    groundOverrides
+    ++ [ f i | f <- polyOverrides, i <- polySizes ]
+  registerSMTLIB2Overrides
