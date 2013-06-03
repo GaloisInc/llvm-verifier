@@ -122,13 +122,10 @@ modifyPathRegs f = do
 getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
 getMem = preuse currentPathMem
 
--- @setMem@ sets the memory model in the current path, which must exist.
-setMem :: (Functor m, Monad m) => SBEMemory sbe -> Simulator sbe m ()
-setMem mem = currentPathMem .= mem
-
 -- | Run simulator in given context.
 runSimulator :: forall sbe a .
   ( Functor sbe
+  , Ord (SBETerm sbe)
   )
   => Codebase sbe          -- ^ Post-transform LLVM code, memory alignment, and
                            -- type aliasing info
@@ -653,31 +650,6 @@ defaultSEH = SEH
                (\_   -> return ())
                (\_ _ -> return ())
                (\_ _ -> return ())
-
---------------------------------------------------------------------------------
--- Memory operation helpers
-
-malloc ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  )
-  => MemType
-  -> BitWidth -- ^ Width of size
-  -> SBETerm sbe -- ^ Size
-  -> Simulator sbe m (SBETerm sbe)
-malloc ty szw sztm = do
-  sbe <- gets symBE
-  Just m <- preuse currentPathMem
-  rslt <- liftSBE $ heapAlloc sbe m ty szw sztm 0
-  case rslt of
-    ASymbolicCountUnsupported -> errorPath $
-      "malloc only supports concrete element count "
-        ++ "(try a different memory model?)"
-    AResult c t m' -> do
-      setMem m'
-      let fr =  memFailRsn sbe ("Failed malloc allocation of type " ++ show (ppMemType ty)) []
-      t <$ processMemCond fr c
 
 --------------------------------------------------------------------------------
 -- Misc utility functions

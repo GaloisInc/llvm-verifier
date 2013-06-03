@@ -2,12 +2,12 @@
 Module           : $Header$
 Description      : The interface to a symbolic backend
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : jhendrix
 -}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE Rank2Types       #-}
-{-# LANGUAGE TypeFamilies     #-}
-
+{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE TypeFamilies #-}
 module Verifier.LLVM.Backend
   ( BitWidth
   , IntArithOp(..)
@@ -26,6 +26,7 @@ module Verifier.LLVM.Backend
   , asSignedInteger
   , beCheckSat
   , SatResult(..)
+  , SMTLIB2Script(..)
   ) where
 
 import           Control.Applicative ((<$>))
@@ -240,12 +241,16 @@ data SBE m = SBE
 
     -- | @writeAiger f ts@ writes an AIG reprsentation of (juxtaposed) @ts@ into
     -- file @f@ in the Aiger format.
-  , writeAiger :: String -> [(MemType,SBETerm m)] -> m ()
+  , writeAiger :: FilePath -> [(MemType,SBETerm m)] -> m ()
 
     -- | @writeCnf f t@ writes a CNF representation of @t /= 0@ into
     -- file @f@.
-  , writeCnf :: String -> BitWidth -> SBETerm m -> m [Maybe Int]
+  , writeCnf :: FilePath -> BitWidth -> SBETerm m -> m [Maybe Int]
 
+    -- | Returns allocator to make new SMTLib2 script if this backend
+    -- supports SMTLIB2 output.
+  , createSMTLIB2Script :: Maybe (m (SMTLIB2Script m))
+ 
     -- | @evalAiger inps tp t@ evaluates an AIG with the given concrete inputs;
     -- result is always a concrete term.  The term @t@ has type @tp@.
   , evalAiger :: [Bool] -> MemType -> SBETerm m -> m (SBETerm m)
@@ -253,6 +258,13 @@ data SBE m = SBE
     -- | Run sbe computation in IO.
   , sbeRunIO :: forall v . m v -> IO v 
   }
+
+data SMTLIB2Script sbe = SMTLIB2Script {
+         addSMTLIB2Assert :: SBEPred sbe -> sbe ()
+       , addSMTLIB2CheckSat :: sbe ()
+         -- | Write SMTLIB2Script to file.
+       , writeSMTLIB2ToFile :: FilePath -> IO () 
+       }
 
 -- | Interpret the term as a concrete signed integer if it can be.
 asSignedInteger :: SBE m -> BitWidth -> SBETerm m -> Maybe Integer
@@ -277,4 +289,4 @@ termAdd sbe w x y = applyTypedExpr sbe (IntArith (Add False False) Nothing w x y
 
 -- | Represents some SBE backend and the initial memory.
 data SBEPair where 
-   SBEPair :: Functor sbe => SBE sbe -> SBEMemory sbe -> SBEPair
+   SBEPair :: (Functor sbe, Ord (SBETerm sbe)) => SBE sbe -> SBEMemory sbe -> SBEPair

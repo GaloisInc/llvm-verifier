@@ -109,6 +109,7 @@ module Verifier.LLVM.Simulator.Internals
   , memFailRsn
   , processMemCond
   , alloca
+  , malloc
   , load
   , loadString
   , resolveFunPtrTerm
@@ -836,6 +837,28 @@ alloca ty szw sztm a = do
       let fr = memFailRsn sbe ("Failed alloca allocation of type " ++ show (ppMemType ty)) []
       processMemCond fr c
       return t
+
+malloc ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  )
+  => MemType
+  -> BitWidth -- ^ Width of size
+  -> SBETerm sbe -- ^ Size
+  -> Simulator sbe m (SBETerm sbe)
+malloc ty szw sztm = do
+  sbe <- gets symBE
+  Just m <- preuse currentPathMem
+  rslt <- liftSBE $ heapAlloc sbe m ty szw sztm 0
+  case rslt of
+    ASymbolicCountUnsupported -> errorPath $
+      "malloc only supports concrete element count "
+        ++ "(try a different memory model?)"
+    AResult c t m' -> do
+      currentPathMem .= m'
+      let fr =  memFailRsn sbe ("Failed malloc allocation of type " ++ show (ppMemType ty)) []
+      t <$ processMemCond fr c
 
 -- | Load value at addr in current path.
 load ::
