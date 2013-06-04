@@ -23,6 +23,7 @@ module Verifier.LLVM.LLVMContext
   , llvmDataLayout
   , llvmAliasMap
   , lookupAlias
+  , liftType
   , liftMemType
   , liftRetType
   , asMemType
@@ -102,9 +103,7 @@ resolveMemType :: SymType -> TC (Maybe MemType)
 resolveMemType = resolve
   where resolve (MemType mt) = return (Just mt)
         resolve (Alias i) = resolve =<< tcIdent i
-        resolve FunType{} = return Nothing
-        resolve UnsupportedType{} = return Nothing
-        resolve VoidType = return Nothing
+        resolve _ = return Nothing
 
 resolveRetType :: SymType -> TC (Maybe RetType)
 resolveRetType = resolve
@@ -143,7 +142,7 @@ tcType tp0 = do
     L.Struct tpl       -> maybeApp StructType $ tcStruct False tpl
     L.PackedStruct tpl -> maybeApp StructType $ tcStruct True  tpl
     L.Vector n etp -> maybeApp (VecType (fromIntegral n)) $ tcMemType etp
-    L.Opaque -> badType
+    L.Opaque -> return OpaqueType
 
 -- | Constructs a function for obtaining target-specific size/alignment
 -- information about structs.  The function produced corresponds to the

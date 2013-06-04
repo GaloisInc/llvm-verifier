@@ -407,6 +407,7 @@ registerSMTLIB2Overrides = do
         s <- getScript "lss_SMTLIB2_check_sat" sp
         liftSBE $ addSMTLIB2CheckSat s
     , voidOverrideEntry "lss_SMTLIB2_write" [ptrToSMTLIB2, strTy] $ \args -> do
+        liftIO $ putStrLn "lss_SMTLIB2_write DEBUGXXX"
         let [(_,sp),(_,pathPtr)] = args
         path <- loadString "lss_SMTLIB2_write" pathPtr
         s <- getScript "lss_SMTLIB2_write" sp

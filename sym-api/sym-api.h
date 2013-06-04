@@ -56,7 +56,6 @@ typedef struct SMTLIB2_script SMTLIB2_script;
  */
 SMTLIB2_script* lss_SMTLIB2_create(void) NO_INL;
 
-
 /**
  * Add assertion that @v@ is non-zero.
  *
@@ -82,6 +81,16 @@ void lss_SMTLIB2_write(SMTLIB2_script* s, const char* path) NO_INL;
  * Free the SMTLIB2 Script.
  */ 
 void lss_SMTLIB2_free(SMTLIB2_script* s) NO_INL;
+
+static
+void lss_SMTLIB2_write_nonzero_uint8(const char* path, uint8_t v) {
+  SMTLIB2_script* s;
+  s = lss_SMTLIB2_create();
+  lss_SMTLIB2_assert_nonzero_uint8(s, v);
+  lss_SMTLIB2_check_sat(s);
+  lss_SMTLIB2_write(s, path);
+  lss_SMTLIB2_free(s);
+}
 
 void lss_write_aiger_uint8  (uint8_t  sym, char *filename) NO_INL;
 void lss_write_aiger_uint16 (uint16_t sym, char *filename) NO_INL;

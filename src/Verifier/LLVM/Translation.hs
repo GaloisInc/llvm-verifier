@@ -47,9 +47,10 @@ import qualified Text.LLVM                  as L
 import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
+
+import Debug.Trace
 
 -- Utility {{{1
 
@@ -346,7 +347,7 @@ liftAlign tp _ = memTypeAlign (llvmDataLayout ?lc) tp
 liftMemType' :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => L.Type
              -> LiftAttempt MemType
-liftMemType' tp = liftMaybe (liftMemType tp)
+liftMemType' tp = liftMaybe $ liftMemType tp
 
 liftStmt :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
          => L.Stmt  
@@ -426,13 +427,14 @@ liftStmt stmt = do
             _ -> fail "Unsupported conversion operator"
         L.Alloca tp0 msz a -> do
           tp <- liftMemType' tp0
-          ssz <- case msz of
-                   Nothing -> return Nothing
-                   Just (L.Typed szTp0 sz) -> do
-                     IntType w <- liftMemType' szTp0
-                     v <- liftValue (IntType w) sz
-                     return (Just (w,v))
-          retExpr (PtrType (MemType tp)) $ Alloca tp ssz (liftAlign tp a)
+          trace ("alloca " ++ show (tp0, fmap ppSymType (liftType tp0))) $ do
+            ssz <- case msz of
+                     Nothing -> return Nothing
+                     Just (L.Typed szTp0 sz) -> do
+                       IntType w <- liftMemType' szTp0
+                       v <- liftValue (IntType w) sz
+                       return (Just (w,v))
+            retExpr (PtrType (MemType tp)) $ Alloca tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) malign -> do
           tp@(PtrType etp0) <- liftMemType' tp0
           etp <- liftMaybe $ asMemType etp0
@@ -643,17 +645,3 @@ liftDefine d
                       <*> traverse liftMemType (L.typedType <$> L.defArgs d)
                       <*> pure False 
         symd = ppSymbol (L.defName d)
-
--- Test code {{{1
-{-
--- | Translate the given module
-testTranslate :: L.Module -> IO ()
-testTranslate mdl = do
-  putStrLn $ render $ L.ppModule mdl
-  putStrLn $ replicate 80 '-'
-  let lc = undefined
-  forM_ (L.modDefines mdl) $ \def -> do
-    let (_,sd) = liftDefine lc def
-    putStrLn $ render $ ppSymDefine sd
-    putStrLn ""
--}

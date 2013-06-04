@@ -293,16 +293,20 @@ data SymType
   = MemType MemType
   | Alias L.Ident
   | FunType FunDecl
+  | VoidType
+    -- | A type that LLVM does not know the structure of such as
+    -- a struct that is declared, but not defined.
+  | OpaqueType
     -- | A type not supported by the symbolic simulator.
   | UnsupportedType L.Type
-  | VoidType
 
 ppSymType :: SymType -> Doc
 ppSymType (MemType tp) = ppMemType tp
 ppSymType (Alias i) = text (show (L.ppIdent i))
 ppSymType (FunType d) = ppFunDecl d
-ppSymType (UnsupportedType tp) = text (show (L.ppType tp)) 
 ppSymType VoidType = text "void"
+ppSymType OpaqueType = text "opaque"
+ppSymType (UnsupportedType tp) = text (show (L.ppType tp)) 
 
 -- | LLVM Types supported by simulator with a defined size and alignment.
 data MemType

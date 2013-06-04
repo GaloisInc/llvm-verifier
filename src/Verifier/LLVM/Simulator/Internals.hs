@@ -892,7 +892,7 @@ loadString nm ptr = do
           t <- load i8 addr 0
           sbe <- gets symBE
           addr' <- ptrInc addr
-          case asUnsignedInteger sbe undefined t of
+          case asUnsignedInteger sbe 8 t of
             Nothing -> do
               errorPath $
                  "Encountered a symbolic byte in " ++ nm ++ "."

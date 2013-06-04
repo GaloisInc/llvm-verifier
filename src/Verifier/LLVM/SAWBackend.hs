@@ -35,6 +35,7 @@ import Verifier.SAW.Conversion
 import qualified Verifier.SAW.Export.SMT.Version2 as SMT2
 import Verifier.SAW.ParserUtils as SAW
 import Verifier.SAW.Prelude
+import Verifier.SAW.Prim
 import qualified Verifier.SAW.Recognizer as R
 import Verifier.SAW.Rewriter
 
@@ -912,7 +913,7 @@ asConsStruct t = do
   ("LLVM.ConsStruct", [_, _, _, _, v, r]) <- R.asCtor t
   return (v,r)
 
-structElt :: SharedTerm s -> Integer -> Maybe (SharedTerm s)
+structElt :: SharedTerm s -> Nat -> Maybe (SharedTerm s)
 structElt t 0 = fst <$> asConsStruct t
 structElt t i = assert (i > 0) $ do
   (_,r) <- asConsStruct t
@@ -926,8 +927,8 @@ getStructElt = Conversion $
                    <:> asAny   -- Struct 
                    <:> asFinValLit -- Index
                   )
-                (\(_ :*: _ :*: s :*: (i,_)) -> 
-                   return <$> structElt s i)
+                (\(_ :*: _ :*: s :*: i) -> 
+                   return <$> structElt s (finVal i))
 
 scWriteAiger :: (Eq l, Storable l)
              => SAWBackendState s l
@@ -1118,7 +1119,8 @@ createSAWBackend be dl _mg = do
                 , writeCnf   = do
                     nyi "writeCnf"
                 , createSMTLIB2Script = Just $ SAWBackend $ do
-                    ref <- newIORef (SMT2.emptyWriterState sc "QF_AUFBV" SMT2.bitvectorRules)
+                    let rules = SMT2.bitvectorRules
+                    ref <- newIORef $ SMT2.emptyWriterState sc "QF_AUFBV" rules
                     let runSMT2Writer a = SAWBackend $ do
                           s <- readIORef ref
                           s' <- execStateT a s
