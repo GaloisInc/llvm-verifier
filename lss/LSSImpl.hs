@@ -108,17 +108,20 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
       enableDebugger
       breakOnMain
     let mainSymbol = L.Symbol "main"
-    argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
     --TODO: Verify main has expected signature.
-    callDefine_ mainSymbol (sdRetType mainDef) argsv
-    mrv <- getProgramReturnValue
-    mm  <- getProgramFinalMem
-    eps <- use errorPaths
-    case mrv of
-      Nothing -> return (NoMainRV eps mm)
-      Just rv -> do
-        let mval = asUnsignedInteger sbe undefined rv
-        return $ maybe (SymRV eps mm rv) (\x -> (ConcRV eps mm x)) mval
+    argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
+    case sdRetType mainDef of
+      Nothing -> do
+        callDefine_ mainSymbol Nothing argsv
+        liftM2 NoMainRV (use errorPaths) getProgramFinalMem
+      Just (IntType w) -> do
+        callDefine_ mainSymbol (Just (IntType w)) argsv
+        eps <- use errorPaths
+        mm  <- getProgramFinalMem
+        Just rv <- getProgramReturnValue
+        let mval = asUnsignedInteger sbe w rv
+        return $ maybe (SymRV eps mm rv) (ConcRV eps mm) mval
+      Just _ -> fail "Unsupported return type of main()"
   where
     opts        = Just $ LSSOpts (errpaths args) (satBranches args)
     seh'        = defaultSEH
@@ -157,7 +160,7 @@ buildArgv [IntType argcw, ptype@PtrType{}] argv'
   return [ (IntType argcw, argc)
          , (ptype, argvBase)
          ]
-buildArgv _ _ = error "main() has an unsupported type."
+buildArgv _ _ = fail "Unexpected arguments expected by main()."
 
 warnNoArgv :: IO ()
 warnNoArgv = putStrLn "WARNING: main() takes no argv; ignoring provided arguments."
