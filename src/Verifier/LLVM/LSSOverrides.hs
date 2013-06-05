@@ -14,6 +14,7 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Data.IORef
+import Data.Map (Map)
 import qualified Data.Map                  as Map
 import Data.String
 import System.IO
@@ -362,6 +363,97 @@ lss_write_cnf =
         void $ withSBE $ \s -> writeCnf s file 32 t
       _ -> wrongArguments "lss_write_cnf"
 
+------------------------------------------------------------------------
+-- SMTLIB common
+
+malloc1 ::
+  ( MonadIO m
+  , Functor m
+  , Functor sbe
+  )
+  => MemType
+  -> Simulator sbe m (SBETerm sbe)
+malloc1 tp = do
+  sbe <- gets symBE
+  cnt1 <- liftSBE $ termInt sbe 32 1
+  malloc tp 32 cnt1
+
+-- | Delete key from map stored in ref.
+insertIntoRef :: (MonadIO m, Ord k) => IORef (Map k v) -> k -> v -> Simulator sbe m ()
+insertIntoRef r k v = liftIO $ do
+  m <- readIORef r
+  writeIORef r $! Map.insert k v m
+
+-- | Delete key from map stored in ref.
+removeFromRef :: (Functor sbe, Functor m, MonadIO m, Ord k)
+              => IORef (Map k v) -> String -> k -> Simulator sbe m ()
+removeFromRef r nm k = do
+  m <- liftIO $ readIORef r
+  when (Map.notMember k m) $ do
+    errorPath $ nm ++ ": Could not resolve script pointer."
+  liftIO $ writeIORef r $! Map.delete k m
+
+assertUint8IsNonzero :: (Monad m) => SBETerm sbe -> Simulator sbe m (SBEPred sbe)
+assertUint8IsNonzero v = do
+  sbe <- gets symBE
+  zero <- liftSBE $ termInt sbe 8 0
+  isZero <- liftSBE $ applyIEq sbe 8 v zero
+  liftSBE $ applyBNot sbe isZero
+
+------------------------------------------------------------------------
+-- SMTLIB1
+
+ptrToSMTLIB1 :: MemType
+ptrToSMTLIB1 = PtrType VoidType -- (UnsupportedType L.Opague)
+
+
+registerSMTLIB1Overrides ::
+  forall sbe m . (Functor m, MonadIO m, Functor sbe,  Ord (SBETerm sbe))
+    => Simulator sbe m ()
+registerSMTLIB1Overrides = do
+  scriptsRef <- liftIO $ newIORef (Map.empty :: Map.Map (SBETerm sbe) (SMTLIB1Script sbe))
+  let getScript :: String -> SBETerm sbe -> Simulator sbe m (SMTLIB1Script sbe)
+      getScript nm p = do
+        scriptsMap <- liftIO $ readIORef scriptsRef
+        case Map.lookup p scriptsMap of
+          Nothing -> errorPath $ nm ++ ": Could not resolve script pointer."
+          Just s -> return s
+  registerOverrides
+    [ overrideEntry "lss_SMTLIB1_create" ptrToSMTLIB1 [strTy] $ \args -> do
+        let [(_,namePtr)] = args
+        -- Get name
+        name <- loadString "lss_SMTLIB1_write" namePtr
+        -- Create variable for pointer.
+        rslt <- malloc1 ptrToSMTLIB1
+        -- Update scriptsRef to store new variable.
+        sbe <- gets symBE
+        case createSMTLIB1Script sbe of
+          Nothing -> errorPath "lss_SMTLIB1_create: Backend does not support SMTLIB generation."
+          Just creator -> do
+            script <- liftSBE $ creator name
+            insertIntoRef scriptsRef rslt script
+            -- Return pointer
+            return rslt
+    , voidOverrideEntry "lss_SMTLIB1_assumption_nonzero_uint8" [ptrToSMTLIB1, i8] $ \args -> do
+        let [(_,sp),(_,v)] = args
+        s <- getScript "lss_SMTLIB1_assumption_nonzero_uint8" sp
+        nz <- assertUint8IsNonzero v
+        liftSBE $ addSMTLIB1Assumption s nz
+    , voidOverrideEntry "lss_SMTLIB1_formula_nonzero_uint8" [ptrToSMTLIB1, i8] $ \args -> do
+        let [(_,sp),(_,v)] = args
+        s <- getScript "lss_SMTLIB1_formula_nonzero_uint8" sp
+        nz <- assertUint8IsNonzero v
+        liftSBE $ addSMTLIB1Formula s nz
+    , voidOverrideEntry "lss_SMTLIB1_write" [ptrToSMTLIB1, strTy] $ \args -> do
+        let [(_,sp),(_,pathPtr)] = args
+        path <- loadString "lss_SMTLIB1_write" pathPtr
+        s <- getScript "lss_SMTLIB1_write" sp
+        liftIO $ writeSMTLIB1ToFile s path
+    , voidOverrideEntry "lss_SMTLIB1_free" [ptrToSMTLIB1] $ \args -> do
+        let [(_,sp)] = args
+        removeFromRef scriptsRef "lss_SMTLIB1_free" sp
+    ]
+
 -- SMTLIB2 {{{
 
 ptrToSMTLIB2 :: MemType
@@ -380,42 +472,34 @@ registerSMTLIB2Overrides = do
           Just s -> return s
   registerOverrides
     [ overrideEntry "lss_SMTLIB2_create" ptrToSMTLIB2 [] $ \_ -> do
-        sbe <- gets symBE
         -- Create variable for pointer.
-        cnt1 <- liftSBE $ termInt sbe 32 1
-        rslt <- malloc (PtrType VoidType) 32 cnt1
+        rslt <- malloc1 ptrToSMTLIB2
         -- Update scriptsRef to store new variable.
+        sbe <- gets symBE
         case createSMTLIB2Script sbe of
           Nothing -> errorPath "lss_SMTLIB2_create: Backend does not support SMTLIB generation."
           Just creator -> do
             script <- liftSBE creator
-            liftIO $ do 
-              scriptsMap <- readIORef scriptsRef
-              writeIORef scriptsRef $! Map.insert rslt script scriptsMap
+            insertIntoRef scriptsRef rslt script
             -- Return pointer
             return rslt
     , voidOverrideEntry "lss_SMTLIB2_assert_nonzero_uint8" [ptrToSMTLIB2, i8] $ \args -> do
-        sbe <- gets symBE
         let [(_,sp),(_,v)] = args
         s <- getScript "lss_SMTLIB2_assert_nonzero_uint8" sp
-        zero <- liftSBE $ termInt sbe 8 0 
-        isZero <- liftSBE $ applyIEq sbe 8 v zero
-        nz <- liftSBE $ applyBNot sbe isZero
+        nz <- assertUint8IsNonzero v
         liftSBE $ addSMTLIB2Assert s nz
     , voidOverrideEntry "lss_SMTLIB2_check_sat" [ptrToSMTLIB2] $ \args -> do
         let [(_,sp)] = args
         s <- getScript "lss_SMTLIB2_check_sat" sp
         liftSBE $ addSMTLIB2CheckSat s
     , voidOverrideEntry "lss_SMTLIB2_write" [ptrToSMTLIB2, strTy] $ \args -> do
-        liftIO $ putStrLn "lss_SMTLIB2_write DEBUGXXX"
         let [(_,sp),(_,pathPtr)] = args
         path <- loadString "lss_SMTLIB2_write" pathPtr
         s <- getScript "lss_SMTLIB2_write" sp
         liftIO $ writeSMTLIB2ToFile s path
-    , voidOverrideEntry "lss_SMTLIB2_free" [ptrToSMTLIB2] $ \args -> liftIO $ do
+    , voidOverrideEntry "lss_SMTLIB2_free" [ptrToSMTLIB2] $ \args -> do
         let [(_,sp)] = args
-        scriptsMap <- readIORef scriptsRef
-        writeIORef scriptsRef $! Map.delete sp scriptsMap
+        removeFromRef scriptsRef "lss_SMTLIB2_free" sp
     ]
 
 registerLSSOverrides :: (Functor m, MonadIO m, Functor sbe, Ord (SBETerm sbe))
@@ -452,4 +536,5 @@ registerLSSOverrides = do
   registerOverrides $
     groundOverrides
     ++ [ f i | f <- polyOverrides, i <- polySizes ]
+  registerSMTLIB1Overrides
   registerSMTLIB2Overrides

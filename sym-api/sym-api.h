@@ -48,6 +48,50 @@ void lss_aiger_add_output_array_uint64(uint64_t *sym, uint32_t size) NO_INL;
    function, the list of collected outputs is cleared. */
 void lss_write_aiger(char *filename) NO_INL;
 
+typedef struct SMTLIB1_script SMTLIB1_script;
+
+/**
+ * Create a new SMTLIB1 script.
+ */
+SMTLIB1_script* lss_SMTLIB1_create(const char* name) NO_INL;
+
+/**
+ * Add assumption that @v@ is non-zero.
+ *
+ * @param s Script to add to.
+ * @param v Value to check.
+ */
+void lss_SMTLIB1_assumption_nonzero_uint8(SMTLIB1_script* s,  uint8_t v) NO_INL;
+
+/**
+ * Add formula that @v@ is non-zero.
+ *
+ * @param s Script to add to.
+ * @param v Value to check.
+ */
+void lss_SMTLIB1_formula_nonzero_uint8(SMTLIB1_script* s,  uint8_t v) NO_INL;
+
+/**
+ * Write SMTLIB1 Script to file.
+ * 
+ * @param s Script to write.
+ * @param path Path to write to.
+ */
+void lss_SMTLIB1_write(SMTLIB1_script* s, const char* path) NO_INL;
+
+/**
+ * Free the SMTLIB1 Script.
+ */ 
+void lss_SMTLIB1_free(SMTLIB1_script* s) NO_INL;
+
+static
+void lss_SMTLIB1_write_nonzero_uint8(const char* name, const char* path, uint8_t v) {
+  SMTLIB2_script* s;
+  s = lss_SMTLIB1_create(name);
+  lss_SMTLIB1_formula_nonzero_uint8(s, v);
+  lss_SMTLIB1_write(s, path);
+  lss_SMTLIB1_free(s);
+}
 
 typedef struct SMTLIB2_script SMTLIB2_script;
 

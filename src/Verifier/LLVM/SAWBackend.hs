@@ -26,12 +26,14 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.String (fromString)
 import qualified Data.Vector as V
 import qualified Data.Vector.Storable as LV
 
 import Verifier.SAW as SAW
 import Verifier.SAW.BitBlast
 import Verifier.SAW.Conversion
+import qualified Verifier.SAW.Export.SMT.Version1 as SMT1
 import qualified Verifier.SAW.Export.SMT.Version2 as SMT2
 import Verifier.SAW.ParserUtils as SAW
 import Verifier.SAW.Prelude
@@ -974,6 +976,12 @@ scEvalTerm sbs inputs t = do
       -- Return instantiated t.
       scInstantiateExt sc m t
 
+execStateFromRef :: IORef t -> StateT t IO () -> SAWBackend s l ()
+execStateFromRef r a = SAWBackend $ do
+  s <- readIORef r
+  s' <- execStateT a s
+  writeIORef r $! s'
+
 -- | Create a SAW backend.
 createSAWBackend :: (Eq l, Storable l)
                  => BitEngine l
@@ -1118,16 +1126,23 @@ createSAWBackend be dl _mg = do
                 , writeAiger = lift2 (scWriteAiger sbs)
                 , writeCnf   = do
                     nyi "writeCnf"
+                , createSMTLIB1Script = Just $ \nm -> SAWBackend $ do
+                    let rules = SMT1.bitvectorRules
+                    ref <- newIORef $ SMT1.emptyWriterState sc (fromString nm) "QF_AUFBV" rules
+                    return SMTLIB1Script {
+                              addSMTLIB1Assumption =
+                                execStateFromRef ref . SMT1.writeAssumption
+                            , addSMTLIB1Formula  =
+                                execStateFromRef ref . SMT1.writeFormula
+                            , writeSMTLIB1ToFile = \p -> do
+                                writeFile p . SMT1.render =<< readIORef ref 
+                            }
                 , createSMTLIB2Script = Just $ SAWBackend $ do
                     let rules = SMT2.bitvectorRules
                     ref <- newIORef $ SMT2.emptyWriterState sc "QF_AUFBV" rules
-                    let runSMT2Writer a = SAWBackend $ do
-                          s <- readIORef ref
-                          s' <- execStateT a s
-                          writeIORef ref $! s'
                     return SMTLIB2Script {
-                              addSMTLIB2Assert = runSMT2Writer . SMT2.assert
-                            , addSMTLIB2CheckSat = runSMT2Writer SMT2.checkSat
+                              addSMTLIB2Assert   = execStateFromRef ref . SMT2.assert
+                            , addSMTLIB2CheckSat = execStateFromRef ref SMT2.checkSat
                             , writeSMTLIB2ToFile = \p -> do
                                 writeFile p . SMT2.render =<< readIORef ref 
                             }
