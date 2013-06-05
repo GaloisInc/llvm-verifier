@@ -47,8 +47,6 @@ import qualified Verifier.LLVM.MemModel as MM
 
 import Verinf.Symbolic.Lit
 
-import Debug.Trace
-
 #if !MIN_VERSION_base(4,6,0)
 -- | Strict version of modifyIORef
 -- Added for compatibility with GHC base 4.5 and 4.6
@@ -58,12 +56,6 @@ modifyIORef' r f = do
   writeIORef r $! f v 
 #endif
 
-preludeTrueTermF :: TermF t
-preludeTrueTermF = FTermF $ CtorApp (mkIdent preludeModuleName "True") []
-
-preludeFalseTermF :: TermF t
-preludeFalseTermF = FTermF $ CtorApp (mkIdent preludeModuleName "False") []
-
 preludeBVNatTermF :: TermF t
 preludeBVNatTermF = FTermF $ GlobalDef (mkIdent preludeModuleName "bvNat")
 
@@ -72,9 +64,6 @@ nyi nm = error $ "(SAW backend) Not yet implemented: " ++ show nm
 
 scBitwidth :: SharedContext s -> BitWidth -> IO (SharedTerm s)
 scBitwidth sc w = scNat sc (toInteger w)
-
-scBitvectorType :: SharedContext s -> SharedTerm s -> IO (SharedTerm s)
-scBitvectorType sc wt = ($ wt) =<< scApplyPreludeBitvector sc
 
 asUnsignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
 asUnsignedBitvector w s2 = do
@@ -1060,14 +1049,14 @@ createSAWBackend be dl _mg = do
   pAnd <- scApplyPreludeAnd sc
   iteFn <- scApplyPreludeIte sc
 
-  bvEq <- scApplyLLVMLlvmIeqBool sc
+  apply_bvEq <- scApplyLLVMLlvmIeqBool sc
 
   valueFn   <- scApplyLLVMValue sc
   intTypeFn <- scApplyLLVMIntType sc
   
   let sbe = SBE { sbeTruePred = true
                 , applyIEq = \w x y -> SAWBackend $
-                   join $ bvEq <$> scBitwidth sc w ?? x ?? y
+                   join $ apply_bvEq <$> scBitwidth sc w ?? x ?? y
                 , applyAnd  = lift2 pAnd
                 , applyBNot = lift1 pNot
                 , applyPredIte = lift3 (iteFn boolType)
@@ -1134,8 +1123,8 @@ createSAWBackend be dl _mg = do
                 , createSMTLIB1Script = Just $ \nm -> SAWBackend $ do
                     let rules = SMT1.bitvectorRules
                     ref <- newIORef $ SMT1.emptyWriterState sc (fromString nm) "QF_AUFBV" rules
-                    let runSMTLIB1 act = SAWBackend $ do
-                          wl <- runStateFromRef ref $ act >> getWarnings SMT1.warnings
+                    let runSMTLIB1 a = SAWBackend $ do
+                          wl <- runStateFromRef ref $ a >> getWarnings SMT1.warnings
                           unless (null wl) $ do
                             putStrLn "Errors occurred during SMTLIB generation:"
                             forM_ wl $ \w -> do
@@ -1152,8 +1141,8 @@ createSAWBackend be dl _mg = do
                 , createSMTLIB2Script = Just $ SAWBackend $ do
                     let rules = SMT2.bitvectorRules
                     ref <- newIORef $ SMT2.emptyWriterState sc "QF_AUFBV" rules
-                    let runSMTLIB2 act = SAWBackend $ do
-                          wl <- runStateFromRef ref $ act >> getWarnings SMT2.warnings
+                    let runSMTLIB2 a = SAWBackend $ do
+                          wl <- runStateFromRef ref $ a >> getWarnings SMT2.warnings
                           unless (null wl) $ do
                             putStrLn "Errors occurred during SMTLIB generation:"
                             forM_ wl $ \w -> do
@@ -1189,3 +1178,13 @@ _unused = undefined
   scApplyLLVMBvVecZipWith
   scApplyLLVMLiftBVRel
   scApplyLLVMLiftSBVRel
+  scApplyLLVMAnd_true2
+  scApplyLLVMBvEq_commute_ite1
+  scApplyLLVMBveq_same2
+  scApplyLLVMBveq_sameL
+  scApplyLLVMBveq_sameR
+  scApplyLLVMBvule_same2
+  scApplyLLVMBvule_sameL
+  scApplyLLVMBvule_sameR
+  scApplyLLVMIte_false_false
+  scApplyLLVMIte_same
