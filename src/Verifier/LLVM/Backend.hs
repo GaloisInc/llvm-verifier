@@ -26,6 +26,7 @@ module Verifier.LLVM.Backend
   , asSignedInteger
   , beCheckSat
   , SatResult(..)
+  , SMTLIB1Script(..)
   , SMTLIB2Script(..)
   ) where
 
@@ -247,6 +248,10 @@ data SBE m = SBE
     -- file @f@.
   , writeCnf :: FilePath -> BitWidth -> SBETerm m -> m [Maybe Int]
 
+    -- | Returns allocator to make new SMTLib1 script if this backend
+    -- supports SMTLIB1 output.
+  , createSMTLIB1Script :: Maybe (String -> m (SMTLIB1Script m))
+
     -- | Returns allocator to make new SMTLib2 script if this backend
     -- supports SMTLIB2 output.
   , createSMTLIB2Script :: Maybe (m (SMTLIB2Script m))
@@ -258,6 +263,13 @@ data SBE m = SBE
     -- | Run sbe computation in IO.
   , sbeRunIO :: forall v . m v -> IO v 
   }
+
+data SMTLIB1Script sbe = SMTLIB1Script {
+         addSMTLIB1Assumption :: SBEPred sbe -> sbe ()
+       , addSMTLIB1Formula :: SBEPred sbe -> sbe ()
+         -- | Write SMTLIB1Script to file.
+       , writeSMTLIB1ToFile :: FilePath -> IO () 
+       }
 
 data SMTLIB2Script sbe = SMTLIB2Script {
          addSMTLIB2Assert :: SBEPred sbe -> sbe ()
