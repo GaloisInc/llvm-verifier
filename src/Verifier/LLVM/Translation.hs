@@ -50,8 +50,6 @@ import Text.PrettyPrint.Leijen hiding ((<$>))
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
 
-import Debug.Trace
-
 -- Utility {{{1
 
 -- | This function is called whenever lifting fails due to an internal error.
@@ -427,14 +425,13 @@ liftStmt stmt = do
             _ -> fail "Unsupported conversion operator"
         L.Alloca tp0 msz a -> do
           tp <- liftMemType' tp0
-          trace ("alloca " ++ show (tp0, fmap ppSymType (liftType tp0))) $ do
-            ssz <- case msz of
-                     Nothing -> return Nothing
-                     Just (L.Typed szTp0 sz) -> do
-                       IntType w <- liftMemType' szTp0
-                       v <- liftValue (IntType w) sz
-                       return (Just (w,v))
-            retExpr (PtrType (MemType tp)) $ Alloca tp ssz (liftAlign tp a)
+          ssz <- case msz of
+                   Nothing -> return Nothing
+                   Just (L.Typed szTp0 sz) -> do
+                     IntType w <- liftMemType' szTp0
+                     v <- liftValue (IntType w) sz
+                     return (Just (w,v))
+          retExpr (PtrType (MemType tp)) $ Alloca tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) malign -> do
           tp@(PtrType etp0) <- liftMemType' tp0
           etp <- liftMaybe $ asMemType etp0

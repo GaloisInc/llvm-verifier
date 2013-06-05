@@ -86,7 +86,7 @@ void lss_SMTLIB1_free(SMTLIB1_script* s) NO_INL;
 
 static
 void lss_SMTLIB1_write_nonzero_uint8(const char* name, const char* path, uint8_t v) {
-  SMTLIB2_script* s;
+  SMTLIB1_script* s;
   s = lss_SMTLIB1_create(name);
   lss_SMTLIB1_formula_nonzero_uint8(s, v);
   lss_SMTLIB1_write(s, path);

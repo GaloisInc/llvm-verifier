@@ -976,11 +976,16 @@ scEvalTerm sbs inputs t = do
       -- Return instantiated t.
       scInstantiateExt sc m t
 
-execStateFromRef :: IORef t -> StateT t IO () -> SAWBackend s l ()
-execStateFromRef r a = SAWBackend $ do
+runStateFromRef :: IORef t -> StateT t IO a -> IO a
+runStateFromRef r a = do
   s <- readIORef r
-  s' <- execStateT a s
+  (v,s') <- runStateT a s
   writeIORef r $! s'
+  return v
+
+-- | Gets elements in list from lens, and clears list.
+getWarnings :: (Applicative m, MonadState s m) => Simple Lens s [w] -> m [w]
+getWarnings l = use l <* assign l []
 
 -- | Create a SAW backend.
 createSAWBackend :: (Eq l, Storable l)
@@ -1129,20 +1134,34 @@ createSAWBackend be dl _mg = do
                 , createSMTLIB1Script = Just $ \nm -> SAWBackend $ do
                     let rules = SMT1.bitvectorRules
                     ref <- newIORef $ SMT1.emptyWriterState sc (fromString nm) "QF_AUFBV" rules
+                    let runSMTLIB1 act = SAWBackend $ do
+                          wl <- runStateFromRef ref $ act >> getWarnings SMT1.warnings
+                          unless (null wl) $ do
+                            putStrLn "Errors occurred during SMTLIB generation:"
+                            forM_ wl $ \w -> do
+                              let wd = SMT1.ppWarning (scPrettyTermDoc <$> w)
+                              putStrLn $ "  " ++ show wd
                     return SMTLIB1Script {
                               addSMTLIB1Assumption =
-                                execStateFromRef ref . SMT1.writeAssumption
+                                runSMTLIB1 . SMT1.writeAssumption
                             , addSMTLIB1Formula  =
-                                execStateFromRef ref . SMT1.writeFormula
+                                runSMTLIB1 . SMT1.writeFormula
                             , writeSMTLIB1ToFile = \p -> do
                                 writeFile p . SMT1.render =<< readIORef ref 
                             }
                 , createSMTLIB2Script = Just $ SAWBackend $ do
                     let rules = SMT2.bitvectorRules
                     ref <- newIORef $ SMT2.emptyWriterState sc "QF_AUFBV" rules
+                    let runSMTLIB2 act = SAWBackend $ do
+                          wl <- runStateFromRef ref $ act >> getWarnings SMT2.warnings
+                          unless (null wl) $ do
+                            putStrLn "Errors occurred during SMTLIB generation:"
+                            forM_ wl $ \w -> do
+                              let wd = SMT2.ppWarning (scPrettyTermDoc <$> w)
+                              putStrLn $ "  " ++ show wd
                     return SMTLIB2Script {
-                              addSMTLIB2Assert   = execStateFromRef ref . SMT2.assert
-                            , addSMTLIB2CheckSat = execStateFromRef ref SMT2.checkSat
+                              addSMTLIB2Assert   = runSMTLIB2 . SMT2.assert
+                            , addSMTLIB2CheckSat = runSMTLIB2 SMT2.checkSat
                             , writeSMTLIB2ToFile = \p -> do
                                 writeFile p . SMT2.render =<< readIORef ref 
                             }
