@@ -518,7 +518,7 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
         blockName :: Int -> SymBlockID
         blockName = symBlockID llvmId
         brSymInstrs tgt =
-          (SetCurrentBlock (symBlockID tgt 0) :) <$> phiInstrs phiMap llvmId tgt
+          (++ [SetCurrentBlock (symBlockID tgt 0)]) <$> phiInstrs phiMap llvmId tgt
         -- | Sequentially process statements.
         impl :: [L.Stmt] -- ^ Remaining statements
              -> Int -- ^ Index of symbolic block that we are defining.

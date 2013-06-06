@@ -371,7 +371,7 @@ data SymBlock t = SymBlock {
        }
 
 ppSymBlock :: SymBlock t -> Doc
-ppSymBlock sb = ppSymBlockID (sbId sb) <$$> nest 2 (vcat (ppStmt <$> sbStmts sb))
+ppSymBlock sb = ppSymBlockID (sbId sb) <$$> indent 2 (vcat (ppStmt <$> sbStmts sb))
 
 -- | Symbolically lifted version of a LLVM definition.
 data SymDefine t = SymDefine {
