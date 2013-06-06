@@ -1121,8 +1121,7 @@ createSAWBackend be dl _mg = do
                 , writeCnf   = do
                     nyi "writeCnf"
                 , createSMTLIB1Script = Just $ \nm -> SAWBackend $ do
-                    let rules = SMT1.bitvectorRules
-                    ref <- newIORef $ SMT1.emptyWriterState sc (fromString nm) "QF_AUFBV" rules
+                    ref <- newIORef $ SMT1.qf_aufbv_WriterState sc (fromString nm)
                     let runSMTLIB1 a = SAWBackend $ do
                           wl <- runStateFromRef ref $ a >> getWarnings SMT1.warnings
                           unless (null wl) $ do
@@ -1139,8 +1138,7 @@ createSAWBackend be dl _mg = do
                                 writeFile p . SMT1.render =<< readIORef ref 
                             }
                 , createSMTLIB2Script = Just $ SAWBackend $ do
-                    let rules = SMT2.bitvectorRules
-                    ref <- newIORef $ SMT2.emptyWriterState sc "QF_AUFBV" rules
+                    ref <- newIORef $ SMT2.qf_aufbv_WriterState sc
                     let runSMTLIB2 a = SAWBackend $ do
                           wl <- runStateFromRef ref $ a >> getWarnings SMT2.warnings
                           unless (null wl) $ do
