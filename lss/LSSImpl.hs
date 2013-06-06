@@ -118,9 +118,11 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
         callDefine_ mainSymbol (Just (IntType w)) argsv
         eps <- use errorPaths
         mm  <- getProgramFinalMem
-        Just rv <- getProgramReturnValue
-        let mval = asUnsignedInteger sbe w rv
-        return $ maybe (SymRV eps mm rv) (ConcRV eps mm) mval
+        mrv <- getProgramReturnValue
+        case mrv of
+          Nothing -> return $ NoMainRV eps mm
+          Just rv -> return $ maybe (SymRV eps mm rv) (ConcRV eps mm) mval
+            where mval = asUnsignedInteger sbe w rv
       Just _ -> fail "Unsupported return type of main()"
   where
     opts        = Just $ LSSOpts (errpaths args) (satBranches args)
