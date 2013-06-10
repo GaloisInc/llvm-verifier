@@ -175,9 +175,14 @@ liftMaybe :: Maybe a -> LiftAttempt a
 liftMaybe = LiftAttempt . return . maybe (Left "") Right
 
 unsupportedStmt :: (?sbe :: SBE sbe)
-                => L.Stmt -> BlockGenerator sbe (SymStmt (SBETerm sbe))
-unsupportedStmt stmt = do
-  addWarning $ text "Unsupported instruction: " <+> text (show (L.ppStmt stmt))
+                => L.Stmt
+                -> String
+                -> BlockGenerator sbe (SymStmt (SBETerm sbe))
+unsupportedStmt stmt detailMsg = do
+  let base = text "Unsupported instruction: " <+> text (show (L.ppStmt stmt))
+      detail | null detailMsg = base
+             | otherwise = base <$$> indent 2 (text detailMsg)
+  addWarning detail
   return (BadSymStmt stmt)
 
 trySymStmt :: (?sbe :: SBE sbe)
@@ -188,7 +193,7 @@ trySymStmt stmt (LiftAttempt m) = do
   mr <- liftIO m
   case mr of
     Right s -> return s
-    Left{} -> unsupportedStmt stmt
+    Left msg -> unsupportedStmt stmt msg
 
 -- Lift operations
 
@@ -252,14 +257,14 @@ liftValue rtp (L.ValConstExpr ce)  =
         (L.IntToPtr, IntType w, PtrType ptrType) -> do
           mkSValExpr (IntToPtr Nothing w v ptrType)
         (L.BitCast,_,_) -> liftBitcast itp v rtp
-        _ -> fail "Could not interpret constant expression"
-    _ -> fail "Could not interpret constant expression"
+        _ -> fail "Could not interpret constant expression."
+    _ -> fail "Could not interpret constant expression."
 liftValue tp L.ValUndef = zeroValue tp
-liftValue _  L.ValLabel{} = fail "Could not interpret label"
+liftValue _  L.ValLabel{} = fail "Could not interpret label."
 liftValue tp L.ValZeroInit = zeroValue tp
 liftValue _  L.ValAsm{} = fail "Could not interpret asm."
 liftValue _  L.ValMd{} = fail "Could not interpret metadata."
-liftValue _  _ = fail "Could not interpret LLVM value"
+liftValue _  _ = fail "Could not interpret LLVM value."
 
 -- | Lift a bitcast expression.
 liftBitcast :: (?lc :: LLVMContext)
@@ -295,7 +300,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
      let fn (L.Typed tp v) = (,v) <$> liftMemType' tp
      expr0 <- mkSValExpr (SValInteger aw 0)
      go expr0 rtp =<< traverse fn args0
-  where gepFailure = fail "Could not parse GEP Value"
+  where gepFailure = fail "Could not parse GEP Value."
         pdl = llvmDataLayout ?lc
         aw :: BitWidth
         aw = ptrBitwidth pdl 
@@ -337,7 +342,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
           go args' (fiType fi) r
         goStruct _ _ _ = gepFailure
 
--- | Lift a maybe alignment constraint to the alignment for the tpye.
+-- | Lift a maybe alignment constraint to the alignment for the type.
 liftAlign :: (?lc :: LLVMContext) => MemType -> Maybe L.Align -> Alignment
 liftAlign _ (Just a) | a /= 0 = fromIntegral a
 liftAlign tp _ = memTypeAlign (llvmDataLayout ?lc) tp
@@ -358,7 +363,7 @@ liftStmt stmt = do
         tptr <- liftValue tp v
         taddr <- liftTypedValue addr 
         return $ Store tp tptr taddr (liftAlign tp a)
-    Effect{} -> unsupportedStmt stmt
+    Effect{} -> unsupportedStmt stmt ""
     Result r app _ -> trySymStmt stmt $ do
       -- Return an assignemnt statement for the value.
       let retExpr tp = return . Assign r tp
@@ -370,7 +375,7 @@ liftStmt stmt = do
             case tp of
               IntType w -> retTExpr tp (IntArith op Nothing w x y)
               VecType n (IntType w) -> retTExpr tp (IntArith op (Just n) w x y)
-              _ -> fail "Could not parse argument type"
+              _ -> fail "Could not parse argument type."
       case app of
         L.Arith llvmOp (L.Typed tp u) v -> do
            op <- case llvmOp of
@@ -381,7 +386,7 @@ liftStmt stmt = do
                    L.SDiv exact  -> return (SDiv exact)
                    L.URem        -> return URem
                    L.SRem        -> return SRem
-                   _ -> fail "Do not support floating point operations"
+                   _ -> fail "Floating point operations not supported."
            retIntArith op tp u v
         L.Bit llvmOp (L.Typed tp u) v   -> retIntArith op tp u v
           where op = case llvmOp of
@@ -401,7 +406,7 @@ liftStmt stmt = do
                     retTExpr rtp (fn Nothing iw sv rw)
                   (VecType n (IntType iw), VecType nr (IntType rw)) | n == nr && cond iw rw ->
                     retTExpr rtp (fn (Just n) iw sv rw)
-                  _ -> fail "Could not parse conversion types"
+                  _ -> fail "Could not parse conversion types."
           case op of
             L.Trunc -> intConv (\iw rw -> iw > rw) Trunc
             L.ZExt -> intConv (\iw rw -> iw < rw) ZExt
@@ -412,14 +417,14 @@ liftStmt stmt = do
                   retTExpr rtp (PtrToInt Nothing ptr sv w)
                 ( VecType n (PtrType ptr), VecType nr (IntType w)) | n == nr ->
                   retTExpr rtp (PtrToInt (Just n) ptr sv w)
-                _ -> fail "Could not parse conversion types"
+                _ -> fail "Could not parse conversion types."
             L.IntToPtr ->
               case (itp, rtp) of
                 ( IntType w, PtrType ptr) ->
                   retTExpr rtp (IntToPtr Nothing w sv ptr)
                 ( VecType n (IntType w), VecType nr (PtrType ptr)) | n == nr ->
                   retTExpr rtp (IntToPtr (Just n) w sv ptr)
-                _ -> fail "Could not parse conversion types"
+                _ -> fail "Could not parse conversion types."
             L.BitCast -> do
               retExpr rtp . Val =<< liftBitcast itp sv rtp
             _ -> fail "Unsupported conversion operator"
@@ -443,10 +448,15 @@ liftStmt stmt = do
           y <- liftValue tp v
           case tp of
             IntType w ->
-              retTExpr (IntType 1) (IntCmp op Nothing w x y)
+              retTExpr (IntType 1) (ICmp op Nothing (Left w) x y)
             VecType n (IntType w) ->
-              retTExpr (VecType n (IntType 1)) (IntCmp op (Just n) w x y)
-            _ -> fail "Could not parse argument type"
+              retTExpr (VecType n (IntType 1)) (ICmp op (Just n) (Left w) x y)
+            PtrType ptp ->
+              retTExpr (IntType 1) (ICmp op Nothing (Right ptp) x y)
+            VecType n (PtrType ptp) ->
+              retTExpr (VecType n (IntType 1)) (ICmp op (Just n) (Right ptp) x y)
+
+            _ -> fail "Could not parse icmp argument type."
         L.GEP ib tp tpvl     -> uncurry retTExpr =<< liftGEP ib tp tpvl
         L.Select (L.Typed tpc0 c') (L.Typed tpv0 v1') v2' -> do
           tpc <- liftMemType' tpc0
@@ -574,7 +584,7 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
                 brStmtsList <- traverse brSymInstrs targets
                 zipWithM_ defineBlock caseBlockIds brStmtsList
               _ -> do
-                symStmt <- unsupportedStmt stmt
+                symStmt <- unsupportedStmt stmt "Unparsable cases."
                 defineBlock (blockName idx) $ reverse (symStmt:il)
           where -- Get values and targets
                 (consts,targets) = unzip cases
@@ -596,12 +606,12 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
               -- Define block for suspended thread.
               defineBlock suspendSymBlockID brStmts2
             _ -> do
-              ss <- unsupportedStmt stmt
+              ss <- unsupportedStmt stmt "Unparsable condition."
               defineBlock (blockName idx) $ reverse (ss:il)
         impl [Effect L.Unreachable _] idx il = do
           defineBlock (blockName idx) (reverse (Unreachable : il))
         impl [stmt@(Effect L.Unwind _)] idx il = do
-          ss <- unsupportedStmt stmt
+          ss <- unsupportedStmt stmt ""
           defineBlock (blockName idx) (reverse (ss : il))
         -- | Phi statements are handled by initial blocks.
         impl (Result _id (L.Phi _ _) _:r) idx il = impl r idx il

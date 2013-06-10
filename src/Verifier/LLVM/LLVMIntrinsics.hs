@@ -36,19 +36,16 @@ memcpyIntrinsic w = voidOverride $ \args -> do
       processMemCond fr c
     _ -> wrongArguments "llvm.memcpy"
 
-memsetIntrinsic :: BitWidth -> StdOvd m sbe
-memsetIntrinsic lenWidth = voidOverride $ \args -> do
-  case args of
-    [(_,dst0), (_,val), (_,len), _, _] -> do
-      sbe <- gets symBE
-      case asUnsignedInteger sbe lenWidth len of
-        Nothing -> errorPath "LSS does not support llvm.memset with symbolic lengths."
-        Just n0 -> go n0 dst0
-          where go 0 _ = return ()
-                go i dst = do
-                  store i8 val dst 0
-                  go (i-1) =<< ptrInc dst
-    _ -> wrongArguments "llvm.memset"
+memsetIntrinsic :: BitWidth -> StdOvdEntry sbe m
+memsetIntrinsic lw = do
+  let nm = fromString $ "llvm.memset.p0i8.i" ++ show lw
+  let arg_types = [i8p, i8, IntType lw, i32, i1]
+  voidOverrideEntry nm arg_types $ \args -> do
+    case args of
+      [(_,dst0), (_,val), (_,len), _, _] -> do
+        memset (show nm) dst0 val lw len
+      _ -> wrongArguments (show nm)
+
 
 objectsizeIntrinsic :: BitWidth -> StdOvd m sbe
 objectsizeIntrinsic w = override $ \args ->
@@ -71,8 +68,8 @@ registerLLVMIntrinsicOverrides = do
   registerOverrides 
     [ ("llvm.memcpy.p0i8.p0i8.i32", voidFunDecl [i8p, i8p, i32, i32, i1], memcpyIntrinsic 32)
     , ("llvm.memcpy.p0i8.p0i8.i64", voidFunDecl [i8p, i8p, i64, i32, i1], memcpyIntrinsic 64)
-    , ("llvm.memset.p0i8.i32", voidFunDecl [i8p, i8, i32, i32, i1], memsetIntrinsic 32)
-    , ("llvm.memset.p0i8.i64", voidFunDecl [i8p, i8, i64, i32, i1], memsetIntrinsic 64)
+    , memsetIntrinsic 32
+    , memsetIntrinsic 64
     , ("llvm.objectsize.i32", funDecl i32 [i8p, i1], objectsizeIntrinsic 32)
     , ("llvm.objectsize.i64", funDecl i64 [i8p, i1], objectsizeIntrinsic 64)
     -- Do nothing.

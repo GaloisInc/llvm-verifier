@@ -80,8 +80,6 @@ import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Map                  as M
 import           Data.Maybe
 import qualified Data.Set                  as S
-import qualified Data.Vector               as V
-import           Numeric                   (showHex)
 import           System.Exit
 import           System.IO
 import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
@@ -89,10 +87,12 @@ import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
 import           Verifier.LLVM.AST
 import           Verifier.LLVM.Backend
 import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.LLVMIntrinsics
-import           Verifier.LLVM.LSSOverrides
 import           Verifier.LLVM.Simulator.Internals
 import           Verifier.LLVM.Simulator.SimUtils
+
+import           Verifier.LLVM.LLVMIntrinsics
+import           Verifier.LLVM.LibcOverrides
+import           Verifier.LLVM.LSSOverrides
 
 -- Utility functions
 
@@ -746,110 +746,3 @@ warning msg = do
                         where cbid = show (ppSymBlockID cb)
             where fn = show $ ppSymbol $ pathFuncSym p
   liftIO $ putStrLn $ "Warning" ++ prefix ++ ". " ++ msg
-
-data PrintfFlags = PrintfFlags {
-    zeroPad :: Bool
-  }
-
-printfToString :: forall sbe m . (Functor sbe, Functor m, MonadIO m)
-               => String -> [(MemType,SBETerm sbe)] -> Simulator sbe m String
-printfToString fmt args = do
-    let vargs = V.fromList args
-
-    let valueAt :: Int -> Simulator sbe m (MemType,SBETerm sbe)
-        valueAt p = maybe (errorPath msg) return (vargs V.!? p)
-          where msg = "Could not get argument at position " ++ show p
-    sbe <- gets symBE
-    let badArg p = errorPath $ "printf given bad argument at position " ++ show p
-    let pr :: ((MemType, SBETerm sbe) -> Maybe String)
-           -> Int -> Simulator sbe m String
-        pr f p = maybe (badArg p) return . f =<< valueAt p
-    let fmtSigned (IntType w, v) = Just $
-          case asSignedInteger sbe w v of
-            Just cv  -> show cv
-            Nothing -> show (prettyTermD sbe v)
-        fmtSigned _ = Nothing
-    let fmtUnsigned (IntType w, v) = Just $
-          case asUnsignedInteger sbe w v of
-            Just cv -> show cv
-            Nothing -> show (prettyTermD sbe v)
-        fmtUnsigned _ = Nothing
-    let fmtPointer (PtrType{}, v) = Just $
-          case asConcretePtr sbe v of
-            Just cv  -> "0x" ++ showHex cv ""
-            Nothing -> show (prettyTermD sbe v)
-        fmtPointer _ = Nothing
-    let printString p = do
-          mv <- valueAt p
-          case mv of
-            (PtrType{}, v) -> loadString "printToString" v
-            _ -> badArg p
-    let procString ('%':r) p rs = procArg r defaultFlags p rs
-          where defaultFlags = PrintfFlags { zeroPad = False }
-        procString (c:r) p rs = procString r p (c:rs)
-        procString [] _ rs = return (reverse rs)
-
-        procArg ('d':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
-        procArg ('i':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
-        procArg ('p':r) _ p rs = procRest r (p+1) rs =<< pr fmtPointer p
-        procArg ('u':r) _ p rs = procRest r (p+1) rs =<< pr fmtUnsigned p
-        procArg ('s':r) _ p rs = procRest r (p+1) rs =<< printString p
-        procArg r       _ _ _  = errorPath $ "Unsupported format string " ++ show r
-
-        procRest r p rs s = procString r p (reverse s ++ rs)
-    procString fmt 0 []
-
-printfHandler :: StdOvd sbe m
-printfHandler = override $ \args ->
-  case args of
-    ((_,fmtPtr) : rest) -> do
-      fmtStr <- loadString "printf format string" fmtPtr
-      --isSym <- withSBE' isSymbolic
-      --ptrWidth <- withLC llvmAddrWidthBits
-      --let fmtStr' = fixFormat (ptrWidth `div` 4) (map isSym rest) fmtStr
-      --resString <- symPrintf fmtStr' <$> mapM termToArg rest
-      resString <- printfToString fmtStr rest
-      unlessQuiet $ liftIO $ putStr resString
-      withSBE $ \s -> termInt s 32 (toInteger (length resString))
-    _ -> wrongArguments "printf"
-
-mallocHandler :: BitWidth -> StdOvd m sbe
-mallocHandler aw = override $ \args ->
-  case args of
-    [(_,sizeTm)] -> malloc i8 aw sizeTm
-    _ -> wrongArguments "malloc"
-
-allocaHandler :: BitWidth -> StdOvd m sbe
-allocaHandler aw = override $ \args ->
-  case args of
-    [(_,sizeTm)] -> alloca i8 aw sizeTm 0
-    _ -> wrongArguments "alloca"
-
-assertHandler__assert_rtn :: StdOvd sbe m
-assertHandler__assert_rtn = voidOverride $ \args -> do
-  case args of
-    [(_,v1), (_,v2), (_,v3), (_,v4)] -> do
-          fname     <- loadString "assert function" v1
-          file      <- loadString "assert filename" v2
-          sbe <- gets symBE
-          let Just line = asSignedInteger sbe undefined v3
-          err       <- loadString "assert error message" v4
-          errorPath $ unwords [ "__assert_rtn:"
-                      , file ++ ":" ++ show line ++ ":" ++ fname ++ ":"
-                      , err
-                      ]
-    _ -> errorPath "Incorrect number of parameters passed to __assert_rtn()"
-
-registerLibcOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
-registerLibcOverrides = do
-  aw <- ptrBitwidth <$> getDL
-  -- Register malloc
-  tryRegisterOverride "malloc" $ \d -> (\_ -> mallocHandler aw) <$> fdRetType d
-  let sizeT = IntType aw
-  registerOverrides
-    [ ("__assert_rtn", voidFunDecl [i8p, i8p, i32, i8p], assertHandler__assert_rtn)
-    --, ("exit", voidTy, [i32], False, exitHandler)
-    , ("alloca", funDecl i8p [sizeT], allocaHandler aw)
-    , ("free", voidFunDecl [i8p], voidOverride $ \_ -> return ())
-    , ("printf", FunDecl (Just i32) [strTy] True, printfHandler)
-    ]

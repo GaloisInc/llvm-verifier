@@ -1636,7 +1636,7 @@ applyExpr dl texpr = do
        (\(c,u) -> StructTerm (V.fromList [IntTerm (LV.singleton c), IntTerm u]))
          <$> beFullAddInt ?be x y
     UAddWithOverflow{} -> illegalArgs "UAddWithOverflow"
-    IntCmp op mn _ x y -> applyICmp opFn mn x y
+    ICmp op mn _ x y -> applyICmp opFn mn x y
       where neg fn bend u v = beNeg bend <$> fn bend u v
             opFn = case op of
                      L.Ieq  -> beEqVector

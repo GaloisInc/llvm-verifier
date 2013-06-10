@@ -190,11 +190,11 @@ data TypedExpr v
     -- | @UAddWithOverflow w x y@ adds @x@ and @y@ and returns a struct whose first element
     -- contains a @w@-bit sum of @x@ and @y@ and second element contains the single overflow bit. 
   | UAddWithOverflow BitWidth v v
-    -- | @IntCmp op mn w x y@ performs the operation @op@ on @x@ and @y@.
-    -- If @mn@ is @Nothing@, then @x@ and @y@ are integers with length @w@.  Otherwise
-    -- @x@ and @y@ are vectors with integer elements of length @w@, and @mn@ contains the
-    -- number of elements.
-  | IntCmp L.ICmpOp OptVectorLength BitWidth v v
+    -- | @ICmp op mn tp x y@ performs the operation @op@ on @x@ and @y@.  If @mn@ is @Nothing@,
+    -- then @x@ and @y@ are scalars, otherwise they are vectors of scalars, and @mn@ contains the
+    -- number of elements. If @tp@ contains a bitwidth, then the scalars are integers with that
+    -- bitwidth, otherwise the scalars are pointers, and @tp@ contains the type of pointer.
+  | ICmp L.ICmpOp OptVectorLength (Either BitWidth SymType) v v
     -- | @Trunc mn iw t rw@ assumes that @rw < iw@, and truncates an integer @t@
     -- with @iw@ bits to an integer with @rw@ bits.
   | Trunc OptVectorLength BitWidth v BitWidth
@@ -238,10 +238,10 @@ ppTypedExpr ppConv ppValue tpExpr =
       PtrAdd p o -> text "ptrAdd" <+> ppValue p <> comma <+> ppValue o
       UAddWithOverflow w x y -> text ("@llvm.uadd.with.overflow.i" ++ show w)
         <> parens (ppValue x <> comma <+> ppValue y)
-      IntCmp op mn w x y ->
+      ICmp op mn etp x y ->
          text "icmp" <+> text (show (L.ppICmpOp op)) <+> tp <+> ppValue x <> comma <+> ppValue y
-       where tp  = maybe ppIntType ppIntVector mn w
-
+       where tp  = maybe id ppVectorType mn scalarTp
+             scalarTp = either ppIntType (ppPtrType . ppSymType) etp
       Trunc mn iw v rw    -> ppConv "trunc"    (ppMIntType mn iw) v (ppMIntType mn rw)
       ZExt  mn iw v rw    -> ppConv "zext"     (ppMIntType mn iw) v (ppMIntType mn rw)
       SExt  mn iw v rw    -> ppConv "sext"     (ppMIntType mn iw) v (ppMIntType mn rw)

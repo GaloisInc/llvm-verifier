@@ -93,8 +93,15 @@ module Verifier.LLVM.Simulator.Internals
   , voidOverride
   , override
   , registerOverride
+  , tryFindFunDecl
   , tryRegisterOverride
+    -- Override entry.
   , OverrideEntry
+  , StdOvdEntry
+  , voidOverrideEntry
+  , overrideEntry
+  , varArgsOverrideEntry
+  , registerOverrideEntry
   , registerOverrides
 
   , ErrorPath(EP, epRsn, epPath)
@@ -114,6 +121,7 @@ module Verifier.LLVM.Simulator.Internals
   , loadString
   , resolveFunPtrTerm
   , store
+  , memset
   , dumpMem
 
   , ppStackTrace
@@ -583,6 +591,7 @@ override :: Functor m
          -> Override sbe m
 override f = Override (\_ _ a -> Just <$> f a)
 
+
 --------------------------------------------------------------------------------
 -- Breakpoints
 
@@ -925,6 +934,23 @@ store tp val dst a = do
   let fr = memFailRsn sbe "Invalid store address: " [dst]
   processMemCond fr c
 
+memset :: (Functor sbe, Functor m, MonadIO m)
+       => String -- ^ Name of function for error purposes. 
+       -> SBETerm sbe -- ^ Destination
+       -> SBETerm sbe -- ^ Value (must be an i8)
+       -> BitWidth    -- ^ Width of length
+       -> SBETerm sbe -- ^ Length
+       -> Simulator sbe m ()
+memset nm dst0 val lw len = do
+  sbe <- gets symBE
+  case asUnsignedInteger sbe lw len of
+    Nothing -> errorPath $ show nm ++ ": does not support symbolic lengths."
+    Just n0 -> go n0 dst0
+      where go 0 _ = return ()
+            go i dst = do
+              store i8 val dst 0
+              go (i-1) =<< ptrInc dst
+
 dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
 dumpMem v msg =
   whenVerbosity (>=v) $ do
@@ -977,23 +1003,67 @@ registerOverride sym decl handler = do
 
 -- | Registers an override if a function with the given name has the
 -- right type.
+tryFindFunDecl :: MonadIO m
+               => Symbol
+                  -- | Returns override if function matches expection.
+               -> (FunDecl -> Simulator sbe m ())
+               -> Simulator sbe m ()
+tryFindFunDecl nm act = do
+  cb <- gets codebase
+  -- Lookup function
+  case cb^.cbFunctionType nm of
+    Nothing -> return ()
+    Just d -> act d
+
+
+-- | Registers an override if a function with the given name has the
+-- right type.
 tryRegisterOverride :: MonadIO m
                     => Symbol
                        -- | Returns override if function matches expection.
                     -> (FunDecl -> Maybe (Override sbe m))
                     -> Simulator sbe m ()
 tryRegisterOverride nm act = do
-  cb <- gets codebase
-  -- Lookup function
-  case cb^.cbFunctionType nm of
-    Nothing -> return ()
-    Just d ->
-      case act d of -- Try getting override
-        Just ovd -> registerOverride nm d ovd
-        Nothing -> tellUser $ "Warning: " ++ show nm ++ " has an unexpected type."
+  tryFindFunDecl nm $ \d -> do
+    case act d of -- Try getting override
+      Just ovd -> registerOverride nm d ovd
+      Nothing -> tellUser $ "Warning: " ++ show nm ++ " has an unexpected type."
 
 type OverrideEntry sbe m = (Symbol, FunDecl, Override sbe m)
 
+type StdOvdEntry sbe m =
+  ( Functor sbe
+  , Functor m
+  , MonadIO m
+  )
+  => OverrideEntry sbe m
+
+
+voidOverrideEntry :: Functor m
+                  => Symbol
+                  -> [MemType]
+                  -> VoidOverrideHandler sbe m
+                  -> OverrideEntry sbe m
+voidOverrideEntry nm tps h = (nm, voidFunDecl tps, voidOverride h)
+
+overrideEntry :: Functor m
+              => Symbol
+              -> MemType
+              -> [MemType]
+              -> ([(MemType, SBETerm sbe)] -> Simulator sbe m (SBETerm sbe))
+              -> OverrideEntry sbe m
+overrideEntry nm rtp tps h = (nm, funDecl rtp tps, override h)
+
+varArgsOverrideEntry :: Functor m
+              => Symbol
+              -> MemType
+              -> [MemType]
+              -> ([(MemType, SBETerm sbe)] -> Simulator sbe m (SBETerm sbe))
+              -> OverrideEntry sbe m
+varArgsOverrideEntry nm rtp tps h = (nm, varArgsFunDecl rtp tps, override h)
+
+registerOverrideEntry :: Monad m => OverrideEntry sbe m -> Simulator sbe m ()
+registerOverrideEntry (sym, fd, handler) = registerOverride sym fd handler
+
 registerOverrides :: Monad m => [OverrideEntry sbe m] -> Simulator sbe m ()
-registerOverrides = mapM_ fn
-  where fn (sym, fd, handler) = registerOverride sym fd handler
+registerOverrides = mapM_ registerOverrideEntry

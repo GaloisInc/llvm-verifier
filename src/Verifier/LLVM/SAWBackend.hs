@@ -29,6 +29,7 @@ import qualified Data.Set as Set
 import Data.String (fromString)
 import qualified Data.Vector as V
 import qualified Data.Vector.Storable as LV
+import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.SAW as SAW
 import Verifier.SAW.BitBlast
@@ -46,6 +47,8 @@ import Verifier.LLVM.Backend as LLVM
 import qualified Verifier.LLVM.MemModel as MM
 
 import Verinf.Symbolic.Lit
+
+--import Debug.Trace
 
 #if !MIN_VERSION_base(4,6,0)
 -- | Strict version of modifyIORef
@@ -530,8 +533,8 @@ createStructValue sc flds = do
         entry <- scTuple sc [mtp,padding] 
         (n+1,reval',) <$> consVecFn fieldType entry nt rvtp
   -- Get initial value and type.
-  empty <- scApplyLLVMEmptyStruct sc
-  let eval0 = ExprEvalFn $ \_ -> return empty
+  emptyStruct <- scApplyLLVMEmptyStruct sc
+  let eval0 = ExprEvalFn $ \_ -> return emptyStruct
   emptyFn <- scApplyPreludeEmptyVec sc
   tp0 <- emptyFn fieldType
   view _2 <$> foldrMOf folded foldFn (0, eval0, tp0) flds
@@ -584,8 +587,9 @@ convertMemType dl tp0 =
 -- | Apply an operation to leaves of a mux.
 applyMuxToLeaves :: (Applicative m, Monad m, Termlike t)
                  => (t -> a -> a -> m a) -- ^ Mux operation on result
-                 -> (t -> m a) -- ^ Action on atoms.   
-                 -> t -> m a
+                 -> (t -> m a) -- ^ Action on leaves.   
+                 -> t -- ^ Term to act on
+                 -> m a
 applyMuxToLeaves mux action = go
   where go t =
           case R.asMux t of
@@ -604,6 +608,9 @@ smLoad sbs m tp0 ptr0 _a0 =
     Just tp -> applyMuxToLeaves mux action ptr0
       where mux c = MM.tgMuxPair (smGenerator sbs) c tp
             action ptr = MM.readMem (smGenerator sbs) ptr tp (m^.memState)
+--            action ptr = trace (show msg) $ MM.readMem (smGenerator sbs) ptr tp (m^.memState)
+--              where msg = text "Loading" <+> scPrettyTermDoc ptr <$$>
+--                      MM.ppMem scTermMemPrettyPrinter (m^.memState)
     Nothing -> fail "smLoad must be given types that are even byte size."
 
 smStore :: SAWBackendState s l
@@ -834,7 +841,9 @@ typedExprEvalFn sbs expr0 = do
               <*> scBitwidth sc w
               <*> scNat sc (toInteger p0)
               <*> scNat sc (toInteger p1)
-    IntCmp op mn w x y -> do
+    ICmp op mn stp x y -> do
+        -- Get scalar type bitwidth.
+        let w = either id (const (ptrBitwidth dl)) stp
         case mn of
           Nothing -> do
             let defOp mkFn w' = fmap (evalBin x y) $ join $ mkFn sc <*> scBitwidth sc w'
@@ -976,6 +985,14 @@ runStateFromRef r a = do
 getWarnings :: (Applicative m, MonadState s m) => Simple Lens s [w] -> m [w]
 getWarnings l = use l <* assign l []
 
+scTermMemPrettyPrinter :: MM.MemPrettyPrinter (SharedTerm s) (SharedTerm s) (SharedTerm s)
+scTermMemPrettyPrinter = pp
+  where ppt _ = scPrettyTermDoc 
+        pp = MM.PP { MM.ppPtr = ppt
+                   , MM.ppCond = ppt
+                   , MM.ppTerm = ppt
+                   }
+
 -- | Create a SAW backend.
 createSAWBackend :: (Eq l, Storable l)
                  => BitEngine l
@@ -1086,12 +1103,7 @@ createSAWBackend be dl _mg = do
                 , asUnsignedInteger = asUnsignedBitvector
                 , asConcretePtr     = asUnsignedBitvector (ptrBitwidth dl)
                 , memDump      = \m _ -> SAWBackend $ do
-                    let ppt _ = scPrettyTermDoc 
-                        pp = MM.PP { MM.ppPtr = ppt
-                                   , MM.ppCond = ppt
-                                   , MM.ppTerm = ppt
-                                   }
-                    print $ MM.ppMem pp (m^.memState)
+                    print $ MM.ppMem scTermMemPrettyPrinter (m^.memState)
                 , memLoad      = lift4 (smLoad sbs)
                 , memStore     = lift5 (smStore sbs)
                 , memCopy      = lift6 (smCopy sbs)

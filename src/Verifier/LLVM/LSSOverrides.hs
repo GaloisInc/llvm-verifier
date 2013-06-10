@@ -74,29 +74,6 @@ checkAigFile filename = do
     Left (e :: CE.SomeException) -> errorPath $ "checkAigFile: " ++ show e
     Right h                       -> liftIO $ hClose h
 
-
-overrideEntry :: Functor m
-              => Symbol
-              -> MemType
-              -> [MemType]
-              -> ([(MemType, SBETerm sbe)] -> Simulator sbe m (SBETerm sbe))
-              -> OverrideEntry sbe m
-overrideEntry nm rtp tps h = (nm, funDecl rtp tps, override h)
-
-voidOverrideEntry :: Functor m
-                  => Symbol
-                  -> [MemType]
-                  -> VoidOverrideHandler sbe m
-                  -> OverrideEntry sbe m
-voidOverrideEntry nm tps h = (nm, voidFunDecl tps, voidOverride h)
-
-type StdOvdEntry sbe m =
-  ( Functor sbe
-  , Functor m
-  , MonadIO m
-  )
-  => OverrideEntry sbe m
-
 lss_override_function_by_name :: StdOvdEntry sbe m
 lss_override_function_by_name = do
   let nm = "lss_override_function_by_name"
