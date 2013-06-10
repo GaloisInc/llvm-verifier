@@ -22,7 +22,7 @@ echo Staging ...
 cp RELEASE_README                              ${TARGET}/README
 cp ABC_LICENSE                                 ${TARGET}
 cp doc/lss-usage.txt                           ${TARGET}/doc
-cp doc/lss-tutorial/out/lss-tutorial.pdf       ${TARGET}/tutorial
+cp doc/lss-tutorial/lss-tutorial.pdf           ${TARGET}/tutorial
 cp -r doc/lss-tutorial/code                    ${TARGET}/tutorial/code
 cp dist/build/lss/lss                          ${TARGET}/bin
 cp -r test-programs/libgcrypt                  ${TARGET}/test-programs
