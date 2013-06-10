@@ -1,12 +1,8 @@
 set -e
-# Jenkins should have "cd LLVM && bash jenkins.sh"
-PATH="$HOME/.cabal/bin:$(eval 'echo $'"$HASKELL_RUNTIME"):$TOOLS:$JDK16:$PATH"
 
-cabal update
-#cabal install cabal-dev
-#cabal install alex
-#cabal install happy
-#cabal install c2hs
+cabal-dev install alex
+cabal-dev install happy
+cabal-dev install c2hs
 
 cabal --version
 cabal-dev --version
