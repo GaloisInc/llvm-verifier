@@ -140,6 +140,7 @@ import Control.Monad.Trans.State.Strict (StateT)
 import qualified Data.Map  as M
 import Data.Maybe
 import qualified Data.Set  as S
+import qualified Data.Vector as V
 
 import System.Console.Haskeline.MonadException (MonadException)
 
@@ -650,16 +651,16 @@ ppMergeInfo (PostdomInfo n b) =
 ppBranchAction :: SBE sbe -> BranchAction sbe -> Doc
 ppBranchAction sbe (BARunFalse c p) = 
   text "runFalse" <+> prettyPredD sbe c <$$>
-  nest 2 (ppPath sbe p)
+  indent 2 (ppPath sbe p)
 ppBranchAction sbe (BAFalseComplete a c p) =
   text "falseComplete" <+> prettyPredD sbe c <$$>
-  nest 2 (text "assumptions:" <+> prettyPredD sbe a) <$$>
-  nest 2 (ppPath sbe p)
+  indent 2 (text "assumptions:" <+> prettyPredD sbe a) <$$>
+  indent 2 (ppPath sbe p)
 
 ppPathHandler :: SBE sbe -> PathHandler sbe -> Doc
 ppPathHandler sbe (BranchHandler info act h) = 
   text "on" <+> ppMergeInfo info <+> text "do" <$$>
-  nest 2 (ppBranchAction sbe act) <$$>
+  indent 2 (ppBranchAction sbe act) <$$>
   ppPathHandler sbe h
 ppPathHandler _ StopHandler = text "stop"
 
@@ -673,7 +674,7 @@ ppPath sbe p =
                  <> maybe (text "none") ppSymBlockID (pathCB p)
                )
   <>  colon
-  <$$> nest 2 (text "Locals:" <$$> nest 2 (ppRegMap sbe (p^.pathRegs)))
+  <$$> indent 2 (text "Locals:" <$$> indent 2 (ppRegMap sbe (p^.pathRegs)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
 
 -- Prints just the path's location and path constraints
@@ -945,11 +946,10 @@ memset nm dst0 val lw len = do
   sbe <- gets symBE
   case asUnsignedInteger sbe lw len of
     Nothing -> errorPath $ show nm ++ ": does not support symbolic lengths."
-    Just n0 -> go n0 dst0
-      where go 0 _ = return ()
-            go i dst = do
-              store i8 val dst 0
-              go (i-1) =<< ptrInc dst
+    Just n0 -> do
+      let n = fromIntegral n0
+      a <- liftSBE $ termArray sbe i8 (V.replicate n val)
+      store (ArrayType n i8) a dst0 0
 
 dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
 dumpMem v msg =

@@ -18,6 +18,7 @@ import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map                  as Map
 import Data.String
+import qualified Data.Vector as V
 import System.IO
 import Text.PrettyPrint.Leijen (nest)
 
@@ -211,7 +212,7 @@ lss_fresh_array_uint n = do
             let sz = fromIntegral size
                 ty = ArrayType (fromIntegral size) itp
             arrPtr <- alloca itp 32 sizeTm 0
-            elts <- replicateM sz (withSBE $ flip freshInt n)
+            elts <- V.replicateM sz (withSBE $ flip freshInt n)
             arrTm <- liftSBE $ termArray sbe itp elts
             arrPtr <$ store ty arrTm arrPtr 0
           Nothing -> errorPath "lss_fresh_array_uint called with symbolic size"

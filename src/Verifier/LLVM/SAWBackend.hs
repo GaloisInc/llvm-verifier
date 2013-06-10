@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DoAndIfThenElse #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -20,16 +21,17 @@ import Control.Lens hiding (op, iact)
 import Control.Monad
 import Control.Monad.Maybe
 import Control.Monad.State
-import Data.Bits (setBit)
+import Data.Bits (setBit, shiftL)
 import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.String (fromString)
 import qualified Data.Vector as V
 import qualified Data.Vector.Storable as LV
-import Text.PrettyPrint.Leijen hiding ((<$>))
+--import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.SAW as SAW
 import Verifier.SAW.BitBlast
@@ -47,8 +49,6 @@ import Verifier.LLVM.Backend as LLVM
 import qualified Verifier.LLVM.MemModel as MM
 
 import Verinf.Symbolic.Lit
-
---import Debug.Trace
 
 #if !MIN_VERSION_base(4,6,0)
 -- | Strict version of modifyIORef
@@ -322,8 +322,8 @@ mkBackendState dl be sc = do
               , MM.tgApplyCtorF = \vcf ->
                  case vcf of
                    MM.ConcatBV xw x yw y -> do
-                     xwt <- scNat sc (toInteger xw)
-                     ywt <- scNat sc (toInteger yw)
+                     xwt <- scNat sc $ toInteger xw `shiftL` 3
+                     ywt <- scNat sc $ toInteger yw `shiftL` 3
                      case dl^.intLayout of
                        BigEndian    -> appendInt xwt ywt x y
                        LittleEndian -> appendInt ywt xwt y x         
@@ -610,7 +610,7 @@ smLoad sbs m tp0 ptr0 _a0 =
             action ptr = MM.readMem (smGenerator sbs) ptr tp (m^.memState)
 --            action ptr = trace (show msg) $ MM.readMem (smGenerator sbs) ptr tp (m^.memState)
 --              where msg = text "Loading" <+> scPrettyTermDoc ptr <$$>
---                      MM.ppMem scTermMemPrettyPrinter (m^.memState)
+--                          MM.ppMem scTermMemPrettyPrinter (m^.memState)
     Nothing -> fail "smLoad must be given types that are even byte size."
 
 smStore :: SAWBackendState s l
@@ -624,8 +624,15 @@ smStore sbs m p mtp v _ = do
   case convertMemType (sbsDataLayout sbs) mtp of
     Nothing -> fail "memtype given to smStore must be an even byte size."
     Just tp -> do
-      (c,ms) <- MM.writeMem (smGenerator sbs) p tp v (m^.memState)
-      return (c,m & memState .~ ms)
+      let tg = smGenerator sbs
+          ms = m^.memState
+      if isJust (runMatcher asBvNatLit p) then
+        return (MM.tgFalse tg, m)
+      else do
+        sz <- MM.tgConstPtr tg (MM.typeEnd 0 tp)
+        c  <- MM.isAllocated tg p sz ms
+        ms' <- MM.writeMem' tg p tp v ms
+        return (c,m & memState .~ ms')
 
 -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
 -- both of which must be aligned according to @align@ and must refer to
@@ -927,8 +934,20 @@ getStructElt = Conversion $
                    <:> asAny   -- Struct 
                    <:> asFinValLit -- Index
                   )
-                (\(_ :*: _ :*: s :*: i) -> 
+                (\(_ :*: s :*: i) -> 
                    return <$> structElt s (finVal i))
+
+
+evalAppendInt :: Conversion (SharedTerm s)
+evalAppendInt = Conversion $
+  thenMatcher (asGlobalDef "LLVM.llvmAppendInt"
+                <:> asAnyNatLit
+                <:> asAnyNatLit
+                <:> asBvNatLit
+                <:> asBvNatLit)
+              (\(_ :*: u :*: v :*: x :*: y) ->
+                  let r = (unsigned x `shiftL` fromIntegral v) + unsigned y
+                    in Just (mkBvNat (u + v) r))
 
 scWriteAiger :: (Eq l, Storable l)
              => SAWBackendState s l
@@ -993,6 +1012,21 @@ scTermMemPrettyPrinter = pp
                    , MM.ppTerm = ppt
                    }
 
+
+remove_ident_coerce :: (Eq t, Termlike t) => Conversion t
+remove_ident_coerce = Conversion $ thenMatcher pat action
+  where pat = asGlobalDef "Prelude.coerce" <:> asAny <:> asAny <:> asAny <:> asAny
+        action (() :*: t :*: f :*: _prf :*: x)
+          | t == f = return (return x)
+          | otherwise = fail "Cannot remove coerce."
+
+remove_ident_unsafeCoerce :: (Eq t, Termlike t) => Conversion t
+remove_ident_unsafeCoerce = Conversion $ thenMatcher pat action
+  where pat = asGlobalDef "Prelude.unsafeCoerce" <:> asAny <:> asAny <:> asAny
+        action (() :*: t :*: f :*: x)
+          | t == f = return (return x)
+          | otherwise = fail "Cannot remove unsafeCoerce."
+
 -- | Create a SAW backend.
 createSAWBackend :: (Eq l, Storable l)
                  => BitEngine l
@@ -1038,6 +1072,8 @@ createSAWBackend be dl _mg = do
                 , "LLVM.llvmAppendInt"
                 ]
   let eqs = [ "Prelude.ite_not"
+            , "Prelude.vTake0"
+            , "Prelude.vDrop0"
             , "LLVM.ite_same"
             , "LLVM.ite_false_false"
             , "LLVM.and_true2"
@@ -1053,7 +1089,11 @@ createSAWBackend be dl _mg = do
         natConversions
         ++ bvConversions
         ++ vecConversions
-        ++ [getStructElt]
+        ++ [ remove_ident_coerce
+           , remove_ident_unsafeCoerce]
+        ++ [ getStructElt
+           , evalAppendInt
+           ]
   
 
   simpSet <- scSimpset sc0 activeDefs eqs conversions

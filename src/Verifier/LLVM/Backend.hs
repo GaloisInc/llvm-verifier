@@ -292,10 +292,10 @@ asSignedInteger sbe w t
 termInt  :: SBE m -> BitWidth -> Integer -> m (SBETerm m)
 termInt sbe w v = applyTypedExpr sbe (SValInteger w v)
 
--- | @termArray tp ts@ creates a term representing an array with element terms
--- @ts@ (which must be nonempty).  Each element must have type tp.  
-termArray :: SBE m -> MemType -> [SBETerm m] -> m (SBETerm m)
-termArray sbe tp l = applyTypedExpr sbe (SValArray tp (V.fromList l))
+-- | @termArray sbe tp v@ creates a term representing an array with element terms
+-- @v@.  Each element must have type @tp@. 
+termArray :: SBE m -> MemType -> V.Vector (SBETerm m) -> m (SBETerm m)
+termArray sbe tp v = applyTypedExpr sbe (SValArray tp v)
 
 termAdd :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
 termAdd sbe w x y = applyTypedExpr sbe (IntArith (Add False False) Nothing w x y)

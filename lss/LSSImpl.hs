@@ -23,16 +23,17 @@ import           Control.Lens
 import           Control.Monad.State
 import           Data.Char
 import           Data.Int
+import qualified Data.Vector as V
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           Verinf.Utils.LogMonad
 import qualified Text.LLVM                       as L
 
-import           Verifier.LLVM.AST
-import           Verifier.LLVM.Backend
-import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Simulator.Debugging
+import Verifier.LLVM.AST
+import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase
+import Verifier.LLVM.Simulator
+import Verifier.LLVM.Simulator.Debugging
 
 {-
 import           Verifier.LLVM.Simulator.Common
@@ -146,7 +147,7 @@ buildArgv [IntType argcw, ptype@PtrType{}] argv'
   argc     <- liftSBE $ termInt sbe argcw (toInteger (length argv'))
   aw <- withDL ptrBitwidth
   one <- liftSBE $ termInt sbe aw 1
-  strPtrs  <- forM argv' $ \str -> do
+  strPtrs  <- V.forM (V.fromList argv') $ \str -> do
      let len = length str + 1
      let tp = ArrayType len (IntType 8)
      let ?sbe = sbe

@@ -11,6 +11,7 @@ module Verifier.LLVM.MemModel
  , arrayType
  , mkStruct
  , typeF
+ , typeEnd
  , Field
  , fieldVal ,fieldPad
 
@@ -27,6 +28,7 @@ module Verifier.LLVM.MemModel
  , allocMem
  , allocAndWriteMem
  , readMem
+ , isAllocated
  , writeMem
  , writeMem'
  , copyMem
@@ -523,14 +525,14 @@ mergeMem c x y =
 ppMemState :: (d -> Doc) -> MemState d -> Doc
 ppMemState f (EmptyMem d) =
   text "Base memory" <$$>
-  nest 2 (f d)
+  indent 2 (f d)
 ppMemState f (StackFrame d ms) =
   text "Stack frame" <$$>
-  nest 2 (f d) <$$>
+  indent 2 (f d) <$$>
   ppMemState f ms
 ppMemState f (BranchFrame d ms) =
   text "Branch frame" <$$>
-  nest 2 (f d) <$$>
+  indent 2 (f d) <$$>
   ppMemState f ms
 
 data MemPrettyPrinter p c t = 
@@ -556,13 +558,13 @@ ppMerge :: MemPrettyPrinter p c t
         -> [v]
         -> [v]
         -> Doc
-ppMerge pp vpp c x y = nest 2 $
+ppMerge pp vpp c x y = indent 2 $
   text "Condition:" <$$>
-  nest 2 (ppCond pp 0 c) <$$>
+  indent 2 (ppCond pp 0 c) <$$>
   text "True Branch:"  <$$>
-  nest 2 (vcat $ vpp <$> x) <$$>
+  indent 2 (vcat $ vpp <$> x) <$$>
   text "False Branch:" <$$>
-  nest 2 (vcat $ vpp <$> y)
+  indent 2 (vcat $ vpp <$> y)
 
 ppAlloc :: MemPrettyPrinter p c t -> MemAlloc p c -> Doc
 ppAlloc pp (Alloc atp base sz) =
@@ -582,9 +584,9 @@ ppWrite pp (WriteMerge c x y) =
 ppMemChanges :: MemPrettyPrinter p c t -> MemChanges p c t -> Doc
 ppMemChanges pp (al,wl) =
   text "Allocations:" <$$>
-  nest 2 (vcat (ppAlloc pp <$> al)) <$$>
+  indent 2 (vcat (ppAlloc pp <$> al)) <$$>
   text "Writes:" <$$>
-  nest 2 (vcat (ppWrite pp <$> wl))
+  indent 2 (vcat (ppWrite pp <$> wl))
 
 ppMem :: MemPrettyPrinter p c t -> Mem p c t -> Doc
 ppMem pp m = ppMemState (ppMemChanges pp) (m^.memState)
