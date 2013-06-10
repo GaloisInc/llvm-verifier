@@ -15,6 +15,7 @@ module Tests.AES (aesTests) where
 import           Control.Applicative
 import           Control.Monad (forM)
 import           Control.Monad.State (gets)
+import qualified Data.Vector as V
 import           Test.QuickCheck
 import           Tests.Common
 import qualified Text.LLVM               as L
@@ -58,7 +59,7 @@ aes128ConcreteImpl = do
     initArr xs = do
        sbe <- gets symBE
        arrElts <- mapM (liftSBE . termInt sbe 32) xs
-       arr <- liftSBE $ termArray sbe i32 arrElts
+       arr <- liftSBE $ termArray sbe i32 (V.fromList arrElts)
        let aw = 8
        one <- liftSBE $ termInt sbe aw 1
        p   <- alloca arrayTy aw one 2
