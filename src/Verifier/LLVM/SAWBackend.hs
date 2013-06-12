@@ -718,16 +718,6 @@ scFieldInfo :: SharedContext s
 scFieldInfo sc ftp flds = scVecLit sc ftp =<< traverse go flds
   where go (tp,p) = scNat sc p >>= \pt -> scTuple sc [tp,pt]
 
-
-scFinConst :: SharedContext s
-           -> Integer -- ^ Index
-           -> Integer -- ^ Bound n
-           -> IO (SharedTerm s)
-scFinConst sc i n | i < n = do
-  fv <- scApplyPreludeFinVal sc
-  join $ fv <$> scNat sc i <*> scNat sc (n - (i + 1))
-scFinConst _ _ _ = error "illegal arguments to scFinConst"
-
 scIntType :: SharedContext s -> BitWidth -> IO (SharedTerm s)
 scIntType sc w = join $ scApplyLLVMIntType sc <*> scBitwidth sc w
 
