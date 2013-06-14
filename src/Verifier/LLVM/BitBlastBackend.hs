@@ -1750,6 +1750,7 @@ liftBinIntRel :: (LV.Storable l)
               => (LV.Vector l -> LV.Vector l -> IO l)
               -> BitTerm l -> BitTerm l -> IO (BitTerm l)
 liftBinIntRel f (IntTerm x) (IntTerm y) = IntTerm . LV.singleton <$> f x y
+liftBinIntRel f (PtrTerm x) (PtrTerm y) = IntTerm . LV.singleton <$> f x y
 liftBinIntRel _ _ _ = error "Illegal arguments to liftBinIntRel"
 
 asInt1 :: (LV.Storable l) => BitTerm l -> l
