@@ -19,7 +19,7 @@ import Control.Applicative hiding (empty)
 import Control.Exception (assert)
 import Control.Lens hiding (op, iact)
 import Control.Monad
-import Control.Monad.Maybe
+import Control.Monad.Error
 import Control.Monad.State
 import Data.Bits (setBit, shiftL)
 import Data.IORef
@@ -946,10 +946,10 @@ scWriteAiger :: (Eq l, Storable l)
              -> IO ()
 scWriteAiger sbs path terms = do
   let bc = sbsBCache sbs
-  mbits <- runMaybeT $ mapM (MaybeT . bitBlastWith bc . snd) terms
+  mbits <- runErrorT $ mapM (ErrorT . bitBlastWith bc . snd) terms
   case mbits of
-    Nothing -> fail "Could not write Aig as term could not be bitblasted."
-    Just bits -> do
+    Left msg -> fail $ "Could not write Aig as term could not be bitblasted: " ++ msg
+    Right bits -> do
       inputValues <- fmap (view _3) <$> readIORef (sbsVars sbs)
       let inputs  = LV.concat $ flattenBValue <$> inputValues
       let outputs = LV.concat $ flattenBValue <$> bits
@@ -1122,7 +1122,7 @@ createSAWBackend be dl _mg = do
                     vtp <- valueFn =<< intTypeFn =<< scBitwidth sc w
                     i <- scFreshGlobalVar sc
                     t <- scFlatTermF sc (ExtCns (EC i "_" vtp))
-                    Just lits <- bitBlastWith (sbsBCache sbs) t
+                    Right lits <- bitBlastWith (sbsBCache sbs) t
                     modifyIORef' (sbsVars sbs) ((w,i,lits):)                    
                     return t
                 , typedExprEval = typedExprEvalFn sbs
