@@ -13,6 +13,7 @@ module Verifier.LLVM.SAWBackend
   ( SAWBackend
   , SAWMemory
   , createSAWBackend
+  , createSAWBackend'
   ) where
 
 import Control.Applicative hiding (empty)
@@ -1023,7 +1024,16 @@ createSAWBackend :: (Eq l, Storable l)
                  -> DataLayout
                  -> MemGeom
                  -> IO (SBE (SAWBackend s l), SAWMemory s)
-createSAWBackend be dl _mg = do
+createSAWBackend be dl mg = do
+  (sbe, mem, _) <- createSAWBackend' be dl mg
+  return (sbe, mem)
+
+createSAWBackend' :: (Eq l, Storable l)
+                 => BitEngine l
+                 -> DataLayout
+                 -> MemGeom
+                 -> IO (SBE (SAWBackend s l), SAWMemory s, SharedContext s)
+createSAWBackend' be dl _mg = do
   sc0 <- mkSharedContext llvmModule
   let activeDefs = filter defPred $ allModuleDefs llvmModule
         where defPred d = defIdent d `Set.notMember` excludedDefs
@@ -1197,7 +1207,7 @@ createSAWBackend be dl _mg = do
                 , evalAiger  = \inputs _ t -> SAWBackend $ scEvalTerm sbs inputs t
                 , sbeRunIO   = runSAWBackend
                 }
-  return (sbe, emptySAWMemory)
+  return (sbe, emptySAWMemory, sc0)
 
 _unused :: a
 _unused = undefined
