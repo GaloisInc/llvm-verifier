@@ -59,9 +59,11 @@ module Verifier.LLVM.Simulator.Internals
   , setReturnValue
   , ppRegMap
 
+  , PathPC
+  , incPathPC
   , Path
   , pathFuncSym
-  , pathCB
+  , pathPC
   , pathName
   , pathRegs
   , pathMem
@@ -188,13 +190,13 @@ data State sbe m = State
   , _ctrlStk     :: !(Maybe (CS sbe))  -- ^ Control stack for controlling simulator.
   , _globalTerms :: GlobalMap sbe   -- ^ Global ptr terms
   , _blockPtrs   :: BlockMap sbe
-  , _fnOverrides  :: OvrMap sbe m    -- ^ Function override table
+  , _fnOverrides :: OvrMap sbe m    -- ^ Function override table
   , verbosity    :: Int             -- ^ Verbosity level
-  , _evHandlers   :: SEH sbe m       -- ^ Simulation event handlers
-  , _errorPaths   :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
+  , _evHandlers  :: SEH sbe m       -- ^ Simulation event handlers
+  , _errorPaths  :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
   , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
-  , _pathCounter  :: Integer         -- ^ Name supply for paths
-  , _aigOutputs   :: [(MemType,SBETerm sbe)]   -- ^ Current list of AIG outputs, discharged
+  , _pathCounter :: Integer         -- ^ Name supply for paths
+  , _aigOutputs  :: [(MemType,SBETerm sbe)]   -- ^ Current list of AIG outputs, discharged
                                      -- via lss_write_aiger() sym api calls
   , _breakpoints :: M.Map Symbol (S.Set Breakpoint)
   , _trBreakpoints :: S.Set TransientBreakpoint
@@ -273,6 +275,8 @@ data ActiveCS sbe = ACS (Path sbe) (PathHandler sbe)
 activePath :: Simple Lens (ActiveCS sbe) (Path sbe)
 activePath f (ACS p h) = flip ACS h <$> f p
 
+-- | A control stack consists of a collection of execution paths
+-- that will eventually be merged.
 data CS sbe
   = FinishedCS (Path sbe)
   | ActiveCS (ActiveCS sbe)
@@ -292,7 +296,7 @@ currentPathMem = currentPathOfState . pathMem
 initialCtrlStk :: SBE sbe -> SBEMemory sbe -> CS sbe
 initialCtrlStk sbe mem = FinishedCS p
   where p = Path { pathFuncSym = entrySymbol
-                 , pathCB = Nothing
+                 , _pathPC = Nothing
                  , pathName = 0
                  , _pathRegs = M.empty
                  , _pathMem = mem
@@ -322,19 +326,18 @@ pushCallFrame sbe calleeSym returnBlock retReg cs =
       ActiveCS (ACS p h) -> ACS (newPath p) h
   where newPath p = p'
           where cf = CallFrame { cfFuncSym = pathFuncSym p
-                               , cfReturnBlock = Just returnBlock
+                               , cfReturnBlock = Just (returnBlock,0)
                                , cfRegs = p^.pathRegs
                                , cfRetReg = retReg
                                , cfAssertions = p^.pathAssertions
                                }
                 p' = p { pathFuncSym = calleeSym
-                       , pathCB = Just initSymBlockID
                        , pathName = pathName p
                        , _pathRegs = M.empty
                        , _pathAssertions = sbeTruePred sbe
                        , pathStackHt = pathStackHt p + 1
                        , pathStack   = cf : pathStack p
-                       }
+                       } & pathPC .~ Just (initSymBlockID,0)
 
 -- | Add a control branch
 addCtrlBranch :: SBE sbe
@@ -349,9 +352,9 @@ addCtrlBranch sbe c nb nm ml (ACS p h) = do
   where fn mem = ACS pf $ BranchHandler info (BARunFalse c pt) h
           where pf = p & pathMem .~ mem
                        & pathAssertions .~ sbeTruePred sbe
-                pt = p { pathCB = Just nb
-                       , pathName = nm 
-                       } & pathMem .~ mem
+                pt = p { pathName = nm 
+                       } & pathPC .~ Just (nb,0)
+                         & pathMem .~ mem
         info = case ml of
                  Just b -> PostdomInfo (pathStackHt p) b
                  Nothing -> ReturnInfo (pathStackHt p - 1) (snd <$> cfRetReg cf)
@@ -362,7 +365,7 @@ postdomMerge :: SBE sbe
              -> PathHandler sbe
              -> IO (ActiveCS sbe)
 postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
-   | n == pathStackHt p && Just b == pathCB p =
+   | pathStackHt p == n && p^.pathPC == Just (b,0) =
   case act of
     BARunFalse c tp -> do
       let tp' = tp & pathAssertions .~ sbeTruePred sbe
@@ -381,7 +384,7 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
       mergedAssertions <- sbeRunIO sbe $
         applyPredIte sbe c (p^.pathAssertions) (pf^.pathAssertions)
       a' <- sbeRunIO sbe $ applyAnd sbe a mergedAssertions
-      assert (pathFuncSym p == pathFuncSym pf && pathCB p == pathCB pf) $ do
+      assert (pathFuncSym p == pathFuncSym pf && p^.pathPC == pf^.pathPC) $ do
       let p' = p & pathRegs .~ mergedRegs
                  & pathMem  .~ mergedMemory
                  & pathAssertions .~ a'
@@ -391,7 +394,8 @@ postdomMerge _ p h = return (ACS p h)
 
 -- | Move current path to target block.
 jumpCurrentPath :: SBE sbe -> SymBlockID -> ActiveCS sbe -> IO (ActiveCS sbe)
-jumpCurrentPath sbe b (ACS p h) = postdomMerge sbe p { pathCB = Just b } h
+jumpCurrentPath sbe b (ACS p h) = postdomMerge sbe p' h
+  where p' = p & pathPC .~ Just (b,0)
 
 -- | Handle merge of paths.
 -- The first element of the return pair contains a mesage if error(s) occured
@@ -432,12 +436,15 @@ returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackH
 returnMerge _ p h = return ([], ActiveCS (ACS p h))
 
 -- | Return from current path
-returnCurrentPath :: SBE sbe -> Maybe (SBETerm sbe) -> ActiveCS sbe -> IO (CS sbe)
+returnCurrentPath :: SBE sbe
+                  -> Maybe (SBETerm sbe)
+                  -> ActiveCS sbe
+                  -> IO (CS sbe)
 returnCurrentPath sbe rt (ACS p h) = do
   let cf : cfs = pathStack p
   m <- sbeRunIO sbe $ stackPopFrame sbe (p^.pathMem)
   let p' = Path { pathFuncSym = cfFuncSym cf
-                , pathCB   = cfReturnBlock cf
+                , _pathPC   = cfReturnBlock cf
                 , pathName = pathName p
                 , _pathRegs = setReturnValue "returnCurrentpath" (cfRetReg cf) rt (cfRegs cf)
                 , _pathMem  = m
@@ -491,9 +498,14 @@ setReturnValue nm Nothing   (Just _) _  =
 setReturnValue nm (Just (_,tr)) Nothing   _  =
   error $ nm ++ ": Missing return value for "  ++ show (ppIdent tr)
 
+type PathPC = Maybe (SymBlockID, Int)
+
+incPathPC :: PathPC -> PathPC
+incPathPC = over (_Just . _2) (+1) 
+
 -- | A Call frame for returning.
 data CallFrame sbe = CallFrame { cfFuncSym :: Symbol
-                               , cfReturnBlock :: Maybe SymBlockID
+                               , cfReturnBlock :: PathPC
                                , cfRegs :: RegMap (SBETerm sbe)
                                , cfRetReg :: Maybe (MemType, Ident)
                                , cfAssertions :: SBEPred sbe
@@ -503,8 +515,8 @@ data CallFrame sbe = CallFrame { cfFuncSym :: Symbol
 -- specified by the recorded path constraints)
 data Path sbe = Path
   { pathFuncSym      :: !Symbol
-  , pathCB           :: !(Maybe SymBlockID) -- ^ The currently-executing basic
-                                         -- block along this path, if any.
+    -- | The current PC location of path if any.
+  , _pathPC           :: !PathPC
   , pathName         :: !(Integer)       -- ^ A unique name for this path
   , _pathRegs        :: !(RegMap (SBETerm sbe))
   , _pathMem          :: SBEMemory sbe    -- ^ The memory model along this path
@@ -512,6 +524,9 @@ data Path sbe = Path
   , pathStackHt      :: !Int             -- ^ Number of call frames count.
   , pathStack        :: [CallFrame sbe] -- ^ Return registers for current calls.
   }
+
+pathPC :: Simple Lens (Path sbe) PathPC
+pathPC = lens _pathPC (\p r -> p { _pathPC = r })
 
 pathRegs :: Simple Lens (Path sbe) (RegMap (SBETerm sbe))
 pathRegs = lens _pathRegs (\p r -> p { _pathRegs = r })
@@ -664,28 +679,24 @@ ppPathHandler sbe (BranchHandler info act h) =
   ppPathHandler sbe h
 ppPathHandler _ StopHandler = text "stop"
 
+ppPathPC :: PathPC -> Doc
+ppPathPC Nothing = text "none"
+ppPathPC (Just (bid,i)) = ppSymBlockID bid <> colon <> int i
 
 ppPath :: SBE sbe -> Path sbe -> Doc
 ppPath sbe p =
-  text "Path #"
-  <>  integer (pathName p)
-  <>  brackets ( text (show $ ppSymbol $ pathFuncSym p)
-                 <> char '/'
-                 <> maybe (text "none") ppSymBlockID (pathCB p)
-               )
+  ppPathInfo p
   <>  colon
   <$$> indent 2 (text "Locals:" <$$> indent 2 (ppRegMap sbe (p^.pathRegs)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
 
--- Prints just the path's location and path constraints
-ppPathLoc :: SBE sbe -> Path sbe -> Doc
-ppPathLoc _ p =
-  text "Path #"
-  <>  integer (pathName p)
-  <>  brackets ( text (show $ ppSymbol $ pathFuncSym p)
-                 <> char '/'
-                 <> maybe (text "none") ppSymBlockID (pathCB p)
-               )
+-- | Prints the path location.
+ppPathLoc :: Path sbe -> Doc
+ppPathLoc p = ppSymbol (pathFuncSym p) <> char '/' <> ppPathPC (p^.pathPC)
+
+-- | Prints just the path's name and info.
+ppPathInfo :: Path sbe -> Doc
+ppPathInfo p = text "Path #" <> integer (pathName p) <>  brackets (ppPathLoc p)
 
 ppStackTrace :: [CallFrame term] -> Doc
 ppStackTrace = braces . vcat . map (ppSymbol . cfFuncSym)
@@ -819,7 +830,7 @@ processMemCond rsn cond = do
         tellUser $ "Warning: Obtained symbolic validity result from memory model."
         tellUser $ "This means that certain memory accesses were valid only on some paths."
         tellUser $ "In this case, the symbolic validity result was encountered at:"
-        tellUser $ show $ ppPathLoc sbe p
+        tellUser $ show $ ppPathLoc p
         tellUser ""
       p' <- liftSBE $ pathAssertions (applyAnd sbe cond) p
       ctrlStk ?= set currentPath p' cs 
@@ -916,8 +927,9 @@ resolveFunPtrTerm ::
   )
   => SBETerm sbe -> Simulator sbe m LookupSymbolResult
 resolveFunPtrTerm fp = do
+  sbe <- gets symBE
   Just m <- preuse currentPathMem
-  withSBE $ \s -> codeLookupSymbol s m fp
+  liftSBE $ codeLookupSymbol sbe m fp
 
 store ::
   ( Functor m

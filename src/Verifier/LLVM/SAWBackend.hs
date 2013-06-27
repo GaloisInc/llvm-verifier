@@ -32,7 +32,6 @@ import qualified Data.Set as Set
 import Data.String (fromString)
 import qualified Data.Vector as V
 import qualified Data.Vector.Storable as LV
---import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.SAW as SAW
 import Verifier.SAW.BitBlast
@@ -124,9 +123,10 @@ scLLVMIntConst sc w v = do
 
 -- | Create a bitvector from a constant.
 scLLVMIntConst' :: SharedContext s
-                  -> (BitWidth, SharedTerm s) -- ^ Result width with corresponding term.
-                  -> Integer -- ^ Value of bitvector.
-                  -> IO (SharedTerm s)
+                -- | Result width with corresponding term.
+                -> (BitWidth, SharedTerm s)
+                -> Integer -- ^ Value of bitvector.
+                -> IO (SharedTerm s)
 scLLVMIntConst' sc (w,wt) v = do
   cfn <- scApplyLLVMLlvmIntConstant sc 
   cfn wt =<< scNat sc (v `mod` 2^(toInteger w))
@@ -451,8 +451,8 @@ smAddDefine dl sc m sym lbls = do
 smLookupSymbol :: SAWMemory s -> SharedTerm s -> LookupSymbolResult
 smLookupSymbol m t = 
   case m^.memSymbols^.at t of
-    Just r -> LookupResult r
-    Nothing -> Indeterminate
+    Just r -> Right r
+    Nothing -> Left Indeterminate
 
 smAlloc :: SAWBackendState s l
         -> MM.AllocType

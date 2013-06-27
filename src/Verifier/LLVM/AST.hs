@@ -330,11 +330,10 @@ data SymStmt t
   -- | @Return@ pops top call frame from path, merges (current path return value)
   -- with call frame, and clears current path.
   | Return (Maybe (SymValue t))
-  -- | @PushPendingExecution tgt c rest@ make the current state a pending execution in the
+  -- | @PushPendingExecution tgt c mergeLoc@ make the current state a pending execution in the
   -- top-most merge frame with the additional path constraint c, and current block @tgt@.
-  -- The final arguments contains the statements to execute with the other path (which 
-  -- may assume the negation of the path condition @c@. 
-  | PushPendingExecution SymBlockID (SymCond t) MergeLocation [SymStmt t]
+  -- @mergeLoc@ indicates where the two execution paths should merge.
+  | PushPendingExecution SymBlockID (SymCond t) MergeLocation
   -- | Sets the block to the given location.
   | SetCurrentBlock SymBlockID
   -- | Assign result of instruction to register.
@@ -353,9 +352,8 @@ ppStmt (PushCallFrame fn args res retTgt)
   <+> maybe (text "void") (\(tp,v) -> ppMemType tp <+> ppIdent v) res
   <+> text "returns to" <+> ppSymBlockID retTgt
 ppStmt (Return mv) = text "return" <+> maybe empty ppSymValue mv
-ppStmt (PushPendingExecution b c ml rest) =
+ppStmt (PushPendingExecution b c ml) =
     text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
-      <$$> vcat (fmap ppStmt rest)
   where loc = maybe (text "return") ppSymBlockID ml
 ppStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
 ppStmt (Assign v _ e) = ppIdent v <+> char '=' <+> ppSymExpr e
@@ -367,11 +365,11 @@ ppStmt (BadSymStmt s) = text (show (L.ppStmt s))
 
 data SymBlock t = SymBlock {
          sbId :: SymBlockID -- ^ Identifier for block (unique within definition).
-       , sbStmts :: [SymStmt t]
+       , sbStmts :: Vector (SymStmt t)
        }
 
 ppSymBlock :: SymBlock t -> Doc
-ppSymBlock sb = ppSymBlockID (sbId sb) <$$> indent 2 (vcat (ppStmt <$> sbStmts sb))
+ppSymBlock sb = ppSymBlockID (sbId sb) <$$> indent 2 (vcat (V.toList (ppStmt <$> sbStmts sb)))
 
 -- | Symbolically lifted version of a LLVM definition.
 data SymDefine t = SymDefine {

@@ -152,7 +152,7 @@ buildArgv [IntType argcw, ptype@PtrType{}] argv'
      let tp = ArrayType len (IntType 8)
      let ?sbe = sbe
      sv <- liftIO $ liftStringValue (str ++ [chr 0])
-     v <- evalExpr "buildArgv" sv
+     v <- evalExprInCC "buildArgv" sv
      p <- alloca tp aw one 0
      store tp v p 0
      return p

@@ -803,11 +803,11 @@ bmLookupSymbol :: (Eq l, LV.Storable l)
                -> LookupSymbolResult
 bmLookupSymbol be m (PtrTerm a) = do
   case beVectorToMaybeInt be a of
-    Nothing -> Indeterminate
+    Nothing -> Left Indeterminate
     Just (w, v) ->
       case loadDef (bmStorage m) w v of
-        Nothing -> Invalid
-        Just d -> LookupResult d
+        Nothing -> Left Invalid
+        Just d -> Right d
 bmLookupSymbol _ _ _ = illegalArgs "bmLookupSymbol"
 
 bmStackAlloc :: (Eq l, LV.Storable l)
@@ -1251,11 +1251,11 @@ dmLookupSymbol :: (?be :: BitEngine l, Eq l, LV.Storable l)
                -> LookupSymbolResult
 dmLookupSymbol mem (PtrTerm a) = do
   case lGetUnsigned a of
-    Nothing -> Indeterminate
+    Nothing -> Left Indeterminate
     Just v ->
       case Map.lookup v (dmDefineMap mem) of
-        Nothing -> Invalid
-        Just d -> LookupResult d
+        Nothing -> Left Invalid
+        Just d -> Right d
 dmLookupSymbol _ _ = illegalArgs "dmLookupSymbol"
 
 dmAllocSpace :: (?be :: BitEngine l, Ord l, LV.Storable l)

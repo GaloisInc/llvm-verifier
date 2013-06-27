@@ -48,6 +48,9 @@ module Verifier.LLVM.Simulator
   , getProgramReturnValue
   , getProgramFinalMem
   , evalExpr
+  , evalExprInCC
+  , Evaluator
+  , runEvaluator
   , runSimulator
   , liftSBE
   , withSBE
@@ -75,11 +78,13 @@ import           Control.Applicative
 import           Control.Lens hiding (act,from)
 import           Control.Monad.Error
 import           Control.Monad.State.Class
+import           Control.Monad.Reader
 import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)
-import qualified Data.Map                  as M
+import qualified Data.Map as M
 import           Data.Maybe
-import qualified Data.Set                  as S
+import qualified Data.Set as S
+import qualified Data.Vector as V
 import           System.Exit
 import           System.IO
 import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
@@ -183,19 +188,22 @@ initGlobals = do
        let idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody d)
        insertGlobalFn (sdName d) idl
   -- Add symbol for declarations.
-  do declares <- cbUndefinedFns . codebase <$> get
+  do declares <- gets (cbUndefinedFns . codebase)
      forM_ declares $ \(sym,_) -> do
        insertGlobalFn sym []
   -- Initialize global data
   do let globals = [ g | (_,Left g) <- M.toList nms]
      forM_ globals $ \g -> do
-       cb1 onMkGlobTerm g
-       cdata <- evalExpr "addGlobal" (globalValue g)
-       cb2 onPreGlobInit g cdata
+       -- Run onMkGlobTerm event handler
+       join $ use (evHandlers . to onMkGlobTerm) ?? g
+       cdata <- evalExprInCC "addGlobal" (globalValue g)
+       -- Run onPreGlobInit event handler.
+       join $ use (evHandlers . to onPreGlobInit) ?? g ?? cdata
        let noDataSpc = "Not enough space in data segment to allocate new global."
-       insertGlobalTerm noDataSpc (globalSym g) (MemType (globalType g)) $ \s m ->
-              memInitGlobal s m (globalType g) cdata
-       cb2 onPostGlobInit g cdata
+       insertGlobalTerm noDataSpc (globalSym g) (MemType (globalType g)) $
+          \s m -> memInitGlobal s m (globalType g) cdata
+       -- Run onPostGlobInit event handler.
+       join $ use (evHandlers . to onPostGlobInit) ?? g ?? cdata
 
 callDefine_ ::
   ( MonadIO m
@@ -376,15 +384,15 @@ run = do
     Just (ActiveCS cs) -> do
       flip catchError handleError $ do
         let p = cs^.activePath
-        let Just pcb = pathCB p
-        sbe <- gets symBE
-        when (pathAssertedFalse sbe p) $
-          errorPath $ "This path is infeasible"
-        let sym = pathFuncSym p
-        Just def <- lookupDefine sym <$> gets codebase
+        let Just (pcb,pc) = p^.pathPC
+        Just def <- lookupDefine (pathFuncSym p) <$> gets codebase
         let sb = lookupSymBlock def pcb
-        use (evHandlers.onBlockEntry) >>= ($sb)
-        runStmts . sbStmts $ sb
+        when (pc == 0) $ do
+          sbe <- gets symBE
+          when (pathAssertedFalse sbe p) $
+            errorPath $ "This path is infeasible"
+          use (evHandlers.onBlockEntry) >>= ($sb)
+        dbugStep (sbStmts sb V.! pc)          
       run
   where
     handleError (ErrorPathExc _rsn s) = do
@@ -421,7 +429,7 @@ assignReg reg tp v = modifyPathRegs $ at reg ?~ (v,tp)
 evalCond :: (Functor sbe, Functor m, MonadIO m)
          => SymCond (SBETerm sbe) -> Simulator sbe m (SBEPred sbe)
 evalCond (HasConstValue t w i) = do
-  v <- evalExpr "evalCond" t
+  v <- evalExprInCC "evalCond" t
   sbe <- gets symBE
   iv <- liftSBE $ termInt sbe w i
   liftSBE $ applyIEq sbe w v iv
@@ -430,22 +438,25 @@ data EvalContext sbe = EvalContext {
        evalContextName :: String
      , evalGlobals :: GlobalMap sbe
      , evalRegs :: Maybe (RegMap (SBETerm sbe))
+     , evalMemory :: Maybe (SBEMemory sbe)
      }
 
-getCurrentEvalContext :: (Functor m, Monad m) => String -> Simulator sbe m (EvalContext sbe)
+getCurrentEvalContext :: (Functor m, Monad m)
+                      => String
+                      -> Simulator sbe m (EvalContext sbe)
 getCurrentEvalContext nm =do
   gm <- use globalTerms
   mr <- preuse (currentPathOfState . pathRegs)
+  mmem <- preuse currentPathMem
   return EvalContext { evalContextName = nm
                      , evalGlobals = gm
                      , evalRegs = mr
-                     }           
+                     , evalMemory = mmem
+                     }
 
-evalExpr :: (Functor m, MonadIO m, Functor sbe) 
+evalExprInCC :: (Functor m, MonadIO m, Functor sbe) 
          => String -> SymValue (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
-evalExpr nm sv = do
-  ec <- getCurrentEvalContext nm
-  evalExpr' ec sv
+evalExprInCC nm sv = runEvaluator nm $ evalExpr sv
 
 evalExpr' ::
   ( Functor m
@@ -453,14 +464,39 @@ evalExpr' ::
   , Functor sbe
   )
   => EvalContext sbe -> SymValue (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
-evalExpr' ec sv = do
-  mr <- liftIO $ runErrorT $ evalExprImpl ec sv
+evalExpr' ec sv = runEvaluator' ec (evalExpr sv)
+
+type Evaluator sbe = ErrorT FailRsn (ReaderT (EvalContext sbe) IO)
+
+runEvaluator ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => String
+  -> Evaluator sbe a -> Simulator sbe m a
+runEvaluator nm m = do
+  ec <- getCurrentEvalContext nm
+  runEvaluator' ec m
+
+runEvaluator' ::
+  ( Functor m
+  , MonadIO m
+  , Functor sbe
+  )
+  => EvalContext sbe
+  -> Evaluator sbe a
+  -> Simulator sbe m a
+runEvaluator' ec m = do
+  mr <- liftIO $ runReaderT (runErrorT m) ec
   case mr of
     Left (FailRsn fr) -> errorPath fr
     Right v -> return v
 
-evalExprImpl :: EvalContext sbe -> SymValue (SBETerm sbe) -> ErrorT FailRsn IO (SBETerm sbe)
-evalExprImpl ec sv =
+evalExpr :: SymValue (SBETerm sbe)
+         -> Evaluator sbe (SBETerm sbe)
+evalExpr sv = do
+  ec <- ask
   case sv of
     SValIdent i -> 
       case evalRegs ec of
@@ -468,14 +504,16 @@ evalExprImpl ec sv =
           case regs^.at i of
             Just (x,_)  -> return x
             Nothing -> throwError $ FailRsn $
-               "ILLEGAL: evalExpr' could not find register: "
-                ++ show (ppIdent i) ++ " in " ++ show (M.keys regs)
-        Nothing -> error $ "evalExpr' called by " ++ evalContextName ec ++ " with missing frame."
+               "Could not find register: "
+                ++ show (ppIdent i) ++ " in " 
+                ++ show (M.keys regs)
+                ++ " when attempting to evaluate expression."
+        Nothing -> error $ "evalExpr called by " ++ evalContextName ec ++ " with missing frame."
     SValSymbol sym -> do
       case evalGlobals ec ^. at sym of
         Just t -> return t
         Nothing -> error "evalExp' called with missing global symbol."
-    SValExpr _ (ExprEvalFn fn) -> fn (evalExprImpl ec)
+    SValExpr _ (ExprEvalFn fn) -> fn evalExpr
 
 insertGlobalFn ::
   ( Functor m
@@ -519,6 +557,9 @@ insertGlobalTerm errMsg sym _ act = do
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
 
+incPC :: Monad m => Simulator sbe m ()
+incPC = currentPathOfState . pathPC %= incPathPC
+
 -- | Execute a single LLVM-Sym AST instruction
 step ::
   ( MonadIO m
@@ -526,32 +567,34 @@ step ::
   , Functor sbe
   )
   => SymStmt (SBETerm sbe) -> Simulator sbe m ()
-
 step (PushCallFrame callee args mres retTgt) = do
-  ec <- getCurrentEvalContext "PushCallFrame"
-  calleeSym <- 
-    case callee of
-      SValSymbol sym -> return sym
-      _ -> do
-        fp <- evalExpr' ec callee
-        r <- resolveFunPtrTerm fp
-        case r of
-          LookupResult sym -> return sym
-          _ -> do
-            sbe <- gets symBE
-            errorPath $ "PushCallFrame: Failed to resolve callee function pointer: "
-                        ++ show (ppSymValue callee) ++ "\n"
-                        ++ show r ++ "\n"
-                        ++ show (prettyTermD sbe fp)
-  argTerms <- (traverse. _2) (evalExpr' ec) args
-  void $ callDefine' False retTgt calleeSym mres argTerms
+  sbe <- gets symBE
+  act <- runEvaluator "PushCallFrame" $ do
+    calleeSym <- 
+      case callee of
+        SValSymbol sym -> return sym
+        _ -> do
+          fp <- evalExpr callee
+          Just m <- asks evalMemory
+          r <- liftIO $ sbeRunIO sbe $ codeLookupSymbol sbe m fp
+          case r of
+            Left e -> do
+              throwError $ FailRsn $
+                "PushCallFrame: Failed to resolve callee function pointer: "
+                ++ show (ppSymValue callee) ++ "\n"
+                ++ show e ++ "\n"
+                ++ show (prettyTermD sbe fp)
+            Right sym -> return sym
+    argTerms <- (traverse._2) evalExpr args
+    return $ void $ callDefine' False retTgt calleeSym mres argTerms
+  act    
 
 step (Return mtv) = do
   sbe <- gets symBE
-  mrv <- traverse (evalExpr "mergeReturn") mtv
+  mrv <- traverse (evalExprInCC "mergeReturn") mtv
   withActiveCS (returnCurrentPath sbe mrv)
 
-step (PushPendingExecution bid cond ml elseStmts) = do
+step (PushPendingExecution bid cond ml) = do
   sbe <- gets symBE
   c <- evalCond cond
   opts <- gets lssOpts
@@ -580,39 +623,42 @@ step (PushPendingExecution bid cond ml elseStmts) = do
    -- Don't bother with elseStmts if negated condition is unsat
    Nothing | fsat == UnSat -> setCurrentBlock bid
    -- Don't bother with pending path as condition is false.
-   Just False -> runStmts elseStmts
+   Just False -> incPC
    -- Don't bother with pending path as condition is unsat
-   Nothing | tsat == UnSat -> runStmts elseStmts
+   Nothing | tsat == UnSat -> incPC
    Nothing -> do
      nm <- use pathCounter
      pathCounter += 1
      withActiveCS $ \cs ->
        ActiveCS <$> addCtrlBranch sbe c bid nm ml cs
-     runStmts elseStmts
+     incPC
 
 step (SetCurrentBlock bid) = setCurrentBlock bid
 
 step (Assign reg tp (Val tv)) = do
-  assignReg reg tp =<< evalExpr "eval@Val" tv
+  assignReg reg tp =<< evalExprInCC "eval@Val" tv
+  incPC
 
 step (Assign reg tp (Alloca ty msztv a)) = do
   assignReg reg tp =<<
     case msztv of
       Just (w,v) -> do
-        sizeTm <- evalExpr "alloca" v
+        sizeTm <- evalExprInCC "alloca" v
         alloca ty w sizeTm a
       Nothing -> do
         aw <- ptrBitwidth <$> getDL
         sbe <- gets symBE
         sizeTm <- liftSBE $ termInt sbe aw 1
         alloca ty aw sizeTm a
+  incPC
 
 step (Assign reg tp (Load v ty a)) = do
-  addrTerm <- evalExpr "load" v
+  addrTerm <- evalExprInCC "load" v
   dumpMem 6 "load pre"
   val <- load ty addrTerm a
   dumpMem 6 "load post"
   assignReg reg tp val
+  incPC
 
 step (Store valType val addr a) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
@@ -621,6 +667,7 @@ step (Store valType val addr a) = do
   addrTerm <- evalExpr' ec addr
   store valType valTerm addrTerm a
   whenVerbosity (<=6) $ dumpMem 6 "store post"
+  incPC
 
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"
@@ -631,14 +678,6 @@ step s@BadSymStmt{} = do
 
 --------------------------------------------------------------------------------
 -- Callbacks and event handlers
-
-cb1 :: (Functor m, Monad m)
-  => (SEH sbe m -> a -> Simulator sbe m ()) -> a -> Simulator sbe m ()
-cb1 f x   = join $ gets (f . view evHandlers) <*> pure x
-
-cb2 :: (Functor m, Monad m)
-  => (SEH sbe m -> a -> b -> Simulator sbe m ()) -> a -> b -> Simulator sbe m ()
-cb2 f x y = join $ gets (f . view evHandlers) <*> pure x <*> pure y
 
 defaultSEH :: Monad m => SEH sbe m
 defaultSEH = SEH
@@ -656,14 +695,6 @@ defaultSEH = SEH
 
 setSEH :: Monad m => SEH sbe m -> Simulator sbe m ()
 setSEH seh = evHandlers .= seh
-
-runStmts ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  )
-  => [SymStmt (SBETerm sbe)] -> Simulator sbe m ()
-runStmts = mapM_ dbugStep
 
 entryRsltReg :: Ident
 entryRsltReg = Ident "__galois_final_rslt"
@@ -684,17 +715,13 @@ dbugStep stmt = do
     Just p  -> do
       dbugM' 2 $ "Executing ("
                  ++ "#" ++ show (pathName p) ++ "): "
-                 ++ show (ppSymbol (pathFuncSym p))
-                 ++ maybe "" (show . parens . ppSymBlockID) (pathCB p)
-                 ++ ": " ++
-                 case stmt of
-                   PushPendingExecution{} -> "\n"
-                   _ -> ""
+                 ++ show (ppPathLoc p)
+                 ++ ": "
                  ++ show (ppStmt stmt)
 --  repl
-  cb1 (view onPreStep) stmt
+  join $ use (evHandlers.onPreStep) ?? stmt
   step stmt
-  cb1 onPostStep stmt
+  join $ use (evHandlers. to onPostStep) ?? stmt
   whenVerbosity (>=5) dumpCtrlStk
 
 repl :: (Functor m, MonadIO m) => Simulator sbe m ()
@@ -737,12 +764,5 @@ warning :: (Functor m, MonadIO m) => String -> Simulator sbe m ()
 warning msg = do
   mp <- getPath
   -- Get location information
-  let prefix =
-        case mp of
-          Nothing -> ""
-          Just p -> case pathCB p of
-                      Nothing -> " at " ++ fn
-                      Just cb -> " at " ++ fn ++ ":" ++ cbid
-                        where cbid = show (ppSymBlockID cb)
-            where fn = show $ ppSymbol $ pathFuncSym p
+  let prefix = maybe "" (\p -> " at " ++ show (ppPathLoc p)) mp
   liftIO $ putStrLn $ "Warning" ++ prefix ++ ". " ++ msg

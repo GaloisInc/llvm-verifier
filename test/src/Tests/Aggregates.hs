@@ -55,7 +55,7 @@ structInitAccessImpl :: AllMemModelTest
 structInitAccessImpl = do
   dl <- withDL id
   let si = mkStructInfo dl False [i32, i8]
-  callDefine_ (Symbol "struct_test") (Just (StructType si)) []
+  void $ callDefine (Symbol "struct_test") (Just (StructType si)) []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False
@@ -71,7 +71,7 @@ structInitAccessImpl = do
 
 structArrayImpl :: AllMemModelTest
 structArrayImpl = do
-  callDefine_ (Symbol "struct_test_two") (Just i32) []
+  void $ callDefine (Symbol "struct_test_two") (Just i32) []
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False

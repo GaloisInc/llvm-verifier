@@ -93,7 +93,7 @@ lss_override_function_by_addr = do
       [(PtrType{}, fromPtr), (PtrType{}, toPtr)] -> do
         syms <- both resolveFunPtrTerm (fromPtr, toPtr)
         case syms of
-          (LookupResult src, LookupResult tgt) -> src `userRedirectTo` tgt
+          (Right src, Right tgt) -> src `userRedirectTo` tgt
           _ -> errorPath "lss_override_function_by_addr: Failed to resolve function pointer"
       _ -> wrongArguments "lss_override_function_by_addr"
 
@@ -105,7 +105,7 @@ lss_override_llvm_intrinsic = do
         nm  <- fromString <$> loadString "lss_override_llvm_intrinsic" nmPtr
         msym <- resolveFunPtrTerm fp
         case msym of
-          LookupResult sym -> nm `userRedirectTo` sym
+          Right sym -> nm `userRedirectTo` sym
           _ -> errorPath "lss_override_llvm_intrinsic: Failed to resolve function pointer"
       _ -> wrongArguments "lss_override_llvm_intrinsic"
 
@@ -117,7 +117,7 @@ lss_override_reset_by_addr =
       [(PtrType{},fp)] -> do
         msym <- resolveFunPtrTerm fp
         case msym of
-          LookupResult sym -> sym `userRedirectTo` sym
+          Right sym -> sym `userRedirectTo` sym
           _ -> errorPath "lss_override_reset_by_addr: Failed to resolve function pointer"
       _ -> wrongArguments "lss_override_reset_by_addr"
 

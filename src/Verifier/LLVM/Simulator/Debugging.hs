@@ -37,6 +37,7 @@ import Data.Char
 import Data.List
 import Data.List.Split
 import qualified Data.Map as M
+import Data.Maybe
 import qualified Data.Set as S
 import Data.String
 import Data.Tuple.Curry
@@ -45,7 +46,6 @@ import System.Console.Haskeline.History
 import System.Exit
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Simulator
 import Verifier.LLVM.Simulator.Internals
@@ -53,6 +53,7 @@ import Verifier.LLVM.Simulator.Internals
 #if __GLASGOW_HASKELL__ < 706
 import qualified Text.ParserCombinators.ReadP as P
 import qualified Text.Read as R
+
 readEither :: Read a => String -> Either String a
 readEither s =
   case [ x | (x,"") <- R.readPrec_to_S read' R.minPrec s ] of
@@ -83,18 +84,14 @@ breakOnMain = addBreakpoint (Symbol "main") BreakEntry
 -- Symbol entry or Basic Block entry breakpoints are encountered
 runAtEntryBreakpoints :: (Functor m, Monad m)
                       => (SymBlock (SBETerm sbe) -> Simulator sbe m ())
-                      -> SymBlock (SBETerm sbe)
-                      -> Simulator sbe m ()
+                      -> (SymBlock (SBETerm sbe) -> Simulator sbe m ())
 runAtEntryBreakpoints sh sb = do
-  mp <- preuse currentPathOfState
-  case pathFuncSym <$> mp of
-    Nothing -> return ()
-    Just sym -> do
-      mbps <- M.lookup sym <$> use breakpoints
-      let atBB = Just True == (S.member (BreakBBEntry (sbId sb)) <$> mbps)
-          atEntry = (sbId sb == initSymBlockID)
-                      && (Just True == (S.member BreakEntry <$> mbps))
-      when (atBB || atEntry) $ sh sb
+  Just p <- preuse currentPathOfState
+  mbps <- fromMaybe S.empty <$> use (breakpoints . at (pathFuncSym p))
+  let atBB = S.member (BreakBBEntry (sbId sb)) mbps
+      atEntry = (sbId sb == initSymBlockID)
+             && S.member BreakEntry mbps
+  when (atBB || atEntry) $ sh sb
 
 -- | Check whether we're at a transient breakpoint, and if so,
 -- deactivate it and return 'True'
@@ -104,20 +101,19 @@ runAtTransientBreakpoints :: (Functor m, Monad m)
                           -> Simulator sbe m ()
 runAtTransientBreakpoints sh stmt = do
   mp <- preuse currentPathOfState
-  sym <- case pathFuncSym <$> mp of
-    Nothing -> fail "no current function symbol"
-    Just sym -> return sym
+  sym <- case mp of
+           Nothing -> fail "no current function symbol"
+           Just p -> return (pathFuncSym p)
   let rember bp = do
         tbps <- use trBreakpoints
-        if S.member bp tbps
-          then do trBreakpoints %= S.delete bp
-                  return True
-          else return False
+        let atBP = S.member bp tbps
+        trBreakpoints %= S.delete bp
+        return atBP
       handleStep = rember BreakNextStmt
       handleRet = case stmt of
                     Return _ -> rember (BreakReturnFrom sym)
                     _        -> return False
-  callSH <- or <$> sequence [handleStep, handleRet]
+  callSH <- (||) <$> handleStep <*> handleRet
   when callSH $ sh stmt
 
 logBreakpoints :: (Functor m, Monad m, MonadIO m)
@@ -150,7 +146,7 @@ enableDebugger = do
   evHandlers.onPreStep .= (runAtTransientBreakpoints $ \stmt -> do
     debuggerREPL Nothing (Just stmt))
 
-debuggerREPL :: (Functor sbe, Functor m, Monad m, MonadIO m, MonadException m)
+debuggerREPL :: (Functor sbe, Functor m, MonadIO m, MonadException m)
              => Maybe (SymBlock (SBETerm sbe))
              -> Maybe (SymStmt (SBETerm sbe))
              -> Simulator sbe m ()
@@ -295,7 +291,7 @@ dumpCmd = let arglist = ["ctrlstk", "block", "function", "memory"]
             Nothing -> fail "no active execution path"
             Just p -> do
               let sym = pathFuncSym p
-                  Just pcb = pathCB p
+                  Just (pcb,_) = p^.pathPC
               Just def <- lookupDefine sym <$> gets codebase
               dbugM . show . ppSymBlock $ lookupSymBlock def pcb
         ["function"] -> do
@@ -365,7 +361,7 @@ stopCmd = Cmd {
       case args of
         [arg] -> do
           bps <- bpsForArg arg
-          forM_ bps $ uncurryN addBreakpoint
+          mapM_ (uncurry addBreakpoint) bps
           return False
         _ -> failHelp
   }

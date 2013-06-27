@@ -112,7 +112,7 @@ runBlockGenerator m = final <$> execStateT m s0
         final s1 = (reverse (_bgRevWarnings s1), bgBlocks s1)
 
 mkSymBlock :: SymBlockID -> [SymStmt t] -> SymBlock t
-mkSymBlock sbid stmts = SymBlock { sbId = sbid, sbStmts = stmts }
+mkSymBlock sbid stmts = SymBlock { sbId = sbid, sbStmts = V.fromList stmts }
 
 addWarning :: (?sbe :: SBE sbe) => Doc -> BlockGenerator sbe ()
 addWarning d = bgRevWarnings %= (d:)
@@ -527,8 +527,10 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
         pd = flip symBlockID 0 <$> ltiImmediatePostDominator lti llvmId
         blockName :: Int -> SymBlockID
         blockName = symBlockID llvmId
-        brSymInstrs tgt =
-          (++ [SetCurrentBlock (symBlockID tgt 0)]) <$> phiInstrs phiMap llvmId tgt
+        -- Generate instructions for adding phi statements and setting
+        -- current block.
+        brSymInstrs tgt = appendSet <$> phiInstrs phiMap llvmId tgt
+          where appendSet il = il ++ [SetCurrentBlock (symBlockID tgt 0)]
         -- | Sequentially process statements.
         impl :: [L.Stmt] -- ^ Remaining statements
              -> Int -- ^ Index of symbolic block that we are defining.
@@ -576,7 +578,7 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
              mtp@(IntType w) <- liftMemType' tp
              tsv <- liftValue mtp v
              let mkCase (cv, bid) rest =
-                   [ PushPendingExecution bid (HasConstValue tsv w cv) pd rest ]
+                   (PushPendingExecution bid (HasConstValue tsv w cv) pd) : rest
              return $ foldr mkCase brStmts $ zip consts caseBlockIds
            case mcases of
               Just symbolicCases -> do
@@ -597,11 +599,11 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
             Just tc -> do
               let suspendSymBlockID = blockName (idx + 1)
               brStmts1 <- brSymInstrs tgt1
-              defineBlock (blockName idx) $ reverse il ++
-                [ PushPendingExecution suspendSymBlockID
-                                       (HasConstValue tc 1 0)
-                                       pd
-                                       brStmts1 ]
+              let pendingStmt = 
+                    PushPendingExecution suspendSymBlockID
+                                         (HasConstValue tc 1 0)
+                                         pd
+              defineBlock (blockName idx) $ reverse il ++ (pendingStmt : brStmts1)
               brStmts2 <- brSymInstrs tgt2
               -- Define block for suspended thread.
               defineBlock suspendSymBlockID brStmts2
