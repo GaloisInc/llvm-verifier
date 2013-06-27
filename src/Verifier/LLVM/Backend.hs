@@ -18,7 +18,8 @@ module Verifier.LLVM.Backend
   , SBEMemory
   , SBEPair(..)
   , AllocResult(..)
-  , LookupSymbolResult(..)
+  , LookupSymbolResult
+  , LookupSymbolError(..)
   , SBEPartialResult
   , termArray
   , termInt
@@ -59,13 +60,13 @@ type family SBEMemory (sbe :: * -> *)
 -- needed to show the result is valid.
 type SBEPartialResult m r  = (SBEPred m, r)
 
--- | Represents a partial result of trying to obtain a concrete value from
--- a symbolic term.
-data LookupSymbolResult
-  = LookupResult Symbol -- ^ The definition associated with the address.
-  | Indeterminate -- ^ The value of the operation could not be determined.
+-- | Represents an error obtained from trying to lookup a symbol.
+data LookupSymbolError
+  = Indeterminate -- ^ The value of the operation could not be determined.
   | Invalid -- ^ The operation failed, because it had an invalid value.
-    deriving Show
+  deriving (Show)
+
+type LookupSymbolResult = Either LookupSymbolError Symbol
 
 -- | Result returned by @stackAlloca@ (defined below).
 data AllocResult sbe
