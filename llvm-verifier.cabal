@@ -57,6 +57,7 @@ library
     , split >= 0.2
     , transformers
     , tuple >= 0.2
+    , unix
     , vector
     , wl-pprint
     , MaybeT

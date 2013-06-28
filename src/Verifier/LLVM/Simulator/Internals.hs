@@ -32,11 +32,14 @@ module Verifier.LLVM.Simulator.Internals
   , aigOutputs
   , breakpoints
   , trBreakpoints
+  , errorPolicy
 
-  , Breakpoint(..)
+  , Breakpoint
   , TransientBreakpoint(..)
   , addBreakpoint
   , removeBreakpoint
+
+  , ErrorPolicy(..)
 
   , CS(..)
   , ActiveCS
@@ -69,8 +72,9 @@ module Verifier.LLVM.Simulator.Internals
   , pathMem
   , pathAssertions
   , pathStack
+  , pathStackHt
   , ppPath
-  , ppPathLoc
+  , ppPathInfo
 
     -- * Symbolic helpers
   , liftSBE
@@ -107,7 +111,6 @@ module Verifier.LLVM.Simulator.Internals
   , registerOverrides
 
   , ErrorPath(EP, epRsn, epPath)
-  , InternalExc(ErrorPathExc, UnknownExc)
   , SEH(..)
   , onPreStep
   , onBlockEntry
@@ -154,13 +157,13 @@ import Verifier.LLVM.Codebase
 import Verifier.LLVM.Simulator.SimUtils
 
 newtype Simulator sbe m a =
-  SM { runSM :: ErrorT (InternalExc sbe m) (StateT (State sbe m) m) a }
+  SM { runSM :: ErrorT FailRsn (StateT (State sbe m) m) a }
   deriving
     ( Functor
     , Monad
     , MonadIO
     , MonadState (State sbe m)
-    , MonadError (InternalExc sbe m)
+    , MonadError FailRsn
     , MonadException
     )
 
@@ -182,6 +185,15 @@ defaultLSSOpts = LSSOpts { optsErrorPathDetails = False
                          , optsSatAtBranches    = False
                          }
 
+-- | Action to perform when an error is encountered.
+-- Note. We may eventually choose to extend this to support
+-- additional types of responses.  A data structure was chosen
+-- for the policy rather than just a simulator action so that
+-- the policy can be inspected.
+data ErrorPolicy
+  = EnterREPL -- ^ Enter the debugger repl on an error.
+  | KillPath -- ^ Kill the current path on an error.
+
 -- | Symbolic simulator state
 data State sbe m = State
   { codebase     :: Codebase sbe    -- ^ LLVM code, post-transformation to sym ast
@@ -196,10 +208,12 @@ data State sbe m = State
   , _errorPaths  :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
   , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
   , _pathCounter :: Integer         -- ^ Name supply for paths
-  , _aigOutputs  :: [(MemType,SBETerm sbe)]   -- ^ Current list of AIG outputs, discharged
-                                     -- via lss_write_aiger() sym api calls
-  , _breakpoints :: M.Map Symbol (S.Set Breakpoint)
-  , _trBreakpoints :: S.Set TransientBreakpoint
+    -- | Current list of AIG outputs, discharged via lss_write_aiger() sym
+    -- api calls
+  , _aigOutputs  :: [(MemType,SBETerm sbe)]
+  , _breakpoints :: !(M.Map Symbol (S.Set Breakpoint))
+  , _trBreakpoints :: !TransientBreakpoint
+  , _errorPolicy :: !ErrorPolicy
   }
 
 ctrlStk :: Simple Lens (State sbe m) (Maybe (CS sbe))
@@ -229,24 +243,24 @@ aigOutputs f s = (\v -> s { _aigOutputs = v }) <$> f (_aigOutputs s)
 breakpoints :: Simple Lens (State sbe m) (M.Map Symbol (S.Set Breakpoint))
 breakpoints f s = (\v -> s { _breakpoints = v }) <$> f (_breakpoints s)
 
-trBreakpoints :: Simple Lens (State sbe m) (S.Set TransientBreakpoint)
+trBreakpoints :: Simple Lens (State sbe m) TransientBreakpoint
 trBreakpoints f s = (\v -> s { _trBreakpoints = v }) <$> f (_trBreakpoints s)
 
+errorPolicy :: Simple Lens (State sbe m) ErrorPolicy
+errorPolicy = lens _errorPolicy (\s v -> s { _errorPolicy = v })
 
 -- | Types of breakpoints (kind of boring for now, but maybe with a
 -- DWARF parser we can do more...)
-data Breakpoint = BreakEntry
-                -- ^ Break when entering this symbol
-                | BreakBBEntry SymBlockID
-                -- ^ Break when entering a basic block
-  deriving (Eq, Ord, Show)
+type Breakpoint = (SymBlockID,Int)
 
 -- | Transient breakpoints for interactive debugging
-data TransientBreakpoint = BreakNextStmt
-                         -- ^ Break at the next statement
-                         | BreakReturnFrom Symbol
-                         -- ^ Break when returning from a function
-  deriving (Eq, Ord, Show)
+data TransientBreakpoint
+    -- | Break at the next statement
+  = BreakNextStmt
+    -- | Break when returning from function at given stack height.
+  | BreakReturnFrom !Int
+  | NoTransientBreakpoint
+ deriving (Eq, Ord, Show)
 
 
 -- | Action to perform when branch.
@@ -348,8 +362,9 @@ addCtrlBranch :: SBE sbe
               -> ActiveCS sbe -- ^  Current control stack.
               -> IO (ActiveCS sbe)
 addCtrlBranch sbe c nb nm ml (ACS p h) = do
-    fmap fn $ sbeRunIO sbe $ memBranch sbe (p^.pathMem)
-  where fn mem = ACS pf $ BranchHandler info (BARunFalse c pt) h
+    mkBranchFromMem <$> sbeRunIO sbe (memBranch sbe (p^.pathMem))
+  where mkBranchFromMem mem =
+            ACS pf $ BranchHandler info (BARunFalse c pt) h
           where pf = p & pathMem .~ mem
                        & pathAssertions .~ sbeTruePred sbe
                 pt = p { pathName = nm 
@@ -359,7 +374,9 @@ addCtrlBranch sbe c nb nm ml (ACS p h) = do
                  Just b -> PostdomInfo (pathStackHt p) b
                  Nothing -> ReturnInfo (pathStackHt p - 1) (snd <$> cfRetReg cf)
                    where cf : _ = pathStack p
-              
+             
+-- | Merge path and path handler.  Note that the new state may
+-- have infeasible path assertions.
 postdomMerge :: SBE sbe
              -> Path sbe
              -> PathHandler sbe
@@ -393,6 +410,7 @@ postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
 postdomMerge _ p h = return (ACS p h)
 
 -- | Move current path to target block.
+-- Note that the new path may have infeasible assertions.
 jumpCurrentPath :: SBE sbe -> SymBlockID -> ActiveCS sbe -> IO (ActiveCS sbe)
 jumpCurrentPath sbe b (ACS p h) = postdomMerge sbe p' h
   where p' = p & pathPC .~ Just (b,0)
@@ -435,7 +453,8 @@ returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackH
       A.first (errs ++) <$> returnMerge sbe p' h
 returnMerge _ p h = return ([], ActiveCS (ACS p h))
 
--- | Return from current path
+-- | Return from current path.
+-- The current path may be infeasible.
 returnCurrentPath :: SBE sbe
                   -> Maybe (SBETerm sbe)
                   -> ActiveCS sbe
@@ -482,6 +501,7 @@ branchError sbe mi (BAFalseComplete a c pf) h = do
     _ -> return $ ActiveCS $ ACS pf' h
 
 -- | Mark the current path as an error path.
+-- N.B. The new current path if any could now potentially be infeasible.
 markCurrentPathAsError :: SBE sbe -> ActiveCS sbe -> IO (Maybe (CS sbe))
 markCurrentPathAsError sbe (ACS _ (BranchHandler mi a h)) =
   Just <$> branchError sbe mi a h
@@ -537,21 +557,12 @@ pathMem = lens _pathMem (\p r -> p { _pathMem = r })
 pathAssertions :: Simple Lens (Path sbe) (SBEPred sbe)
 pathAssertions = lens _pathAssertions (\p r -> p { _pathAssertions = r })
 
-data FailRsn       = FailRsn String deriving (Show)
+newtype FailRsn       = FailRsn String deriving (Show)
 data ErrorPath sbe = EP { epRsn :: FailRsn, epPath :: Path sbe }
 
 instance Error FailRsn where
-  noMsg  = FailRsn ""
+  noMsg  = FailRsn "(no reason given)"
   strMsg = FailRsn
-
--- | The exception type for errors that are both thrown and caught within the
--- simulator.
-data InternalExc sbe m
-  = ErrorPathExc FailRsn (State sbe m)
-  | UnknownExc (Maybe FailRsn)
-instance Error (InternalExc sbe m) where
-  noMsg  = UnknownExc Nothing
-  strMsg = UnknownExc . Just . FailRsn
 
 -- | Simulation event handlers, useful for debugging nontrivial codes.
 data SEH sbe m = SEH
@@ -560,8 +571,6 @@ data SEH sbe m = SEH
     onPostOverrideReg :: Simulator sbe m ()
     -- | Invoked before each instruction executes
   , _onPreStep         :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
-    -- | Invoked after each instruction executes
-  , onPostStep        :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked when entering a basic block
   , _onBlockEntry      :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked when leaving a basic block
@@ -685,18 +694,16 @@ ppPathPC (Just (bid,i)) = ppSymBlockID bid <> colon <> int i
 
 ppPath :: SBE sbe -> Path sbe -> Doc
 ppPath sbe p =
-  ppPathInfo p
-  <>  colon
-  <$$> indent 2 (text "Locals:" <$$> indent 2 (ppRegMap sbe (p^.pathRegs)))
+  text "Path" <+> ppPathInfo p <> colon <$$>
+  indent 2 (text "Locals:" <$$> indent 2 (ppRegMap sbe (p^.pathRegs)))
 -- <+> (parens $ text "PC:" <+> ppPC sbe c)
-
--- | Prints the path location.
-ppPathLoc :: Path sbe -> Doc
-ppPathLoc p = ppSymbol (pathFuncSym p) <> char '/' <> ppPathPC (p^.pathPC)
 
 -- | Prints just the path's name and info.
 ppPathInfo :: Path sbe -> Doc
-ppPathInfo p = text "Path #" <> integer (pathName p) <>  brackets (ppPathLoc p)
+ppPathInfo p =
+  char '#' <> integer (pathName p) <> colon 
+  <> ppSymbol (pathFuncSym p) <> colon
+  <> ppPathPC (p^.pathPC)
 
 ppStackTrace :: [CallFrame term] -> Doc
 ppStackTrace = braces . vcat . map (ppSymbol . cfFuncSym)
@@ -716,8 +723,8 @@ ppTuple :: [Doc] -> Doc
 ppTuple = parens . hcat . punctuate comma
 
 ppBreakpoint :: Breakpoint -> Doc
-ppBreakpoint BreakEntry          = text "init"
-ppBreakpoint (BreakBBEntry sbid) = ppSymBlockID sbid
+ppBreakpoint (sbid,0) = ppSymBlockID sbid
+ppBreakpoint (sbid,i) = ppSymBlockID sbid <> colon <> int i
 
 ppBreakpoints :: M.Map Symbol (S.Set Breakpoint) -> Doc
 ppBreakpoints m = text "breakpoints set:" <$$> hang 2 (vcat d)
@@ -777,38 +784,16 @@ tellUser msg = unlessQuiet $ dbugM msg
 --------------------------------------------------------------------------------
 -- Error handling
 
-errorPath ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  ) => String -> Simulator sbe m a
-errorPath rsn = do
-  s <- get
-  let sbe = symBE s
-  let Just (ActiveCS cs) = s^.ctrlStk
-  let p = cs^.activePath
-  -- Log error path  
-  whenVerbosity (>=3) $ do
-    dbugM $ "Error path encountered: " ++ rsn
-    dbugM $ show $ ppPath sbe p
-  mcs <- liftIO $ markCurrentPathAsError sbe cs
-  let s' = s & ctrlStk .~ mcs
-             & errorPaths %~ (EP (FailRsn rsn) p:)
-  -- Merge negation of assumptions in current path into conditions on merge frame.
-  -- NB: Since we've set up the control stack for the next invocation of
-  -- run, and explicitly captured the error path, we need to be sure to
-  -- ship that modified state back to the catch site so it execution can
-  -- continue correctly.
-  throwError $ ErrorPathExc (FailRsn rsn) s'
+errorPath :: Monad m => String -> Simulator sbe m a
+errorPath = throwError . FailRsn
 
-wrongArguments :: (Functor sbe, Functor m, MonadIO m) => String -> Simulator sbe m a
+wrongArguments :: Monad m => String -> Simulator sbe m a
 wrongArguments nm = errorPath $ nm ++ ": wrong number of arguments"
 
 memFailRsn :: SBE sbe -> String -> [SBETerm sbe] -> String
 memFailRsn sbe desc terms = show $ text desc <+> ppTuple pts
   --TODO: See if we can get a reasonable location for the failure.
   where pts = map (prettyTermD sbe) terms
-
 
 -- | Handle a condition returned by the memory model
 processMemCond ::
@@ -819,20 +804,18 @@ processMemCond ::
   => String -> SBEPred sbe -> Simulator sbe m ()
 processMemCond rsn cond = do
   sbe <- gets symBE
-  case asBool sbe cond of
+  Just cs <- use ctrlStk
+  let p = cs^.currentPath
+  p' <- liftSBE $ pathAssertions (applyAnd sbe cond) p
+  case asBool sbe (p^.pathAssertions) of
     Just True  -> return ()
     Just False -> errorPath rsn
     _ -> do
-      Just cs <- use ctrlStk
-      let p = cs^.currentPath
       -- TODO: provide more detail here?
       whenVerbosity (>= 6) $ do
-        tellUser $ "Warning: Obtained symbolic validity result from memory model."
-        tellUser $ "This means that certain memory accesses were valid only on some paths."
-        tellUser $ "In this case, the symbolic validity result was encountered at:"
-        tellUser $ show $ ppPathLoc p
-        tellUser ""
-      p' <- liftSBE $ pathAssertions (applyAnd sbe cond) p
+        tellUser $ show $ text "Warning at" <+> ppPathInfo p
+        tellUser $ "  Could not verify memory access was valid."
+        tellUser $ "  Results may only be partially correct."
       ctrlStk ?= set currentPath p' cs 
 
 alloca ::
@@ -990,7 +973,7 @@ checkTypeCompat fnm (FunDecl frtn fargs fva) tnm (FunDecl trtn targs tva) = do
   lc <- gets (cbLLVMContext . codebase)
   let ?lc = lc
   let nm = show . ppSymbol
-  let e rsn = error $ "Attempt to replace " ++ nm fnm
+  let e rsn = errorPath $ "Attempt to replace " ++ nm fnm
                      ++ " with function " ++ tnm ++ " that " ++ rsn
   let ppTypes :: [MemType] -> String
       ppTypes tys = show (parens (commas (ppMemType <$> tys)))

@@ -105,18 +105,16 @@ runBitBlast sbe mem cb mg argv' args mainDef = do
       dbugM $ "Code range  : " ++ sr (mgCode mg)
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
-    when (startDebugger args) $ do
-      enableDebugger
-      breakOnMain
+    when (startDebugger args) breakOnMain
     let mainSymbol = L.Symbol "main"
     --TODO: Verify main has expected signature.
     argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
     case sdRetType mainDef of
       Nothing -> do
-        callDefine_ mainSymbol Nothing argsv
+        void $ callDefine mainSymbol Nothing argsv
         liftM2 NoMainRV (use errorPaths) getProgramFinalMem
       Just (IntType w) -> do
-        callDefine_ mainSymbol (Just (IntType w)) argsv
+        void $ callDefine mainSymbol (Just (IntType w)) argsv
         eps <- use errorPaths
         mm  <- getProgramFinalMem
         mrv <- getProgramReturnValue
