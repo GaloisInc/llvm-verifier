@@ -144,7 +144,7 @@ testSetupPtrArgImpl = do
   let w = 1
   one <- withSBE $ \sbe -> termInt sbe w 1
   p <- alloca i32 w one a
-  callDefine_ (L.Symbol "ptrarg") Nothing [(i32p, p)]
+  callDefine (L.Symbol "ptrarg") Nothing [(i32p, p)]
   mrv <- getProgramReturnValue
   CE.assert (isNothing mrv) $ return ()
   mm  <- getProgramFinalMem

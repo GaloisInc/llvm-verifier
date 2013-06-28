@@ -58,7 +58,7 @@ trivBranchImpl :: String -> (Integer, Integer) -> AllMemModelTest
 trivBranchImpl symName (e0,e1) = do
   sbe <- gets symBE
   b <- liftSBE $ freshInt sbe 32
-  callDefine_ (Symbol symName) (Just i32) [(IntType 32, b)]
+  callDefine (Symbol symName) (Just i32) [(IntType 32, b)]
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> dbugM "No return value (fail)" >> return False

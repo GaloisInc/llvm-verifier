@@ -23,7 +23,6 @@ import qualified Text.LLVM               as L
 import           Verifier.LLVM.Backend
 import           Verifier.LLVM.LLVMContext
 import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Simulator.Debugging
 
 aesTests :: [(Args, Property)]
 aesTests =
@@ -36,7 +35,6 @@ aesTests =
 
 aes128ConcreteImpl :: forall sbe . Functor sbe => Simulator sbe IO Bool
 aes128ConcreteImpl = do
-  setSEH sanityChecks
   ptptr  <- initArr ptVals
   keyptr <- initArr keyVals
   let aw = 8
@@ -44,10 +42,9 @@ aes128ConcreteImpl = do
   ctptr  <- alloca arrayTy aw one 2
   let args :: [(MemType, SBETerm sbe)]
       args = [ptptr, keyptr, (IntType aw, ctptr)]
-  [_, _, ctRawPtr] <-
-    callDefine (L.Symbol "aes128BlockEncrypt") Nothing args
+  callDefine (L.Symbol "aes128BlockEncrypt") Nothing args
   Just mem <- getProgramFinalMem
-  ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctRawPtr 2
+  ctarr <- withSBE $ \s -> snd <$> memLoad s mem arrayTy ctptr 2
   sbe <- gets symBE
   ctVals <- forM [0..3] $ \i ->
     liftSBE $ getVal sbe <$> applyTypedExpr sbe (GetConstArrayElt 4 i32 ctarr i)

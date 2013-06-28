@@ -13,6 +13,7 @@ semantics are loosely based on gdb.
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
@@ -20,35 +21,35 @@ semantics are loosely based on gdb.
 
 module Verifier.LLVM.Simulator.Debugging (
     breakOnMain
-  , logBreakpoints
-  , enableDebugger
   , debuggerREPL
-  , runAtEntryBreakpoints
-  , runAtTransientBreakpoints
-  , sanityChecks
+  , resetInterrupt
   ) where
 
 import Control.Applicative
+import Control.Concurrent (myThreadId)
+import Control.Exception (AsyncException(UserInterrupt))
 import Control.Monad
 import Control.Monad.Error
 import Control.Monad.State.Class
 import Control.Lens hiding (createInstance)
 import Data.Char
 import Data.List
-import Data.List.Split
 import qualified Data.Map as M
-import Data.Maybe
 import qualified Data.Set as S
 import Data.String
-import Data.Tuple.Curry
+import qualified Data.Vector as V
 import System.Console.Haskeline
 import System.Console.Haskeline.History
 import System.Exit
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
+import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
-import Verifier.LLVM.Simulator
+import Verifier.LLVM.Codebase
 import Verifier.LLVM.Simulator.Internals
+import Verifier.LLVM.Simulator.SimUtils
+
+import System.Posix.Signals
 
 #if __GLASGOW_HASKELL__ < 706
 import qualified Text.ParserCombinators.ReadP as P
@@ -76,82 +77,46 @@ readMaybe s = case readEither s of
 import Text.Read (readMaybe)
 #endif
 
+-- @resetInterrupt@ installs a one-time signal handler so
+-- that the next time an interrupt (e.g. Ctrl-C) is given, a
+-- @UserInterrupt@ AsyncException will be thrown in the current
+-- thread.
+-- By default GHC will do this once during program execution, but
+-- subsequent uses of Ctrl-C result in immediate termination.
+-- This function allows Ctrl-C to be used to interrupt multiple
+-- times over program execution.
+resetInterrupt :: IO ()
+resetInterrupt = do
+  tid <- myThreadId
+  let handler = throwTo tid UserInterrupt
+  let mask = Nothing -- Any other signal handler can block while
+  _ <- installHandler sigINT (CatchOnce handler) mask
+  return ()
+
 -- | Add a breakpoint to @main@ in the current codebase
 breakOnMain :: (Functor m, Monad m) => Simulator sbe m ()
-breakOnMain = addBreakpoint (Symbol "main") BreakEntry
-
--- | Given a step handler, return a new step handler that runs it when
--- Symbol entry or Basic Block entry breakpoints are encountered
-runAtEntryBreakpoints :: (Functor m, Monad m)
-                      => (SymBlock (SBETerm sbe) -> Simulator sbe m ())
-                      -> (SymBlock (SBETerm sbe) -> Simulator sbe m ())
-runAtEntryBreakpoints sh sb = do
-  Just p <- preuse currentPathOfState
-  mbps <- fromMaybe S.empty <$> use (breakpoints . at (pathFuncSym p))
-  let atBB = S.member (BreakBBEntry (sbId sb)) mbps
-      atEntry = (sbId sb == initSymBlockID)
-             && S.member BreakEntry mbps
-  when (atBB || atEntry) $ sh sb
-
--- | Check whether we're at a transient breakpoint, and if so,
--- deactivate it and return 'True'
-runAtTransientBreakpoints :: (Functor m, Monad m)
-                          => (SymStmt (SBETerm sbe) -> Simulator sbe m ())
-                          -> SymStmt (SBETerm sbe)
-                          -> Simulator sbe m ()
-runAtTransientBreakpoints sh stmt = do
-  mp <- preuse currentPathOfState
-  sym <- case mp of
-           Nothing -> fail "no current function symbol"
-           Just p -> return (pathFuncSym p)
-  let rember bp = do
-        tbps <- use trBreakpoints
-        let atBP = S.member bp tbps
-        trBreakpoints %= S.delete bp
-        return atBP
-      handleStep = rember BreakNextStmt
-      handleRet = case stmt of
-                    Return _ -> rember (BreakReturnFrom sym)
-                    _        -> return False
-  callSH <- (||) <$> handleStep <*> handleRet
-  when callSH $ sh stmt
-
-logBreakpoints :: (Functor m, Monad m, MonadIO m)
-               => Simulator sbe m ()
-logBreakpoints = do
-  evHandlers.onBlockEntry .= (runAtEntryBreakpoints $ \sb -> do
-    logBreakpoint (Just sb) Nothing)
-  evHandlers.onPreStep .= (runAtTransientBreakpoints $ \stmt -> do
-    logBreakpoint Nothing (Just stmt))
+breakOnMain = addBreakpoint (Symbol "main") (initSymBlockID,0)
 
 logBreakpoint :: (Functor m, Monad m, MonadIO m)
-              => Maybe (SymBlock (SBETerm sbe))
-              -> Maybe (SymStmt (SBETerm sbe))
-              -> Simulator sbe m ()
-logBreakpoint msb mstmt = do
-  mp <- preuse currentPathOfState
-  sym <- case pathFuncSym <$> mp of
-    Nothing -> fail "no current function symbol"
-    Just sym -> return sym
-  let psym = ppSymbol sym
-      pblock = maybe (text "") (\sb -> ppSymBlockID . sbId $ sb) msb
-      pstmt = maybe (text "") (\stmt -> colon <+> ppStmt stmt) mstmt
-  dbugM . show $ text "at" <+> (psym <> pblock <> pstmt) <> colon
-
-enableDebugger :: (Functor sbe, Functor m, Monad m, MonadIO m, MonadException m)
-               => Simulator sbe m ()
-enableDebugger = do
-  evHandlers.onBlockEntry .= (runAtEntryBreakpoints $ \sb -> do
-    debuggerREPL (Just sb) Nothing)
-  evHandlers.onPreStep .= (runAtTransientBreakpoints $ \stmt -> do
-    debuggerREPL Nothing (Just stmt))
+              => Simulator sbe m ()
+logBreakpoint = do
+  Just p <- preuse currentPathOfState
+  let sym = pathFuncSym p
+      psym = ppSymbol sym
+  Just def <- lookupDefine (pathFuncSym p) <$> gets codebase
+  let bld =
+        case p^.pathPC of
+          Nothing -> psym
+          Just (pcb,pc) -> psym <> ppSymBlockID pcb <> colon <+> ppStmt stmt
+            where sb = lookupSymBlock def pcb
+                  stmt = sbStmts sb V.! pc
+  dbugM $ show $ text "at" <+> bld <> colon
 
 debuggerREPL :: (Functor sbe, Functor m, MonadIO m, MonadException m)
-             => Maybe (SymBlock (SBETerm sbe))
-             -> Maybe (SymStmt (SBETerm sbe))
-             -> Simulator sbe m ()
-debuggerREPL msb mstmt = do
-    logBreakpoint msb mstmt
+             => Simulator sbe m ()
+debuggerREPL = do
+    trBreakpoints .= NoTransientBreakpoint
+    logBreakpoint
     let settings = setComplete completer $
                      defaultSettings { historyFile = Just ".lssdb" }
     runInputT settings loop
@@ -169,37 +134,35 @@ debuggerREPL msb mstmt = do
         doCmd (cmdStr:args) = do
           case M.lookup cmdStr commandMap of
             Just cmd -> do
-              let go = cmdAction cmd mstmt args
-                  handleErr epe@(ErrorPathExc _ _) = throwError epe
-                  handleErr (UnknownExc (Just (FailRsn rsn))) = do
+              let go = cmdAction cmd args
+                  handleErr (FailRsn rsn) = do
                     dbugM $ "error: " ++ rsn
                     return False
-                  handleErr _ = do dbugM "unknown error"; return False
               continue <- lift $ catchError go handleErr
-              unless continue loop
+              when (continue == False) loop
             Nothing -> do
               outputStrLn $ "unknown command '" ++ cmdStr ++ "'"
               outputStrLn $ "type 'help' for more info"
               loop
         doCmd [] = error "unreachable"
 
-data Command sbe m = Cmd {
+data Command m = Cmd {
     cmdNames :: [String]
   , cmdArgs :: [String]
   , cmdDesc :: String
   , cmdCompletion :: CompletionFunc m
-  , cmdAction :: Maybe (SymStmt (SBETerm sbe)) -> [String] -> m Bool
+  , cmdAction :: [String] -> m Bool
   }
 
 commandMap :: (Functor sbe, Functor m, Monad m, MonadIO m)
-           => M.Map String (Command sbe (Simulator sbe m))
+           => M.Map String (Command (Simulator sbe m))
 commandMap = M.fromList . concatMap expandNames $ cmds
   where expandNames cmd = do
           name <- cmdNames cmd
           return (name, cmd)
 
 cmds :: (Functor sbe, Functor m, Monad m, MonadIO m)
-     => [Command sbe (Simulator sbe m)]
+     => [Command (Simulator sbe m)]
 cmds = [
     helpCmd
   , whereCmd
@@ -218,18 +181,18 @@ cmds = [
   ]
 
 helpCmd :: forall sbe m . (Functor sbe, Functor m, Monad m, MonadIO m)
-        => Command sbe (Simulator sbe m)
+        => Command (Simulator sbe m)
 helpCmd = Cmd {
     cmdNames = ["help", "?"]
   , cmdArgs = []
   , cmdDesc = "show this help"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> do
-      dbugM $ helpString (cmds :: [Command sbe (Simulator sbe m)])
+  , cmdAction = \_ -> do
+      dbugM $ helpString (cmds :: [Command (Simulator sbe m)])
       return False
   }
 
-helpString :: [Command sbe m] -> String
+helpString :: [Command m] -> String
 helpString cs = show . vcat $
   [ invs <> colon <$$> nest 2 (text $ cmdDesc cmd)
   | cmd <- cs
@@ -239,13 +202,13 @@ helpString cs = show . vcat $
 failHelp :: Monad m => m a
 failHelp = fail "invalid arguments; type 'help' for details"
 
-whereCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
+whereCmd :: (Functor m, Monad m, MonadIO m) => Command (Simulator sbe m)
 whereCmd = Cmd {
     cmdNames = ["where", "w"]
   , cmdArgs = []
   , cmdDesc = "print call stack"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> do
+  , cmdAction = \_ -> do
       mp <- preuse currentPathOfState
       case mp of
         Nothing -> dbugM "no active execution path"
@@ -253,13 +216,13 @@ whereCmd = Cmd {
       return False
   }
 
-localsCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
+localsCmd :: (Functor m, Monad m, MonadIO m) => Command (Simulator sbe m)
 localsCmd = Cmd {
     cmdNames = ["locals"]
   , cmdArgs = []
   , cmdDesc = "print local variables in current stack frame"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> do
+  , cmdAction = \_ -> do
       mp <- preuse currentPathOfState
       case mp of
         Nothing -> dbugM "no active execution path"
@@ -269,7 +232,7 @@ localsCmd = Cmd {
       return False
   }
 
-dumpCmd :: (Functor m, Monad m, MonadIO m) => Command sbe (Simulator sbe m)
+dumpCmd :: (Functor m, Monad m, MonadIO m) => Command (Simulator sbe m)
 dumpCmd = let arglist = ["ctrlstk", "block", "function", "memory"]
           in Cmd {
     cmdNames = ["dump", "d"]
@@ -282,7 +245,7 @@ dumpCmd = let arglist = ["ctrlstk", "block", "function", "memory"]
                     . filter (word `isPrefixOf`)
                     $ arglist
         _ -> return []
-  , cmdAction = \_ args -> do
+  , cmdAction = \args -> do
       case args of
         ["ctrlstk"] -> dumpCtrlStk
         ["block"] -> do
@@ -304,42 +267,42 @@ dumpCmd = let arglist = ["ctrlstk", "block", "function", "memory"]
       return False
   }
 
-contCmd :: Monad m => Command sbe m
+contCmd :: Monad m => Command m
 contCmd = Cmd {
     cmdNames = ["cont", "c"]
   , cmdArgs = []
   , cmdDesc = "continue execution"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> return True
+  , cmdAction = \_ -> return True
   }
 
-killCmd :: (Functor sbe, Functor m, MonadIO m) => Command sbe (Simulator sbe m)
+killCmd :: (Functor sbe, Functor m, MonadIO m) => Command (Simulator sbe m)
 killCmd = Cmd {
     cmdNames = ["kill"]
   , cmdArgs = ["[<msg>]"]
   , cmdDesc = "kill the current execution path"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ -> errorPath . unwords
+  , cmdAction = errorPath . unwords
   }
 
-exitCmd :: MonadIO m => Command sbe m
+exitCmd :: MonadIO m => Command m
 exitCmd = Cmd {
     cmdNames = ["exit", "quit", "q"]
   , cmdArgs = []
   , cmdDesc = "exit LSS"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> liftIO $ exitWith ExitSuccess
+  , cmdAction = \_ -> liftIO $ exitWith ExitSuccess
   }
 
 satpathCmd :: (Functor sbe, Functor m, MonadIO m)
-           => Command sbe (Simulator sbe m)
+           => Command (Simulator sbe m)
 satpathCmd = Cmd {
     cmdNames = ["satpath", "sat"]
   , cmdArgs = []
   , cmdDesc = "check whether the current path's assertions are satisfiable, killing this path if they are not"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> do
-      (Just p) <- preuse currentPathOfState
+  , cmdAction = \_ -> do
+      Just p <- preuse currentPathOfState
       sbe <- gets symBE
       sat <- liftSBE $ termSAT sbe (p^.pathAssertions)
       case sat of
@@ -351,94 +314,92 @@ satpathCmd = Cmd {
   }
 
 stopCmd :: (Functor sbe, Functor m, Monad m, MonadIO m)
-        => Command sbe (Simulator sbe m)
+        => Command (Simulator sbe m)
 stopCmd = Cmd {
     cmdNames = ["stop"]
   , cmdArgs = ["<function_symbol>[%block.id]"]
   , cmdDesc = "set a breakpoint at a function; if no block is specified, break at the entry to the function"
   , cmdCompletion = funcSymCompletion
-  , cmdAction = \_ args ->
+  , cmdAction = \args ->
       case args of
         [arg] -> do
-          bps <- bpsForArg arg
-          mapM_ (uncurry addBreakpoint) bps
+          cb <- gets codebase
+          either dbugM (uncurry addBreakpoint) $ bpsForArg cb arg
           return False
         _ -> failHelp
   }
 
 clearCmd :: (Functor sbe, Functor m, Monad m, MonadIO m)
-         => Command sbe (Simulator sbe m)
+         => Command (Simulator sbe m)
 clearCmd = Cmd {
     cmdNames = ["clear"]
   , cmdArgs = ["<function_symbol>[%block.id]"]
   , cmdDesc = "clear a breakpoint at a function"
   , cmdCompletion = funcSymCompletion
-  , cmdAction = \_ args ->
+  , cmdAction = \args ->
       case args of
         [arg] -> do
-          bps <- bpsForArg arg
-          forM_ bps $ uncurryN removeBreakpoint
+          cb <- gets codebase
+          either dbugM (uncurry removeBreakpoint) (bpsForArg cb arg)
           return False
         _ -> failHelp
   }
 
-bpsForArg :: (Functor sbe, Functor m, Monad m, MonadIO m)
-          => String
-          -> Simulator sbe m [(Symbol, Breakpoint)]
-bpsForArg arg = do
-  let (sym, bbid) = break (== '%') arg
-  def <- lookupSymbolDef (Symbol sym)
-  let failbbid = fail $ "unexpected basic block identifier: " ++ bbid
-  (name, n) <- case splitOn "." . reverse . drop 1 $ bbid of
-                 [] -> fail bbid
-                 (nstr:rest) -> do
-                   n <- maybe failbbid return (readMaybe nstr)
-                   return (reverse . intercalate "." $ rest, n)
-  let sbid = symBlockID (fromString name) n
-  case M.lookup sbid (sdBody def) of
-    Nothing -> fail $ "unknown basic block: " ++ arg
-    Just _ -> return [(Symbol sym, BreakBBEntry sbid)]
+bpsForArg :: Codebase sbe
+          -> String
+          -> Either String (Symbol, Breakpoint)
+bpsForArg cb arg =
+  case break (== '%') arg of
+    (sym0, '%' : bbid) -> do
+     let sym = Symbol sym0
+     case lookupDefine sym cb of
+       Nothing  -> Left $ "Could not find symbol " ++ show (ppSymbol sym) ++ "."
+       Just def ->
+         case break (=='.') (reverse (drop 1 bbid)) of
+           (nstr,'.':rest) | Just n <- readMaybe (reverse nstr) -> do
+             let sbid = symBlockID (fromString (reverse rest)) n
+             case M.lookup sbid (sdBody def) of
+               Just _ -> Right (sym, (sbid,0))
+               Nothing -> Left "Could not find basic block in function."
+           _ -> Left "Could not parse basic block."
+    _ -> Left "Could not parse basic block."
 
-infoCmd :: MonadIO m => Command sbe (Simulator sbe m)
+infoCmd :: MonadIO m => Command (Simulator sbe m)
 infoCmd = Cmd {
     cmdNames = ["info"]
   , cmdArgs = []
   , cmdDesc = "list breakpoints"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> dumpBPs >> return False
+  , cmdAction = \_ -> dumpBPs >> return False
   }
 
 dumpBPs :: MonadIO m => Simulator sbe m ()
 dumpBPs = do
   bps <- use breakpoints
-  if all S.null (M.elems bps)
-     then dbugM "no breakpoints set"
-     else dbugM . show . ppBreakpoints $ bps
+  let msg | all S.null (M.elems bps) = "no breakpoints set"
+          | otherwise = show (ppBreakpoints bps)
+  dbugM msg
 
-
-stepupCmd :: (Functor m, Monad m) => Command sbe (Simulator sbe m)
+stepupCmd :: (Functor m, Monad m) => Command (Simulator sbe m)
 stepupCmd = Cmd {
-    cmdNames = ["stepup"]
+    cmdNames = ["finish"]
   , cmdArgs = []
-  , cmdDesc = "execute until the current function returns to its caller (may not happen for tail calls)"
+  , cmdDesc = "execute until the current function returns to its caller."
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> do
-      mp <- preuse currentPathOfState
-      case mp of
-        Nothing -> fail "no active execution path"
-        Just p ->
-          trBreakpoints %= S.insert (BreakReturnFrom (pathFuncSym p))
+  , cmdAction = \_ -> do
+      Just p <- preuse currentPathOfState
+      trBreakpoints .= BreakReturnFrom (pathStackHt p)
       return True
   }
 
-stepiCmd :: (Functor m, Monad m) => Command sbe (Simulator sbe m)
+stepiCmd :: (Functor m, Monad m) => Command (Simulator sbe m)
 stepiCmd = Cmd {
     cmdNames = ["stepi", "si"]
   , cmdArgs = []
   , cmdDesc = "execute current symbolic statement"
   , cmdCompletion = noCompletion
-  , cmdAction = \_ _ -> do
-      trBreakpoints %= S.insert BreakNextStmt
+  , cmdAction = \_ -> do
+      trBreakpoints .= BreakNextStmt
       return True
   }
 
@@ -459,7 +420,7 @@ completer (revleft, right) = do
           Nothing -> return (revleft, [])
           Just c -> cmdCompletion c (revleft, right)
   where
-    m :: Functor sbe => M.Map String (Command sbe (Simulator sbe m))
+    m :: Functor sbe => M.Map String (Command (Simulator sbe m))
     m = commandMap
 
 -- | Complete a function symbol as the current word
@@ -504,55 +465,3 @@ notFinished c = c { isFinished = False }
 
 unSym :: Symbol -> String
 unSym (Symbol str) = str
-
--- NB: Currently only valid for SBEBitBlast mems
-sanityChecks ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  )
-  => SEH sbe m
-sanityChecks = SEH
-  {
-    _onPreStep        = \_ -> return ()
-  , onPostStep        = \_ -> return ()
-  , _onBlockEntry     = \_ -> return ()
-  , onBlockExit       = \_ -> return ()
-  , onMkGlobTerm      = \_ -> return ()
-  , onPostOverrideReg = return ()
-
-  , onPreGlobInit     = \_ _ -> return ()
-
-{-
-  , onPreGlobInit = \g (Typed ty gdata) -> do
-      CE.assert (L.globalType g == ty) $ return ()
-      sz  <- withLC (`llvmStoreSizeOf` ty)
-      szt <- withSBE' $ \sbe -> termWidth sbe gdata
-      when (szt `shiftR` 3 /= sz) $ do
-        dbugM $ "onPreGlobInit assert failure on " ++ show (L.ppSymbol $ L.globalSym g)
-                ++ " (size check)"
-        CE.assert False $ return ()
--}
-
-  , onPostGlobInit = \_g _ -> do
-      {-
-      Just mem       <- getMem
-      sz        <- withLC (`llvmStoreSizeOf` ty)
-      addrWidth <- withLC llvmAddrWidthBits
-      -- Read back and check
-      gstart <- withSBE $ \sbe -> termInt sbe addrWidth (bmDataAddr mem - sz)
-      (cond, gdata') <- withSBE $ \sbe -> memLoad sbe mem (Typed (L.PtrTo ty) gstart)
-      processMemCond cond
-      eq <- uval =<< (Typed i1 <$> withSBE (\sbe -> applyICmp sbe L.Ieq gdata gdata'))
-      when (eq /= 1) $ do
-        dbugM $ "onPostGlobInit assert failure on " ++ show (L.ppSymbol $ L.globalSym g)
-                ++ " (read-back) "
-        CE.assert False $ return ()
-        -}
-      return ()
-  }
-  {-
-  where
-    uval (typedValue -> v) =
-      fromJust <$> withSBE' (\sbe -> snd $ asUnsignedInteger sbe v)
--}

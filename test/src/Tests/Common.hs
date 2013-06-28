@@ -227,7 +227,7 @@ runCInt32Fn v bcFile sym cargs erv = do
   void $ forAllMemModels v bcFile $ do
     sbe <- gets symBE
     args <- mapM (liftSBE . termInt sbe 32 . fromIntegral) cargs
-    callDefine_ sym (Just i32) ((IntType 32,) <$> args)
+    void $ callDefine sym (Just i32) ((IntType 32,) <$> args)
     mrv <- getProgramReturnValue
     case (erv,mrv) of
       (RV{}, Nothing) -> fail "Missing return value"
@@ -269,5 +269,5 @@ runMain' quiet v bc erv = do
 
 runMainVoid :: Int -> FilePath -> PropertyM IO ()
 runMainVoid v bcFile = psk v $ do
-  void $ forAllMemModels 0 bcFile $ do
-    callDefine_ (L.Symbol "main") Nothing []
+  void $ forAllMemModels 0 bcFile $
+    void $ callDefine (L.Symbol "main") Nothing []
