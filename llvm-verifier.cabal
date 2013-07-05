@@ -57,11 +57,13 @@ library
     , split >= 0.2
     , transformers
     , tuple >= 0.2
-    , unix
     , vector
     , wl-pprint
     , MaybeT
     , Verinf
+
+  if !os(windows)
+    build-depends: unix
 
   hs-source-dirs: src
 
@@ -142,7 +144,7 @@ executable bcdump
 
 test-suite test-llvm
   type:       exitcode-stdio-1.0
-  
+
   if flag(abc-backend)
     cpp-options: -DUseABC
 
@@ -175,3 +177,6 @@ test-suite test-llvm
     , MaybeT
     , QuickCheck >= 2.4.1
     , Verinf
+
+  if !os(windows)
+    build-depends: unix
