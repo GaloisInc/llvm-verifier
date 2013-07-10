@@ -15,13 +15,14 @@ import Verifier.LLVM.Backend
 import Verifier.LLVM.DataLayout
 import Verifier.LLVM.Simulator.Internals
 
-uaddWithOverflowIntrinsic :: BitWidth -> StdOvd m sbe
-uaddWithOverflowIntrinsic w = override $ \args ->
-  case args of
-    [(_,x), (_,y)] -> do
-      sbe <- gets symBE
-      liftSBE $ applyTypedExpr sbe (UAddWithOverflow w x y)
-    _ -> wrongArguments "llvm.uadd.with.overflow"
+llvm_uadd_with_overflow :: BitWidth -> StdOvd m sbe
+llvm_uadd_with_overflow w = do
+  override $ \args ->
+    case args of
+      [(_,x), (_,y)] -> do
+        sbe <- gets symBE
+        liftSBE $ applyTypedExpr sbe (UAddWithOverflow w x y)
+      _ -> wrongArguments "llvm.uadd.with.overflow"
 
 memcpyIntrinsic :: BitWidth -> StdOvdEntry m sbe
 memcpyIntrinsic w = do
@@ -65,8 +66,8 @@ objectsizeIntrinsic w = do
             where tv = if v == 0 then -1 else 0
       _ -> wrongArguments nm
 
-expectIntrinsic :: BitWidth -> StdOvdEntry m sbe
-expectIntrinsic w = do
+llvm_expect :: BitWidth -> StdOvdEntry m sbe
+llvm_expect w = do
   let nm = "llvm.expect.i" ++ show w
   let itp = IntType w
   overrideEntry (fromString nm) itp [itp, itp] $ \args ->
@@ -80,11 +81,11 @@ registerLLVMIntrinsicOverrides = do
   let override_uadd_with_overflow w = do
         let nm = fromString $ "llvm.uadd.with.overflow.i" ++ show w
         tryRegisterOverride nm $ \_ -> do
-          return $ uaddWithOverflowIntrinsic w
+          return $ llvm_add_with_overflow w
   mapM_ override_uadd_with_overflow [16, 32, 64]
   registerOverrides 
-    [ expectIntrinsic 32
-    , expectIntrinsic 64
+    [ llvm_expect 32
+    , llvm_expect 64
 
     , memcpyIntrinsic 32
     , memcpyIntrinsic 64
