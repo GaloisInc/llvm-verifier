@@ -48,6 +48,8 @@ library
     , bytestring
     , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
+    , directory
+    , filepath
     , fingertree
     , haskeline >= 0.7
     , lens >= 3.9
@@ -57,11 +59,13 @@ library
     , split >= 0.2
     , transformers
     , tuple >= 0.2
-    , unix
     , vector
     , wl-pprint
     , MaybeT
     , Verinf
+  if !os(windows)
+    build-depends: unix
+
 
   hs-source-dirs: src
 
@@ -71,6 +75,7 @@ library
     Verifier.LLVM.Codebase
     Verifier.LLVM.BitBlastBackend
     Verifier.LLVM.DataLayout
+    Verifier.LLVM.FreeApp
     Verifier.LLVM.LLVMContext
     Verifier.LLVM.LLVMIntrinsics
     Verifier.LLVM.LibcOverrides

@@ -131,7 +131,6 @@ module Verifier.LLVM.Simulator.Internals
 
   , ppStackTrace
   , ppTuple
-  , ppBreakpoints
   ) where
 
 import Control.Applicative hiding (empty)
@@ -265,29 +264,50 @@ data TransientBreakpoint
 
 -- | Action to perform when branch.
 data BranchAction sbe
-  = BARunFalse (SBEPred sbe) -- ^ Branch condition
-               (Path sbe) -- ^ True path to run
-  | BAFalseComplete (SBEPred sbe) -- ^ Assertions before merge
-                    (SBEPred sbe) -- ^ Branch condition
+  = BARunFalse (Path sbe) -- ^ True path to run
+  | BAFalseComplete (SBEPred sbe) -- ^ Assertions before branch.
                     (Path sbe) -- ^ Completed true path
 
-data MergeInfo
-  = ReturnInfo Int (Maybe Ident)
-    -- | Contains the 
-  | PostdomInfo Int SymBlockID
+
+-- | Target location to merge to.
+data MergeTarget
+    -- | @OnReturn i mr@ denotes that the merge should occur when
+    -- returning from a function with old stack height equal to @i@.
+    -- The register to write the return value to in the calling
+    -- frame is @mr@ (which may be Nothing if this is a void function).
+  = OnReturn Int (Maybe Ident)
+    -- | @OnPostdomJump i b@ denotes the merge should occur when
+    -- jumping to block @b@ with a stack height of @i@. 
+  | OnPostdomJump Int SymBlockID
 
 data PathHandler sbe
-  = BranchHandler MergeInfo -- ^ Number of call frames and block id to merge to.
-                  (BranchAction sbe) -- ^ Action to get new control stack when current
-                                      -- path reached merge location.
-                  (PathHandler sbe) -- ^ Handler once this handler is done.
+  = BranchHandler -- | Number of call frames and block id to merge to.
+                  MergeTarget
+                  -- | Assertions before branch.
+                  --(SBEPred sbe)
+                  -- | Branch condition
+                  (SBEPred sbe)
+                  -- | Action to get new control stack when current path reached
+                  -- merge location.
+                  (BranchAction sbe)
+                  -- | Handler once this handler is done.
+                  (PathHandler sbe) 
   | StopHandler
 
 -- | A control stack that is still active.
-data ActiveCS sbe = ACS (Path sbe) (PathHandler sbe)
+data ActiveCS sbe = ACS { _activePath :: Path sbe
+                        , _activeHandler :: PathHandler sbe
+                        }
 
 activePath :: Simple Lens (ActiveCS sbe) (Path sbe)
-activePath f (ACS p h) = flip ACS h <$> f p
+activePath = lens _activePath (\s v -> s { _activePath = v })
+
+--activeHandler :: Simple Lens (ActiveCS sbe) (PathHandler sbe)
+--activeHandler = lens _activeHandler (\s v -> s { _activeHandler = v })
+
+---- | Return all paths in active state.
+--activePaths :: Simple Traversal (ActiveCS sbe) (Path sbe)
+--activePaths f (ACS p h) = ACS <$> f p <*>  
 
 -- | A control stack consists of a collection of execution paths
 -- that will eventually be merged.
@@ -311,7 +331,7 @@ initialCtrlStk :: SBE sbe -> SBEMemory sbe -> CS sbe
 initialCtrlStk sbe mem = FinishedCS p
   where p = Path { pathFuncSym = entrySymbol
                  , _pathPC = Nothing
-                 , pathName = 0
+                 , _pathName = 0
                  , _pathRegs = M.empty
                  , _pathMem = mem
                  , _pathAssertions = sbeTruePred sbe
@@ -346,7 +366,6 @@ pushCallFrame sbe calleeSym returnBlock retReg cs =
                                , cfAssertions = p^.pathAssertions
                                }
                 p' = p { pathFuncSym = calleeSym
-                       , pathName = pathName p
                        , _pathRegs = M.empty
                        , _pathAssertions = sbeTruePred sbe
                        , pathStackHt = pathStackHt p + 1
@@ -357,22 +376,22 @@ pushCallFrame sbe calleeSym returnBlock retReg cs =
 addCtrlBranch :: SBE sbe
               -> SBEPred sbe -- ^ Condition to branch on.
               -> SymBlockID -- ^ Location for newly branched paused path to start at.
-              -> Integer -- ^ Name of path
+              -> Integer -- ^ Name of new path
               -> MergeLocation -- ^ Control point to merge at.
               -> ActiveCS sbe -- ^  Current control stack.
               -> IO (ActiveCS sbe)
 addCtrlBranch sbe c nb nm ml (ACS p h) = do
     mkBranchFromMem <$> sbeRunIO sbe (memBranch sbe (p^.pathMem))
   where mkBranchFromMem mem =
-            ACS pf $ BranchHandler info (BARunFalse c pt) h
+            ACS pf $ BranchHandler info c (BARunFalse pt) h
           where pf = p & pathMem .~ mem
                        & pathAssertions .~ sbeTruePred sbe
-                pt = p { pathName = nm 
-                       } & pathPC .~ Just (nb,0)
-                         & pathMem .~ mem
+                pt = p & pathName .~ nm
+                       & pathPC .~ Just (nb,0)
+                       & pathMem .~ mem
         info = case ml of
-                 Just b -> PostdomInfo (pathStackHt p) b
-                 Nothing -> ReturnInfo (pathStackHt p - 1) (snd <$> cfRetReg cf)
+                 Just b -> OnPostdomJump (pathStackHt p) b
+                 Nothing -> OnReturn (pathStackHt p) (snd <$> cfRetReg cf)
                    where cf : _ = pathStack p
              
 -- | Merge path and path handler.  Note that the new state may
@@ -381,14 +400,14 @@ postdomMerge :: SBE sbe
              -> Path sbe
              -> PathHandler sbe
              -> IO (ActiveCS sbe)
-postdomMerge sbe p (BranchHandler info@(PostdomInfo n b) act h)
+postdomMerge sbe p (BranchHandler info@(OnPostdomJump n b) c act h)
    | pathStackHt p == n && p^.pathPC == Just (b,0) =
   case act of
-    BARunFalse c tp -> do
+    BARunFalse tp -> do
       let tp' = tp & pathAssertions .~ sbeTruePred sbe
-      let act' = BAFalseComplete (tp^.pathAssertions) c p
-      return $ ACS tp' (BranchHandler info act' h)
-    BAFalseComplete a c pf -> do
+      let act' = BAFalseComplete (tp^.pathAssertions) p
+      return $ ACS tp' (BranchHandler info c act' h)
+    BAFalseComplete a pf -> do
       -- TODO: Collect and print merge errors.
       let mergeTyped (tt,tp) (ft,_) =
             (,tp) . either (const tt) id <$> sbeRunIO sbe (applyIte sbe tp c tt ft)
@@ -423,13 +442,13 @@ returnMerge :: SBE sbe
             -> PathHandler sbe
             -> IO ([String], CS sbe)
 returnMerge _ p StopHandler | pathStackHt p == 0 = return ([], FinishedCS p)
-returnMerge sbe p (BranchHandler info@(ReturnInfo n mr) act h) | n == pathStackHt p =
+returnMerge sbe p (BranchHandler info@(OnReturn n mr) c act h) | n > pathStackHt p =
   case act of
-    BARunFalse c tp -> do
+    BARunFalse tp -> do
       let tp' = tp & pathAssertions .~ sbeTruePred sbe
-      let act' = BAFalseComplete (tp^.pathAssertions) c p
-      return $ ([], ActiveCS (ACS tp' (BranchHandler info act' h)))
-    BAFalseComplete a c pf -> do
+      let act' = BAFalseComplete (tp^.pathAssertions) p
+      return $ ([], ActiveCS (ACS tp' (BranchHandler info c act' h)))
+    BAFalseComplete a pf -> do
       -- Merge return value
       (errs, mergedRegs) <-
         case mr of
@@ -462,29 +481,29 @@ returnCurrentPath :: SBE sbe
 returnCurrentPath sbe rt (ACS p h) = do
   let cf : cfs = pathStack p
   m <- sbeRunIO sbe $ stackPopFrame sbe (p^.pathMem)
-  let p' = Path { pathFuncSym = cfFuncSym cf
-                , _pathPC   = cfReturnBlock cf
-                , pathName = pathName p
-                , _pathRegs = setReturnValue "returnCurrentpath" (cfRetReg cf) rt (cfRegs cf)
-                , _pathMem  = m
-                , _pathAssertions = cfAssertions cf
-                , pathStackHt = pathStackHt p - 1
-                , pathStack  = cfs
-                }
+  let p' = p { pathFuncSym = cfFuncSym cf
+             , _pathPC   = cfReturnBlock cf
+             , _pathRegs = setReturnValue "returnCurrentpath" (cfRetReg cf) rt (cfRegs cf)
+             , _pathMem  = m
+             , _pathAssertions = cfAssertions cf
+             , pathStackHt = pathStackHt p - 1
+             , pathStack  = cfs
+             }
   snd <$> returnMerge sbe p' h
 
 branchError :: SBE sbe
-            -> MergeInfo -- Info for current merge point.
+            -> MergeTarget -- Info for current merge point.
+            -> SBEPred sbe --  ^ Branch condition.
             -> BranchAction sbe -- Action to run if branch occurs.
             -> PathHandler sbe -- Previous path handler.
             -> IO (CS sbe) 
-branchError sbe _ (BARunFalse c pt) h = do
+branchError sbe _ c (BARunFalse pt) h = do
   a2 <- sbeRunIO sbe $ applyAnd sbe (pt^.pathAssertions) c
   mem' <- sbeRunIO sbe $ memBranchAbort sbe (pt^.pathMem)
   let pt' = pt & pathMem .~ mem'
                & pathAssertions .~ a2
   return $ ActiveCS $ ACS pt' h
-branchError sbe mi (BAFalseComplete a c pf) h = do
+branchError sbe mi c (BAFalseComplete a pf) h = do
   -- Update assertions on current path
   a1   <- sbeRunIO sbe $ applyAnd sbe a (pf^.pathAssertions)
   cNot <- sbeRunIO sbe $ applyBNot sbe c
@@ -494,17 +513,17 @@ branchError sbe mi (BAFalseComplete a c pf) h = do
                & pathAssertions .~ a2
   -- Try to merge states that may have been waiting for the current path to terminate.
   case (mi,h) of
-    ( ReturnInfo n _, BranchHandler (ReturnInfo pn _) _ _) | n == pn ->
+    ( OnReturn n _, BranchHandler (OnReturn pn _) _ _ _) | n == pn ->
       snd <$> returnMerge sbe pf' h
-    ( PostdomInfo n _, BranchHandler (PostdomInfo pn _) _ _) | n == pn ->
+    ( OnPostdomJump n _, BranchHandler (OnPostdomJump pn _) _ _ _) | n == pn ->
       ActiveCS <$> postdomMerge sbe pf' h
     _ -> return $ ActiveCS $ ACS pf' h
 
 -- | Mark the current path as an error path.
 -- N.B. The new current path if any could now potentially be infeasible.
 markCurrentPathAsError :: SBE sbe -> ActiveCS sbe -> IO (Maybe (CS sbe))
-markCurrentPathAsError sbe (ACS _ (BranchHandler mi a h)) =
-  Just <$> branchError sbe mi a h
+markCurrentPathAsError sbe (ACS _ (BranchHandler mi c a h)) =
+  Just <$> branchError sbe mi c a h
 markCurrentPathAsError _ (ACS _ StopHandler) = return Nothing
 
 type RegMap term = M.Map Ident (term, MemType)
@@ -537,7 +556,7 @@ data Path sbe = Path
   { pathFuncSym      :: !Symbol
     -- | The current PC location of path if any.
   , _pathPC           :: !PathPC
-  , pathName         :: !(Integer)       -- ^ A unique name for this path
+  , _pathName         :: !(Integer)
   , _pathRegs        :: !(RegMap (SBETerm sbe))
   , _pathMem          :: SBEMemory sbe    -- ^ The memory model along this path
   , _pathAssertions   :: SBEPred sbe      -- ^ Condition on path since last branch.
@@ -547,6 +566,10 @@ data Path sbe = Path
 
 pathPC :: Simple Lens (Path sbe) PathPC
 pathPC = lens _pathPC (\p r -> p { _pathPC = r })
+
+-- | A Unique identifier for this path.
+pathName :: Simple Lens (Path sbe) Integer
+pathName = lens _pathName (\p r -> p { _pathName = r })
 
 pathRegs :: Simple Lens (Path sbe) (RegMap (SBETerm sbe))
 pathRegs = lens _pathRegs (\p r -> p { _pathRegs = r })
@@ -666,24 +689,25 @@ ppCtrlStk sbe (Just (ActiveCS (ACS p h))) =
   ppPath sbe p <$$>
   ppPathHandler sbe h
 
-ppMergeInfo :: MergeInfo -> Doc
-ppMergeInfo (ReturnInfo n mr) = text "return" <> parens (int n <+> reg)
+ppMergeTarget :: MergeTarget -> Doc
+ppMergeTarget (OnReturn n mr) = text "return" <> parens (int n <+> reg)
   where reg = maybe empty ppIdent mr
-ppMergeInfo (PostdomInfo n b) =
+ppMergeTarget (OnPostdomJump n b) =
     text "postdom" <> parens (int n <+> ppSymBlockID b)
 
 ppBranchAction :: SBE sbe -> BranchAction sbe -> Doc
-ppBranchAction sbe (BARunFalse c p) = 
-  text "runFalse" <+> prettyPredD sbe c <$$>
+ppBranchAction sbe (BARunFalse p) = 
+  text "runFalse" <$$>
   indent 2 (ppPath sbe p)
-ppBranchAction sbe (BAFalseComplete a c p) =
-  text "falseComplete" <+> prettyPredD sbe c <$$>
+ppBranchAction sbe (BAFalseComplete a p) =
+  text "falseComplete" <$$>
   indent 2 (text "assumptions:" <+> prettyPredD sbe a) <$$>
   indent 2 (ppPath sbe p)
 
 ppPathHandler :: SBE sbe -> PathHandler sbe -> Doc
-ppPathHandler sbe (BranchHandler info act h) = 
-  text "on" <+> ppMergeInfo info <+> text "do" <$$>
+ppPathHandler sbe (BranchHandler tgt c act h) = 
+  text "on" <+> ppMergeTarget tgt <+> text "do" <$$>
+  indent 2 (text "condition:" <+> prettyPredD sbe c) <$$>
   indent 2 (ppBranchAction sbe act) <$$>
   ppPathHandler sbe h
 ppPathHandler _ StopHandler = text "stop"
@@ -701,7 +725,7 @@ ppPath sbe p =
 -- | Prints just the path's name and info.
 ppPathInfo :: Path sbe -> Doc
 ppPathInfo p =
-  char '#' <> integer (pathName p) <> colon 
+  char '#' <> integer (p^.pathName) <> colon 
   <> ppSymbol (pathFuncSym p) <> colon
   <> ppPathPC (p^.pathPC)
 
@@ -721,18 +745,6 @@ ppRegMap sbe mp =
 
 ppTuple :: [Doc] -> Doc
 ppTuple = parens . hcat . punctuate comma
-
-ppBreakpoint :: Breakpoint -> Doc
-ppBreakpoint (sbid,0) = ppSymBlockID sbid
-ppBreakpoint (sbid,i) = ppSymBlockID sbid <> colon <> int i
-
-ppBreakpoints :: M.Map Symbol (S.Set Breakpoint) -> Doc
-ppBreakpoints m = text "breakpoints set:" <$$> hang 2 (vcat d)
-  where d = [ text sym <> ppBreakpoint bp
-            | (Symbol sym, bps) <- M.toList m
-            , bp <- S.toList bps
-            ]
-
 
 --------------------------------------------------------------------------------
 -- SBE lifters and helpers
