@@ -167,6 +167,7 @@ test-suite test-llvm
     , cmdargs >= 0.8
     , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
+    , directory
     , filepath
     , fingertree
     , haskeline >= 0.7
