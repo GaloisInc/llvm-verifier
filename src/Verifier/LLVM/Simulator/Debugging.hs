@@ -64,12 +64,10 @@ import Verifier.LLVM.FreeApp
 import Verifier.LLVM.Simulator.Internals
 import Verifier.LLVM.Simulator.SimUtils
 
-#if !defined(mingw32_HOST_OS) && !defined(__MINGW32__) && !defined(BAD)
+#if !defined(mingw32_HOST_OS) && !defined(__MINGW32__)
 import Control.Concurrent (myThreadId)
 import System.Posix.Signals
 #endif
-
-
 
 commaSepList :: [Doc] -> Doc
 commaSepList l = hcat (punctuate (comma PP.<> char ' ') l)
@@ -115,7 +113,7 @@ strictNonemptyPrefixes i =
 ------------------------------------------------------------------------
 -- User interaction
 
-#if defined(mingw32_HOST_OS) || defined(__MINGW32__) || defined(BAD)
+#if defined(mingw32_HOST_OS) || defined(__MINGW32__)
 -- @resetInterrupt does nothing on Windows.
 resetInterrupt :: IO ()
 resetInterrupt = return ()
@@ -784,6 +782,7 @@ pathCmd
 
 pathListCmd :: SimCmd sbe m
 pathListCmd = cmdDef "List all current execution paths." $ do
+
   --TODO: Implement 
   return False
 
