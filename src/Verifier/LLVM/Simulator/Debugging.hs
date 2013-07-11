@@ -746,32 +746,25 @@ locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
                end = pure (sym, (initSymBlockID,0))
                m = foldl insertName emptyNameMap (M.keys (sdBody d))
 
+-- | List of commands for debugger.
 allCmds :: Codebase sbe -> SimCmd sbe m
 allCmds cb = res 
-  where res = switch
-            [ (,) "help" $ helpCmd res
+  where res -- Breakpoints
+            =    keyword "continue" *> continueCmd
+            <||> keyword "break"  *> breakCmd cb
+            -- Execution
+            <||> keyword "delete" *> deleteCmd cb
+            <||> keyword "finish" *> finishCmd
+            <||> keyword "s"     *> hide stepiCmd
+            <||> keyword "stepi" *> stepiCmd
+            -- Information about current path.
+            <||> keyword "info"   *> infoCmd
+            -- Function for switching between paths
+            <||> keyword "path" *> pathCmd
+            -- Control and information about debugger.
+            <||> keyword "help" *> helpCmd res
+            <||> keyword "quit"   *> quitCmd
             
-            -- TODO 
-            , (,) "path" $ pathCmd
-            , (,) "satpath" satpathCmd
-
-
-            -- Functions below here have bee
-            , (,) "continue" $ continueCmd
-
-            -- Breakpoints            
-            , (,) "break" $ breakCmd cb
-            , (,) "delete" $ deleteCmd cb
-
-            , (,) "quit" $ quitCmd
-            
-
-            , (,) "info" $ infoCmd
-            , (,) "finish" $ finishCmd
-            , (,) "stepi" $ stepiCmd
-            , (,) "s" $ hide stepiCmd
-            ]
-
 helpCmd :: MonadIO m => Command m -> Command m
 helpCmd cmdList = cmdDef "Print list of commands." $ do
   liftIO $ print (commandHelp cmdList)
@@ -785,13 +778,28 @@ continueCmd = cmdDef "Continue execution." $ do
 
 pathCmd :: SimCmd sbe m
 pathCmd
-  = keyword "kill" *> pathKillCmd
-  <||> pathListCmd
+  =    pathListCmd
+  <||> keyword "kill" *> pathKillCmd
+  <||> keyword "sat" *> pathSatCmd
 
 pathListCmd :: SimCmd sbe m
 pathListCmd = cmdDef "List all current execution paths." $ do
   --TODO: Implement 
   return False
+
+-- TODO: Fix path cmd.
+pathSatCmd :: SimCmd sbe m
+pathSatCmd =
+  cmdDef "Check whether the current path's assertions are satisfiable, killing this path if they are not." $ do
+      Just p <- preuse currentPathOfState
+      sbe <- gets symBE
+      sat <- liftSBE $ termSAT sbe (p^.pathAssertions)
+      case sat of
+        UnSat -> do dbugM "path assertions unsatisfiable; killed"
+                    errorPath "path assertions unsatisfiable: killed by debugger"
+        Sat _ -> dbugM "path assertions satisfiable"
+        Unknown -> dbugM "pat assertions possibly satisfiable"
+      return False
 
 pathKillCmd :: SimCmd sbe m
 pathKillCmd = cmdDef "Kill the current execution path." $ do
@@ -804,18 +812,6 @@ opt m = (Just <$> m) <||> pure Nothing
 quitCmd :: MonadIO m => Command m
 quitCmd = cmdDef "Exit LSS." $ do
   liftIO $ exitWith ExitSuccess
-
-satpathCmd :: SimCmd sbe m
-satpathCmd = cmdDef "Check whether the current path's assertions are satisfiable, killing this path if they are not." $ do
-      Just p <- preuse currentPathOfState
-      sbe <- gets symBE
-      sat <- liftSBE $ termSAT sbe (p^.pathAssertions)
-      case sat of
-        UnSat -> do dbugM "path assertions unsatisfiable; killed"
-                    errorPath "path assertions unsatisfiable: killed by debugger"
-        Sat _ -> dbugM "path assertions satisfiable"
-        Unknown -> dbugM "pat assertions possibly satisfiable"
-      return False
 
 breakCmd :: Codebase sbe -> SimCmd sbe m
 breakCmd cb = (locSeq cb <**>) $ cmdDef desc $ \(b,p) -> do

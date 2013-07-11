@@ -81,7 +81,7 @@ registerLLVMIntrinsicOverrides = do
   let override_uadd_with_overflow w = do
         let nm = fromString $ "llvm.uadd.with.overflow.i" ++ show w
         tryRegisterOverride nm $ \_ -> do
-          return $ llvm_add_with_overflow w
+          return $ llvm_uadd_with_overflow w
   mapM_ override_uadd_with_overflow [16, 32, 64]
   registerOverrides 
     [ llvm_expect 32
