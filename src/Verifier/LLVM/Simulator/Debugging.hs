@@ -74,7 +74,7 @@ commaSepList l = hcat (punctuate (comma PP.<> char ' ') l)
 
 safeGetAppUserDataDirectory :: String -> IO (Maybe FilePath)
 safeGetAppUserDataDirectory nm = 
-    catch (Just <$> getAppUserDataDirectory nm)
+    System.Console.Haskeline.catch (Just <$> getAppUserDataDirectory nm)
           catchErrors
   where -- Catch the UnsupportedOperation and DoesNotExist
         -- exceptions that may be thrown.
