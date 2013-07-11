@@ -63,9 +63,6 @@ library
     , wl-pprint
     , MaybeT
     , Verinf
-  if !os(windows)
-    build-depends: unix
-
 
   if !os(windows)
     build-depends: unix
