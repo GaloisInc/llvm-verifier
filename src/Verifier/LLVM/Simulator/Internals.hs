@@ -880,8 +880,8 @@ processMemCond rsn cond = do
   sbe <- gets symBE
   Just cs <- use ctrlStk
   let p = cs^.currentPath
-  p' <- liftSBE $ pathAssertions (applyAnd sbe cond) p
-  case asBool sbe (p^.pathAssertions) of
+  a <- liftSBE $ applyAnd sbe cond (p^.pathAssertions)
+  case asBool sbe a of
     Just True  -> return ()
     Just False -> errorPath rsn
     _ -> do
@@ -890,7 +890,8 @@ processMemCond rsn cond = do
         tellUser $ show $ text "Warning at" <+> ppPathInfo p
         tellUser $ "  Could not verify memory access was valid."
         tellUser $ "  Results may only be partially correct."
-      ctrlStk ?= set currentPath p' cs 
+      let p' = p & pathAssertions .~ a
+      ctrlStk ?= set currentPath p' cs
 
 alloca ::
   ( MonadIO m
