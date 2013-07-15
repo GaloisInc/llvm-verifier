@@ -37,11 +37,9 @@ aggTests =
       runStruct 1 structInitAccessImpl
   , test 1 False "test-array-of-structs"            $
       runStruct 1 structArrayImpl
-  {-
-  , lssTest 0 "ctests/test-struct-member-indirect-call" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 0)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 0)
-  -}
+--  , lssTest 0 "ctests/test-struct-member-indirect-call" $ \v cb -> do
+--      runTestLSSBuddy v cb [] Nothing (Just 0)
+--      runTestLSSDag v cb []   Nothing (Just 0)
   ]
   where
     arrayBaseIdx v        = testArrays v "arr1" (RV 42)

@@ -40,6 +40,10 @@ module Verifier.LLVM.Simulator
   , module Verifier.LLVM.Codebase
   , Simulator (SM)
   , State(..)
+  , errorHandler
+  , ErrorHandler
+  , enterDebuggerOnError
+  , killPathOnError
   , SEH(..)
   , callDefine
   , defaultSEH
@@ -55,6 +59,7 @@ module Verifier.LLVM.Simulator
   , withSBE'
   , errorPath
   -- * Memory operations
+  , currentPathMem
   , alloca
   , load
   , store
@@ -69,6 +74,9 @@ module Verifier.LLVM.Simulator
   , ErrorPath
   , errorPaths
   , LSSOpts(..)
+  , MonadException
+  , debuggerREPL
+  , breakOnMain
   ) where
 
 import           Control.Applicative
@@ -151,15 +159,15 @@ runSimulator cb sbe mem seh mopts m = do
                     , lssOpts      = fromMaybe defaultLSSOpts mopts
                     , _ctrlStk     = Just $ initialCtrlStk sbe mem
                     , _globalTerms = M.empty
-                    , _blockPtrs = M.empty
+                    , _blockPtrs   = M.empty
                     , _fnOverrides = M.empty
                     , _evHandlers  = seh
                     , _errorPaths  = []
                     , _pathCounter = 1
                     , _aigOutputs  = []
                     , _breakpoints = M.empty
-                    , _trBreakpoints = NoTransientBreakpoint
-                    , _errorPolicy = EnterREPL
+                    , _pathPosChangeEvent = checkForBreakpoint
+                    , _errorHandler = enterDebuggerOnError
                     }
   ea <- flip evalStateT newSt $ runErrorT $ runSM $ do
     initGlobals
@@ -229,8 +237,7 @@ callDefine calleeSym t args = do
               <+>  text "for" <+> ppSymbol calleeSym <+> text "when actual type is"
               <+> ppRetType (sdRetType def) <> text "."
   callDefine' False entryRetNormalID calleeSym retReg args
-  cont <- atBreakpoint
-  when cont debuggerREPL
+  signalPathPosChangeEvent
   run
 
 setCurrentBlock :: MonadIO m => SymBlockID -> Simulator sbe m ()
@@ -260,7 +267,7 @@ callDefine' isRedirected normalRetID calleeSym@(Symbol calleeName) mreg args = d
       | otherwise    -> callDefine' True normalRetID calleeSym' mreg args
     Just (Override f, _) -> do
       r <- f calleeSym mreg args
-      modifyPathRegs $ setReturnValue "callDefine'" mreg r
+      modifyPathRegs $ setReturnValue mreg r
       setCurrentBlock normalRetID
   where
     normal
@@ -330,64 +337,53 @@ getProgramFinalMem :: (Monad m, Functor m)
                    => Simulator sbe m (Maybe (SBEMemory sbe))
 getProgramFinalMem = preuse currentPathMem
 
--- | Return true if simulator has a current path at a breakpoint.
-atBreakpoint :: Monad m => Simulator sbe m Bool
-atBreakpoint = do
+-- | Check to see if simulator hit breakpoint, and enter debugger if so.
+signalPathPosChangeEvent :: Monad m => Simulator sbe m ()
+signalPathPosChangeEvent = do
   mp <- preuse currentPathOfState
   case mp of
-    Nothing -> return False
-    Just p -> do
-      tbps <- use trBreakpoints
-      case tbps of
-        BreakNextStmt -> return True
-        BreakReturnFrom ht | pathStackHt p < ht -> return True
-        _ -> do
-          mbps <- use (breakpoints . at (pathFuncSym p))
-          return $ fromMaybe False $ S.member <$> (p^.pathPC) <*> mbps
+    Nothing -> return ()
+    Just{} -> join $ use pathPosChangeEvent
 
--- | Resets simulator state after a failure occurs.
-onSimulationError :: (Functor sbe, Functor m, MonadException m)
-                  => State sbe m -- ^ State to reset to.
-                  -> ActiveCS sbe -- ^ Constrol stack to use for resetting. 
-                  -> FailRsn
-                  -> Simulator sbe m ()
-onSimulationError s cs rsn = do
-  put s -- Reset state
+enterDebuggerOnError :: (Functor sbe, Functor m, MonadException m)
+                     => ErrorHandler sbe m
+enterDebuggerOnError cs rsn = do
+  -- Reset state
+  ctrlStk ?= ActiveCS cs
   -- Get current path before last step.
   let p = cs^.activePath
-  -- Handle error based on policy.
-  ep <- use errorPolicy
-  case ep of
-    EnterREPL -> do
-      dbugM $ show $
-        text "Simulation error:" <+> ppFailRsn rsn <$$>
-        indent 2 (text "at" <+> ppPathInfo p)
-      debuggerREPL
-      -- Resume execution
-      run
-    KillPath -> do
-      sbe <- gets symBE
-      -- Log error path  
-      whenVerbosity (>=1) $ do
-        dbugM $ show $ text "Simulation error:" <+> ppFailRsn rsn
-      -- Just print location at verbosity 1 and 2.
-      whenVerbosity (`elem` [1,2]) $ do
-        dbugM $ show $ indent 2 (text "at" <+> ppPathInfo p)
-      -- Print full path at verbosity 3+.
-      whenVerbosity (>=3) $ do
-        dbugM $ show $ ppPath sbe p
-      -- Merge current path as error, and update control stack.
-      mcs' <- liftIO $ markCurrentPathAsError sbe cs
-      ctrlStk .= mcs'
-      -- Add path to list of error paths.
-      errorPaths %= (EP rsn p:)
-      -- Check to see if we have hit a breakpoint from marking path as
-      -- error.
-      cont <- atBreakpoint
-      when cont debuggerREPL
-      -- Resume execution
-      run
+  dbugM $ show $
+    text "Simulation error:" <+> ppFailRsn rsn <$$>
+    indent 2 (text "at" <+> ppPathInfo p)
+  debuggerREPL
+  -- Resume execution
+  run
 
+killPathOnError :: (Functor sbe, Functor m, MonadException m)
+                => ErrorHandler sbe m
+killPathOnError cs rsn = do
+  -- Reset state
+  ctrlStk ?= ActiveCS cs
+  -- Get current path before last step.
+  let p = cs^.activePath
+  sbe <- gets symBE
+  -- Log error path  
+  whenVerbosity (>=1) $ do
+    dbugM $ show $ text "Simulation error:" <+> ppFailRsn rsn
+  -- Just print location at verbosity 1 and 2.
+  whenVerbosity (`elem` [1,2]) $ do
+    dbugM $ show $ indent 2 (text "at" <+> ppPathInfo p)
+  -- Print full path at verbosity 3+.
+  whenVerbosity (>=3) $ do
+    dbugM $ show $ ppPath sbe p
+  -- Kill the current path.
+  killCurrentPath rsn
+  -- Check to see if there is a new active path that may have hit
+  -- a breakpoint.
+  signalPathPosChangeEvent
+  -- Resume execution
+  run
+  
 -- | Run execution until completion or a breakpoint is encountered.
 run ::
   ( Functor m
@@ -438,10 +434,11 @@ run = do
             run
           userIntHandler e = throwIO e
       handle userIntHandler $ do
-        flip catchError (onSimulationError s cs) $ do
+        let onError rsn = use errorHandler >>= \h -> h cs rsn
+        flip catchError onError $ do
           let Just (pcb,pc) = p^.pathPC
           -- Get name of function we are in.
-          let sym = pathFuncSym p
+          let sym = p^.pathFuncSym
           -- Get statement to execute
           Just def <- lookupDefine sym <$> gets codebase
           let sb = lookupSymBlock def pcb
@@ -455,8 +452,7 @@ run = do
           step stmt
           whenVerbosity (>=5) dumpCtrlStk
           -- Check to see if we have hit a breakpoint from previous step.
-          cont <- atBreakpoint
-          when cont debuggerREPL
+          signalPathPosChangeEvent
           run
   where
     showErrCnt x

@@ -15,12 +15,12 @@ ioTests :: [(Args, Property)]
 ioTests =
   [
     lssTest 0 "ctests/test-call-printf" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 3)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 3)
+      runTestLSSBuddy v cb [] Nothing (Just 3)
+      runTestLSSDag v cb []   Nothing (Just 3)
 
   , lssTest 0 "ctests/test-printf-str" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS Nothing (Just 8)
-      runTestLSSDag v cb []   $ chkLSS Nothing (Just 8)
+      runTestLSSBuddy v cb [] Nothing (Just 8)
+      runTestLSSDag v cb []   Nothing (Just 8)
   ]
 
 --------------------------------------------------------------------------------
