@@ -721,12 +721,11 @@ bmLoadByte :: (Eq l, LV.Storable l)
          -> BitMemory l
          -> LV.Vector l
          -> IO (l, LV.Vector l)
-bmLoadByte be bm vi =
-  let load (SBranch f t) i =
-        mergeCondVector be (vi LV.! i) (load t (i-1)) (load f (i-1))
-      load (SValue _ i v) _ = return (i, v)
-      load _ _ = return (beFalse be, beDontCareByte be)
-   in load (bmStorage bm) (LV.length vi - 1)
+bmLoadByte be bm vi = load (bmStorage bm) (LV.length vi - 1)
+  where load (SBranch f t) i =
+          mergeCondVector be (vi LV.! i) (load t (i-1)) (load f (i-1))
+        load (SValue _ i v) _ = return (i, v)
+        load _ _ = return (beFalse be, beDontCareByte be)
 
 bmMux :: (Eq l, LV.Storable l)
       => BitEngine l
@@ -930,7 +929,7 @@ buddyMemModel dl be = mm
  where ptrWidth = ptrBitwidth dl
        mm = MemModel {
                 mmDump = bmDump be
-              , mmLoad = \m ->
+              , mmLoad = \m -> do
                  let ?be = be in loadBytes (bmLoadByte be m)
               , mmStore = \m (PtrTerm ptr) bytes a -> do
                  Arrow.second (\s -> m { bmStorage = s }) <$>
