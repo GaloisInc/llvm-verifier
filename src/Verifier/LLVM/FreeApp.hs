@@ -7,6 +7,7 @@ module Verifier.LLVM.FreeApp
  , runCont
  , evalCont
  , contToApp
+ , composeCont
  ) where
 
 import Control.Applicative

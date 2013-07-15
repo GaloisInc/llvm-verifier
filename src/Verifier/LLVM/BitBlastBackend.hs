@@ -820,7 +820,9 @@ bmStackAlloc :: (Eq l, LV.Storable l)
              -> AllocResult (BitIO (BitMemory l) l)
 bmStackAlloc be ptrWidth bm eltSize (IntTerm cntVector) a =
   case beVectorToMaybeInt be cntVector of
-    Nothing -> ASymbolicCountUnsupported
+    Nothing -> AError msg
+     where msg = "Stack allocation with symbolic size requested; "
+              ++ "This is not supported by the bitblast backend."
     Just (_,cnt) -> r
       where mkRes c res endAddr newAddr = AResult (beLitFromBool be c) ptr bm'
               where newStorage = uninitRegion be ptrWidth res endAddr (bmStorage bm)
@@ -871,7 +873,9 @@ bmHeapAlloc :: (Eq l, LV.Storable l)
             -> AllocResult (BitIO (BitMemory l) l)
 bmHeapAlloc be ptrWidth bm eltSize (IntTerm cntVector) a =
   case beVectorToMaybeInt be cntVector of
-    Nothing -> ASymbolicCountUnsupported
+    Nothing -> AError msg
+     where msg = "Heap allocation with symbolic size requested; "
+              ++ "This is not supported by the bitblast backend."
     Just (_, cnt) ->
         case allocBlock (bmFreeList bm) pwr of
           Just (freeList, addr) ->

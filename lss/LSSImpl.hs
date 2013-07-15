@@ -50,6 +50,9 @@ data LSS = LSS
   , satBranches   :: Bool
   } deriving (Show, Data, Typeable)
 
+mkLssOpts :: LSS -> LSSOpts
+mkLssOpts lss = LSSOpts (errpaths lss) (satBranches lss)
+
 newtype DbugLvl = DbugLvl { unD :: Int32 }
   deriving (Data, Enum, Eq, Integral, Num, Ord, Real, Show, Typeable)
 instance Default DbugLvl where def = DbugLvl 1
@@ -68,6 +71,15 @@ data ExecRslt sbe crt
   | SymRV    [ErrorPath sbe] (Maybe (SBEMemory sbe)) (SBETerm sbe)
   | ConcRV   [ErrorPath sbe] (Maybe (SBEMemory sbe)) crt
 
+execRsltErrorPaths :: Simple Lens (ExecRslt sbe crt) [ErrorPath sbe]
+execRsltErrorPaths = lens g s
+  where g (NoMainRV e _) = e
+        g (SymRV  e _ _) = e
+        g (ConcRV e _ _) = e
+        s (NoMainRV _ m) e = NoMainRV e m
+        s (SymRV _ m r)  e = SymRV  e m r
+        s (ConcRV _ m r) e = ConcRV e m r
+
 lssImpl :: (Functor sbe, Ord (SBETerm sbe))
         => SBE sbe
         -> SBEMemory sbe
@@ -76,56 +88,45 @@ lssImpl :: (Functor sbe, Ord (SBETerm sbe))
         -> LSS
         -> IO (ExecRslt sbe Integer)
 lssImpl sbe mem cb argv0 args = do
-  let mainDef =
-        case lookupDefine (L.Symbol "main") cb of
-          Nothing -> error "Provided bitcode does not contain main()."
-          Just md -> md
-  runBitBlast sbe mem cb mg argv' args mainDef
-  where
-    argv' = "lss" : argv0
-    mg    = defaultMemGeom (cbDataLayout cb)
-
-
-runBitBlast :: (Functor sbe, Ord (SBETerm sbe))
-            => SBE sbe -- ^ SBE to use
-            -> SBEMemory sbe     -- ^ SBEMemory to use
-            -> Codebase sbe
-            -> MemGeom
-            -> [String]          -- ^ argv
-            -> LSS               -- ^ LSS command-line arguments
-            -> SymDefine (SBETerm sbe) -- ^ Define of main()
-            -> IO (ExecRslt sbe Integer)
-runBitBlast sbe mem cb mg argv' args mainDef = do
-  runSimulator cb sbe mem seh' opts $ do
-    setVerbosity $ fromIntegral $ dbug args
-    whenVerbosity (>=5) $ do
+  runSimulator cb sbe mem defaultSEH (Just (mkLssOpts args)) $ do
+    when (dbug args >=5) $ do
+      let mg    = defaultMemGeom (cbDataLayout cb)
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"
       dbugM $ "Memory model regions:"
       dbugM $ "Stack range : " ++ sr (mgStack mg)
       dbugM $ "Code range  : " ++ sr (mgCode mg)
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
+    setVerbosity $ fromIntegral $ dbug args
     when (startDebugger args) breakOnMain
-    let mainSymbol = L.Symbol "main"
-    --TODO: Verify main has expected signature.
-    argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
-    case sdRetType mainDef of
-      Nothing -> do
-        void $ callDefine mainSymbol Nothing argsv
-        liftM2 NoMainRV (use errorPaths) getProgramFinalMem
-      Just (IntType w) -> do
-        void $ callDefine mainSymbol (Just (IntType w)) argsv
-        eps <- use errorPaths
-        mm  <- getProgramFinalMem
-        mrv <- getProgramReturnValue
-        case mrv of
-          Nothing -> return $ NoMainRV eps mm
-          Just rv -> return $ maybe (SymRV eps mm rv) (ConcRV eps mm) mval
-            where mval = asUnsignedInteger sbe w rv
-      Just _ -> fail "Unsupported return type of main()"
-  where
-    opts        = Just $ LSSOpts (errpaths args) (satBranches args)
-    seh'        = defaultSEH
+    let mainDef =
+          case lookupDefine (L.Symbol "main") cb of
+            Nothing -> error "Provided bitcode does not contain main()."
+            Just md -> md
+    runMainFn mainDef ("lss" : argv0)
+
+-- | Runs a function whose signature matches main.
+runMainFn :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+        => SymDefine (SBETerm sbe)
+        -> [String] -- ^ argv
+        -> Simulator sbe m (ExecRslt sbe Integer)
+runMainFn mainDef argv' = do
+  --TODO: Verify main has expected signature.
+  argsv <- buildArgv (snd <$> sdArgs mainDef) argv'
+  void $ callDefine (sdName mainDef) (sdRetType mainDef) argsv
+  case sdRetType mainDef of
+    Nothing -> do
+      liftM2 NoMainRV (use errorPaths) getProgramFinalMem
+    Just (IntType w) -> do
+      sbe <- gets symBE
+      eps <- use errorPaths
+      mm  <- getProgramFinalMem
+      mrv <- getProgramReturnValue
+      case mrv of
+        Nothing -> return $ NoMainRV eps mm
+        Just rv -> return $ maybe (SymRV eps mm rv) (ConcRV eps mm) mval
+          where mval = asUnsignedInteger sbe w rv
+    Just _ -> error "internal: Unsupported return type of main()"
 
 buildArgv ::
   ( MonadIO m

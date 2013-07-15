@@ -10,6 +10,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE ViewPatterns     #-}
 module Tests.Symbolic (symTests) where
 
+import Control.Lens
 import Control.Monad (unless)
 import Control.Monad.State (gets)
 import Test.QuickCheck
@@ -28,30 +29,28 @@ symTests =
       let v = 1
       runAllMemModelTest v "test-sym-simple.bc" $
         trivBranchImpl "sym_read" (99,42)
-  , lssTest 0 "ctests/test-symbolic-alloc" $ \v cb -> do
-      runTestLSSBuddy v cb [] $ chkLSS (Just 1) Nothing
-       -- This seems to hang in GHCI but not from the command line =/
-      runTestLSSDag v cb []   $ chkLSS (Just 2) Nothing
-  , lssTestAll 0 "ctests/test-fresh" [] $
-      chkLSS Nothing (Just 16)
-  , lssTestAll 0 "ctests/test-fresh-array" [] $
-      -- NB: This test writes an .aig file; we are just testing
-      -- essentially that we don't crash.  At some point this really
-      -- should be beefed up to automatically equivalence check the
-      -- output against a golden AIG file.
-      chkLSS Nothing (Just 0)
-  , lssTestAll 0 "ctests/test-const-false-path" [] $
-      chkLSS (Just 0) (Just 1)
-  , lssTestAll 0 "ctests/test-divergent-unreachables" [] $
-      chkLSS (Just 1) (Just 1)
-  , lssTestAll 0 "ctests/test-missing-define" [] $
-      chkLSS (Just 1) (Just 1)
-  , lssTestAll 0 "ctests/test-fresh-incremental" [] $
-      chkLSS (Just 0) (Just 0)
-  , lssTestAll 0 "ctests/test-fresh-array-incremental" [] $
-      chkLSS (Just 0) (Just 0)
-  , lssTestAll 0 "ctests/test-write-cnf" [] $
-      chkLSS (Just 0) (Just 0)
+  , lssTest 0 "ctests/test-symbolic-alloc" $ \v mdl -> do
+      let mkTest createFn expectedFails expectedRV = run $ do
+            runTestSimulator createFn v mdl $ do
+              errorHandler .= killPathOnError
+              er <- testRunMain []
+              checkErrorPaths expectedFails er
+              checkReturnValue expectedRV er
+      mkTest createBuddyModel 1 Nothing
+      mkTest createDagModel 0 (Just 0)
+
+  , lssTestAll 0 "ctests/test-fresh" [] Nothing (Just 16)
+    -- NB: This test writes an .aig file; we are just testing
+    -- essentially that we don't crash.  At some point this really
+    -- should be beefed up to automatically equivalence check the
+    -- output against a golden AIG file.
+  , lssTestAll 0 "ctests/test-fresh-array"      [] Nothing (Just 0)
+  , lssTestAll 0 "ctests/test-const-false-path" [] (Just 0) (Just 1)
+  , lssTestAll 0 "ctests/test-divergent-unreachables" [] (Just 2) Nothing
+  , lssTestAll 0 "ctests/test-missing-define" [] (Just 1) (Just 1)
+  , lssTestAll 0 "ctests/test-fresh-incremental" [] (Just 0) (Just 0)
+  , lssTestAll 0 "ctests/test-fresh-array-incremental" [] (Just 0) (Just 0)
+  , lssTestAll 0 "ctests/test-write-cnf" [] (Just 0) (Just 0)
   ]
 
 trivBranchImpl :: String -> (Integer, Integer) -> AllMemModelTest

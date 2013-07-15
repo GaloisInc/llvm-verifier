@@ -26,7 +26,7 @@ llvm_uadd_with_overflow w = do
 
 memcpyIntrinsic :: BitWidth -> StdOvdEntry m sbe
 memcpyIntrinsic w = do
-  let nm = "llvm.memcpy.p0i8.i" ++ show w
+  let nm = "llvm.memcpy.p0i8.p0i8.i" ++ show w
   let itp = IntType w
   voidOverrideEntry (fromString nm) [i8p, i8p, itp, i32, i1] $ \args -> do
     case snd <$> args of

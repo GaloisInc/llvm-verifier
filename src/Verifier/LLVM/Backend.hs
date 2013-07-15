@@ -76,9 +76,8 @@ data AllocResult sbe
   -- allocated space.  @c@ is false if the allocation failed due to
   -- insufficient space.
   = AResult (SBEPred sbe) (SBETerm sbe) (SBEMemory sbe)
-  -- | Returned if stackAlloca given a symbolic length and the implementation
-  -- does not support this.
-  | ASymbolicCountUnsupported
+  -- | Return an error message if allocation failed.
+  | AError String
 
 data SBE m = SBE
   {

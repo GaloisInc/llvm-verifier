@@ -9,13 +9,14 @@
 module Tests.Common 
   ( module Tests.Common
   , PropertyM
+  , run
   , view
   ) where
 
 import           Control.Applicative
 import           Control.Lens hiding (act, (<.>))
 import           Control.Monad 
-import           Control.Monad.State (gets)
+import           Control.Monad.State (gets, MonadIO)
 import           Data.Int
 import           System.FilePath
 import qualified Text.LLVM                     as L
@@ -77,20 +78,18 @@ type SBEPropM a = forall sbe . (Functor sbe, Ord (SBETerm sbe)) => Simulator sbe
 
 forAllMemModels :: forall a. Int -> FilePath -> SBEPropM a -> PropertyM IO [a]
 forAllMemModels v bcFile testProp = do
-  mdl <- run $ loadModule $ testsDir </> bcFile
-  let dl = parseDataLayout (L.modDataLayout mdl)
-  let runTest :: (Functor sbe, Ord (SBETerm sbe)) => (SBE sbe,SBEMemory sbe) -> PropertyM IO a
-      runTest (sbe,mem) = do
-        cb <- run (mkCodebase sbe dl mdl)
-        run $ do
-          runSimulator cb sbe mem defaultSEH Nothing $ withVerbosity v $ testProp
+  mdl <- testMDL bcFile
+  let runTest :: (Functor sbe, Ord (SBETerm sbe))
+              => SBECreateFn sbe
+              -> PropertyM IO a
+      runTest createFn = run $ runTestSimulator createFn v mdl testProp
   sequence
     [ 
 {-
-runTest =<< run (createBuddyModel dl)
+      runTest =<< run (createBuddyModel dl)
     , runTest =<< run (createDagModel dl)
 -}
-      runTest =<< run (createSAWModel dl)
+      runTest createSAWModel
     ]
 
 type AllMemModelTest = Functor sbe => Simulator sbe IO Bool
@@ -105,37 +104,54 @@ type ExecRsltHndlr sbe crt a =
   -> ExecRslt sbe crt -- ^ Execution results; final memory is embedded here
   -> IO a
 
-type RunLSSTest sbe = Int
-                    -> L.Module
-                    -> [String]
-                    -> ExecRsltHndlr sbe Integer Bool
-                    -> PropertyM IO ()
+runTestSimulator :: (Functor sbe, Ord (SBETerm sbe))
+                 => SBECreateFn sbe
+                 -> Int -- ^ Verbosity
+                 -> L.Module -- ^ Code to run in.
+                 -> Simulator sbe IO a
+                 -> IO a
+runTestSimulator createFn v mdl action = do
+  let dl = parseDataLayout (L.modDataLayout mdl)
+  (sbe, mem) <- createFn dl
+  cb <- mkCodebase sbe dl mdl
+  runSimulator cb sbe mem defaultSEH Nothing $ do
+    setVerbosity v
+    action
+
+testRunMain :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+            => [String] -> Simulator sbe m (ExecRslt sbe Integer)
+testRunMain args = do
+  cb <- gets codebase
+  case lookupDefine (L.Symbol "main") cb of
+    Nothing -> error "Provided bitcode does not contain main()."
+    Just mainDef -> runMainFn mainDef ("lss" : args)
+
+type SBECreateFn sbe = DataLayout -> IO (SBE sbe, SBEMemory sbe)
 
 runTestLSSCommon :: (Functor sbe, Ord (SBETerm sbe))
-                 => String
-                 -> (DataLayout -> IO (SBE sbe, SBEMemory sbe))
-                 -> RunLSSTest sbe
-runTestLSSCommon nm createFn v mdl argv' hndlr = do
-   when (v >= 2) $ run $ putStrLn nm
-   assert =<< run m
-  where m = do let dl = parseDataLayout (L.modDataLayout mdl)
-               (sbe, mem) <- createFn dl
-               cb <- mkCodebase sbe dl mdl
-               rslt <- lssImpl sbe mem cb argv' cmdLineOpts
-               hndlr sbe mem rslt
-        dbugLvl     = DbugLvl (fromIntegral v)
-        cmdLineOpts = LSS { dbug = dbugLvl
-                          , argv = "" 
-                          , backend = Nothing
-                          , errpaths = False
-                          , xlate = False
-                          , mname = Nothing
-                          , startDebugger = False
-                          , satBranches = False
-                          }
+                 => SBECreateFn sbe
+                 -> Int
+                 -> L.Module
+                 -> [String]
+                 -> Maybe Int     -- ^ Expected number of error paths
+                 -> Maybe Integer -- ^ Expected return value
+                 -> PropertyM IO ()
+runTestLSSCommon createFn v mdl argv' mepsLen mexpectedRV = do
+  run $ runTestSimulator createFn v mdl $ do
+    when (v > 0) breakOnMain
+    case mepsLen of
+      -- Set error policy to just kill paths if errors are expected.
+      Just i | i > 0 && v == 0 -> errorHandler .= killPathOnError
+      _ -> return ()
+    execRslt <- testRunMain argv'
+    case mepsLen of
+      Nothing -> return ()
+      Just epsLen -> checkErrorPaths epsLen execRslt
+    checkReturnValue mexpectedRV execRslt
+
 
 -- | Create buddy backend and initial memory.
-createBuddyModel :: DataLayout -> IO (SBE (BitIO (BitMemory Lit) Lit), BitMemory Lit)
+createBuddyModel :: SBECreateFn (BitIO (BitMemory Lit) Lit)
 createBuddyModel dl = do
   be <- createBitEngine
   let sbe = let ?be = be in sbeBitBlast dl (buddyMemModel dl be)
@@ -143,41 +159,84 @@ createBuddyModel dl = do
   return (sbe,mem)
 
 -- | Create buddy backend and initial memory.
-createDagModel :: DataLayout -> IO (SBE (BitIO (DagMemory Lit) Lit), DagMemory Lit)
+createDagModel :: SBECreateFn (BitIO (DagMemory Lit) Lit)
 createDagModel dl = do
   be <- createBitEngine
   (mm,mem) <- createDagMemModel dl be (defaultMemGeom dl)
   let sbe = let ?be = be in sbeBitBlast dl mm
   return (sbe,mem)
 
-createSAWModel :: DataLayout -> IO (SBE (SAWBackend s Lit), SAWMemory s)
+createSAWModel :: SBECreateFn (SAWBackend s Lit)
 createSAWModel dl = do
   be <- createBitEngine
   createSAWBackend be dl (defaultMemGeom dl)
 
-runTestLSSBuddy :: RunLSSTest (BitIO (BitMemory Lit) Lit)
-runTestLSSBuddy = runTestLSSCommon "runTestLSSBuddy" createBuddyModel
+runTestLSSBuddy :: Int           -- ^ Verbosity
+                -> L.Module      -- ^ Module 
+                -> [String]      -- ^ Arguments
+                -> Maybe Int     -- ^ Expected number of error paths
+                -> Maybe Integer -- ^ Expected return value
+                -> PropertyM IO ()
+runTestLSSBuddy = runTestLSSCommon createBuddyModel
 
-runTestLSSDag :: RunLSSTest (BitIO (DagMemory Lit) Lit)
-runTestLSSDag = runTestLSSCommon "runTestLSSDag" createDagModel
-
-runTestSAWBackend :: RunLSSTest (SAWBackend s Lit)
-runTestSAWBackend = runTestLSSCommon "runTestLSSDag" createSAWModel
+runTestLSSDag :: Int           -- ^ Verbosity
+              -> L.Module      -- ^ Module 
+              -> [String]      -- ^ Arguments
+              -> Maybe Int     -- ^ Expected number of error paths
+              -> Maybe Integer -- ^ Expected return value
+              -> PropertyM IO ()
+runTestLSSDag = runTestLSSCommon createDagModel
 
 lssTest :: Int -> FilePath -> (Int -> L.Module -> PropertyM IO ()) -> (Args, Property)
 lssTest v bc act = test 1 False bc $ act v =<< testMDL (bc <.> "bc")
+
+testEachBackend :: FilePath
+                -> (forall sbe . (Functor sbe, Ord (SBETerm sbe))
+                               => L.Module
+                               -> String
+                               -> SBECreateFn sbe
+                               -> PropertyM IO ())
+                -> (Args,Property)
+testEachBackend nm f = do
+  test 1 False nm $ do
+    mdl <- testMDL (nm <.> "bc")
+    f mdl "bitblast" createBuddyModel
+    f mdl "dag" createDagModel
+--    f "saw" createSAWModel
 
 -- | Run test on all backends
 lssTestAll :: Int
            -> String
            -> [String]
-           -> (forall sbe . ExecRsltHndlr sbe Integer Bool)
+           -> Maybe Int  -- ^ Expected number of error paths.
+           -> Maybe Integer -- ^ Expected return value
            -> (Args,Property)
-lssTestAll v nm args hndlr =
-  lssTest v nm $ \_ mdl -> do
-    runTestLSSBuddy v mdl args hndlr
-    runTestLSSDag v mdl args hndlr
-    --runTestSAWBackend v mdl args hndlr
+lssTestAll v nm args elen erv =
+  testEachBackend nm $ \mdl _backendName createFn -> do
+    runTestLSSCommon createFn v mdl args elen erv
+
+checkErrorPaths :: Monad m => Int -> ExecRslt sbe crt -> m ()
+checkErrorPaths epsLen execRslt = do
+  let actualLen = length (execRslt^.execRsltErrorPaths)
+  unless (actualLen == epsLen) $ do
+    fail $ "Expected " ++ show epsLen ++ " error paths, but found " 
+           ++ show actualLen
+
+checkReturnValue :: Monad m => Maybe Integer -> ExecRslt sbe Integer -> m ()
+checkReturnValue mexpectedRV execRslt = do
+  case execRslt of
+    ConcRV _ _mm r -> do
+      case mexpectedRV of
+        Nothing -> fail "Unexpected return value"
+        Just expectedRV ->
+          unless (expectedRV == r) $ do
+            fail $ "Expected " ++ show expectedRV ++ " return value, but found " ++ show r  
+    NoMainRV _ _mm -> do
+      case mexpectedRV of
+        Nothing -> return ()
+        Just{} -> fail $ "Missing return value"
+    SymRV{} -> fail "Unexpected sym exec result"
+
 
 -- TODO: At some point we may want to inspect error paths and ensure
 -- that they are the /right/ error paths, rather just checking the
@@ -186,27 +245,10 @@ chkLSS :: Maybe Int
        -> Maybe Integer
        -> ExecRsltHndlr sbe Integer Bool
 chkLSS mepsLen mexpectedRV _ _ execRslt = do
-  let chkLen eps =
-        case mepsLen of
-          Nothing -> return ()
-          Just epsLen ->
-            unless (length eps == epsLen) $ do
-              fail $ "Expected " ++ show epsLen ++ " error paths, but found " 
-                       ++ show (length eps)
-  case execRslt of
-    ConcRV eps _mm r -> do
-      chkLen eps
-      case mexpectedRV of
-        Nothing -> fail "Unexpected return value"
-        Just expectedRV ->
-          unless (expectedRV == r) $ do
-            fail $ "Expected " ++ show expectedRV ++ " return value, but found " ++ show r  
-    NoMainRV eps _mm -> do
-      chkLen eps
-      case mexpectedRV of
-        Nothing -> return ()
-        Just{} -> fail $ "Missing return value"
-    SymRV{} -> fail "Unexpected sym exec result"
+  case mepsLen of
+    Nothing -> return ()
+    Just epsLen -> checkErrorPaths epsLen execRslt
+  checkReturnValue mexpectedRV execRslt
   return True
 
 chkNullaryCInt32Fn :: Int

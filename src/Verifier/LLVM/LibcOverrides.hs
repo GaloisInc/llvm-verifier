@@ -98,22 +98,21 @@ printf =
         withSBE $ \s -> termInt s 32 (toInteger (length resString))
       _ -> wrongArguments "printf"
 
-assert_rtn :: StdOvdEntry sbe m
-assert_rtn = do
-  voidOverrideEntry "__assert_rtn" [i8p, i8p, i32, i8p] $ \args -> do
+handle_assert :: String -> StdOvdEntry sbe m
+handle_assert nm = do
+  voidOverrideEntry (fromString nm) [i8p, i8p, i32, i8p] $ \args -> do
     case args of
       [(_,v1), (_,v2), (_,v3), (_,v4)] -> do
           fname     <- loadString "assert function" v1
           file      <- loadString "assert filename" v2
           sbe <- gets symBE
-          let Just line = asSignedInteger sbe undefined v3
+          let Just line = asSignedInteger sbe 32 v3
           err       <- loadString "assert error message" v4
-          errorPath $ unwords [ "__assert_rtn:"
-                      , file ++ ":" ++ show line ++ ":" ++ fname ++ ":"
-                      , err
-                      ]
-      _ -> errorPath "Incorrect number of parameters passed to __assert_rtn()"
-
+          errorPath $ unwords [ nm
+                              , file ++ ":" ++ show line ++ ":" ++ fname ++ ":"
+                              , err
+                              ]
+      _ -> wrongArguments nm
 
 free :: StdOvdEntry sbe m
 free = do
@@ -121,17 +120,17 @@ free = do
 
 memset_chk :: BitWidth -> StdOvdEntry sbe m
 memset_chk aw = do
-  let nm = fromString "__memset_chk"
+  let nm = "__memset_chk"
   let sizeT = IntType aw
-  overrideEntry nm i8p [i8p, i32, sizeT, sizeT] $ \args -> do
+  overrideEntry (fromString nm) i8p [i8p, i32, sizeT, sizeT] $ \args -> do
     case args of
       [(_,dst), (_,val0), (_, len), (_, _dstlen)] -> do
         sbe <- gets symBE
         -- Truncate down to unsigned integer.
         val <- liftSBE $ termTruncScalar sbe 32 val0 8
-        memset (show nm) dst val aw len
+        memset nm dst val aw len
         return dst
-      _ -> wrongArguments (show nm)
+      _ -> wrongArguments nm
 
 registerLibcOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
 registerLibcOverrides = do
@@ -143,7 +142,8 @@ registerLibcOverrides = do
         registerOverrideEntry (mallocOvd ptp aw)
       _ -> return ()
   registerOverrides
-    [ assert_rtn
+    [ handle_assert "__assert_fail"
+    , handle_assert "__assert_rtn"
     --, ("exit", voidTy, [i32], False, exitHandler)
     , allocaOvd aw
     , free

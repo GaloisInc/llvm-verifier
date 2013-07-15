@@ -11,21 +11,23 @@ semantics are loosely based on gdb.
 -}
 
 {-# LANGUAGE CPP                 #-}
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE DoAndIfThenElse     #-}
+{- LANGUAGE FlexibleContexts    #-}
+{- LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE PatternGuards       #-}
-{-# LANGUAGE RankNTypes          #-}
+{- LANGUAGE PatternGuards       #-}
+{-# LANGUAGE Rank2Types          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeFamilies        #-}
+{- LANGUAGE TupleSections #-}
+{- LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE ViewPatterns        #-}
-
 module Verifier.LLVM.Simulator.Debugging (
     breakOnMain
   , debuggerREPL
   , resetInterrupt
+  , checkForBreakpoint
   ) where
 
 import Control.Applicative hiding (empty)
@@ -139,26 +141,40 @@ resetInterrupt = do
 breakOnMain :: (Functor m, Monad m) => Simulator sbe m ()
 breakOnMain = addBreakpoint (Symbol "main") (initSymBlockID,0)
 
+-- | Prints out message where current path is.
 logBreakpoint :: (Functor m, Monad m, MonadIO m)
               => Simulator sbe m ()
 logBreakpoint = do
+  withActivePath () $ \p -> do
+    let sym = p^.pathFuncSym
+    cb <- gets codebase
+    case lookupDefine sym cb of
+      Nothing -> dbugM "Could not determine location."
+      Just def -> do
+        let psym = ppSymbol sym  
+        let bld =
+              case p^.pathPC of
+                Nothing -> psym
+                Just (pcb,pc) ->
+                    psym <> ppSymBlockID pcb <> colon <+> ppStmt stmt
+                  where sb = lookupSymBlock def pcb
+                        stmt = sbStmts sb V.! pc
+        dbugM $ show $ text "at" <+> bld <> colon
+
+
+checkForBreakpoint :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+                   => Simulator sbe m ()
+checkForBreakpoint = do
   Just p <- preuse currentPathOfState
-  let sym = pathFuncSym p
-      psym = ppSymbol sym
-  Just def <- lookupDefine (pathFuncSym p) <$> gets codebase
-  let bld =
-        case p^.pathPC of
-          Nothing -> psym
-          Just (pcb,pc) -> psym <> ppSymBlockID pcb <> colon <+> ppStmt stmt
-            where sb = lookupSymBlock def pcb
-                  stmt = sbStmts sb V.! pc
-  dbugM $ show $ text "at" <+> bld <> colon
+  mbps <- use (breakpoints . at (p^.pathFuncSym))
+  let atBP = fromMaybe False $ S.member <$> (p^.pathPC) <*> mbps
+  when atBP debuggerREPL
 
 debuggerREPL :: forall sbe m 
               . (Functor sbe, Functor m, MonadIO m, MonadException m)
              => Simulator sbe m ()
 debuggerREPL = do
-    trBreakpoints .= NoTransientBreakpoint
+    pathPosChangeEvent .= checkForBreakpoint
     logBreakpoint
     cb <- gets codebase
     let cmds = allCmds cb
@@ -216,18 +232,37 @@ tokenSeqTokens f (SeqCons p t s) = SeqCons p <$> f t <*> tokenSeqTokens f s
 tokenSeqTokens f (SeqLast p t pe) = (\u -> SeqLast p u pe) <$> f t
 tokenSeqTokens _ (SeqEnd p) = pure (SeqEnd p)
 
+-- | A "type" for topens.  Tokens with the same type need
+-- a space between them.
+data TokenType
+   = WordTokenType
+   | OpTokenType
+   | BadCharType
+  deriving (Eq, Show)
+
+-- | Token from parser.
 data Token
-  = Keyword String
-  | OpToken String
-  | StringLit String
-  | BadChar String
+   = Keyword String
+   | StringLit String
+   | NatToken Integer -- | A non-negative integer.
+   | OpToken String
+   | BadChar String
   deriving (Eq, Ord, Show)
+
+-- | Type of token.
+tokenType :: Token -> TokenType
+tokenType Keyword{}   = WordTokenType
+tokenType StringLit{} = WordTokenType
+tokenType NatToken{}  = WordTokenType
+tokenType OpToken{}   = OpTokenType
+tokenType BadChar{}   = BadCharType
 
 -- | Pretty print a token.
 ppToken :: Token -> Doc
 ppToken (Keyword k) = text k
-ppToken (OpToken k) = text k
 ppToken (StringLit s) = dquotes (text s)
+ppToken (NatToken i) = integer i
+ppToken (OpToken k) = text k
 ppToken (BadChar s) = text s
 
 data CharStream = CSNext !Pos !Char !CharStream
@@ -252,24 +287,33 @@ convertToTokens = tokenize . charStream
         tokenize (CSNext p c r)
           | isSpace c  = tokenize r
           | c == '\"'  = stringLit p [] r
-          | isToken1 c = charSeq isToken Keyword p [c] r
-          | isOp c     = charSeq isOp OpToken p [c] r
-          | otherwise  = SeqLast p (BadChar (c:csString r)) (csEndPos r)
+          | isDigit c  = charSeq isDigit isSpace (NatToken . read) p [c] r 
+          | isToken1 c = charSeq isToken isSpace Keyword p [c] r
+          | isOp c     = charSeq isOp (\_ -> True) OpToken p [c] r
+          | otherwise  = badChar p [c] r
         tokenize (CSEnd p) = SeqEnd p
         
-        isToken1 c = isAlphaNum c || c `elem` ['_', '%']
+        badChar :: Pos -> String -> CharStream -> TokenSeq Token
+        badChar p s r = SeqLast p (BadChar (s ++ csString r)) (csEndPos r)
+
+        isToken1 c = isAlpha c || c `elem` ['_', '%']
         isToken  c = isAlphaNum c || c `elem` ['_', '%']
 
         -- Recognize operator characters.
         isOp = (`elem` ['.', ':'])
 
-        -- @charSeq rec pos p cs@ recognizes a word with characters
-        -- satisfying rec.
-        charSeq :: (Char -> Bool)
-                -> (String -> Token)
+        -- @charSeq whilePred endPred ctor pos p cs@ recognizes a word
+        -- with characters satisfying whilePred that ends with the end
+        -- of the CharStream or a character satisfying endPred.
+        charSeq :: (Char -> Bool) -- ^ Character to accumulate.
+                -> (Char -> Bool) -- ^ Character for end.
+                -> (String -> Token) -- ^ Constructor for making tokens.
                 -> Pos -> String -> CharStream -> TokenSeq Token
-        charSeq rec tkn pos p (CSNext _ c r) | rec c = charSeq rec tkn pos (c:p) r
-        charSeq _ tkn pos p r = resolve pos (tkn (reverse p)) r
+        charSeq accRec endRec ctor = go
+          where go pos p cs@(CSNext _ c r)
+                  | accRec c = go pos (c:p) r
+                  | not (endRec c) = badChar pos (reverse p) cs
+                go pos p r = resolve pos (ctor (reverse p)) r
 
         -- Recognize string literals
         stringLit :: Pos -> String -> CharStream -> TokenSeq Token
@@ -277,12 +321,11 @@ convertToTokens = tokenize . charStream
           case r of
             CSNext _ '\\' s -> stringLit pos ('\\':p) s
             CSNext _ '\"' s -> stringLit pos ('\"':p) s
-            _ -> SeqLast pos (BadChar (reverse p ++ csString r0)) (csEndPos r)
+            _ -> badChar pos (reverse p) r0
         stringLit pos p (CSNext _ '\"' r) =
           resolve pos (StringLit (reverse p)) r
         stringLit pos p (CSNext _ c r) = stringLit pos (c:p) r
-        stringLit pos p (CSEnd p') = SeqLast pos (BadChar (reverse p)) p'
-
+        stringLit pos p (CSEnd p') = badChar pos (reverse p) (CSEnd p')
 
         resolve p k (CSEnd p') = SeqLast p k p'
         resolve p k r  = SeqCons p k (tokenize r)
@@ -353,33 +396,54 @@ instance IsString SwitchKey where
   fromString s = SwitchKey (toListOf tokenSeqTokens tokens)
     where tokens = convertToTokens s
 
+-- | A token predicate recognizes tokens with a user-definable action.
+data TokenPred m a where
+  -- | Includes what to show when printing, a predicate, anda  continuation.
+  TokenPred :: (Maybe PP.Doc)
+            -> TokenType
+            -> (Token -> Maybe b)
+            -> Cont (Parser m) b a
+            -> TokenPred m a
+
+
+tokenPredAddCont :: TokenPred m a
+                 -> Cont (Parser m) a c
+                 -> TokenPred m c
+tokenPredAddCont (TokenPred d t f c) c' =
+  TokenPred d t f (c `composeCont` c')
+
+tokenPredType :: Simple Lens (TokenPred m a) TokenType
+tokenPredType f (TokenPred d tp p c) =
+  (\tp' -> TokenPred d tp' p c) <$> f tp
+
 data SwitchMap m a = SwitchMap { _smWords :: M.Map Token (SwitchMatch (Grammar m a))
+                               , _smPreds :: [TokenPred m a]
                                , _smEnd :: Maybe (Grammar m a)
                                }
 
+
+fromTokenPred :: TokenPred m a -> SwitchMap m a
+fromTokenPred p = SwitchMap { _smWords = M.empty
+                            , _smPreds = [p]
+                            , _smEnd = Nothing
+                            }
+
+-- | Map of ground towns to switch matches.
 smWords :: Simple Lens (SwitchMap m a) (M.Map Token (SwitchMatch (Grammar m a)))
 smWords = lens _smWords (\s v -> s { _smWords = v })
+
+-- | List of token predicates in map.
+smPreds :: Simple Lens (SwitchMap m a) [TokenPred m a]
+smPreds = lens _smPreds (\s v -> s { _smPreds = v })
 
 smEnd :: Simple Lens (SwitchMap m a) (Maybe (Grammar m a))
 smEnd = lens _smEnd (\s v -> s { _smEnd = v })
 
-smGrammars :: Traversal (SwitchMap m a)
-                        (SwitchMap n b)
-                        (Grammar m a)
-                        (Grammar n b)
-smGrammars f (SwitchMap w e) =
-  SwitchMap <$> traverse (switchMatchGrammars f) w <*> traverse f e
-
-smNextTokens :: SwitchMap m a -> [Token]
-smNextTokens = M.keys . (^.smWords)
-
 emptySwitchMap :: SwitchMap m a
-emptySwitchMap = SwitchMap { _smWords = M.empty, _smEnd = Nothing }
-
-unionSwitchMap :: SwitchMap m a -> SwitchMap m a -> SwitchMap m a
-unionSwitchMap (SwitchMap nx ex) (SwitchMap ny ey) =
-  SwitchMap (M.unionWith (unionSwitchMatch (<||>)) nx ny)
-            (unionMaybe (<||>) ex ey)
+emptySwitchMap = SwitchMap { _smWords = M.empty
+                           , _smPreds = []
+                           , _smEnd = Nothing
+                           }
 
 unionMaybe :: (a -> a -> a) -> Maybe a -> Maybe a -> Maybe a
 unionMaybe u (Just x) y = Just (maybe x (u x) y)
@@ -390,18 +454,6 @@ unionSwitchMatch :: (a -> a -> a)
 unionSwitchMatch u (SwitchMatch ex xx) (SwitchMatch ey xy) =
   SwitchMatch (unionMaybe u ex ey) (xx ++ xy)
 
-pureSwitchMap :: a -> SwitchMap m a
-pureSwitchMap v = SwitchMap { _smWords = M.empty, _smEnd = Just (pure v) }
-
-composeSwitchMap :: SwitchMap m a -> Cont (Parser m) a b -> SwitchMap m b
-composeSwitchMap m c = m & smGrammars %~ (`runCont` c)
-
-switchMapChoices :: SwitchMap m a -> [(Token, Grammar m a)]
-switchMapChoices m = 
-  [ (nm, a)
-  | (nm,(^.switchExact) -> Just a) <- M.toList (m^.smWords)
-  ]
-
 switchHelp :: SwitchMap m a -> HelpResult
 switchHelp m = unionHelpList $
     itemHelp <$> mapMaybe (_2 (^. switchExact)) matches
@@ -409,31 +461,45 @@ switchHelp m = unionHelpList $
         itemHelp (nm,k) = HelpResult (singleArg (ppToken nm)) [] 
                          `seqHelp` matcherHelp k
 
+matchPred :: TokenPred m a -> Token -> Maybe (App (Parser m) a)
+matchPred (TokenPred _ _ f c) t = (`evalCont` c) <$> f t
+
 parseSwitchToken :: (Applicative m, Monad m)
-                 => SwitchMap m a
+                 => NextState m a
                  -> Pos
                  -> Token
                  -> TokenSeq Token
                  -> m (ParseResult a)
-parseSwitchToken m p t ts
-  | Just ma <- m^.smWords^.at t =
-    case ma^.switchExact of
-      Just a -> runGrammar a ts
-      Nothing -> do
-        case ma^.switchExtensions of
-          [] -> error "internal error: Unexpected empty match"
-          [(nm,a)] -> addCompletions p [mkCompletion nm a]
-                      <$> runGrammar a ts
-          _ -> pure (incompleteParse p msg cl)
-            where msg = text "Ambiguous input" <+> dquotes (ppToken t)
-                  cl = ma^.switchExtensions
-parseSwitchToken m p t _ = pure (parseFail p d [])
-  where d = text "Unexpected symbol" <+> dquotes (ppToken t)
-            PP.<> expectedOneOf cl
-        cl = switchMapChoices m
+parseSwitchToken m p t ts =
+   case tokenMatches ++ predMatches of
+     a:_ -> runGrammar a ts
+     [] ->
+       case mma of
+         Nothing -> pure (parseFail p d [])
+           where d = text "Unexpected symbol" <+> dquotes (ppToken t)
+                       PP.<> expectedOneOf cl
+                 cl = nextStateChoices m
+
+         Just ma ->
+           case ma^.switchExtensions of
+             [] -> error "internal: parsing unexpectedly failed."
+             [(t',a)] -> addCompletions p [mkCompletion t' a]
+                           <$> runGrammar a ts
+             _ -> pure (incompleteParse p msg cl)
+               where msg = text "Ambiguous input" <+> dquotes (ppToken t)
+                     cl = ma^.switchExtensions
+
+  where mma = nsWords m^.at t
+        tokenMatches =
+          case mma of
+            Nothing -> []
+            Just ma -> case ma^.switchExact of
+                         Just a -> [a]
+                         Nothing -> []
+        predMatches = mapMaybe (`matchPred` t) (nsPreds m)
 
 parseSwitch :: (Applicative m, Monad m)
-            => SwitchMap m a
+            => NextState m a
             -> TokenSeq Token
             -> m (ParseResult a)
 parseSwitch m ts =
@@ -441,17 +507,19 @@ parseSwitch m ts =
     SeqCons p t ts'  -> parseSwitchToken m p t ts'
     SeqLast p t pend -> parseSwitchToken m p t (SeqEnd pend)
     SeqEnd p ->
-      case m^.smEnd of
-        Just ma -> runGrammar ma ts
-        Nothing -> pure (incompleteParse p msg cl)
+      case nsMatches m of
+        [] -> pure (incompleteParse p msg cl)
           where msg = text "Unexpected end of command"
-                cl = switchMapChoices m
+                cl = nextStateChoices m
+        [v] -> pure $ parseValue p v []
+        _ -> pure $ parseFail p msg []
+          where msg = text "Internal error: Unexpected ambiguous command."
 
 switch :: forall m a . [(SwitchKey, Grammar m a)] -> Grammar m a
 switch = atom . Switch . impl
     where -- Get map from strings to associated match
           impl cases =
-            execState (traverseOf_ folded (uncurry addMatch) cases)
+            execState (mapM_ (uncurry addMatch) cases)
                       emptySwitchMap
           -- Update switch match at a given identifier.
           alter :: Token
@@ -477,6 +545,74 @@ switch = atom . Switch . impl
                         alter (Keyword p) (switchExtensions %~ (++[(k,v')]))
               _ -> return ()
           addMatch (SwitchKey []) v = smEnd ?= v
+
+------------------------------------------------------------------------
+-- NextState
+
+data NextState m a = NextState { nsWords   :: M.Map Token (SwitchMatch (Grammar m a))
+                               , nsPreds   :: [TokenPred m a]
+                               , nsMatches :: [a]
+                               }
+
+{-
+emptyNextState :: NextState m a
+emptyNextState = NextState { nsWords = M.empty
+                           , nsPreds = []
+                           , nsMatches = []
+                           }
+-}
+
+pureNextState :: a -> NextState m a
+pureNextState v = NextState { nsWords = M.empty
+                            , nsPreds = []
+                            , nsMatches = [v]
+                            }
+
+unionNextState :: NextState m a -> NextState m a -> NextState m a
+unionNextState x y =
+  NextState { nsWords   = zw
+            , nsPreds   = zp
+            , nsMatches = zm
+            }
+  where xw = nsWords x
+        yw = nsWords y
+        zw = M.unionWith (unionSwitchMatch (<||>)) xw yw
+        zp = nsPreds x   ++ nsPreds y
+        zm = nsMatches x ++ nsMatches y
+
+{-
+-- | Traverse all grammars in switch map.
+smGrammars :: Traversal (SwitchMap m a)
+                        (SwitchMap n b)
+                        (Grammar m a)
+                        (Grammar n b)
+smGrammars f (SwitchMap w e) =
+  SwitchMap <$> traverse (switchMatchGrammars f) w <*> traverse f e
+-}
+
+composeNextState :: SwitchMap m a -> Cont (Parser m) a b -> NextState m b
+composeNextState m c =
+    case m^.smEnd of
+      Just a -> ns `unionNextState` ns'
+        where ns' = resolveToNextState (a `runCont` c)
+      Nothing -> ns
+  where w = over switchMatchGrammars (`runCont` c) <$> m^.smWords
+        ns = NextState { nsWords = w
+                       , nsPreds = (`tokenPredAddCont` c) <$> m^.smPreds
+                       , nsMatches = []
+                       }
+
+
+nextStateChoices :: NextState m a -> [(Token, Grammar m a)]
+nextStateChoices m = 
+  [ (nm, a)
+  | (nm,(^.switchExact) -> Just a) <- M.toList (nsWords m)
+  ]
+
+nextTokenTypes :: NextState m a -> [TokenType]
+nextTokenTypes m = wordTypes ++ predTypes
+  where wordTypes = tokenType <$> M.keys (nsWords m)
+        predTypes = view tokenPredType <$> nsPreds m
 
 ------------------------------------------------------------------------
 -- Help system
@@ -609,22 +745,22 @@ parseFail p d cl = ParseResult (Left d) (p,cl)
 addCompletions :: Pos -> [Completion] -> ParseResult r -> ParseResult r
 addCompletions p' cl = parseCompletions .~ (p',cl)
 
+-- | Create a completion token from the target word and the
+-- following grammar.
 mkCompletion :: Token -- ^ Target word
              -> Grammar m a -- ^ Followup matcher
              -> Completion
-mkCompletion tgt a =
+mkCompletion tgt g =
   Completion { replacement = show (ppToken tgt)
              , display = show (ppToken tgt)
-             , isFinished = shouldTerm tgt (resolveToSwitchMap a)
+             , isFinished = spaceAfterToken tgt (resolveToNextState g)
              }
 
--- | @shouldTerm returns true if switchMap contains a token with 
-shouldTerm :: Token -> SwitchMap m a -> Bool
-shouldTerm t m = any (tokenCompat t) (smNextTokens m)
-  where tokenCompat Keyword{} Keyword{} = True
-        tokenCompat OpToken{} OpToken{} = True
-        tokenCompat StringLit{} _ = True
-        tokenCompat _ _ = False
+-- | @spaceAfterToken t m@ holds if there may need to be a space between
+-- @t@ and the next token to be parsed.
+spaceAfterToken :: Token -> NextState m a -> Bool
+spaceAfterToken t m = any tokenCompat (nextTokenTypes m)
+  where tokenCompat tp = tokenType t == tp
 
 expectedOneOf :: [(Token,a)] -> Doc
 expectedOneOf [] = text "."
@@ -647,18 +783,18 @@ runGrammar :: (Applicative m, Monad m)
 runGrammar (PureApp a) ts = 
   pure (parseValue (tokenSeqPos ts) a [])
 runGrammar m ts = 
-  parseSwitch (resolveToSwitchMap m) ts
+  parseSwitch (resolveToNextState m) ts
 
-resolveToSwitchMap :: Grammar m a -> SwitchMap m a
-resolveToSwitchMap (PureApp v) = pureSwitchMap v
-resolveToSwitchMap (NP u c) =
+resolveToNextState :: Grammar m a -> NextState m a
+resolveToNextState (PureApp v) = pureNextState v
+resolveToNextState (NP u c) =
   case u of
-    ArgumentLabel{} -> resolveToSwitchMap (evalCont () c)
-    CommandLabel{} -> resolveToSwitchMap (evalCont () c)
-    Switch m -> composeSwitchMap m c
-    Hide m -> resolveToSwitchMap (runCont m c)
-    UnionGrammar x y -> resolveToSwitchMap (runCont x c) 
-       `unionSwitchMap` resolveToSwitchMap (runCont y c)
+    ArgumentLabel{} -> resolveToNextState (evalCont () c)
+    CommandLabel{} -> resolveToNextState (evalCont () c)
+    Switch m -> composeNextState m c
+    Hide m -> resolveToNextState (runCont m c)
+    UnionGrammar x y -> resolveToNextState (runCont x c) 
+       `unionNextState` resolveToNextState (runCont y c)
 
 ------------------------------------------------------------------------
 -- Completions
@@ -744,6 +880,14 @@ locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
                end = pure (sym, (initSymBlockID,0))
                m = foldl insertName emptyNameMap (M.keys (sdBody d))
 
+
+
+nat :: Grammar m Integer
+nat = atom (Switch (fromTokenPred p))
+  where p = TokenPred (Just (text "<nat>")) WordTokenType f idCont
+        f (NatToken i) = Just i
+        f _ = Nothing
+
 -- | List of commands for debugger.
 allCmds :: Codebase sbe -> SimCmd sbe m
 allCmds cb = res 
@@ -753,7 +897,7 @@ allCmds cb = res
             -- Execution
             <||> keyword "delete" *> deleteCmd cb
             <||> keyword "finish" *> finishCmd
-            <||> keyword "s"     *> hide stepiCmd
+            <||> hide (keyword "s" *> stepiCmd)
             <||> keyword "stepi" *> stepiCmd
             -- Information about current path.
             <||> keyword "info"   *> infoCmd
@@ -768,43 +912,58 @@ helpCmd cmdList = cmdDef "Print list of commands." $ do
   liftIO $ print (commandHelp cmdList)
   return False
 
-type SimCmd sbe m = (Functor m, MonadIO m) => Command (Simulator sbe m)
-
-continueCmd :: Monad m => Command m
-continueCmd = cmdDef "Continue execution." $ do
-  return True
+type SimCmd sbe m = (Functor sbe, Functor m, MonadIO m, MonadException m)
+                 => Command (Simulator sbe m)
 
 pathCmd :: SimCmd sbe m
 pathCmd
-  =    pathListCmd
+  =    hide pathListCmd
   <||> keyword "kill" *> pathKillCmd
+  <||> keyword "list" *> pathListCmd
   <||> keyword "sat" *> pathSatCmd
+
 
 pathListCmd :: SimCmd sbe m
 pathListCmd = cmdDef "List all current execution paths." $ do
-
-  --TODO: Implement 
+  mcs <- use ctrlStk
+  case mcs of
+    Nothing ->
+      dbugM "No active paths."
+    Just cs -> dbugM $ show $ printTable table
+      where paths = case cs of
+                      FinishedCS p -> [p]
+                      ActiveCS acs -> acs^..activePaths
+            ppPathItem :: Integer -> Path sbe -> [String]
+            ppPathItem i p = [ padRightMin 3 (show i), show (ppPathInfo p)]              
+            header = [ " Num", "Location"]
+            table = header : zipWith ppPathItem [1..] paths
   return False
 
--- TODO: Fix path cmd.
 pathSatCmd :: SimCmd sbe m
 pathSatCmd =
-  cmdDef "Check whether the current path's assertions are satisfiable, killing this path if they are not." $ do
+  cmdDef "Check satisfiability of path assertions with SAT solver." $ do
       Just p <- preuse currentPathOfState
       sbe <- gets symBE
       sat <- liftSBE $ termSAT sbe (p^.pathAssertions)
       case sat of
-        UnSat -> do dbugM "path assertions unsatisfiable; killed"
-                    errorPath "path assertions unsatisfiable: killed by debugger"
-        Sat _ -> dbugM "path assertions satisfiable"
-        Unknown -> dbugM "pat assertions possibly satisfiable"
+        UnSat -> 
+           dbugM "Path has unsatisfiable assertions."
+        Sat _ ->
+           dbugM "Path assertions are satisfiable."
+        Unknown ->
+           dbugM "Could not determine if path assertions are feasible."
       return False
 
 pathKillCmd :: SimCmd sbe m
 pathKillCmd = cmdDef "Kill the current execution path." $ do
-  errorPath "Terminated by debugger"
-  -- TODO: Fix kill cmd.
-
+  killCurrentPath (FailRsn "Terminated by debugger.")
+  mp <- preuse currentPathOfState
+  case mp of
+    Nothing -> dbugM "Killed last path."
+    Just p -> dbugM $ show $
+      text "Switched to path:" <+> ppPathInfo p
+  return False
+ 
 opt :: Grammar m a -> Grammar m (Maybe a)
 opt m = (Just <$> m) <||> pure Nothing 
 
@@ -834,25 +993,6 @@ concatBreakpoints m =
 equalSep :: Doc -> Doc -> Doc
 equalSep x y = x <+> char '=' <+> y
 
-withCurrentFrame :: MonadIO m
-                 => (Path sbe -> Simulator sbe m ())
-                 -> Simulator sbe m ()
-withCurrentFrame a = do
-  mp <- preuse currentPathOfState
-  case mp of
-    Nothing -> dbugM "No frame selected."
-    Just p -> a p
-
-withActivePath :: MonadIO m
-               => (Path sbe -> Simulator sbe m Bool)
-               -> Simulator sbe m Bool
-withActivePath a = do
-  mcs <- use ctrlStk
-  case mcs of
-    Just (ActiveCS cs) -> a (cs^.activePath)
-    _ -> do dbugM "The program is not being run."
-            return False
-
 infoCmd :: SimCmd sbe m
 infoCmd
   = keyword "block" *> infoBlockCmd
@@ -866,12 +1006,12 @@ infoCmd
 infoBlockCmd :: SimCmd sbe m
 infoBlockCmd =
   cmdDef "Print block information." $ do
-    withCurrentFrame $ \p -> do
-      let sym = pathFuncSym p
+    withActivePath False $ \p -> do
+      let sym = p^.pathFuncSym
           Just (pcb,_) = p^.pathPC
       Just def <- lookupDefine sym <$> gets codebase
       dbugM $ show $ ppSymBlock $ lookupSymBlock def pcb
-    return False
+      return False
 
 infoBreakpointsCmd :: SimCmd sbe m
 infoBreakpointsCmd =
@@ -886,20 +1026,20 @@ infoCtrlStkCmd =
 infoFunctionCmd :: SimCmd sbe m
 infoFunctionCmd =
   cmdDef "Print function information." $ do
-    withCurrentFrame $ \p -> do
-      dumpSymDefine (gets codebase) (unSym (pathFuncSym p))
-    return False
+    withActivePath False $ \p -> do
+      dumpSymDefine (gets codebase) (unSym (p^.pathFuncSym))
+      return False
 
 infoLocalsCmd :: SimCmd sbe m
 infoLocalsCmd =
   cmdDef "Print local variables in current stack frame." $ do
-    withCurrentFrame $ \p -> do
+    withActivePath False $ \p -> do
       sbe <- gets symBE
       let locals = M.toList (p^.pathRegs)
           ppLocal (nm, (v,_)) =
             ppIdent nm `equalSep` prettyTermD sbe v           
       dbugM $ show $ vcat $ ppLocal <$> locals
-    return False
+      return False
 
 infoMemoryCmd :: SimCmd sbe m
 infoMemoryCmd =
@@ -909,10 +1049,13 @@ infoMemoryCmd =
 --TODO: Revisit this command to check formatting.
 infoStackCmd :: SimCmd sbe m
 infoStackCmd = cmdDef "Print backtrace of the stack." $ do
-  withCurrentFrame $ \p -> do
-    dbugM $ show $ ppStackTrace $ pathStack p
-  return False
+  withActivePath False $ \p -> do
+    dbugM $ show $ ppStackTrace $ p^.pathStack
+    return False
 
+padRightMin :: Int -> String -> String
+padRightMin l s | length s < l = replicate (l - length s) ' ' ++ s
+                | otherwise = s
 
 printTable :: [[String]] -> Doc
 printTable m = vcat padded
@@ -941,18 +1084,55 @@ dumpBPs = do
                 where header = ["Num", "Location"]
   dbugM (show msg)
 
+withActivePath :: MonadIO m
+               => a
+               -> (Path sbe -> Simulator sbe m a)
+               -> Simulator sbe m a
+withActivePath v action = do
+  mcs <- use ctrlStk
+  case mcs of
+    Just (ActiveCS cs) -> action (cs^.activePath)
+    _ -> do dbugM "No active execution path."
+            return v
+
+continueCmd :: SimCmd sbe m
+continueCmd = cmdDef "Continue execution." $ do
+  withActivePath False $ \_ -> do
+     return True
+
+onReturnFrom :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+             => Int -> Simulator sbe m ()
+onReturnFrom ht = do
+  Just p <- preuse currentPathOfState
+  if p^.pathStackHt < ht then
+    debuggerREPL
+  else
+    checkForBreakpoint
+
 finishCmd :: SimCmd sbe m
 finishCmd = cmdDef desc $ do
-    withActivePath $ \p -> do
-      trBreakpoints .= BreakReturnFrom (pathStackHt p)
+    withActivePath False $ \p -> do
+      pathPosChangeEvent .= onReturnFrom (p^.pathStackHt)
       return True
   where desc = "Execute until the current stack frame returns."
 
+enterDebuggerAfterNSteps
+  :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+  => Integer -> Simulator sbe m ()
+enterDebuggerAfterNSteps n
+  | n <= 1 = debuggerREPL
+  | otherwise = pathPosChangeEvent .= enterDebuggerAfterNSteps (n-1)
+
 stepiCmd :: SimCmd sbe m
-stepiCmd = cmdDef "Execute one symbolic statement" $ do
-  withActivePath $ \_ -> do
-    trBreakpoints .= BreakNextStmt
-    return True
+stepiCmd = (opt nat <**>) $
+  cmdDef "Execute one symbolic statement" $ \mc -> do
+    withActivePath False $ \_ -> do
+      let c = fromMaybe 1 mc
+      if c <= 0 then
+        return False
+      else do
+        pathPosChangeEvent .= enterDebuggerAfterNSteps c
+        return True
 
 unSym :: Symbol -> String
 unSym (Symbol str) = str

@@ -11,6 +11,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
+{-# LANGUAGE ViewPatterns #-}
 module Verifier.LLVM.Simulator.Internals
   ( Simulator(SM)
   , runSM
@@ -31,19 +32,19 @@ module Verifier.LLVM.Simulator.Internals
   , pathCounter
   , aigOutputs
   , breakpoints
-  , trBreakpoints
-  , errorPolicy
+  , pathPosChangeEvent
+  , ErrorHandler
+  , errorHandler
 
   , Breakpoint
-  , TransientBreakpoint(..)
   , addBreakpoint
   , removeBreakpoint
 
-  , ErrorPolicy(..)
 
   , CS(..)
   , ActiveCS
   , activePath
+  , activePaths
   , initialCtrlStk
   , currentPath
   , modifyCurrentPathM
@@ -51,7 +52,7 @@ module Verifier.LLVM.Simulator.Internals
   , addCtrlBranch
   , jumpCurrentPath
   , returnCurrentPath
-  , markCurrentPathAsError
+  , killCurrentPath
 
   , currentPathOfState
   , currentPathMem
@@ -139,7 +140,7 @@ import Control.Exception (assert)
 import Control.Lens hiding (act)
 import Control.Monad.Error
 import Control.Monad.State.Class
-import Control.Monad.Trans.State.Strict (StateT)
+import Control.Monad.Trans.State.Strict (StateT, runStateT, execStateT)
 
 import qualified Data.Map  as M
 import Data.Maybe
@@ -153,6 +154,7 @@ import Text.PrettyPrint.Leijen hiding ((<$>))
 import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase
+import Verifier.LLVM.Simulator.CursorTree
 import Verifier.LLVM.Simulator.SimUtils
 
 newtype Simulator sbe m a =
@@ -167,8 +169,13 @@ newtype Simulator sbe m a =
     )
 
 type LiftSBE sbe m = forall a. sbe a -> Simulator sbe m a
+
+-- | Map from function names to address of their entry point.
 type GlobalMap sbe = M.Map Symbol (SBETerm sbe)
+
+-- | Map from individual blocks within function to address of block.
 type BlockMap sbe = M.Map (Symbol, BlockLabel) (SBETerm sbe)
+
 type OvrMap sbe m  = M.Map Symbol (Override sbe m, Bool {- user override? -})
 
 -- | Symbolic simulator options
@@ -184,35 +191,36 @@ defaultLSSOpts = LSSOpts { optsErrorPathDetails = False
                          , optsSatAtBranches    = False
                          }
 
--- | Action to perform when an error is encountered.
--- Note. We may eventually choose to extend this to support
--- additional types of responses.  A data structure was chosen
--- for the policy rather than just a simulator action so that
--- the policy can be inspected.
-data ErrorPolicy
-  = EnterREPL -- ^ Enter the debugger repl on an error.
-  | KillPath -- ^ Kill the current path on an error.
+-- | Action to perform when a simulation error is encountered.
+-- Parameters include simulator control stack prior to error, and
+-- a description of the error.
+type ErrorHandler sbe m
+   = ActiveCS sbe -> FailRsn -> Simulator sbe m ()
 
 -- | Symbolic simulator state
 data State sbe m = State
   { codebase     :: Codebase sbe    -- ^ LLVM code, post-transformation to sym ast
   , symBE        :: SBE sbe         -- ^ Symbolic backend interface
   , liftSymBE    :: LiftSBE sbe m   -- ^ Lift SBE operations into the Simulator monad
-  , _ctrlStk     :: !(Maybe (CS sbe))  -- ^ Control stack for controlling simulator.
-  , _globalTerms :: GlobalMap sbe   -- ^ Global ptr terms
-  , _blockPtrs   :: BlockMap sbe
-  , _fnOverrides :: OvrMap sbe m    -- ^ Function override table
+  , _globalTerms :: GlobalMap sbe   -- ^ Global ptr terms (global for program).
+  , _blockPtrs   :: BlockMap sbe    -- ^ Block pointers (global for program).
   , verbosity    :: Int             -- ^ Verbosity level
-  , _evHandlers  :: SEH sbe m       -- ^ Simulation event handlers
   , _errorPaths  :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
-  , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
   , _pathCounter :: Integer         -- ^ Name supply for paths
+
+  , _evHandlers  :: SEH sbe m       -- ^ Simulation event handlers
+  , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
+  , _breakpoints :: !(M.Map Symbol (S.Set Breakpoint))
+
+  , _pathPosChangeEvent :: Simulator sbe m ()
+
+  , _errorHandler :: ErrorHandler sbe m
+
+  , _ctrlStk     :: !(Maybe (CS sbe))  -- ^ Control stack for controlling simulator.
+  , _fnOverrides :: OvrMap sbe m    -- ^ Function override table
     -- | Current list of AIG outputs, discharged via lss_write_aiger() sym
     -- api calls
   , _aigOutputs  :: [(MemType,SBETerm sbe)]
-  , _breakpoints :: !(M.Map Symbol (S.Set Breakpoint))
-  , _trBreakpoints :: !TransientBreakpoint
-  , _errorPolicy :: !ErrorPolicy
   }
 
 ctrlStk :: Simple Lens (State sbe m) (Maybe (CS sbe))
@@ -242,31 +250,32 @@ aigOutputs f s = (\v -> s { _aigOutputs = v }) <$> f (_aigOutputs s)
 breakpoints :: Simple Lens (State sbe m) (M.Map Symbol (S.Set Breakpoint))
 breakpoints f s = (\v -> s { _breakpoints = v }) <$> f (_breakpoints s)
 
-trBreakpoints :: Simple Lens (State sbe m) TransientBreakpoint
-trBreakpoints f s = (\v -> s { _trBreakpoints = v }) <$> f (_trBreakpoints s)
+-- | Event called when the instruction the active path is on has changed.
+pathPosChangeEvent :: Simple Lens (State sbe m) (Simulator sbe m ())
+pathPosChangeEvent =
+  lens _pathPosChangeEvent (\s v -> s { _pathPosChangeEvent = v })
 
-errorPolicy :: Simple Lens (State sbe m) ErrorPolicy
-errorPolicy = lens _errorPolicy (\s v -> s { _errorPolicy = v })
+errorHandler :: Simple Lens (State sbe m) (ErrorHandler sbe m)
+errorHandler = lens _errorHandler (\s v -> s { _errorHandler = v })
 
 -- | Types of breakpoints (kind of boring for now, but maybe with a
 -- DWARF parser we can do more...)
 type Breakpoint = (SymBlockID,Int)
 
--- | Transient breakpoints for interactive debugging
-data TransientBreakpoint
-    -- | Break at the next statement
-  = BreakNextStmt
-    -- | Break when returning from function at given stack height.
-  | BreakReturnFrom !Int
-  | NoTransientBreakpoint
- deriving (Eq, Ord, Show)
+-- | A control stack that is still active.
+newtype ActiveCS sbe = ACS { unACS :: CursorTree (BranchInfo sbe) (Path sbe) }
 
+data BranchInfo sbe = BI { biTarget :: MergeTarget 
+                         , biCond :: SBEPred sbe
+                         , _biAssertions :: SBEPred sbe
+                         , _biAbortsAbove :: Int 
+                         }
 
--- | Action to perform when branch.
-data BranchAction sbe
-  = BARunFalse (Path sbe) -- ^ True path to run
-  | BAFalseComplete (SBEPred sbe) -- ^ Assertions before branch.
-                    (Path sbe) -- ^ Completed true path
+biAssertions :: Simple Lens (BranchInfo sbe) (SBEPred sbe)
+biAssertions = lens _biAssertions (\s v -> s { _biAssertions = v })
+
+biAbortsAbove :: Simple Lens (BranchInfo sbe) Int
+biAbortsAbove = lens _biAbortsAbove (\s v -> s { _biAbortsAbove = v })
 
 
 -- | Target location to merge to.
@@ -280,40 +289,32 @@ data MergeTarget
     -- jumping to block @b@ with a stack height of @i@. 
   | OnPostdomJump Int SymBlockID
 
-data PathHandler sbe
-  = BranchHandler -- | Number of call frames and block id to merge to.
-                  MergeTarget
-                  -- | Assertions before branch.
-                  --(SBEPred sbe)
-                  -- | Branch condition
-                  (SBEPred sbe)
-                  -- | Action to get new control stack when current path reached
-                  -- merge location.
-                  (BranchAction sbe)
-                  -- | Handler once this handler is done.
-                  (PathHandler sbe) 
-  | StopHandler
-
--- | A control stack that is still active.
-data ActiveCS sbe = ACS { _activePath :: Path sbe
-                        , _activeHandler :: PathHandler sbe
-                        }
+activeTree :: Simple Iso
+                     (ActiveCS sbe)
+                     (CursorTree (BranchInfo sbe) (Path sbe))
+activeTree = iso unACS ACS
 
 activePath :: Simple Lens (ActiveCS sbe) (Path sbe)
-activePath = lens _activePath (\s v -> s { _activePath = v })
+activePath = activeTree . activeValue
 
---activeHandler :: Simple Lens (ActiveCS sbe) (PathHandler sbe)
---activeHandler = lens _activeHandler (\s v -> s { _activeHandler = v })
+activePaths :: Simple Traversal (ActiveCS sbe) (Path sbe)
+activePaths = activeTree . inorderTraversal
 
----- | Return all paths in active state.
---activePaths :: Simple Traversal (ActiveCS sbe) (Path sbe)
---activePaths f (ACS p h) = ACS <$> f p <*>  
+activePair :: Simple Iso
+                     (ActiveCS sbe)
+                     (TreeContext (BranchInfo sbe) (Path sbe), Path sbe)
+activePair = activeTree . treePair
 
 -- | A control stack consists of a collection of execution paths
 -- that will eventually be merged.
 data CS sbe
   = FinishedCS (Path sbe)
   | ActiveCS (ActiveCS sbe)
+
+{-
+_ActiveCS :: Simple Lens (CS sbe) (Maybe (ActiveCS sbe))
+_ActiveCS f (ActiveCS abc) = ActiveCS
+-}
 
 currentPath :: Simple Lens (CS sbe) (Path sbe)
 currentPath f (FinishedCS p) = FinishedCS <$> f p
@@ -327,28 +328,21 @@ currentPathOfState = ctrlStk . _Just . currentPath
 currentPathMem :: Simple Traversal (State sbe m) (SBEMemory sbe)
 currentPathMem = currentPathOfState . pathMem
 
+
 initialCtrlStk :: SBE sbe -> SBEMemory sbe -> CS sbe
-initialCtrlStk sbe mem = FinishedCS p
-  where p = Path { pathFuncSym = entrySymbol
-                 , _pathPC = Nothing
-                 , _pathName = 0
-                 , _pathRegs = M.empty
-                 , _pathMem = mem
-                 , _pathAssertions = sbeTruePred sbe
-                 , pathStackHt = 0
-                 , pathStack = []
-                 }
+initialCtrlStk sbe mem = FinishedCS (initialPath sbe mem)
 
 -- | Modify current path in control stack.
-modifyCurrentPathM :: forall m sbe a .
-                      Functor m
+modifyCurrentPathM :: Functor m
                    => CS sbe
                    -> (Path sbe -> m (a,Path sbe))
                    -> m (a,CS sbe)
 modifyCurrentPathM cs f = 
   over _2 (\p -> set currentPath p cs) <$> f (cs^.currentPath)
 
-pushCallFrame :: SBE sbe
+-- | Push a call frame to the active path
+pushCallFrame :: forall sbe
+               . SBE sbe
               -> Symbol -- ^ Function we are jumping to. 
               -> SymBlockID -- ^ Block to return to.
               -> Maybe (MemType, Ident) -- ^ Where to write return value to (if any).
@@ -356,121 +350,137 @@ pushCallFrame :: SBE sbe
               -> ActiveCS sbe
 pushCallFrame sbe calleeSym returnBlock retReg cs =
     case cs of
-      FinishedCS p       -> ACS (newPath p) StopHandler
-      ActiveCS (ACS p h) -> ACS (newPath p) h
-  where newPath p = p'
-          where cf = CallFrame { cfFuncSym = pathFuncSym p
+      FinishedCS p -> ACS (Singleton (newPath p))
+      ActiveCS acs -> acs & activePath %~ newPath
+  where newPath :: Path sbe -> Path sbe
+        newPath p = p'
+          where cf = CallFrame { cfFuncSym = p^.pathFuncSym
                                , cfReturnBlock = Just (returnBlock,0)
                                , cfRegs = p^.pathRegs
                                , cfRetReg = retReg
-                               , cfAssertions = p^.pathAssertions
                                }
-                p' = p { pathFuncSym = calleeSym
-                       , _pathRegs = M.empty
-                       , _pathAssertions = sbeTruePred sbe
-                       , pathStackHt = pathStackHt p + 1
-                       , pathStack   = cf : pathStack p
-                       } & pathPC .~ Just (initSymBlockID,0)
+                p' = p & pathFuncSym    .~ calleeSym
+                       & pathPC         .~ Just (initSymBlockID,0)
+                       & pathRegs       .~ M.empty
+                       & pathAssertions .~ sbeTruePred sbe
+                       & pathStackHt    +~ 1
+                       & pathStack     %~ (cf:)
 
 -- | Add a control branch
 addCtrlBranch :: SBE sbe
               -> SBEPred sbe -- ^ Condition to branch on.
-              -> SymBlockID -- ^ Location for newly branched paused path to start at.
+                 -- | Location for newly branched paused path to start at.
+              -> SymBlockID
               -> Integer -- ^ Name of new path
               -> MergeLocation -- ^ Control point to merge at.
               -> ActiveCS sbe -- ^  Current control stack.
               -> IO (ActiveCS sbe)
-addCtrlBranch sbe c nb nm ml (ACS p h) = do
-    mkBranchFromMem <$> sbeRunIO sbe (memBranch sbe (p^.pathMem))
-  where mkBranchFromMem mem =
-            ACS pf $ BranchHandler info c (BARunFalse pt) h
-          where pf = p & pathMem .~ mem
-                       & pathAssertions .~ sbeTruePred sbe
-                pt = p & pathName .~ nm
-                       & pathPC .~ Just (nb,0)
-                       & pathMem .~ mem
-        info = case ml of
-                 Just b -> OnPostdomJump (pathStackHt p) b
-                 Nothing -> OnReturn (pathStackHt p) (snd <$> cfRetReg cf)
-                   where cf : _ = pathStack p
-             
+addCtrlBranch sbe c nb nm ml (view activePair -> (h,p)) = do
+  mem <- sbeRunIO sbe (memBranch sbe (p^.pathMem))
+  let tgt = case ml of
+              Just b -> OnPostdomJump (p^.pathStackHt) b
+              Nothing -> OnReturn (p^.pathStackHt) (snd <$> cfRetReg cf)
+                where cf : _ = p^.pathStack
+      info = BI tgt c (p^.pathAssertions) 0
+  let pt = p & pathPC .~ Just (nb,0)
+             & pathMem .~ mem
+             & pathAssertions .~ sbeTruePred sbe
+  let pf = p & pathName .~ nm
+             & pathMem .~ mem
+             & pathAssertions .~ sbeTruePred sbe
+  return $ ACS (Branch h info RightActive pf (Singleton pt))
+                
+atTarget :: Path sbe -> MergeTarget -> Bool
+atTarget p (OnPostdomJump n b) = p^.pathStackHt == n && p^.pathPC == Just (b,0)
+atTarget p (OnReturn n _) = p^.pathStackHt < n
+
+flipBranch :: TreeContext b a
+           -> b
+           -> Orientation
+           -> a
+           -> CursorTree b a
+           -> CursorTree b a
+flipBranch h b LeftActive  p r = branch h b RightActive (Singleton p) r
+flipBranch h b RightActive p r = branch h b LeftActive  r (Singleton p)
+
+-- | Return merged assertions in path.
+mergeAssertions :: SBE sbe
+                -> SBEPred sbe -- ^ Old assertions
+                -> SBEPred sbe -- ^ Branch condition
+                -> Path sbe -- ^ True path
+                -> Path sbe -- ^ False path
+                -> IO (SBEPred sbe)
+mergeAssertions sbe a c pt pf = do
+  a' <- sbeRunIO sbe $
+    applyPredIte sbe c (pt^.pathAssertions) (pf^.pathAssertions)
+  sbeRunIO sbe $ applyAnd sbe a a'
+
+type ErrorCollector m e = StateT [e] m 
+
+runErrorCollector :: Functor m => ErrorCollector m e a -> m ([e],a)
+runErrorCollector m = finish <$> runStateT m []
+  where finish (v,e) = (reverse e,v)
+
+collectError :: Monad m => a -> m (Either e a) -> ErrorCollector m e a
+collectError d a = do
+  ev <- lift $ a
+  case ev of
+    Left e -> modify (e:) >> return d
+    Right v -> return v
+
 -- | Merge path and path handler.  Note that the new state may
 -- have infeasible path assertions.
-postdomMerge :: SBE sbe
-             -> Path sbe
-             -> PathHandler sbe
-             -> IO (ActiveCS sbe)
-postdomMerge sbe p (BranchHandler info@(OnPostdomJump n b) c act h)
-   | pathStackHt p == n && p^.pathPC == Just (b,0) =
-  case act of
-    BARunFalse tp -> do
-      let tp' = tp & pathAssertions .~ sbeTruePred sbe
-      let act' = BAFalseComplete (tp^.pathAssertions) p
-      return $ ACS tp' (BranchHandler info c act' h)
-    BAFalseComplete a pf -> do
-      -- TODO: Collect and print merge errors.
-      let mergeTyped (tt,tp) (ft,_) =
-            (,tp) . either (const tt) id <$> sbeRunIO sbe (applyIte sbe tp c tt ft)
-      -- Merge path regs
-      mergedRegs <- traverse id $
-        M.intersectionWith mergeTyped (p^.pathRegs) (pf^.pathRegs)
-      -- Merge memory
-      mergedMemory <- sbeRunIO sbe $ memMerge sbe c (p^.pathMem) (pf^.pathMem)
-      -- Merge assertions
-      mergedAssertions <- sbeRunIO sbe $
-        applyPredIte sbe c (p^.pathAssertions) (pf^.pathAssertions)
-      a' <- sbeRunIO sbe $ applyAnd sbe a mergedAssertions
-      assert (pathFuncSym p == pathFuncSym pf && p^.pathPC == pf^.pathPC) $ do
-      let p' = p & pathRegs .~ mergedRegs
-                 & pathMem  .~ mergedMemory
-                 & pathAssertions .~ a'
-      -- Recurse to check if more merges should be performed.
-      postdomMerge sbe p' h
-postdomMerge _ p h = return (ACS p h)
+checkForMerge :: SBE sbe -> ActiveCS sbe -> IO (ActiveCS sbe)
+checkForMerge sbe (ACS cs) =
+  case cs of
+    Branch h b o p r | atTarget p (biTarget b) -> do
+      let tgt = biTarget b
+          c   = biCond b
+          a   = b^.biAssertions    
+      case r of
+        -- Merge if adjacent tree is a single path at the branch
+        -- merge point.
+        Singleton pf | atTarget pf tgt -> do
+          let mergeTyped (tt,tp) (ft,_) =
+                fmap (,tp) $ collectError tt
+                           $ sbeRunIO sbe
+                           $ applyIte sbe tp c tt ft
+          -- Merge path regs
+          (_errs, mergedRegs) <- runErrorCollector $ do
+            let pr  = p^.pathRegs
+                pfr = pf^.pathRegs 
+            case tgt of
+              OnReturn _ mr ->
+                case mr of
+                  Nothing -> return pr
+                  Just reg -> do -- Merge return register only
+                    let Just vt =  pr^.at reg
+                    let Just vf = pfr^.at reg
+                    (\v -> pr & at reg ?~ v) <$> mergeTyped vt vf
+              OnPostdomJump{} -> -- Merge all registers
+                traverse id $ M.intersectionWith mergeTyped pr pfr
+          -- Merge memory
+          mergedMem <- sbeRunIO sbe $
+            memMerge sbe c (p^.pathMem) (pf^.pathMem)
+          finalMem <- abortMemBranches sbe (b^.biAbortsAbove) mergedMem
+          -- Merge assertions
+          a' <- mergeAssertions sbe a c p pf
+          assert (p^.pathFuncSym == pf^.pathFuncSym
+                  && p^.pathPC == pf^.pathPC) $ do
+            return ()  
+          let p' = p & pathRegs .~ mergedRegs
+                     & pathMem  .~ finalMem
+                     & pathAssertions .~ a'
+          -- Recurse to check if more merges should be performed.
+          checkForMerge sbe (ACS ((h,p') ^.from treePair))
+        _ -> return (ACS (flipBranch h b o p r))
+    _ -> return (ACS cs)
 
 -- | Move current path to target block.
 -- Note that the new path may have infeasible assertions.
 jumpCurrentPath :: SBE sbe -> SymBlockID -> ActiveCS sbe -> IO (ActiveCS sbe)
-jumpCurrentPath sbe b (ACS p h) = postdomMerge sbe p' h
-  where p' = p & pathPC .~ Just (b,0)
-
--- | Handle merge of paths.
--- The first element of the return pair contains a mesage if error(s) occured
--- during merging.
-returnMerge :: SBE sbe
-            -> Path sbe
-            -> PathHandler sbe
-            -> IO ([String], CS sbe)
-returnMerge _ p StopHandler | pathStackHt p == 0 = return ([], FinishedCS p)
-returnMerge sbe p (BranchHandler info@(OnReturn n mr) c act h) | n > pathStackHt p =
-  case act of
-    BARunFalse tp -> do
-      let tp' = tp & pathAssertions .~ sbeTruePred sbe
-      let act' = BAFalseComplete (tp^.pathAssertions) p
-      return $ ([], ActiveCS (ACS tp' (BranchHandler info c act' h)))
-    BAFalseComplete a pf -> do
-      -- Merge return value
-      (errs, mergedRegs) <-
-        case mr of
-          Nothing -> return ([], p^.pathRegs)
-          Just r -> do
-            let Just (vt,tp) =  p^.pathRegs^.at r
-            let Just (vf,_)  = pf^.pathRegs^.at r
-            mv <- sbeRunIO sbe $ applyIte sbe tp c vt vf
-            let v = either (const vt) id mv
-            return (mv ^.. _Left, p^.pathRegs & at r ?~ (v, tp))
-
-      -- Merge memory
-      mergedMemory <- sbeRunIO sbe $ memMerge sbe c (p^.pathMem) (pf^.pathMem)
-      -- Merge assertions
-      mergedAssertions <- sbeRunIO sbe $
-        applyPredIte sbe c (p^.pathAssertions) (pf^.pathAssertions)
-      a' <- sbeRunIO sbe $ applyAnd sbe a mergedAssertions
-      let p' = p & pathRegs .~ mergedRegs
-                 & pathMem .~ mergedMemory
-                 & pathAssertions .~ a'
-      A.first (errs ++) <$> returnMerge sbe p' h
-returnMerge _ p h = return ([], ActiveCS (ACS p h))
+jumpCurrentPath sbe b cs =
+  checkForMerge sbe (cs & activePath . pathPC .~ Just (b,0))
 
 -- | Return from current path.
 -- The current path may be infeasible.
@@ -478,64 +488,90 @@ returnCurrentPath :: SBE sbe
                   -> Maybe (SBETerm sbe)
                   -> ActiveCS sbe
                   -> IO (CS sbe)
-returnCurrentPath sbe rt (ACS p h) = do
-  let cf : cfs = pathStack p
+returnCurrentPath sbe rt cs = do
+  let p = cs^.activePath
+  let cf : cfs = p^.pathStack
   m <- sbeRunIO sbe $ stackPopFrame sbe (p^.pathMem)
-  let p' = p { pathFuncSym = cfFuncSym cf
-             , _pathPC   = cfReturnBlock cf
-             , _pathRegs = setReturnValue "returnCurrentpath" (cfRetReg cf) rt (cfRegs cf)
-             , _pathMem  = m
-             , _pathAssertions = cfAssertions cf
-             , pathStackHt = pathStackHt p - 1
-             , pathStack  = cfs
-             }
-  snd <$> returnMerge sbe p' h
+  let regs' = setReturnValue (cfRetReg cf) rt (cfRegs cf)
+  let p' = p & pathFuncSym .~ cfFuncSym cf
+             & pathPC .~ cfReturnBlock cf
+             & pathRegs .~ regs'
+             & pathMem .~ m
+             & pathStackHt -~ 1
+             & pathStack .~ cfs
+  cs' <- checkForMerge sbe (cs & activePath .~ p')
+  return $
+    case cs' of
+      ACS (Singleton pn) | null (pn^.pathStack) -> FinishedCS pn
+      _ -> ActiveCS cs'
 
-branchError :: SBE sbe
-            -> MergeTarget -- Info for current merge point.
-            -> SBEPred sbe --  ^ Branch condition.
-            -> BranchAction sbe -- Action to run if branch occurs.
-            -> PathHandler sbe -- Previous path handler.
-            -> IO (CS sbe) 
-branchError sbe _ c (BARunFalse pt) h = do
-  a2 <- sbeRunIO sbe $ applyAnd sbe (pt^.pathAssertions) c
-  mem' <- sbeRunIO sbe $ memBranchAbort sbe (pt^.pathMem)
-  let pt' = pt & pathMem .~ mem'
-               & pathAssertions .~ a2
-  return $ ActiveCS $ ACS pt' h
-branchError sbe mi c (BAFalseComplete a pf) h = do
-  -- Update assertions on current path
-  a1   <- sbeRunIO sbe $ applyAnd sbe a (pf^.pathAssertions)
-  cNot <- sbeRunIO sbe $ applyBNot sbe c
-  a2   <- sbeRunIO sbe $ applyAnd sbe a1 cNot
-  mem' <- sbeRunIO sbe $ memBranchAbort sbe (pf^.pathMem)
-  let pf' = pf & pathMem .~ mem'
-               & pathAssertions .~ a2
-  -- Try to merge states that may have been waiting for the current path to terminate.
-  case (mi,h) of
-    ( OnReturn n _, BranchHandler (OnReturn pn _) _ _ _) | n == pn ->
-      snd <$> returnMerge sbe pf' h
-    ( OnPostdomJump n _, BranchHandler (OnPostdomJump pn _) _ _ _) | n == pn ->
-      ActiveCS <$> postdomMerge sbe pf' h
-    _ -> return $ ActiveCS $ ACS pf' h
+-- | @sbeAndIO sbe a c@ returns (a and c).
+sbeAndIO :: SBE sbe -> SBEPred sbe -> SBEPred sbe -> IO (SBEPred sbe)
+sbeAndIO sbe a c = sbeRunIO sbe (applyAnd sbe a c)
+  
+-- | List a monadic operation from a state @s@ to itself to
+-- the state monad.
+stateTransform :: Monad m => (s -> m s) -> StateT s m ()
+stateTransform a = do
+  s <- get
+  put =<< lift (a s)
+
+-- | Abort memory branches
+abortMemBranches :: SBE sbe -> Int -> SBEMemory sbe -> IO (SBEMemory sbe)
+abortMemBranches sbe n = execStateT runAllAborts
+  where abortOnce    = sbeRunIO sbe . memBranchAbort sbe
+        runAllAborts = replicateM_ n (stateTransform abortOnce)
+
+-- | Kill the current path and add it to the list of errorPaths.
+-- This function assumes the simulator has an active path.
+killCurrentPath :: MonadIO m => FailRsn -> Simulator sbe m ()
+killCurrentPath rsn = do
+  Just (ActiveCS cs) <- use ctrlStk
+  -- Get current path before last step.
+  let p = cs^.activePath
+  -- Merge current path as error, and update control stack.
+  sbe <- gets symBE
+  mcs' <- liftIO $ markCurrentPathAsError sbe cs
+  ctrlStk .= mcs'
+  -- Add path to list of error paths.
+  errorPaths %= (EP rsn p:)
 
 -- | Mark the current path as an error path.
 -- N.B. The new current path if any could now potentially be infeasible.
 markCurrentPathAsError :: SBE sbe -> ActiveCS sbe -> IO (Maybe (CS sbe))
-markCurrentPathAsError sbe (ACS _ (BranchHandler mi c a h)) =
-  Just <$> branchError sbe mi c a h
-markCurrentPathAsError _ (ACS _ StopHandler) = return Nothing
+markCurrentPathAsError _   (ACS Singleton{}) = return Nothing
+markCurrentPathAsError sbe (ACS (Branch ctx b o _ rest)) = do
+  -- Negate condition if the true branch (which is on the left)
+  -- has failed.
+  cond <- case o of
+            LeftActive  -> sbeRunIO sbe $ applyBNot sbe (biCond b)
+            RightActive -> pure (biCond b)
+  -- Get new and assertions.
+  newAssertions <- sbeAndIO sbe (b^.biAssertions) cond
+  cs <- case topView rest of
+          Left p -> do
+            -- Set assertions
+            let p' = p & pathAssertions .~ newAssertions
+            -- Clean up memory aborts.
+            let cnt = (b^.biAbortsAbove)+1
+            instContext' ctx <$> pathMem (abortMemBranches sbe cnt) p'
+          Right (b', o', l, r) -> do
+            a' <- sbeAndIO sbe newAssertions (b'^.biAssertions)
+            let b2 = b' & biAssertions .~ a'
+                        & biAbortsAbove +~ 1
+            return $ branch ctx b2 o' l r
+  Just . ActiveCS <$> checkForMerge sbe (ACS cs)
 
 type RegMap term = M.Map Ident (term, MemType)
 
-setReturnValue :: String -> Maybe (MemType, Ident) -> Maybe t
-               ->  RegMap t -> RegMap t
-setReturnValue _n (Just (tp, r)) (Just rv) rm = M.insert r (rv, tp) rm
-setReturnValue _n Nothing   Nothing   rm = rm
-setReturnValue nm Nothing   (Just _) _  =
-  error $ nm ++ ": Return value where non expected"
-setReturnValue nm (Just (_,tr)) Nothing   _  =
-  error $ nm ++ ": Missing return value for "  ++ show (ppIdent tr)
+setReturnValue :: Maybe (MemType, Ident) -> Maybe t
+               -> RegMap t -> RegMap t
+setReturnValue (Just (tp, r)) (Just rv) rm = M.insert r (rv, tp) rm
+setReturnValue Nothing   Nothing   rm = rm
+setReturnValue Nothing   (Just _) _  =
+  error $ "internal: Return value where non expected"
+setReturnValue (Just (_,tr)) Nothing   _  =
+  error $ "internal: Missing return value for "  ++ show (ppIdent tr)
 
 type PathPC = Maybe (SymBlockID, Int)
 
@@ -547,22 +583,40 @@ data CallFrame sbe = CallFrame { cfFuncSym :: Symbol
                                , cfReturnBlock :: PathPC
                                , cfRegs :: RegMap (SBETerm sbe)
                                , cfRetReg :: Maybe (MemType, Ident)
-                               , cfAssertions :: SBEPred sbe
                                }
 
--- | Captures all symbolic execution state for a unique control-flow path (as
--- specified by the recorded path constraints)
+-- | A unique control flow path during symbolic execution.
 data Path sbe = Path
-  { pathFuncSym      :: !Symbol
+  { _pathFuncSym     :: !Symbol
     -- | The current PC location of path if any.
-  , _pathPC           :: !PathPC
-  , _pathName         :: !(Integer)
-  , _pathRegs        :: !(RegMap (SBETerm sbe))
-  , _pathMem          :: SBEMemory sbe    -- ^ The memory model along this path
-  , _pathAssertions   :: SBEPred sbe      -- ^ Condition on path since last branch.
-  , pathStackHt      :: !Int             -- ^ Number of call frames count.
-  , pathStack        :: [CallFrame sbe] -- ^ Return registers for current calls.
+  , _pathPC         :: !PathPC
+  , _pathName       :: !(Integer)
+  , _pathRegs       :: !(RegMap (SBETerm sbe))
+    -- | The current state of memory on path.
+  , _pathMem        :: SBEMemory sbe
+    -- | Assertions added since last branch.
+  , _pathAssertions :: SBEPred sbe
+    -- | Number of call frames in stack.
+  , _pathStackHt     :: !Int
+    -- | List of stack frames on path previously.
+  , _pathStack       :: [CallFrame sbe]
   }
+
+-- | A path with no active state and the given initial memory.
+initialPath :: SBE sbe -> SBEMemory sbe -> Path sbe
+initialPath sbe mem =
+  Path { _pathFuncSym = entrySymbol
+       , _pathPC = Nothing
+       , _pathName = 0
+       , _pathRegs = M.empty
+       , _pathMem = mem
+       , _pathAssertions = sbeTruePred sbe
+       , _pathStackHt = 0
+       , _pathStack = []
+       }
+
+pathFuncSym :: Simple Lens (Path sbe) Symbol
+pathFuncSym = lens _pathFuncSym (\p r -> p { _pathFuncSym = r })
 
 pathPC :: Simple Lens (Path sbe) PathPC
 pathPC = lens _pathPC (\p r -> p { _pathPC = r })
@@ -579,6 +633,12 @@ pathMem = lens _pathMem (\p r -> p { _pathMem = r })
 
 pathAssertions :: Simple Lens (Path sbe) (SBEPred sbe)
 pathAssertions = lens _pathAssertions (\p r -> p { _pathAssertions = r })
+
+pathStackHt :: Simple Lens (Path sbe) Int
+pathStackHt = lens _pathStackHt (\p r -> p { _pathStackHt = r })
+
+pathStack :: Simple Lens (Path sbe) [CallFrame sbe]
+pathStack = lens _pathStack (\p r -> p { _pathStack = r })
 
 newtype FailRsn       = FailRsn String deriving (Show)
 data ErrorPath sbe = EP { epRsn :: FailRsn, epPath :: Path sbe }
@@ -684,11 +744,12 @@ ppFailRsn (FailRsn msg) = text msg
 ppCtrlStk :: SBE sbe -> Maybe (CS sbe) -> Doc
 ppCtrlStk _ Nothing = text "All paths failed"
 ppCtrlStk sbe (Just (FinishedCS p)) = ppPath sbe p
-ppCtrlStk sbe (Just (ActiveCS (ACS p h))) =
+ppCtrlStk sbe (Just (ActiveCS cs)) =
   text "Active path:" <$$>
-  ppPath sbe p <$$>
-  ppPathHandler sbe h
+  ppPath sbe (cs^.activePath)
+  --TODO: Print more information
 
+{-
 ppMergeTarget :: MergeTarget -> Doc
 ppMergeTarget (OnReturn n mr) = text "return" <> parens (int n <+> reg)
   where reg = maybe empty ppIdent mr
@@ -711,6 +772,7 @@ ppPathHandler sbe (BranchHandler tgt c act h) =
   indent 2 (ppBranchAction sbe act) <$$>
   ppPathHandler sbe h
 ppPathHandler _ StopHandler = text "stop"
+-}
 
 ppPathPC :: PathPC -> Doc
 ppPathPC Nothing = text "none"
@@ -726,7 +788,7 @@ ppPath sbe p =
 ppPathInfo :: Path sbe -> Doc
 ppPathInfo p =
   char '#' <> integer (p^.pathName) <> colon 
-  <> ppSymbol (pathFuncSym p) <> colon
+  <> ppSymbol (p^.pathFuncSym) <> colon
   <> ppPathPC (p^.pathPC)
 
 ppStackTrace :: [CallFrame term] -> Doc
@@ -845,9 +907,7 @@ alloca ty szw sztm a = do
   sbe <- gets symBE
   rslt <- liftSBE $ stackAlloc sbe m ty szw sztm a
   case rslt of
-    ASymbolicCountUnsupported  -> errorPath $
-      "Stack allocation only supports a concrete element count "
-        ++ "(try a different memory model?)"
+    AError msg -> errorPath msg
     AResult c t m' -> do
       currentPathMem .= m'
       let fr = memFailRsn sbe ("Failed alloca allocation of type " ++ show (ppMemType ty)) []
@@ -868,9 +928,7 @@ malloc ty szw sztm = do
   Just m <- preuse currentPathMem
   rslt <- liftSBE $ heapAlloc sbe m ty szw sztm 0
   case rslt of
-    ASymbolicCountUnsupported -> errorPath $
-      "malloc only supports concrete element count "
-        ++ "(try a different memory model?)"
+    AError msg -> errorPath msg
     AResult c t m' -> do
       currentPathMem .= m'
       let fr =  memFailRsn sbe ("Failed malloc allocation of type " ++ show (ppMemType ty)) []
