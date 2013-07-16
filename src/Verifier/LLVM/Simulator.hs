@@ -20,7 +20,6 @@ Point-of-contact : jstanley
 --    merges.  Warnings on symbolic validity results from memory model
 -- 7: Memory model dump pre/post every operation (for nontrivial codes, this
 --    generates a /lot/ of output -- now with more output than level 6!)
-
 {-# LANGUAGE DoAndIfThenElse       #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -33,16 +32,13 @@ Point-of-contact : jstanley
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
-
-
 module Verifier.LLVM.Simulator
   ( module Verifier.LLVM.AST
   , module Verifier.LLVM.Codebase
   , Simulator (SM)
   , State(..)
-  , errorHandler
+  , onSimError
   , ErrorHandler
-  , enterDebuggerOnError
   , killPathOnError
   , SEH(..)
   , callDefine
@@ -75,8 +71,6 @@ module Verifier.LLVM.Simulator
   , errorPaths
   , LSSOpts(..)
   , MonadException
-  , debuggerREPL
-  , breakOnMain
   ) where
 
 import           Control.Applicative
@@ -89,7 +83,6 @@ import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Map as M
 import           Data.Maybe
-import qualified Data.Set as S
 import qualified Data.Vector as V
 import System.Console.Haskeline.MonadException (MonadException, handle, throwIO)
 import           System.Exit
@@ -99,7 +92,6 @@ import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
 import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase
-import Verifier.LLVM.Simulator.Debugging
 import Verifier.LLVM.Simulator.Internals
 import Verifier.LLVM.Simulator.SimUtils
 
@@ -166,8 +158,9 @@ runSimulator cb sbe mem seh mopts m = do
                     , _pathCounter = 1
                     , _aigOutputs  = []
                     , _breakpoints = M.empty
-                    , _pathPosChangeEvent = checkForBreakpoint
-                    , _errorHandler = enterDebuggerOnError
+                    , _onPathPosChange = return ()
+                    , _onSimError = killPathOnError
+                    , _onUserInterrupt = throwIO UserInterrupt
                     }
   ea <- flip evalStateT newSt $ runErrorT $ runSM $ do
     initGlobals
@@ -343,21 +336,8 @@ signalPathPosChangeEvent = do
   mp <- preuse currentPathOfState
   case mp of
     Nothing -> return ()
-    Just{} -> join $ use pathPosChangeEvent
+    Just{} -> join (use onPathPosChange)
 
-enterDebuggerOnError :: (Functor sbe, Functor m, MonadException m)
-                     => ErrorHandler sbe m
-enterDebuggerOnError cs rsn = do
-  -- Reset state
-  ctrlStk ?= ActiveCS cs
-  -- Get current path before last step.
-  let p = cs^.activePath
-  dbugM $ show $
-    text "Simulation error:" <+> ppFailRsn rsn <$$>
-    indent 2 (text "at" <+> ppPathInfo p)
-  debuggerREPL
-  -- Resume execution
-  run
 
 killPathOnError :: (Functor sbe, Functor m, MonadException m)
                 => ErrorHandler sbe m
@@ -421,20 +401,17 @@ run = do
           dbugM $ showErrCnt numErrs
           dumpErrorPaths
     Just (ActiveCS cs) -> do
-      s <- get
       let p = cs^.activePath
       let userIntHandler UserInterrupt = do
-            put s
-            dbugM $ show $ 
-              text "Simulation interrupted: Entering debugger" <$$>
-              indent 2 (text "at" <+> ppPathInfo p)
-            debuggerREPL
-            dbugM $ "Resuming simulation"
-            liftIO $ resetInterrupt
+            ctrlStk ?= ActiveCS cs -- Reset control stack.
+            join $ use onUserInterrupt
             run
           userIntHandler e = throwIO e
       handle userIntHandler $ do
-        let onError rsn = use errorHandler >>= \h -> h cs rsn
+        let onError rsn = do
+              h <- use onSimError
+              h cs rsn
+              run
         flip catchError onError $ do
           let Just (pcb,pc) = p^.pathPC
           -- Get name of function we are in.

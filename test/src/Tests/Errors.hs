@@ -15,30 +15,30 @@ import           Tests.Common
 
 errorTests :: [(Args, Property)]
 errorTests =
-  [ lssTest 0 "ctests/test-error-paths-all" $ \v mdl -> do
-      runTestLSSBuddy v mdl [] (Just 2) Nothing
-      runTestLSSDag   v mdl [] (Just 2) Nothing
+  [ lssTest "ctests/test-error-paths-all" $ \mdl -> do
+      runTestLSSBuddy 0 mdl [] (Just 2) Nothing
+      runTestLSSDag   0 mdl [] (Just 2) Nothing
 
-  , lssTest 0 "ctests/test-error-paths-some" $ \v cb -> do
-      runTestLSSBuddy v cb [] (Just 1) (Just 0)
-      runTestLSSDag   v cb [] (Just 1) (Just 0)
+  , lssTest "ctests/test-error-paths-some" $ \cb -> do
+      runTestLSSBuddy 0 cb [] (Just 1) (Just 0)
+      runTestLSSDag   0 cb [] (Just 1) (Just 0)
 
-  , lssTest 0 "ctests/test-error-paths-some-more" $ \v cb -> do
-      runTestLSSBuddy v cb [] (Just 2) (Just 0)
-      runTestLSSDag   v cb [] (Just 2) (Just 0)
+  , lssTest "ctests/test-error-paths-some-more" $ \cb -> do
+      runTestLSSBuddy 0 cb [] (Just 2) (Just 0)
+      runTestLSSDag   0 cb [] (Just 2) (Just 0)
 
-  , lssTest 0 "ctests/test-error-paths-bad-mem-trivial" $ \v cb -> do
-      runTestLSSBuddy v cb [] (Just 1) Nothing
-      runTestLSSDag   v cb [] (Just 1) Nothing
+  , lssTest "ctests/test-error-paths-bad-mem-trivial" $ \cb -> do
+      runTestLSSBuddy 0 cb [] (Just 1) Nothing
+      runTestLSSDag   0 cb [] (Just 1) Nothing
 
-  , lssTest 0 "ctests/test-error-paths-bad-mem-symsize" $ \v cb -> do
-      runTestLSSBuddy v cb [] (Just 1) (Just 1)
+  , lssTest "ctests/test-error-paths-bad-mem-symsize" $ \cb -> do
+      runTestLSSBuddy 0 cb [] (Just 1) (Just 1)
        -- This seems to hang in GHCI but not from the command line =/
-      runTestLSSDag   v cb [] Nothing  (Just 1)
+      runTestLSSDag   0 cb [] Nothing  (Just 1)
 
-  , lssTest 0 "ctests/test-error-paths-bad-mem-diverge" $ \v cb -> do
-      runTestLSSBuddy v cb [] (Just 1) (Just 1)
-      runTestLSSDag   v cb [] (Just 1) (Just 1)
+  , lssTest "ctests/test-error-paths-bad-mem-diverge" $ \cb -> do
+      runTestLSSBuddy 0 cb [] (Just 1) (Just 1)
+      runTestLSSDag   0 cb [] (Just 1) (Just 1)
   ]
 
 --------------------------------------------------------------------------------
