@@ -195,16 +195,10 @@ initGlobals = do
   -- Initialize global data
   do let globals = [ g | (_,Left g) <- M.toList nms]
      forM_ globals $ \g -> do
-       -- Run onMkGlobTerm event handler
-       join $ use (evHandlers . to onMkGlobTerm) ?? g
        cdata <- evalExprInCC "addGlobal" (globalValue g)
-       -- Run onPreGlobInit event handler.
-       join $ use (evHandlers . to onPreGlobInit) ?? g ?? cdata
        let noDataSpc = "Not enough space in data segment to allocate new global."
        insertGlobalTerm noDataSpc (globalSym g) (MemType (globalType g)) $
           \s m -> memInitGlobal s m (globalType g) cdata
-       -- Run onPostGlobInit event handler.
-       join $ use (evHandlers . to onPostGlobInit) ?? g ?? cdata
 
 -- | External entry point for a function call.  This will push a callFrame
 -- for the function to the stack, and run the function until termination.
@@ -699,9 +693,6 @@ defaultSEH = SEH { onPostOverrideReg = return ()
                  , _onPreStep = \_   -> return ()
                  , _onBlockEntry = \_   -> return ()
                  , onBlockExit = \_ -> return ()
-                 , onMkGlobTerm = \_ -> return ()
-                 , onPreGlobInit = \_ _ -> return ()
-                 , onPostGlobInit = \_ _ -> return ()
                  }
 
 --------------------------------------------------------------------------------

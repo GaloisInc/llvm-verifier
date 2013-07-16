@@ -318,11 +318,7 @@ data CS sbe
   = FinishedCS (Path sbe)
   | ActiveCS (ActiveCS sbe)
 
-{-
-_ActiveCS :: Simple Lens (CS sbe) (Maybe (ActiveCS sbe))
-_ActiveCS f (ActiveCS abc) = ActiveCS
--}
-
+-- | Returns current path
 currentPath :: Simple Lens (CS sbe) (Path sbe)
 currentPath f (FinishedCS p) = FinishedCS <$> f p
 currentPath f (ActiveCS acs) = ActiveCS <$> activePath f acs
@@ -665,12 +661,6 @@ data SEH sbe m = SEH
   , _onBlockEntry      :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
     -- | Invoked when leaving a basic block
   , onBlockExit       :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
-    -- | Invoked before construction of a global term value
-  , onMkGlobTerm      :: Global (SBETerm sbe) -> Simulator sbe m ()
-    -- | Invoked before memory model initialization of global data
-  , onPreGlobInit     :: Global (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
-    -- | Invoked after memory model initialization of global data
-  , onPostGlobInit    :: Global (SBETerm sbe) -> SBETerm sbe -> Simulator sbe m ()
   }
 
 onPreStep :: Simple Lens (SEH sbe m) (SymStmt (SBETerm sbe) -> Simulator sbe m ())
