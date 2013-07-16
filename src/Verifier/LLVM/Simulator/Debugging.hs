@@ -12,20 +12,16 @@ semantics are loosely based on gdb.
 
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE DoAndIfThenElse     #-}
-{- LANGUAGE FlexibleContexts    #-}
-{- LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{- LANGUAGE PatternGuards       #-}
 {-# LANGUAGE Rank2Types          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{- LANGUAGE TupleSections #-}
-{- LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE ViewPatterns        #-}
 module Verifier.LLVM.Simulator.Debugging (
     breakOnMain
-  , debuggerREPL
+  , initializeDebugger
   , resetInterrupt
   , checkForBreakpoint
   ) where
@@ -38,6 +34,7 @@ import Control.Monad.State as MTL
 import Control.Lens hiding (createInstance)
 import Data.Char
 import qualified Data.Foldable as Fold
+import Data.IORef
 import Data.List
 import qualified Data.Map as M
 import Data.Maybe
@@ -45,11 +42,11 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as S
 import Data.String
-import qualified Data.Vector as V
 import System.Console.Haskeline
 import System.Directory
 import System.Exit
 import System.FilePath
+import System.IO
 import System.IO.Error
 import Text.PrettyPrint.Leijen hiding ((<$>), (</>))
 import qualified Text.PrettyPrint.Leijen as PP
@@ -139,72 +136,163 @@ resetInterrupt = do
 
 -- | Add a breakpoint to @main@ in the current codebase
 breakOnMain :: (Functor m, Monad m) => Simulator sbe m ()
-breakOnMain = addBreakpoint (Symbol "main") (initSymBlockID,0)
-
--- | Prints out message where current path is.
-logBreakpoint :: (Functor m, Monad m, MonadIO m)
-              => Simulator sbe m ()
-logBreakpoint = do
-  withActivePath () $ \p -> do
-    let sym = p^.pathFuncSym
-    cb <- gets codebase
-    case lookupDefine sym cb of
-      Nothing -> dbugM "Could not determine location."
-      Just def -> do
-        let psym = ppSymbol sym  
-        let bld =
-              case p^.pathPC of
-                Nothing -> psym
-                Just (pcb,pc) ->
-                    psym <> ppSymBlockID pcb <> colon <+> ppStmt stmt
-                  where sb = lookupSymBlock def pcb
-                        stmt = sbStmts sb V.! pc
-        dbugM $ show $ text "at" <+> bld <> colon
-
+breakOnMain = do
+  addBreakpoint (Symbol "main") (initSymBlockID,0)
 
 checkForBreakpoint :: (Functor sbe, Functor m, MonadIO m, MonadException m)
-                   => Simulator sbe m ()
-checkForBreakpoint = do
+                   => DebuggerRef sbe m -> Simulator sbe m ()
+checkForBreakpoint r = do
   Just p <- preuse currentPathOfState
   mbps <- use (breakpoints . at (p^.pathFuncSym))
   let atBP = fromMaybe False $ S.member <$> (p^.pathPC) <*> mbps
-  when atBP debuggerREPL
+  when atBP (enterDebuggerAtBreakpoint r)
 
-debuggerREPL :: forall sbe m 
-              . (Functor sbe, Functor m, MonadIO m, MonadException m)
+runWithNoNextCommand :: (Functor sbe, Functor m, MonadException m)
+                     => DebuggerCont sbe m
+runWithNoNextCommand = runNextCommand (Debugger (\c -> c ()))
+
+runNextCommand :: (Functor sbe, Functor m, MonadException m)
+               => Debugger sbe m () -- ^ What to run if no input is provided.
+               -> DebuggerCont sbe m
+runNextCommand onNoInput dr = do
+  mline <- getInputLine "(lss) "
+  case dropWhile isSpace <$> mline of
+    Nothing -> return ()
+    Just "" -> do
+      runDebugger onNoInput (\() -> runNextCommand onNoInput) dr
+    Just cmdStr -> do
+      grammar <- liftIO $ dsCmd <$> readIORef dr
+      let pr = runIdentity $ runGrammar grammar (convertToTokens cmdStr) 
+      case resolveParse pr of
+        Left d -> do
+          outputStrLn (show d)
+          runWithNoNextCommand dr
+        Right cmd -> runDebugger cmd (\() -> runNextCommand cmd) dr
+--                       `catch` handleErr
+--          where handleErr (FailRsn rsn) = do
+--                  dbugM ("error: " ++ rsn)
+--                  runWithNoNextCommand ds
+
+data DebuggerState sbe m 
+   = DebuggerState { dsCmd :: SimCmd sbe m
+                   , _resumeThrowsError :: Bool
+                   }
+
+-- | Flag that holds if we know that resuming from this point will throw an error.
+resumeThrowsError :: Simple Lens (DebuggerState sbe m) Bool
+resumeThrowsError = lens _resumeThrowsError (\s v -> s { _resumeThrowsError = v })
+
+type DebuggerRef sbe m = IORef (DebuggerState sbe m)
+
+type DebuggerCont sbe m
+   = DebuggerRef sbe m
+   -> InputT (Simulator sbe m) ()
+
+newtype Debugger sbe m a
+      = Debugger { runDebugger :: (a -> DebuggerCont sbe m)
+                               -> DebuggerCont sbe m
+                 }
+
+
+instance Functor (Debugger sbe m) where
+  fmap f d = Debugger (\c -> runDebugger d (c . f))
+
+instance Applicative (Debugger sbe m) where
+  pure v = Debugger ($v)  
+  mf <*> mv = Debugger $ \c -> do
+    runDebugger mf (\f -> runDebugger mv (c.f))
+
+instance (Functor sbe, Functor m, MonadException m)
+      => Monad (Debugger sbe m) where
+  m >>= h = Debugger $ \c -> runDebugger m (\v -> runDebugger (h v) c)
+  return v = Debugger ($v)
+  fail m = Debugger $ \_c r -> do
+    dbugM $ "Unexpected error: " ++ show m
+    runWithNoNextCommand r
+
+instance (Functor sbe, Functor m, MonadException m)
+      => MonadState (DebuggerState sbe m) (Debugger sbe m) where
+  get   = Debugger $ \c r -> liftIO (readIORef r) >>= flip c r
+  put v = Debugger $ \c r -> liftIO (writeIORef r v) >> c () r
+
+
+instance (Functor sbe, Functor m, MonadIO m, MonadException m)
+      => MonadIO (Debugger sbe m) where
+  liftIO m = Debugger (\c r -> liftIO m >>= flip c r)
+
+getDebuggerRef :: Debugger sbe m (DebuggerRef sbe m)
+getDebuggerRef = Debugger (\c r -> c r r)
+
+runSim :: Monad m => Simulator sbe m a -> Debugger sbe m a
+runSim m = Debugger (\c r -> lift m >>= flip c r)
+
+-- | Resume exectuion of simulator.
+resume :: Monad m => Debugger sbe m a
+resume = Debugger (\_ _ -> return ())
+
+-- | Setup simulator to run debugger when needed.
+initializeDebugger :: (Functor sbe, Functor m, MonadException m)
+                   => Simulator sbe m (DebuggerRef sbe m)
+initializeDebugger = do
+  cb <- gets codebase
+  let cmds = allCmds cb
+  let ds = DebuggerState { dsCmd = cmds
+                         , _resumeThrowsError = False
+                         }
+  r <- liftIO $ newIORef ds
+  onPathPosChange .= checkForBreakpoint r
+  onSimError      .= enterDebuggerOnError r
+  onUserInterrupt .= enterDebuggerOnInterrupt r
+  return r
+
+enterDebuggerOnError :: (Functor sbe, Functor m, MonadException m)
+                     => DebuggerRef sbe m
+                     -> ErrorHandler sbe m
+enterDebuggerOnError r cs rsn = do
+  -- Reset state
+  ctrlStk ?= ActiveCS cs
+  -- Get current path before last step.
+  dbugM $ show $
+    text "Simulation error:" <+> ppFailRsn rsn
+  -- Debugger state
+  enterDebugger r True
+
+enterDebuggerOnInterrupt :: (Functor sbe, Functor m, MonadException m)
+                         => DebuggerRef sbe m
+                         -> Simulator sbe m ()
+enterDebuggerOnInterrupt r = do
+  dbugM $ show $ 
+    text "Simulation interrupted: Entering debugger"
+  enterDebugger r False
+  dbugM $ "Resuming simulation"
+  liftIO $ resetInterrupt
+
+enterDebuggerAtBreakpoint :: (Functor sbe, Functor m, MonadException m)
+                          => DebuggerRef sbe m
+                          -> Simulator sbe m ()
+enterDebuggerAtBreakpoint r = do
+  dbugM "Encountered breakpoint"
+  enterDebugger r False
+
+enterDebugger :: (Functor sbe, Functor m, MonadException m)
+              => DebuggerRef sbe m
+              -> Bool -- ^ Indicates if debugger was entered due to error in current path.
+              -> Simulator sbe m ()
+enterDebugger r eoe = do
+  liftIO $ modifyIORef r $ resumeThrowsError .~ eoe
+  withActivePath () $ \p -> do
+    dbugM $ show $ indent 2 (text "at" <+> ppPathInfo p)
+  grammar <- liftIO $ dsCmd <$> readIORef r
+  historyPath <- liftIO getLSSHistoryPath
+  let settings = setComplete (matcherCompletions grammar)
+               $ defaultSettings { historyFile = historyPath }
+  runInputT settings (runWithNoNextCommand r)
+
+{-
+debuggerREPL :: (Functor sbe, Functor m, MonadIO m, MonadException m)
              => Simulator sbe m ()
-debuggerREPL = do
-    pathPosChangeEvent .= checkForBreakpoint
-    logBreakpoint
-    cb <- gets codebase
-    let cmds = allCmds cb
-    historyPath <- liftIO getLSSHistoryPath
-    let settings = setComplete (matcherCompletions cmds) $
-                     defaultSettings { historyFile = historyPath }
-    runInputT settings (loop cmds (return False))
-  where loop :: SimCmd sbe m
-             -> Simulator sbe m Bool
-             -> InputT (Simulator sbe m) ()
-        loop cmds mprev = do
-          mline <- getInputLine "(lss) "
-          case dropWhile isSpace <$> mline of
-            Nothing -> return ()
-            Just "" -> do
-              -- repeat last command if nothing entered
-              continue <- lift mprev
-              unless continue (loop cmds mprev)
-            Just cmdStr -> do
-              cb <- lift $ gets codebase
-              case selectCommand cb cmds cmdStr of
-                Left emsg -> do
-                  outputStrLn emsg
-                  loop cmds (return False)
-                Right cmd -> do
-                  let handleErr (FailRsn rsn) = do
-                        dbugM $ "error: " ++ rsn
-                        return False
-                  continue <- lift $ catchError cmd handleErr
-                  unless continue (loop cmds cmd)
+debuggerREPL = initializeDebugger >>= enterDebugger
+-}
 
 ------------------------------------------------------------------------
 -- Tokenization
@@ -362,7 +450,7 @@ cmdLabel :: String -> Grammar m ()
 cmdLabel d = atom (CommandLabel (PP.text d))
 
 cmdDef :: String -> a -> Grammar m a
-cmdDef d a = cmdLabel d *> pure a
+cmdDef d v = cmdLabel d *> pure v
 
 hide :: Grammar m a -> Grammar m a
 hide = atom . Hide
@@ -554,14 +642,6 @@ data NextState m a = NextState { nsWords   :: M.Map Token (SwitchMatch (Grammar 
                                , nsMatches :: [a]
                                }
 
-{-
-emptyNextState :: NextState m a
-emptyNextState = NextState { nsWords = M.empty
-                           , nsPreds = []
-                           , nsMatches = []
-                           }
--}
-
 pureNextState :: a -> NextState m a
 pureNextState v = NextState { nsWords = M.empty
                             , nsPreds = []
@@ -579,16 +659,6 @@ unionNextState x y =
         zw = M.unionWith (unionSwitchMatch (<||>)) xw yw
         zp = nsPreds x   ++ nsPreds y
         zm = nsMatches x ++ nsMatches y
-
-{-
--- | Traverse all grammars in switch map.
-smGrammars :: Traversal (SwitchMap m a)
-                        (SwitchMap n b)
-                        (Grammar m a)
-                        (Grammar n b)
-smGrammars f (SwitchMap w e) =
-  SwitchMap <$> traverse (switchMatchGrammars f) w <*> traverse f e
--}
 
 composeNextState :: SwitchMap m a -> Cont (Parser m) a b -> NextState m b
 composeNextState m c =
@@ -810,20 +880,79 @@ matcherCompletions m (l,_r) = pure (finalize a)
                  (reverse (take p rl), cl)
           where (p,cl) = pr^.parseCompletions
 
-type Command m = Grammar Identity (m Bool)
 
-selectCommand :: MonadIO m
-              => Codebase sbe
-              -> Command m
-              -> String
-              -> Either String (m Bool)
-selectCommand _cb l s =
-    case resolveParse pr of
-      Left d -> Left $ show d
-      Right v -> Right $ v
-  where pr = runIdentity (runGrammar l (convertToTokens s)) 
+data YesNoCancel = Yes | No | Cancel
 
-commandHelp :: Command m -> Doc
+promptYesNoCancel :: MonadIO m => m YesNoCancel
+promptYesNoCancel =
+    liftIO $ do
+      putNoLine "Please enter (Y)es, (N)o, (C)ancel? " >> loop
+  where putNoLine m = putStr m >> hFlush stdout
+        loop = do
+          l <- dropWhile isSpace . fmap toLower <$> getLine
+          case l of
+            "" -> do putNoLine "Please enter (Y)es, (N)o, or (C)ancel: "
+                     loop
+            _ | l `isPrefixOf` "yes" -> return Yes
+              | l `isPrefixOf` "no" -> return No
+              | l `isPrefixOf` "cancel" -> return Cancel
+              | otherwise -> do
+                 putNoLine "Invalid response; please answer (Y)es, (N)o, or (C)ancel "
+                 loop
+
+-- | Check to see if we should warn user before resuming.  Return True
+-- if resume should continue
+warnIfResumeThrowsError :: (Functor sbe, Functor m, MonadException m)
+                        => Debugger sbe m Bool
+warnIfResumeThrowsError = do
+  rte <- use resumeThrowsError
+  mcs <- runSim $ use ctrlStk
+  case mcs of
+    Just (ActiveCS cs) | rte -> do
+      dbugM "Resuming execution on this path should rethrow the simulation error."
+      if length (cs^..activePaths) == 1 then do
+        dbugM "Should lss kill the current path, and stop simulation?"
+        ync <- promptYesNoCancel
+        case ync of
+          Yes -> do
+            killPathByDebugger
+            resume
+          No -> return True
+          Cancel -> return False
+      else do
+        dbugM "Should lss kill the current path, and resume on a new path?"
+        ync <- promptYesNoCancel
+        case ync of
+          Yes -> do
+            killPathByDebugger
+            return True
+          No -> return True
+          Cancel -> return False
+    _ -> return True
+
+-- | @resumeActivePath m@ runs @m@ with the current path,
+-- and resumes execution if there is a current path and @m@
+-- returns true.
+resumeActivePath :: (Functor sbe, Functor m, MonadException m)
+                 => (Path sbe -> Simulator sbe m ())
+                 -> Debugger sbe m ()
+resumeActivePath action = do
+  c <- warnIfResumeThrowsError
+  when c $ do
+    join $ runSim $ do
+      mcs <- use ctrlStk
+      case mcs of
+        Just (ActiveCS cs) -> do
+          action (cs^.activePath)
+          return resume
+        _ -> do
+          dbugM "No active execution path."
+          return (return ())
+
+type SimCmd sbe m = (Functor sbe, Functor m, MonadException m)
+                 => Grammar Identity (Debugger sbe m ())
+
+commandHelp :: Grammar m a -> Doc
 commandHelp cmds = 
     text "List of commands:" <$$> 
     PP.empty <$$> 
@@ -832,6 +961,12 @@ commandHelp cmds =
     text "Type \"help\" followed by command name for full documentation." <$$>
     text "Command name abbreviations are allowed if unambiguous."
   where help = matcherHelp cmds
+
+nat :: Grammar m Integer
+nat = atom (Switch (fromTokenPred p))
+  where p = TokenPred (Just (text "<nat>")) WordTokenType f idCont
+        f (NatToken i) = Just i
+        f _ = Nothing
 
 newtype NameMap = NameMap (M.Map String NameMapPair)
 type NameMapPair = (Maybe SymBlockID, NameMap)
@@ -881,13 +1016,6 @@ locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
                m = foldl insertName emptyNameMap (M.keys (sdBody d))
 
 
-
-nat :: Grammar m Integer
-nat = atom (Switch (fromTokenPred p))
-  where p = TokenPred (Just (text "<nat>")) WordTokenType f idCont
-        f (NatToken i) = Just i
-        f _ = Nothing
-
 -- | List of commands for debugger.
 allCmds :: Codebase sbe -> SimCmd sbe m
 allCmds cb = res 
@@ -907,13 +1035,9 @@ allCmds cb = res
             <||> keyword "help" *> helpCmd res
             <||> keyword "quit"   *> quitCmd
             
-helpCmd :: MonadIO m => Command m -> Command m
+helpCmd :: SimCmd sbe m -> SimCmd sbe m
 helpCmd cmdList = cmdDef "Print list of commands." $ do
   liftIO $ print (commandHelp cmdList)
-  return False
-
-type SimCmd sbe m = (Functor sbe, Functor m, MonadIO m, MonadException m)
-                 => Command (Simulator sbe m)
 
 pathCmd :: SimCmd sbe m
 pathCmd
@@ -924,7 +1048,7 @@ pathCmd
 
 
 pathListCmd :: SimCmd sbe m
-pathListCmd = cmdDef "List all current execution paths." $ do
+pathListCmd = cmdDef "List all current execution paths." $ runSim $ do
   mcs <- use ctrlStk
   case mcs of
     Nothing ->
@@ -937,52 +1061,56 @@ pathListCmd = cmdDef "List all current execution paths." $ do
             ppPathItem i p = [ padRightMin 3 (show i), show (ppPathInfo p)]              
             header = [ " Num", "Location"]
             table = header : zipWith ppPathItem [1..] paths
-  return False
 
 pathSatCmd :: SimCmd sbe m
 pathSatCmd =
   cmdDef "Check satisfiability of path assertions with SAT solver." $ do
+    runSim $ do
       Just p <- preuse currentPathOfState
       sbe <- gets symBE
       sat <- liftSBE $ termSAT sbe (p^.pathAssertions)
       case sat of
         UnSat -> 
-           dbugM "Path has unsatisfiable assertions."
+          dbugM "Path has unsatisfiable assertions."
         Sat _ ->
-           dbugM "Path assertions are satisfiable."
+          dbugM "Path assertions are satisfiable."
         Unknown ->
-           dbugM "Could not determine if path assertions are feasible."
-      return False
+          dbugM "Could not determine if path assertions are feasible."
+
+killPathByDebugger :: (Functor sbe, Functor m, MonadException m)
+                   => Debugger sbe m ()
+killPathByDebugger = do
+  runSim $ killCurrentPath (FailRsn "Terminated by debugger.")
+  resumeThrowsError .= False
+
 
 pathKillCmd :: SimCmd sbe m
 pathKillCmd = cmdDef "Kill the current execution path." $ do
-  killCurrentPath (FailRsn "Terminated by debugger.")
-  mp <- preuse currentPathOfState
+  killPathByDebugger
+  mp <- runSim $ preuse currentPathOfState
   case mp of
     Nothing -> dbugM "Killed last path."
     Just p -> dbugM $ show $
       text "Switched to path:" <+> ppPathInfo p
-  return False
  
 opt :: Grammar m a -> Grammar m (Maybe a)
 opt m = (Just <$> m) <||> pure Nothing 
 
-quitCmd :: MonadIO m => Command m
+quitCmd :: SimCmd sbe m
 quitCmd = cmdDef "Exit LSS." $ do
   liftIO $ exitWith ExitSuccess
 
 breakCmd :: Codebase sbe -> SimCmd sbe m
 breakCmd cb = (locSeq cb <**>) $ cmdDef desc $ \(b,p) -> do
-    addBreakpoint b p
-    return False
+    runSim $ addBreakpoint b p
   where desc = "Set a breakpoint at a specified location."
 
 deleteCmd :: Codebase sbe -> SimCmd sbe m
 deleteCmd cb = (opt (locSeq cb) <**>) $ cmdDef desc $ \mbp -> do
-      case mbp of
-        Just (b,p) -> removeBreakpoint b p
-        Nothing -> dbugM "Remove all breakpoints"
-      return False
+      runSim $ 
+        case mbp of
+          Just (b,p) -> removeBreakpoint b p
+          Nothing -> dbugM "Remove all breakpoints"
   where desc = "Clear a breakpoint at a function."
 
 concatBreakpoints :: M.Map Symbol (S.Set Breakpoint)
@@ -997,61 +1125,57 @@ infoCmd :: SimCmd sbe m
 infoCmd
   = keyword "block" *> infoBlockCmd
   <||> keyword "breakpoints" *> infoBreakpointsCmd
-  <||> keyword "ctrlstk" *> infoCtrlStkCmd
+  <||> keyword "ctrlstk"  *> infoCtrlStkCmd
   <||> keyword "function" *> infoFunctionCmd
   <||> keyword "locals" *> infoLocalsCmd
   <||> keyword "memory" *> infoMemoryCmd
-  <||> keyword "stack" *> infoStackCmd
+  <||> keyword "stack"  *> infoStackCmd
 
 infoBlockCmd :: SimCmd sbe m
 infoBlockCmd =
   cmdDef "Print block information." $ do
-    withActivePath False $ \p -> do
+    runSim $ withActivePath () $ \p -> do
       let sym = p^.pathFuncSym
           Just (pcb,_) = p^.pathPC
       Just def <- lookupDefine sym <$> gets codebase
       dbugM $ show $ ppSymBlock $ lookupSymBlock def pcb
-      return False
 
 infoBreakpointsCmd :: SimCmd sbe m
 infoBreakpointsCmd =
   cmdDef "List breakpoints." $ do
-    dumpBPs >> return False
+    runSim dumpBPs
 
 infoCtrlStkCmd :: SimCmd sbe m
 infoCtrlStkCmd =
   cmdDef "Print the entire control stack." $ do
-    dumpCtrlStk >> return False
+    runSim dumpCtrlStk
 
 infoFunctionCmd :: SimCmd sbe m
 infoFunctionCmd =
   cmdDef "Print function information." $ do
-    withActivePath False $ \p -> do
+    runSim $ withActivePath () $ \p -> do
       dumpSymDefine (gets codebase) (unSym (p^.pathFuncSym))
-      return False
 
 infoLocalsCmd :: SimCmd sbe m
 infoLocalsCmd =
   cmdDef "Print local variables in current stack frame." $ do
-    withActivePath False $ \p -> do
+    runSim $ withActivePath () $ \p -> do
       sbe <- gets symBE
       let locals = M.toList (p^.pathRegs)
           ppLocal (nm, (v,_)) =
             ppIdent nm `equalSep` prettyTermD sbe v           
       dbugM $ show $ vcat $ ppLocal <$> locals
-      return False
 
 infoMemoryCmd :: SimCmd sbe m
 infoMemoryCmd =
   cmdDef "Print memory information." $ do
-    dumpMem 0 "memory" >> return False
+    runSim $ dumpMem 0 "memory"
 
 --TODO: Revisit this command to check formatting.
 infoStackCmd :: SimCmd sbe m
 infoStackCmd = cmdDef "Print backtrace of the stack." $ do
-  withActivePath False $ \p -> do
+  runSim $ withActivePath () $ \p -> do
     dbugM $ show $ ppStackTrace $ p^.pathStack
-    return False
 
 padRightMin :: Int -> String -> String
 padRightMin l s | length s < l = replicate (l - length s) ' ' ++ s
@@ -1097,42 +1221,39 @@ withActivePath v action = do
 
 continueCmd :: SimCmd sbe m
 continueCmd = cmdDef "Continue execution." $ do
-  withActivePath False $ \_ -> do
-     return True
+  resumeActivePath (\_ -> return ())
 
 onReturnFrom :: (Functor sbe, Functor m, MonadIO m, MonadException m)
-             => Int -> Simulator sbe m ()
-onReturnFrom ht = do
+             => DebuggerRef sbe m -> Int -> Simulator sbe m ()
+onReturnFrom dr ht = do
   Just p <- preuse currentPathOfState
   if p^.pathStackHt < ht then
-    debuggerREPL
+    enterDebuggerAtBreakpoint dr
   else
-    checkForBreakpoint
+    checkForBreakpoint dr
 
 finishCmd :: SimCmd sbe m
 finishCmd = cmdDef desc $ do
-    withActivePath False $ \p -> do
-      pathPosChangeEvent .= onReturnFrom (p^.pathStackHt)
-      return True
+    dr <- getDebuggerRef
+    resumeActivePath $ \p -> do
+      onPathPosChange .= onReturnFrom dr (p^.pathStackHt)
   where desc = "Execute until the current stack frame returns."
 
 enterDebuggerAfterNSteps
   :: (Functor sbe, Functor m, MonadIO m, MonadException m)
-  => Integer -> Simulator sbe m ()
-enterDebuggerAfterNSteps n
-  | n <= 1 = debuggerREPL
-  | otherwise = pathPosChangeEvent .= enterDebuggerAfterNSteps (n-1)
+  => DebuggerRef sbe m -> Integer -> Simulator sbe m ()
+enterDebuggerAfterNSteps dr n
+  | n <= 1 = enterDebuggerAtBreakpoint dr
+  | otherwise = onPathPosChange .= enterDebuggerAfterNSteps dr (n-1)
 
 stepiCmd :: SimCmd sbe m
 stepiCmd = (opt nat <**>) $
   cmdDef "Execute one symbolic statement" $ \mc -> do
-    withActivePath False $ \_ -> do
-      let c = fromMaybe 1 mc
-      if c <= 0 then
-        return False
-      else do
-        pathPosChangeEvent .= enterDebuggerAfterNSteps c
-        return True
+    let c = fromMaybe 1 mc
+    when (c > 0) $ do
+      dr <- getDebuggerRef
+      resumeActivePath $ \_ -> do
+        onPathPosChange .= enterDebuggerAfterNSteps dr c
 
 unSym :: Symbol -> String
 unSym (Symbol str) = str

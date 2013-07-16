@@ -32,9 +32,10 @@ module Verifier.LLVM.Simulator.Internals
   , pathCounter
   , aigOutputs
   , breakpoints
-  , pathPosChangeEvent
+  , onPathPosChange
   , ErrorHandler
-  , errorHandler
+  , onSimError
+  , onUserInterrupt
 
   , Breakpoint
   , addBreakpoint
@@ -212,9 +213,11 @@ data State sbe m = State
   , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
   , _breakpoints :: !(M.Map Symbol (S.Set Breakpoint))
 
-  , _pathPosChangeEvent :: Simulator sbe m ()
+  , _onPathPosChange :: Simulator sbe m ()
+  , _onSimError      :: ErrorHandler sbe m
+    -- | Invoked when user presses control-C during execution.
+  , _onUserInterrupt :: Simulator sbe m ()
 
-  , _errorHandler :: ErrorHandler sbe m
 
   , _ctrlStk     :: !(Maybe (CS sbe))  -- ^ Control stack for controlling simulator.
   , _fnOverrides :: OvrMap sbe m    -- ^ Function override table
@@ -251,12 +254,16 @@ breakpoints :: Simple Lens (State sbe m) (M.Map Symbol (S.Set Breakpoint))
 breakpoints f s = (\v -> s { _breakpoints = v }) <$> f (_breakpoints s)
 
 -- | Event called when the instruction the active path is on has changed.
-pathPosChangeEvent :: Simple Lens (State sbe m) (Simulator sbe m ())
-pathPosChangeEvent =
-  lens _pathPosChangeEvent (\s v -> s { _pathPosChangeEvent = v })
+onPathPosChange :: Simple Lens (State sbe m) (Simulator sbe m ())
+onPathPosChange =
+  lens _onPathPosChange (\s v -> s { _onPathPosChange = v })
 
-errorHandler :: Simple Lens (State sbe m) (ErrorHandler sbe m)
-errorHandler = lens _errorHandler (\s v -> s { _errorHandler = v })
+onSimError :: Simple Lens (State sbe m) (ErrorHandler sbe m)
+onSimError = lens _onSimError (\s v -> s { _onSimError = v })
+
+-- | Event called when the simulator is interrupted by a user interrupt.
+onUserInterrupt :: Simple Lens (State sbe m) (Simulator sbe m ())
+onUserInterrupt = lens _onUserInterrupt (\s v -> s { _onUserInterrupt = v })
 
 -- | Types of breakpoints (kind of boring for now, but maybe with a
 -- DWARF parser we can do more...)

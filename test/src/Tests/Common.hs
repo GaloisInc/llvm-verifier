@@ -27,11 +27,12 @@ import           Verinf.Symbolic               (Lit, createBitEngine)
 
 import           LSSImpl
 
-import           Verifier.LLVM.BitBlastBackend
-import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.SAWBackend
-import           Verifier.LLVM.Simulator
-import           Verifier.LLVM.Simulator.SimUtils
+import Verifier.LLVM.BitBlastBackend
+import Verifier.LLVM.Codebase
+import Verifier.LLVM.Debugger          
+import Verifier.LLVM.SAWBackend
+import Verifier.LLVM.Simulator
+import Verifier.LLVM.Simulator.SimUtils
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
 
@@ -138,11 +139,12 @@ runTestLSSCommon :: (Functor sbe, Ord (SBETerm sbe))
                  -> PropertyM IO ()
 runTestLSSCommon createFn v mdl argv' mepsLen mexpectedRV = do
   run $ runTestSimulator createFn v mdl $ do
-    when (v > 0) breakOnMain
     case mepsLen of
-      -- Set error policy to just kill paths if errors are expected.
-      Just i | i > 0 && v == 0 -> errorHandler .= killPathOnError
-      _ -> return ()
+      Just i | i > 0 && v == 0 -> return ()
+      _ -> do
+        _ <- initializeDebugger
+        when (v > 0) $
+          breakOnMain
     execRslt <- testRunMain argv'
     case mepsLen of
       Nothing -> return ()
@@ -187,8 +189,8 @@ runTestLSSDag :: Int           -- ^ Verbosity
               -> PropertyM IO ()
 runTestLSSDag = runTestLSSCommon createDagModel
 
-lssTest :: Int -> FilePath -> (Int -> L.Module -> PropertyM IO ()) -> (Args, Property)
-lssTest v bc act = test 1 False bc $ act v =<< testMDL (bc <.> "bc")
+lssTest :: FilePath -> (L.Module -> PropertyM IO ()) -> (Args, Property)
+lssTest bc act = test 1 False bc $ act =<< testMDL (bc <.> "bc")
 
 testEachBackend :: FilePath
                 -> (forall sbe . (Functor sbe, Ord (SBETerm sbe))

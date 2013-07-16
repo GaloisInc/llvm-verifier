@@ -10,7 +10,6 @@ Point-of-contact : jstanley
 {-# LANGUAGE ViewPatterns     #-}
 module Tests.Symbolic (symTests) where
 
-import Control.Lens
 import Control.Monad (unless)
 import Control.Monad.State (gets)
 import Test.QuickCheck
@@ -29,10 +28,9 @@ symTests =
       let v = 1
       runAllMemModelTest v "test-sym-simple.bc" $
         trivBranchImpl "sym_read" (99,42)
-  , lssTest 0 "ctests/test-symbolic-alloc" $ \v mdl -> do
+  , lssTest "ctests/test-symbolic-alloc" $ \mdl -> do
       let mkTest createFn expectedFails expectedRV = run $ do
-            runTestSimulator createFn v mdl $ do
-              errorHandler .= killPathOnError
+            runTestSimulator createFn 0 mdl $ do
               er <- testRunMain []
               checkErrorPaths expectedFails er
               checkReturnValue expectedRV er

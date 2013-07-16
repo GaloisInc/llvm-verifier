@@ -75,6 +75,7 @@ library
     Verifier.LLVM.Codebase
     Verifier.LLVM.BitBlastBackend
     Verifier.LLVM.DataLayout
+    Verifier.LLVM.Debugger
     Verifier.LLVM.FreeApp
     Verifier.LLVM.LLVMContext
     Verifier.LLVM.LLVMIntrinsics

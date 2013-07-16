@@ -33,11 +33,7 @@ import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Simulator
-import Verifier.LLVM.Simulator.Debugging
-
-{-
-import           Verifier.LLVM.Simulator.Common
--}
+import Verifier.LLVM.Debugger
 
 data LSS = LSS
   { dbug          :: DbugLvl
@@ -98,6 +94,7 @@ lssImpl sbe mem cb argv0 args = do
       dbugM $ "Data range  : " ++ sr (mgData mg)
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
     setVerbosity $ fromIntegral $ dbug args
+    void $ initializeDebugger
     when (startDebugger args) breakOnMain
     let mainDef =
           case lookupDefine (L.Symbol "main") cb of
