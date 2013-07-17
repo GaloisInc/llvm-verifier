@@ -9,6 +9,7 @@ import Control.Applicative
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Data.Char
+import Data.List (stripPrefix)
 import Data.String
 import qualified Data.Vector as V
 import Numeric                   (showHex, showOct)
@@ -16,6 +17,7 @@ import Numeric                   (showHex, showOct)
 import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Simulator.Internals
+import Verifier.LLVM.Simulator.SimUtils
 
 allocaOvd :: BitWidth -> StdOvdEntry sbe m
 allocaOvd aw = do
@@ -32,9 +34,32 @@ mallocOvd ptp aw = do
       [(_,sizeTm)] -> malloc i8 aw sizeTm
       _ -> wrongArguments "malloc"
 
+data Justification = LeftJustify | RightJustify
+
 data PrintfFlags = PrintfFlags {
-    zeroPad :: Bool
+    printfJustify :: Justification
+  , printfForceSign :: Bool
+  , printfBlankBeforeUnsigned :: Bool
+  , printfShowBasePrefix :: Bool
+  , printfZeroPad :: Bool
+    -- | printfMinWidth is @Left n@ if an argument is used for the
+    -- width, and @Right w@ is the min width is set zero.
+  , printfMinWidth :: Either Int Integer
+  
+  , printfPrecision :: Either Int Integer
+  , lengthMod :: String
   }
+
+defaultFlags :: PrintfFlags
+defaultFlags = PrintfFlags { printfJustify = RightJustify
+                           , printfForceSign = False
+                           , printfBlankBeforeUnsigned = False
+                           , printfShowBasePrefix = False
+                           , printfZeroPad = False
+                           , printfMinWidth = Right 0
+                           , printfPrecision = Right 0
+                           , lengthMod = "" 
+                           }
 
 -- | Attempt to format a term as an unsigned number with a given format term.
 fmtUnsigned' :: SBE sbe -> (Integer -> String) -> (MemType,SBETerm sbe) -> Maybe String
@@ -53,13 +78,18 @@ printfToString fmt args = do
         valueAt p = maybe (errorPath msg) return (vargs V.!? p)
           where msg = "Could not get argument at position " ++ show p
     sbe <- gets symBE
-    let badArg p = errorPath $ "printf given bad argument at position " ++ show p
+    let badArg p = do
+          whenVerbosity (>0) $ 
+            dbugM $ "printf omitting bad argument at position " ++ show p
+          return ""
                    
     let -- @pr f i@ prints argument at index i using the formating
         -- function f.
         pr :: ((MemType, SBETerm sbe) -> Maybe String)
-           -> Int -> Simulator sbe m String
-        pr f p = maybe (badArg p) return . f =<< valueAt p
+           -> PrintfFlags
+           -> Int
+           -> Simulator sbe m String
+        pr f _ p = maybe (badArg p) return . f =<< valueAt p
 
     let fmtSigned (IntType w, v) = Just $
           case asSignedInteger sbe w v of
@@ -72,43 +102,123 @@ printfToString fmt args = do
     let fmtHexLower = fmtUnsigned' sbe (\v -> showHex v "")
     let fmtHexUpper = fmtUnsigned' sbe (\v -> toUpper <$> showHex v "")
 
+    let fmtChar     = fmtUnsigned' sbe (\v -> toEnum (fromInteger v) : []) 
+
     let fmtPointer (PtrType{}, v) = Just $
           case asConcretePtr sbe v of
             Just cv  -> "0x" ++ showHex cv ""
             Nothing -> show (prettyTermD sbe v)
         fmtPointer _ = Nothing
 
-    let printString p = do
-          mv <- valueAt p
-          case mv of
-            (PtrType{}, v) -> loadString "printToString" v
-            _ -> badArg p
+    let printString fl p = do
+          case lengthMod fl of
+            "" -> do
+              mv <- valueAt p
+              case mv of
+                (PtrType{}, v) -> loadString "printToString" v
+                _ -> badArg p
+            "l" -> do
+              dbugM "lss does not yet support printing wide characters."
+              return ""
+            lm -> do
+              whenVerbosity (> 0) $
+                dbugM $ "printf skipping argument with unsupported length modifier "
+                  ++ show lm
+              return ""
 
-    let procString ('%':r) p rs = procPrefix r defaultFlags p rs
-          where defaultFlags = PrintfFlags { zeroPad = False }
+    let procString ('%':r) p rs = procFlags r defaultFlags p rs
         procString (c:r) p rs = procString r p (c:rs)
         procString [] _ rs = return (reverse rs)
 
-        procPrefix ('l':r) fl p rs =
-          case r of
-            'l':r' -> procType r' fl p rs
-            _      -> procType r  fl p rs
-        procPrefix r fl p rs = procType r fl p rs
 
+        procFlags ('-':r) fl =
+          procFlags r fl { printfJustify = LeftJustify }
+        procFlags ('+':r) fl =
+          procFlags r fl { printfForceSign = True }
+        procFlags (' ':r) fl =
+          procFlags r fl { printfBlankBeforeUnsigned = True }
+        procFlags ('#':r) fl =
+          procFlags r fl { printfShowBasePrefix = True }
+        procFlags ('0':r) fl =
+          procFlags r fl { printfZeroPad = True }
+        procFlags r fl =
+          procWidth r fl
+
+        readInt :: String -> (Integer,String)
+        readInt r = (read digits, r')
+          where (digits,r') = span isDigit r
+ 
+        -- Read width specifier.
+        procWidth r@(c:_) fl p | isDigit c = procPrecision r' fl' p
+          where (n,r') = readInt r
+                fl' = fl { printfMinWidth = Right n }
+        procWidth ('*':r) fl p = procPrecision r fl' (p+1)
+          where fl' = fl { printfMinWidth = Left p }
+        procWidth r fl p       = procPrecision r fl p
+
+        -- Read precision
+        procPrecision r@(c:_) fl p | isDigit c = procPrefix r' fl' p
+          where (n,r') = readInt r
+                fl' = fl { printfMinWidth = Right n }
+        procPrecision ('*':r) fl p = procPrefix r fl' (p+1)
+          where fl' = fl { printfMinWidth = Left p }
+        procPrecision r fl p       = procPrefix r fl p
+
+        -- Read prefix followed by type
+        prefixes = [ "h", "hh", "l", "ll", "j", "z", "t", "L"]
+        procPrefix r fl = firstPrefix prefixes
+          where firstPrefix (pre:rest) =
+                  case stripPrefix pre r of
+                    Nothing -> firstPrefix rest
+                    Just r' -> procType r' fl'
+                      where fl' = fl { lengthMod = pre }
+                firstPrefix [] = procType r fl
+
+        floatingPointUnsupported _ _ = do
+          whenVerbosity (> 0) $ dbugM "printf skipping floating point argument."
+          return ""
+           
+        printCharCount _ _ = do
+          whenVerbosity (> 0) $ dbugM "printf does not yet support %n parameters."
+          return ""
+
+        typePrinters :: [(Char, PrintfFlags -> Int -> Simulator sbe m String)]
+        typePrinters
+          = [ ('d', pr fmtSigned)
+            , ('i', pr fmtSigned)
+            , ('u', pr fmtUnsigned)
+            , ('o', pr fmtOctal)
+            , ('x', pr fmtHexLower)
+            , ('X', pr fmtHexUpper)
+
+            , ('f', floatingPointUnsupported)
+            , ('F', floatingPointUnsupported)
+            , ('e', floatingPointUnsupported)
+            , ('E', floatingPointUnsupported)
+            , ('g', floatingPointUnsupported)
+            , ('G', floatingPointUnsupported)
+            , ('a', floatingPointUnsupported)
+            , ('A', floatingPointUnsupported)
+
+            , ('c', pr fmtChar)
+            , ('C', pr fmtChar)
+            , ('s', printString)
+            , ('p', pr fmtPointer)
+            , ('n', printCharCount)
+            , ('%', \_ _ -> return "%")
+            ]
+ 
         procType :: String -- ^ String so far.
                  -> PrintfFlags -- ^ Flags if any
-                 -> Int -> String -> Simulator sbe m String
-        procType ('d':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
-        procType ('i':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
-
-        procType ('o':r) _ p rs = procRest r (p+1) rs =<< pr fmtOctal p
-        procType ('x':r) _ p rs = procRest r (p+1) rs =<< pr fmtHexLower p
-        procType ('X':r) _ p rs = procRest r (p+1) rs =<< pr fmtHexUpper p
-
-        procType ('p':r) _ p rs = procRest r (p+1) rs =<< pr fmtPointer p
-        procType ('u':r) _ p rs = procRest r (p+1) rs =<< pr fmtUnsigned p
-        procType ('s':r) _ p rs = procRest r (p+1) rs =<< printString p
-        procType r       _ _ _  = errorPath $ "Unsupported format string " ++ show r
+                 -> Int -- ^ Current argument position.
+                 -> String -- ^ String to be printed.
+                 -> Simulator sbe m String
+        procType (c:r) fl p rs = findFirstMatch typePrinters
+          where findFirstMatch ((nm,fn):otherPrinters)
+                  | nm == c = procRest r (p+1) rs =<< fn fl p
+                  | otherwise = findFirstMatch otherPrinters
+                findFirstMatch [] = badArg p
+        procType [] _ p rs = procRest [] (p+1) rs =<< badArg p
 
         procRest r p rs s = procString r p (reverse s ++ rs)
     procString fmt 0 []
