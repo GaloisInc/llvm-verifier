@@ -72,7 +72,9 @@ module Verifier.LLVM.Simulator
   ) where
 
 import           Control.Applicative
-import Control.Exception (AsyncException(..))
+import Control.Exception ( AsyncException(..)
+                         , AssertionFailed(..)
+                         )
 import           Control.Lens hiding (act,from)
 import           Control.Monad.Error
 import           Control.Monad.State.Class
@@ -354,11 +356,10 @@ killPathOnError cs rsn = do
   run
   
 -- | Run execution until completion or a breakpoint is encountered.
-run ::
-  ( Functor m
-  , MonadIO m
+run :: forall sbe m .
+  ( Functor sbe
+  , Functor m
   , MonadException m
-  , Functor sbe
   )
   => Simulator sbe m ()
 run = do
@@ -391,16 +392,20 @@ run = do
           dumpErrorPaths
     Just (ActiveCS cs) -> do
       let p = cs^.activePath
-      let userIntHandler UserInterrupt = do
+      let onError rsn = do
+            h <- use onSimError
+            h cs rsn
+            run
+      let assertionFailedHandler (AssertionFailed msg) = do
+            onError (FailRsn msg)                
+      let userIntHandler :: AsyncException -> Simulator sbe m ()
+          userIntHandler UserInterrupt = do
             ctrlStk ?= ActiveCS cs -- Reset control stack.
             join $ use onUserInterrupt
             run
           userIntHandler e = throwIO e
-      handle userIntHandler $ do
-        let onError rsn = do
-              h <- use onSimError
-              h cs rsn
-              run
+      handle assertionFailedHandler $
+       handle userIntHandler $ do
         flip catchError onError $ do
           let Just (pcb,pc) = p^.pathPC
           -- Get name of function we are in.
