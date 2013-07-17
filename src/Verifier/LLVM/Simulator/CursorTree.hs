@@ -2,6 +2,7 @@
 module Verifier.LLVM.Simulator.CursorTree
   ( Orientation(..)
   , CursorTree(..)
+  , treeParents
   , topView
   , activeValue
   , updateActiveValue
@@ -46,6 +47,14 @@ data CursorTree b a
   = Branch (TreeContext b a) b Orientation a (CursorTree b a)
   | Singleton a 
   deriving (Show)
+
+-- | Returns branch labels and which side is active with branch
+-- immediately about active node first, and root branch last.
+treeParents :: CursorTree b a -> [(b,Orientation,CursorTree b a)]
+treeParents = impl . fst . asPair
+  where impl Empty = []
+        impl (OnLeft _ c b t) = (b,RightActive,t):impl c
+        impl (OnRight _ c b t) = (b,LeftActive,t):impl c
 
 -- | @branch c b o l r@ denotes @c[b(l,r)]@.  
 -- Which branch is active is chosen by @o@.

@@ -40,9 +40,7 @@ module Verifier.LLVM.Simulator
   , onSimError
   , ErrorHandler
   , killPathOnError
-  , SEH(..)
   , callDefine
-  , defaultSEH
   , getProgramReturnValue
   , getProgramFinalMem
   , evalExpr
@@ -136,12 +134,10 @@ runSimulator :: forall sbe a .
                            -- type aliasing info
   -> SBE sbe               -- ^ A symbolic backend
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
-  -> SEH sbe IO            -- ^ Simulation event handlers (use defaultSEH if no
-                           -- event handling is needed)
   -> Maybe LSSOpts         -- ^ Simulation options
   -> Simulator sbe IO a     -- ^ Simulator action to perform
   -> IO a
-runSimulator cb sbe mem seh mopts m = do
+runSimulator cb sbe mem mopts m = do
   let lifter :: forall v . sbe v -> Simulator sbe IO v
       lifter = SM . lift . lift . sbeRunIO sbe
   let newSt = State { codebase     = cb
@@ -153,7 +149,6 @@ runSimulator cb sbe mem seh mopts m = do
                     , _globalTerms = M.empty
                     , _blockPtrs   = M.empty
                     , _fnOverrides = M.empty
-                    , _evHandlers  = seh
                     , _errorPaths  = []
                     , _pathCounter = 1
                     , _aigOutputs  = []
@@ -684,16 +679,6 @@ step Unreachable
 step s@BadSymStmt{} = do
   errorPath $ "Path execution encountered unsupported statement:\n"
             ++ show (ppStmt s)
-
---------------------------------------------------------------------------------
--- Callbacks and event handlers
-
-defaultSEH :: Monad m => SEH sbe m
-defaultSEH = SEH { onPostOverrideReg = return ()
-                 , _onPreStep = \_   -> return ()
-                 , _onBlockEntry = \_   -> return ()
-                 , onBlockExit = \_ -> return ()
-                 }
 
 --------------------------------------------------------------------------------
 -- Misc utility functions

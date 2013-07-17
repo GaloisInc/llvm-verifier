@@ -115,7 +115,7 @@ runTestSimulator createFn v mdl action = do
   let dl = parseDataLayout (L.modDataLayout mdl)
   (sbe, mem) <- createFn dl
   cb <- mkCodebase sbe dl mdl
-  runSimulator cb sbe mem defaultSEH Nothing $ do
+  runSimulator cb sbe mem Nothing $ do
     setVerbosity v
     action
 
