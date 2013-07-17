@@ -9,7 +9,7 @@ TOP := ../../..
 include ../libgcrypt.mk
 LSS    := lss --errpaths
 CC     := clang
-CFLAGS := $(libgcrypt_flags) -Wall -I$(TOP)/sym-api -O1
+CFLAGS := $(libgcrypt_flags) -Wall -I$(TOP)/sym-api -O0
 
 ### AIG rules
 
