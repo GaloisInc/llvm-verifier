@@ -27,12 +27,35 @@ allocaOvd aw = do
       [(_,sizeTm)] -> alloca i8 aw sizeTm 0
       _ -> wrongArguments "alloca"
 
-mallocOvd :: SymType -> BitWidth -> StdOvdEntry m sbe
+mallocOvd :: SymType -> BitWidth -> StdOvdEntry sbe m
 mallocOvd ptp aw = do
   overrideEntry "malloc" (PtrType ptp) [IntType aw] $ \args ->
     case args of
       [(_,sizeTm)] -> malloc i8 aw sizeTm
       _ -> wrongArguments "malloc"
+
+
+calloc :: BitWidth -> StdOvdEntry sbe m
+calloc aw = do
+  let void_ptr = PtrType VoidType
+  let size_t = IntType aw
+  overrideEntry "calloc" void_ptr [size_t, size_t] $ \args ->
+    case snd <$> args of
+      [count, size] -> do
+        sbe <- gets symBE
+        -- Get total size; intermediate values are zero extended to
+        -- ensure overflow is avoided.
+        count' <- liftSBE $ termZExt sbe aw count (2*aw)
+        size'  <- liftSBE $ termZExt sbe aw size  (2*aw)
+        total  <- liftSBE $ termMul sbe (2*aw) count' size'
+        -- Allocate memory
+        ptr <- malloc i8 (2*aw) total
+        -- Set memory to zero.
+        zero_byte <- liftSBE $ termInt sbe 8 0
+        memset "calloc" ptr zero_byte (2*aw) total
+        -- Return new pointer
+        return ptr
+      _ -> wrongArguments "calloc"
 
 data Justification = LeftJustify | RightJustify
 
@@ -291,6 +314,7 @@ registerLibcOverrides = do
     , handle_assert "__assert_rtn"
     --, ("exit", voidTy, [i32], False, exitHandler)
     , allocaOvd aw
+    , calloc aw
     , free
     , memset_chk aw
     , printf

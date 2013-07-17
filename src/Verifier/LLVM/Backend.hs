@@ -24,6 +24,8 @@ module Verifier.LLVM.Backend
   , termArray
   , termInt
   , termAdd
+  , termMul
+  , termZExt
   , termTruncScalar
   , asSignedInteger
   , beCheckSat
@@ -299,6 +301,12 @@ termArray sbe tp v = applyTypedExpr sbe (SValArray tp v)
 
 termAdd :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
 termAdd sbe w x y = applyTypedExpr sbe (IntArith (Add False False) Nothing w x y)
+
+termMul :: SBE m -> BitWidth -> SBETerm m -> SBETerm m -> m (SBETerm m)
+termMul sbe w x y = applyTypedExpr sbe (IntArith (Mul False False) Nothing w x y)
+
+termZExt :: SBE sbe -> BitWidth -> SBETerm sbe -> BitWidth -> sbe (SBETerm sbe)
+termZExt sbe iw x rw = applyTypedExpr sbe (ZExt Nothing iw x rw)
 
 -- | Truncate a scalar to a smaller bitwidth.
 termTruncScalar :: SBE m -> BitWidth -> SBETerm m -> BitWidth -> m (SBETerm m)
