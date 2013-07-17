@@ -84,7 +84,7 @@ lssImpl :: (Functor sbe, Ord (SBETerm sbe))
         -> LSS
         -> IO (ExecRslt sbe Integer)
 lssImpl sbe mem cb argv0 args = do
-  runSimulator cb sbe mem defaultSEH (Just (mkLssOpts args)) $ do
+  runSimulator cb sbe mem (Just (mkLssOpts args)) $ do
     when (dbug args >=5) $ do
       let mg    = defaultMemGeom (cbDataLayout cb)
       let sr (a,b) = "[0x" ++ showHex a "" ++ ", 0x" ++ showHex b "" ++ ")"

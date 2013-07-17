@@ -139,7 +139,7 @@ breakOnMain :: (Functor m, Monad m) => Simulator sbe m ()
 breakOnMain = do
   addBreakpoint (Symbol "main") (initSymBlockID,0)
 
-checkForBreakpoint :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+checkForBreakpoint :: (Functor sbe, Functor m, MonadException m)
                    => DebuggerRef sbe m -> Simulator sbe m ()
 checkForBreakpoint r = do
   Just p <- preuse currentPathOfState
@@ -216,7 +216,7 @@ instance (Functor sbe, Functor m, MonadException m)
   put v = Debugger $ \c r -> liftIO (writeIORef r v) >> c () r
 
 
-instance (Functor sbe, Functor m, MonadIO m, MonadException m)
+instance (Functor sbe, Functor m, MonadException m)
       => MonadIO (Debugger sbe m) where
   liftIO m = Debugger (\c r -> liftIO m >>= flip c r)
 
@@ -881,24 +881,34 @@ matcherCompletions m (l,_r) = pure (finalize a)
           where (p,cl) = pr^.parseCompletions
 
 
-data YesNoCancel = Yes | No | Cancel
+data YesNo = Yes | No
+  deriving (Eq)
 
-promptYesNoCancel :: MonadIO m => m YesNoCancel
-promptYesNoCancel =
-    liftIO $ do
-      putNoLine "Please enter (Y)es, (N)o, (C)ancel? " >> loop
-  where putNoLine m = putStr m >> hFlush stdout
-        loop = do
+putAndFlush :: MonadIO m => String -> m ()
+putAndFlush msg = liftIO $ putStr msg >> hFlush stdout
+
+-- | Prompts the user for a string matching a choice.
+promptChoice :: MonadIO m => String -> [(String,r)] -> m r
+promptChoice prompt choices =
+    liftIO $ putAndFlush prompt >> loop
+  where loop = do
           l <- dropWhile isSpace . fmap toLower <$> getLine
-          case l of
-            "" -> do putNoLine "Please enter (Y)es, (N)o, or (C)ancel: "
-                     loop
-            _ | l `isPrefixOf` "yes" -> return Yes
-              | l `isPrefixOf` "no" -> return No
-              | l `isPrefixOf` "cancel" -> return Cancel
-              | otherwise -> do
-                 putNoLine "Invalid response; please answer (Y)es, (N)o, or (C)ancel "
-                 loop
+          let resl = [ r | (c,r) <- choices, l `isPrefixOf` c ] 
+          case (l,resl) of
+            ("",_) -> putAndFlush prompt >> loop
+            (_,r:_)  -> return r
+            (_,[]) -> do putAndFlush ("Invalid response; " ++ prompt)
+                         loop
+
+promptYesNoCancel :: MonadIO m => m (Maybe YesNo)
+promptYesNoCancel = promptChoice prompt choices
+  where prompt = "Please enter (Y)es, (N)o, or (C)ancel: "
+        choices = [("yes", Just Yes), ("no", Just No), ("cancel", Nothing) ]
+
+promptYesNo :: MonadIO m => m YesNo
+promptYesNo = promptChoice prompt choices
+  where prompt = "Please enter (Y)es or (N)o: "
+        choices = [("yes", Yes), ("no", No)]
 
 -- | Check to see if we should warn user before resuming.  Return True
 -- if resume should continue
@@ -914,21 +924,21 @@ warnIfResumeThrowsError = do
         dbugM "Should lss kill the current path, and stop simulation?"
         ync <- promptYesNoCancel
         case ync of
-          Yes -> do
-            killPathByDebugger
+          Just Yes -> do
+            killPathByDebugger cs
             resume
-          No -> return True
-          Cancel -> return False
+          Just No -> return True
+          Nothing -> return False
       else do
         dbugM "Should lss kill the current path, and resume on a new path?"
         ync <- promptYesNoCancel
         case ync of
-          Yes -> do
-            killPathByDebugger
+          Just Yes -> do
+            killPathByDebugger cs
             return True
-          No -> return True
-          Cancel -> return False
-    _ -> return True
+          Just No -> return True
+          Nothing -> return False
+    _ -> return False
 
 -- | @resumeActivePath m@ runs @m@ with the current path,
 -- and resumes execution if there is a current path and @m@
@@ -940,14 +950,8 @@ resumeActivePath action = do
   c <- warnIfResumeThrowsError
   when c $ do
     join $ runSim $ do
-      mcs <- use ctrlStk
-      case mcs of
-        Just (ActiveCS cs) -> do
-          action (cs^.activePath)
-          return resume
-        _ -> do
-          dbugM "No active execution path."
-          return (return ())
+      withActivePath (return ()) $ \p -> 
+        action p >> return resume
 
 type SimCmd sbe m = (Functor sbe, Functor m, MonadException m)
                  => Grammar Identity (Debugger sbe m ())
@@ -1065,34 +1069,42 @@ pathListCmd = cmdDef "List all current execution paths." $ runSim $ do
 pathSatCmd :: SimCmd sbe m
 pathSatCmd =
   cmdDef "Check satisfiability of path assertions with SAT solver." $ do
-    runSim $ do
-      Just p <- preuse currentPathOfState
-      sbe <- gets symBE
-      sat <- liftSBE $ termSAT sbe (p^.pathAssertions)
+    withActiveCS () $ \cs -> do
+      sat <- runSim $ do
+        sbe <- gets symBE
+        cond <- assumptionsForActivePath cs
+        liftSBE $ termSAT sbe cond
       case sat of
-        UnSat -> 
-          dbugM "Path has unsatisfiable assertions."
+        UnSat -> do
+          dbugM "The current path is infeasible.  Should simulation of the path be terminated?"
+          yn <- promptYesNo
+          when (yn == Yes) $ do
+            killPathByDebugger cs
         Sat _ ->
-          dbugM "Path assertions are satisfiable."
+          dbugM "Conditions along path are satisfiable."
         Unknown ->
-          dbugM "Could not determine if path assertions are feasible."
+          dbugM "Could not determine if path is feasible."
 
+-- | Kills the current path with the debugger.
+-- Assumes that there is an active path.
 killPathByDebugger :: (Functor sbe, Functor m, MonadException m)
-                   => Debugger sbe m ()
-killPathByDebugger = do
+                   => ActiveCS sbe
+                   -> Debugger sbe m ()
+killPathByDebugger _ = do
   runSim $ killCurrentPath (FailRsn "Terminated by debugger.")
   resumeThrowsError .= False
 
 
 pathKillCmd :: SimCmd sbe m
 pathKillCmd = cmdDef "Kill the current execution path." $ do
-  killPathByDebugger
-  mp <- runSim $ preuse currentPathOfState
-  case mp of
-    Nothing -> dbugM "Killed last path."
-    Just p -> dbugM $ show $
-      text "Switched to path:" <+> ppPathInfo p
- 
+  withActiveCS () $ \cs -> do
+    killPathByDebugger cs
+    mp <- runSim $ preuse currentPathOfState
+    case mp of
+      Nothing -> dbugM "Killed last path."
+      Just p -> dbugM $ show $
+        text "Switched to path:" <+> ppPathInfo p
+
 opt :: Grammar m a -> Grammar m (Maybe a)
 opt m = (Just <$> m) <||> pure Nothing 
 
@@ -1208,6 +1220,17 @@ dumpBPs = do
                 where header = ["Num", "Location"]
   dbugM (show msg)
 
+withActiveCS :: (Functor sbe, Functor m, MonadException m)
+             => a
+             -> (ActiveCS sbe -> Debugger sbe m a)
+             -> Debugger sbe m a
+withActiveCS v action = do
+  mcs <- runSim $ use ctrlStk
+  case mcs of
+    Just (ActiveCS cs) -> action cs
+    _ -> dbugM "No active execution path." >> return v
+
+-- | @withActivePath v act@ runs @act p@ with the active path
 withActivePath :: MonadIO m
                => a
                -> (Path sbe -> Simulator sbe m a)
@@ -1216,8 +1239,7 @@ withActivePath v action = do
   mcs <- use ctrlStk
   case mcs of
     Just (ActiveCS cs) -> action (cs^.activePath)
-    _ -> do dbugM "No active execution path."
-            return v
+    _ -> dbugM "No active execution path." >> return v
 
 continueCmd :: SimCmd sbe m
 continueCmd = cmdDef "Continue execution." $ do

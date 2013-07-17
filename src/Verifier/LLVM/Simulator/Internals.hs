@@ -27,7 +27,6 @@ module Verifier.LLVM.Simulator.Internals
   , globalTerms
   , blockPtrs
   , fnOverrides
-  , evHandlers
   , errorPaths
   , pathCounter
   , aigOutputs
@@ -51,9 +50,6 @@ module Verifier.LLVM.Simulator.Internals
   , modifyCurrentPathM
   , pushCallFrame
   , addCtrlBranch
-  , jumpCurrentPath
-  , returnCurrentPath
-  , killCurrentPath
 
   , currentPathOfState
   , currentPathMem
@@ -77,6 +73,10 @@ module Verifier.LLVM.Simulator.Internals
   , pathStackHt
   , ppPath
   , ppPathInfo
+  , assumptionsForActivePath
+  , jumpCurrentPath
+  , returnCurrentPath
+  , killCurrentPath
 
     -- * Symbolic helpers
   , liftSBE
@@ -113,9 +113,6 @@ module Verifier.LLVM.Simulator.Internals
   , registerOverrides
 
   , ErrorPath(EP, epRsn, epPath)
-  , SEH(..)
-  , onPreStep
-  , onBlockEntry
   , errorPath
   , wrongArguments
  
@@ -209,7 +206,6 @@ data State sbe m = State
   , _errorPaths  :: [ErrorPath sbe] -- ^ Terminated paths due to errors.
   , _pathCounter :: Integer         -- ^ Name supply for paths
 
-  , _evHandlers  :: SEH sbe m       -- ^ Simulation event handlers
   , lssOpts      :: LSSOpts         -- ^ Options passed to simulator
   , _breakpoints :: !(M.Map Symbol (S.Set Breakpoint))
 
@@ -237,9 +233,6 @@ blockPtrs f s = (\v -> s { _blockPtrs = v }) <$> f (_blockPtrs s)
 
 fnOverrides :: Simple Lens (State sbe m) (OvrMap sbe m)
 fnOverrides f s = (\v -> s { _fnOverrides = v }) <$> f (_fnOverrides s)
-
-evHandlers :: Simple Lens (State sbe m) (SEH sbe m)
-evHandlers f s = (\v -> s { _evHandlers = v }) <$> f (_evHandlers s)
 
 errorPaths :: Simple Lens (State sbe m) [ErrorPath sbe]
 errorPaths f s = (\v -> s { _errorPaths = v }) <$> f (_errorPaths s)
@@ -508,6 +501,17 @@ returnCurrentPath sbe rt cs = do
       ACS (Singleton pn) | null (pn^.pathStack) -> FinishedCS pn
       _ -> ActiveCS cs'
 
+assumptionsForActivePath :: (Monad m)
+                         => ActiveCS sbe
+                         -> Simulator sbe m (SBEPred sbe)
+assumptionsForActivePath (ACS t) = do
+  sbe <- gets symBE
+  let branchCond (b,LeftActive,_) = return (biCond b)
+      branchCond (b,RightActive,_) = liftSBE $ applyBNot sbe (biCond b)
+  conds <- mapM branchCond (treeParents t)
+  let andFn x y = liftSBE (applyAnd sbe x y)
+  foldM andFn (sbeTruePred sbe) conds
+
 -- | @sbeAndIO sbe a c@ returns (a and c).
 sbeAndIO :: SBE sbe -> SBEPred sbe -> SBEPred sbe -> IO (SBEPred sbe)
 sbeAndIO sbe a c = sbeRunIO sbe (applyAnd sbe a c)
@@ -649,25 +653,6 @@ data ErrorPath sbe = EP { epRsn :: FailRsn, epPath :: Path sbe }
 instance Error FailRsn where
   noMsg  = FailRsn "(no reason given)"
   strMsg = FailRsn
-
--- | Simulation event handlers, useful for debugging nontrivial codes.
-data SEH sbe m = SEH
-  {
-    -- | Invoked after function overrides have been registered
-    onPostOverrideReg :: Simulator sbe m ()
-    -- | Invoked before each instruction executes
-  , _onPreStep         :: SymStmt (SBETerm sbe) -> Simulator sbe m ()
-    -- | Invoked when entering a basic block
-  , _onBlockEntry      :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
-    -- | Invoked when leaving a basic block
-  , onBlockExit       :: SymBlock (SBETerm sbe) -> Simulator sbe m ()
-  }
-
-onPreStep :: Simple Lens (SEH sbe m) (SymStmt (SBETerm sbe) -> Simulator sbe m ())
-onPreStep = lens _onPreStep (\seh sh -> seh { _onPreStep = sh })
-
-onBlockEntry :: Simple Lens (SEH sbe m) (SymBlock (SBETerm sbe) -> Simulator sbe m ())
-onBlockEntry = lens _onBlockEntry (\seh sh -> seh { _onBlockEntry = sh })
 
 -- | A handler for a function override. This gets the function symbol as an
 -- argument so that one function can potentially be used to override multiple
