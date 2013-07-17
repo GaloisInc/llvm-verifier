@@ -938,6 +938,7 @@ warnIfResumeThrowsError = do
             return True
           Just No -> return True
           Nothing -> return False
+    Just ActiveCS{} -> return True
     _ -> return False
 
 -- | @resumeActivePath m@ runs @m@ with the current path,

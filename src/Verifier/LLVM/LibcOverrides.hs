@@ -69,6 +69,11 @@ fmtUnsigned' sbe cf (IntType w, v) = Just $
     Nothing -> show (prettyTermD sbe v)
 fmtUnsigned' _ _ _ = Nothing
 
+readInt :: String -> (Integer,String)
+readInt r = (read digits, r')
+  where (digits,r') = span isDigit r
+ 
+
 printfToString :: forall sbe m . (Functor sbe, Functor m, MonadIO m)
                => String -> [(MemType,SBETerm sbe)] -> Simulator sbe m String
 printfToString fmt args = do
@@ -130,24 +135,19 @@ printfToString fmt args = do
         procString (c:r) p rs = procString r p (c:rs)
         procString [] _ rs = return (reverse rs)
 
+        flags  = [ ('-', \fl -> fl { printfJustify = LeftJustify })
+                 , ('+', \fl -> fl { printfForceSign = True })
+                 , (' ', \fl -> fl { printfBlankBeforeUnsigned = True })
+                 , ('#', \fl -> fl { printfShowBasePrefix = True })
+                 , ('0', \fl -> fl { printfZeroPad = True })
+                 ]
+        procFlags (c:r) fl = matchFlag flags
+          where matchFlag ((e,f):rest)
+                  | c == e = procFlags r (f fl)
+                  | otherwise = matchFlag rest
+                matchFlag [] = procWidth (c:r) fl
+        procFlags [] fl = procWidth [] fl
 
-        procFlags ('-':r) fl =
-          procFlags r fl { printfJustify = LeftJustify }
-        procFlags ('+':r) fl =
-          procFlags r fl { printfForceSign = True }
-        procFlags (' ':r) fl =
-          procFlags r fl { printfBlankBeforeUnsigned = True }
-        procFlags ('#':r) fl =
-          procFlags r fl { printfShowBasePrefix = True }
-        procFlags ('0':r) fl =
-          procFlags r fl { printfZeroPad = True }
-        procFlags r fl =
-          procWidth r fl
-
-        readInt :: String -> (Integer,String)
-        readInt r = (read digits, r')
-          where (digits,r') = span isDigit r
- 
         -- Read width specifier.
         procWidth r@(c:_) fl p | isDigit c = procPrecision r' fl' p
           where (n,r') = readInt r
@@ -157,15 +157,16 @@ printfToString fmt args = do
         procWidth r fl p       = procPrecision r fl p
 
         -- Read precision
-        procPrecision r@(c:_) fl p | isDigit c = procPrefix r' fl' p
+        procPrecision r@('.':c:_) fl p | isDigit c = procPrefix r' fl' p
           where (n,r') = readInt r
                 fl' = fl { printfMinWidth = Right n }
-        procPrecision ('*':r) fl p = procPrefix r fl' (p+1)
+        procPrecision ('.':'*':r) fl p = procPrefix r fl' (p+1)
           where fl' = fl { printfMinWidth = Left p }
         procPrecision r fl p       = procPrefix r fl p
 
         -- Read prefix followed by type
-        prefixes = [ "h", "hh", "l", "ll", "j", "z", "t", "L"]
+        prefixes = [ "hh", "h", "ll", "l", "j", "z", "t", "L"]
+
         procPrefix r fl = firstPrefix prefixes
           where firstPrefix (pre:rest) =
                   case stripPrefix pre r of
@@ -217,7 +218,11 @@ printfToString fmt args = do
           where findFirstMatch ((nm,fn):otherPrinters)
                   | nm == c = procRest r (p+1) rs =<< fn fl p
                   | otherwise = findFirstMatch otherPrinters
-                findFirstMatch [] = badArg p
+                findFirstMatch [] = do
+                  whenVerbosity (>0) $ do
+                    dbugM $ "printf could not interpret type " ++ show c
+                          ++ " at position " ++ show p
+                  procString r p rs
         procType [] _ p rs = procRest [] (p+1) rs =<< badArg p
 
         procRest r p rs s = procString r p (reverse s ++ rs)
