@@ -1564,7 +1564,7 @@ type BitBlastSBE m l = SBE (BitIO m l)
 beZeroIntCoerce :: (Eq l, LV.Storable l) => BitEngine l -> Int -> LV.Vector l -> LV.Vector l
 beZeroIntCoerce be r t
     | r > l = beZext be r t
-    | r < l = beTrunc be r t
+    | r < l = assert (LV.length t >= r) $ beTrunc be r t
     | otherwise = t
   where l = LV.length t
 
@@ -1636,7 +1636,7 @@ applyExpr dl texpr = do
         PtrTerm <$> beAddInt ?be x y
     PtrAdd{} -> illegalArgs "PtrAdd"
     UAddWithOverflow _ (IntTerm x) (IntTerm y) ->
-       (\(c,u) -> StructTerm (V.fromList [IntTerm (LV.singleton c), IntTerm u]))
+       (\(c,u) -> StructTerm (V.fromList [IntTerm u, IntTerm (LV.singleton c)]))
          <$> beFullAddInt ?be x y
     UAddWithOverflow{} -> illegalArgs "UAddWithOverflow"
     ICmp op mn _ x y -> applyICmp opFn mn x y
@@ -1652,7 +1652,7 @@ applyExpr dl texpr = do
                      L.Isge -> neg beSignedLt
                      L.Islt -> beSignedLt
                      L.Isle -> beSignedLeq
-    Trunc mn _ t rw -> retIntMV mn (beTrunc ?be rw) t
+    Trunc mn _ t rw -> retIntMV mn (\v -> assert (LV.length v >= rw) $ beTrunc ?be rw v) t
     ZExt  mn _ t rw   -> retIntMV mn (beZext  ?be rw) t
     SExt   mn _ t rw  -> retIntMV mn (beSext  ?be rw) t
     PtrToInt mn _ t w -> retMV mn (IntTerm . expectPtrArg f) t

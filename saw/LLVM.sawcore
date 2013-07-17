@@ -153,15 +153,15 @@ singleField tp p = consFieldType (tp,p) 0 emptyFields;
 
 arithmeticWithOverflowResult :: Nat -> Nat -> Nat -> LLVMType;
 arithmeticWithOverflowResult w p1 p2 =
-  StructType 2 (consFieldType (IntType 1,p1) 1
-               (singleField (IntType w) p2));
+  StructType 2 (consFieldType (IntType w,p1) 1
+               (singleField (IntType 1) p2));
 
 mkOverflowResult :: (w p1 p2 :: Nat)
                  -> #(Bool, bitvector w)
                  -> value (arithmeticWithOverflowResult w p1 p2);
 mkOverflowResult w p1 p2 (c,z) = 
-  ConsStruct (IntType 1) p1 1 (singleField (IntType w) p2) [c]
-    (ConsStruct (IntType w) p2 0 emptyFields z EmptyStruct);            
+  ConsStruct (IntType w) p1 1 (singleField (IntType 1) p2) z
+    (ConsStruct (IntType 1) p2 0 emptyFields [c] EmptyStruct);            
 
 -- Width of bitvectors, amount of padding for first and second fields.
 llvmAddWithOverflow :: (w p1 p2 :: Nat) 
