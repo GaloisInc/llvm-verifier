@@ -8,9 +8,10 @@ module Verifier.LLVM.LibcOverrides
 import Control.Applicative
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
+import Data.Char
 import Data.String
 import qualified Data.Vector as V
-import Numeric                   (showHex)
+import Numeric                   (showHex, showOct)
 
 import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
@@ -35,6 +36,14 @@ data PrintfFlags = PrintfFlags {
     zeroPad :: Bool
   }
 
+-- | Attempt to format a term as an unsigned number with a given format term.
+fmtUnsigned' :: SBE sbe -> (Integer -> String) -> (MemType,SBETerm sbe) -> Maybe String
+fmtUnsigned' sbe cf (IntType w, v) = Just $
+  case asUnsignedInteger sbe w v of
+    Just cv -> cf cv
+    Nothing -> show (prettyTermD sbe v)
+fmtUnsigned' _ _ _ = Nothing
+
 printfToString :: forall sbe m . (Functor sbe, Functor m, MonadIO m)
                => String -> [(MemType,SBETerm sbe)] -> Simulator sbe m String
 printfToString fmt args = do
@@ -45,40 +54,61 @@ printfToString fmt args = do
           where msg = "Could not get argument at position " ++ show p
     sbe <- gets symBE
     let badArg p = errorPath $ "printf given bad argument at position " ++ show p
-    let pr :: ((MemType, SBETerm sbe) -> Maybe String)
+                   
+    let -- @pr f i@ prints argument at index i using the formating
+        -- function f.
+        pr :: ((MemType, SBETerm sbe) -> Maybe String)
            -> Int -> Simulator sbe m String
         pr f p = maybe (badArg p) return . f =<< valueAt p
+
     let fmtSigned (IntType w, v) = Just $
           case asSignedInteger sbe w v of
             Just cv  -> show cv
             Nothing -> show (prettyTermD sbe v)
         fmtSigned _ = Nothing
-    let fmtUnsigned (IntType w, v) = Just $
-          case asUnsignedInteger sbe w v of
-            Just cv -> show cv
-            Nothing -> show (prettyTermD sbe v)
-        fmtUnsigned _ = Nothing
+
+    let fmtUnsigned = fmtUnsigned' sbe show
+    let fmtOctal    = fmtUnsigned' sbe (\v -> showOct v "")
+    let fmtHexLower = fmtUnsigned' sbe (\v -> showHex v "")
+    let fmtHexUpper = fmtUnsigned' sbe (\v -> toUpper <$> showHex v "")
+
     let fmtPointer (PtrType{}, v) = Just $
           case asConcretePtr sbe v of
             Just cv  -> "0x" ++ showHex cv ""
             Nothing -> show (prettyTermD sbe v)
         fmtPointer _ = Nothing
+
     let printString p = do
           mv <- valueAt p
           case mv of
             (PtrType{}, v) -> loadString "printToString" v
             _ -> badArg p
-    let procString ('%':r) p rs = procArg r defaultFlags p rs
+
+    let procString ('%':r) p rs = procPrefix r defaultFlags p rs
           where defaultFlags = PrintfFlags { zeroPad = False }
         procString (c:r) p rs = procString r p (c:rs)
         procString [] _ rs = return (reverse rs)
 
-        procArg ('d':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
-        procArg ('i':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
-        procArg ('p':r) _ p rs = procRest r (p+1) rs =<< pr fmtPointer p
-        procArg ('u':r) _ p rs = procRest r (p+1) rs =<< pr fmtUnsigned p
-        procArg ('s':r) _ p rs = procRest r (p+1) rs =<< printString p
-        procArg r       _ _ _  = errorPath $ "Unsupported format string " ++ show r
+        procPrefix ('l':r) fl p rs =
+          case r of
+            'l':r' -> procType r' fl p rs
+            _      -> procType r  fl p rs
+        procPrefix r fl p rs = procType r fl p rs
+
+        procType :: String -- ^ String so far.
+                 -> PrintfFlags -- ^ Flags if any
+                 -> Int -> String -> Simulator sbe m String
+        procType ('d':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
+        procType ('i':r) _ p rs = procRest r (p+1) rs =<< pr fmtSigned p
+
+        procType ('o':r) _ p rs = procRest r (p+1) rs =<< pr fmtOctal p
+        procType ('x':r) _ p rs = procRest r (p+1) rs =<< pr fmtHexLower p
+        procType ('X':r) _ p rs = procRest r (p+1) rs =<< pr fmtHexUpper p
+
+        procType ('p':r) _ p rs = procRest r (p+1) rs =<< pr fmtPointer p
+        procType ('u':r) _ p rs = procRest r (p+1) rs =<< pr fmtUnsigned p
+        procType ('s':r) _ p rs = procRest r (p+1) rs =<< printString p
+        procType r       _ _ _  = errorPath $ "Unsupported format string " ++ show r
 
         procRest r p rs s = procString r p (reverse s ++ rs)
     procString fmt 0 []
