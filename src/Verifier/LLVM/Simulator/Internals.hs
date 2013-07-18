@@ -69,6 +69,7 @@ module Verifier.LLVM.Simulator.Internals
   , pathRegs
   , pathMem
   , pathAssertions
+  , CallFrame(..)
   , pathStack
   , pathStackHt
   , ppPath
@@ -128,7 +129,6 @@ module Verifier.LLVM.Simulator.Internals
   , memset
   , dumpMem
 
-  , ppStackTrace
   , ppTuple
   ) where
 
@@ -585,7 +585,7 @@ type PathPC = Maybe (SymBlockID, Int)
 incPathPC :: PathPC -> PathPC
 incPathPC = over (_Just . _2) (+1) 
 
--- | A Call frame for returning.
+-- | A Call frame stack for identifying where to return to.
 data CallFrame sbe = CallFrame { cfFuncSym :: Symbol
                                , cfReturnBlock :: PathPC
                                , cfRegs :: RegMap (SBETerm sbe)
@@ -772,9 +772,6 @@ ppPathInfo p =
   char '#' <> integer (p^.pathName) <> colon 
   <> ppSymbol (p^.pathFuncSym) <> colon
   <> ppPathPC (p^.pathPC)
-
-ppStackTrace :: [CallFrame term] -> Doc
-ppStackTrace = braces . vcat . map (ppSymbol . cfFuncSym)
 
 ppRegMap :: SBE sbe -> RegMap (SBETerm sbe) -> Doc
 ppRegMap sbe mp =
