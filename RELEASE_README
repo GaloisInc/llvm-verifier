@@ -10,9 +10,18 @@ test-programs/ : libgcrypt example code and proof scripts
 
 NEW IN THIS RELEASE
 
+- There is a new word-level backend that can be invoked by passing "-b saw"
+  to the lss.  The backend allows SMTLIB export, but is only lightly
+  tested.
+- There is a new interactive debugger that can be accessed by passing
+  "--startdebugger" to lss or pressing Ctrl-C during execution.
+
 Bug fixes:
 
-- The type of the built-in 'free' function is now correct.
+- There was a bug in handling of phi instructions that resulted in
+  incorrect execution.  This manifested itself when compiling with
+  optimization.
+
 
 KNOWN ISSUES, LIMITATIONS, AND QUIRKS
 
@@ -23,10 +32,14 @@ Lightly tested:
   check parsed target data, implement additional intrinsic forms, etc.).
 - llvm-optimized versions of our test codes (may expose missing
   instruction/intrinsic support)
-- The lss_eval_aiger_array_* family of sigfuns
+- SMTLib generation.
 
 Nonexistent, limited, or untested support for:
 
+- We currently generate safety checks during simulation, but do not offer
+  a facility for exporting them to AIGs or SMTLIB.  This means that code
+  may be able to be "verified", but actually contains memory errors or other
+  bugs.
 - Codes compiled from C++
 - Some vector instructions
 - Exception handling (including setjmp/longjmp-style exception handling)
@@ -45,8 +58,3 @@ Nonexistent, limited, or untested support for:
 - User-definable memory segmentation
 - Big-endian architectures
 - Non-x86 architectures
-
-Quirks:
-
-- Our printf implementation of format string %p will currently fail if given a
-  pointer to a uint8_t.
