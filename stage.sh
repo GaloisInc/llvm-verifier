@@ -1,6 +1,6 @@
 #!/bin/sh
 
-TARGET=lss-0.2b
+TARGET=lss-0.2c
 
 NM=`uname`
 
