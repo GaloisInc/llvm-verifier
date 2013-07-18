@@ -31,7 +31,6 @@ module Verifier.LLVM.AST
   , TypedExpr(..)
   , StructInfo(..)
   , Int32
-  , SymExpr(..)
   , SymCond(..)
   , MergeLocation
   , SymStmt(..)
@@ -45,7 +44,6 @@ module Verifier.LLVM.AST
   , ppSymBlockID
   , ppSymCond
   , ppSymDefine
-  , ppSymExpr
   , ppStmt
   , symBlockID
   , symBlockLabel
@@ -286,28 +284,8 @@ ppSymValue = go
         go (SValSymbol s) = ppSymbol s
         go (SValExpr te _) = ppTypedExpr ppConv go te
 
--- | Expression in Symbolic instruction set.
--- | TODO: Make this data-type strict.
-data SymExpr t
-  -- | Statement for type-checked operations.
-  -- = TypedExpr (TypedExpr TypedSymValue)
-  = Val (SymValue t)
-  -- | @Alloca tp sz align@  allocates a new pointer to @sz@ elements of type
-  -- @tp@ with alignment @align@.
-  | Alloca MemType (Maybe (BitWidth, SymValue t)) Alignment
-    -- @Load ptr tp align@ tp is type to load.
-  | Load (SymValue t) MemType Alignment
-
 ppAlign :: Alignment -> Doc
 ppAlign a = text (", align " ++ show a)
-
--- | Pretty print symbolic expression.
-ppSymExpr :: SymExpr t -> Doc
-ppSymExpr (Val v) = ppSymValue v
-ppSymExpr (Alloca ty mbLen a) = text "alloca" <+> ppMemType ty <> len <> ppAlign a
-  where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppSymValue l) mbLen
-ppSymExpr (Load ptr tp a) =
-  text "load" <+> ppPtrType (ppMemType tp) <+> ppSymValue ptr <> ppAlign a
 
 -- | Predicates in symbolic simulator context.
 data SymCond t
@@ -336,8 +314,14 @@ data SymStmt t
   | PushPendingExecution SymBlockID (SymCond t) MergeLocation
   -- | Sets the block to the given location.
   | SetCurrentBlock SymBlockID
-  -- | Assign result of instruction to register.
-  | Assign L.Ident MemType (SymExpr t)
+    -- | Assign expression values in current context to registers.
+  | Assign [(L.Ident, MemType, SymValue t)]
+    -- | @AllocaStmt r tp sz align@ allocates a new pointer to @sz@ elements of type
+    -- @tp@ with alignment @align@, and stores result in @r@.
+  | AllocaStmt L.Ident MemType (Maybe (BitWidth, SymValue t)) Alignment
+    -- | @LoadSmt r ptr tp align@ loads the value at @ptr@ as a value with type @tp@, and
+    -- stores the result in @r@.
+  | LoadStmt L.Ident (SymValue t) MemType Alignment
   -- | @Store v addr@ stores value @v@ in @addr@.
   | Store MemType (SymValue t) (SymValue t) Alignment
   -- | Print out an error message if we reach an unreachable.
@@ -356,7 +340,13 @@ ppStmt (PushPendingExecution b c ml) =
     text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
   where loc = maybe (text "return") ppSymBlockID ml
 ppStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
-ppStmt (Assign v _ e) = ppIdent v <+> char '=' <+> ppSymExpr e
+ppStmt (Assign l) = nest 2 (vcat (ppAssign <$> l))
+  where ppAssign (v, _, e) = ppIdent v <+> char '=' <+> ppSymValue e
+ppStmt (AllocaStmt r ty mbLen a) = 
+    ppIdent r <+> text "= alloca" <+> ppMemType ty <> len <> ppAlign a
+  where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppSymValue l) mbLen
+ppStmt (LoadStmt r ptr tp a) =
+  ppIdent r <+> text "= load" <+> ppPtrType (ppMemType tp) <+> ppSymValue ptr <> ppAlign a
 ppStmt (Store tp v addr a) =
   text "store" <+> ppMemType tp <+> ppSymValue v <> comma
                <+> ppSymValue addr <> ppAlign a

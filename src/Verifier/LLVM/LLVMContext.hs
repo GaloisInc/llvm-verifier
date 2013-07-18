@@ -123,13 +123,13 @@ tcType tp0 = do
   case tp0 of
     L.PrimType pt ->
       case pt of
-        L.Void -> return VoidType
-        L.Integer w -> return $ MemType $ IntType (fromIntegral w)
         L.FloatType ft -> do
           case ft of
             L.Float -> return $ MemType FloatType
             L.Double -> return $ MemType DoubleType
             _ -> badType
+        L.Integer w -> return $ MemType $ IntType (fromIntegral w)
+        L.Void -> return VoidType
         _ -> badType
     L.Alias i -> return (Alias i)
     L.Array n etp -> maybeApp (ArrayType (fromIntegral n)) $ tcMemType etp

@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
@@ -195,6 +196,23 @@ trySymStmt stmt (LiftAttempt m) = do
     Right s -> return s
     Left msg -> unsupportedStmt stmt msg
 
+-- | Attempts to parse a list of values and return a single statement.
+trySymStmtList :: (?sbe :: SBE sbe)
+               => -- | Function to call if all values parse correctly.
+                  ([b] -> SymStmt (SBETerm sbe))
+                  -- | Function to call if a parse failure occurs.
+               -> (a -> L.Stmt)
+               -> [a] -- ^ List of values to parse
+               -> (a -> LiftAttempt b)  -- ^ Parse function.
+               -> BlockGenerator sbe (SymStmt (SBETerm sbe))
+trySymStmtList sfn ffn l pfn = impl [] l
+  where impl rest [] = return (sfn (reverse rest))
+        impl rest (h:r) = do
+          mr <- liftIO $ unLiftAttempt (pfn h)
+          case mr of
+            Left msg -> unsupportedStmt (ffn h) msg
+            Right v -> impl (v:rest) r
+
 -- Lift operations
 
 liftTypedValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
@@ -366,8 +384,8 @@ liftStmt stmt = do
     Effect{} -> unsupportedStmt stmt ""
     Result r app _ -> trySymStmt stmt $ do
       -- Return an assignemnt statement for the value.
-      let retExpr tp = return . Assign r tp
-      let retTExpr tp v = Assign r tp . Val <$> mkSValExpr v
+      let retExpr tp v = return $ Assign [(r, tp, v)]
+      let retTExpr tp v = (\v' -> Assign [(r, tp, v')]) <$> mkSValExpr v
       let retIntArith op tp0 u v = do
             tp <- liftMemType' tp0 
             x <- liftValue tp u
@@ -426,7 +444,7 @@ liftStmt stmt = do
                   retTExpr rtp (IntToPtr (Just n) w sv ptr)
                 _ -> fail "Could not parse conversion types."
             L.BitCast -> do
-              retExpr rtp . Val =<< liftBitcast itp sv rtp
+              retExpr rtp =<< liftBitcast itp sv rtp
             _ -> fail "Unsupported conversion operator"
         L.Alloca tp0 msz a -> do
           tp <- liftMemType' tp0
@@ -436,12 +454,12 @@ liftStmt stmt = do
                      IntType w <- liftMemType' szTp0
                      v <- liftValue (IntType w) sz
                      return (Just (w,v))
-          retExpr (PtrType (MemType tp)) $ Alloca tp ssz (liftAlign tp a)
+          return $ AllocaStmt r tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) malign -> do
           tp@(PtrType etp0) <- liftMemType' tp0
           etp <- liftMaybe $ asMemType etp0
           v <- liftValue tp ptr
-          retExpr etp (Load v etp (liftAlign etp malign))
+          return $ LoadStmt r v etp (liftAlign etp malign)
         L.ICmp op (L.Typed tp0 u) v -> do
           tp <- liftMemType' tp0
           x <- liftValue tp u
@@ -473,7 +491,7 @@ liftStmt stmt = do
         L.ExtractValue (L.Typed vtp v) il -> do
             vmtp <- liftMemType' vtp
             go vmtp il =<< liftValue vmtp v
-          where go tp [] sv = retExpr tp (Val sv)
+          where go tp [] sv = retExpr tp sv
                 go (StructType si) (i0 : is) sv =
                     case fiType <$> siFieldInfo si i of
                       Nothing -> fail "Illegal index"
@@ -500,15 +518,14 @@ phiInstrs :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
           => Map L.BlockLabel [PhiInstr] -- ^ Map from targets to phi instructions for target.
           -> L.BlockLabel -- ^ Source
           -> L.BlockLabel -- ^ Target block
-          -> BlockGenerator sbe [SymStmt (SBETerm sbe)]
+          -> BlockGenerator sbe (SymStmt (SBETerm sbe))
 phiInstrs phiMap llvmId tgt = do
   let phiEntries = fromMaybe [] $ Map.lookup tgt phiMap
-  forM phiEntries $ \(r,tp,stmt,valMap) -> do
-    trySymStmt stmt $ do
-      mtp <- liftMemType' tp
-      Just v <- return $ Map.lookup llvmId valMap
-      val <- liftValue mtp v
-      return $ Assign r mtp (Val val)
+  trySymStmtList Assign (\(_,_,s,_) -> s) phiEntries $ \(r,tp,_,valMap) -> do
+    mtp <- liftMemType' tp
+    Just v <- return $ Map.lookup llvmId valMap
+    val <- liftValue mtp v
+    return (r, mtp, val)
 
 -- Lift LLVM basic block to symbolic block {{{1
 --
@@ -530,7 +547,7 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
         -- Generate instructions for adding phi statements and setting
         -- current block.
         brSymInstrs tgt = appendSet <$> phiInstrs phiMap llvmId tgt
-          where appendSet il = il ++ [SetCurrentBlock (symBlockID tgt 0)]
+          where appendSet i = [i, SetCurrentBlock (symBlockID tgt 0)]
         -- | Sequentially process statements.
         impl :: [L.Stmt] -- ^ Remaining statements
              -> Int -- ^ Index of symbolic block that we are defining.
@@ -547,11 +564,10 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
           defineBlock (blockName idx) (reverse (symStmt:il))
         impl [Effect L.RetVoid _] idx il =
           defineBlock (blockName idx) (reverse (Return Nothing:il))
-        -- For function calls, we:
-        -- * Allocate block for next block after call.
-        -- * Define previous block to end with pushing call frame.
-        -- * Process rest of instructions.
-        -- * TODO: Handle invoke instructions
+
+
+        -- Case for function calls.
+
         impl (stmt@(Result reg (L.Call _b tp v tpvl) _):r) idx il = do
           symStmt <- trySymStmt stmt $ do
             mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType' tp
@@ -560,6 +576,10 @@ liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
             return $ PushCallFrame sv svl (Just (rty, reg)) (blockName (idx + 1))
           defineBlock (blockName idx) $ reverse (symStmt:il)
           impl r (idx+1) []
+        -- Skip certain intrinsics
+        impl (Effect (L.Call _ _ (L.ValSymbol v) _) _:r) idx il
+          | v `elem` [ "llvm.dbg.declare", "llvm.dbg.value"]
+          = impl r idx il
         -- Function call that does not return a value (see comment for other call case).
         impl (stmt@(Effect (L.Call _b tp v tpvl) _):r) idx il = do
           symStmt <- trySymStmt stmt $ do
