@@ -646,11 +646,15 @@ step (PushPendingExecution bid cond ml) = do
 
 step (SetCurrentBlock bid) = setCurrentBlock bid
 
-step (Assign reg tp (Val tv)) = do
-  assignReg reg tp =<< evalExprInCC "eval@Val" tv
+step (Assign l) = do
+  -- Evaluate all expressions.
+  l' <- forM l $ \(r,tp, tv) -> do
+    v <- evalExprInCC "eval@Val" tv
+    return (r,tp,v)
+  mapM_ (\(r,tp,v) -> assignReg r tp v) l'
   incPC
 
-step (Assign reg tp (Alloca ty msztv a)) = do
+step (AllocaStmt reg ty msztv a) = do
   -- Get number of elements and with of number of elements.
   (aw,sizeTm) <- 
     case msztv of
@@ -659,15 +663,15 @@ step (Assign reg tp (Alloca ty msztv a)) = do
         aw <- ptrBitwidth <$> getDL
         sbe <- gets symBE
         (aw,) <$> liftSBE (termInt sbe aw 1)
-  assignReg reg tp =<< alloca ty aw sizeTm a
+  assignReg reg (PtrType (MemType ty)) =<< alloca ty aw sizeTm a
   incPC
 
-step (Assign reg tp (Load v ty a)) = do
+step (LoadStmt reg v ty a) = do
   addrTerm <- evalExprInCC "load" v
-  dumpMem 6 "load pre"
+  dumpMem 6 "lo/ad pre"
   val <- load ty addrTerm a
   dumpMem 6 "load post"
-  assignReg reg tp val
+  assignReg reg ty val
   incPC
 
 step (Store valType val addr a) = do
