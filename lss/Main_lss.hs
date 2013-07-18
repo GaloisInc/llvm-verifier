@@ -53,8 +53,8 @@ main = do
             , startDebugger = def &= help "Break and enter the LSS debugger when running main"
             , satBranches   = def &= help "With a supported symbolic backend, always check satisfiability of symbolic path assertions at branches"
             }
-            &= summary ("LLVM Symbolic Simulator (lss) 0.2b Feb 2013. "
-                        ++ "Copyright 2011-2012 Galois, Inc. All rights reserved.")
+            &= summary ("LLVM Symbolic Simulator (lss) 0.2c July 2013. "
+                        ++ "Copyright 2011-2013 Galois, Inc. All rights reserved.")
 
   let eatWS (' ':cs) = eatWS cs
       eatWS cs       = cs
