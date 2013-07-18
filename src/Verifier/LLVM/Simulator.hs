@@ -648,10 +648,12 @@ step (SetCurrentBlock bid) = setCurrentBlock bid
 
 step (Assign l) = do
   -- Evaluate all expressions.
-  l' <- forM l $ \(r,tp, tv) -> do
-    v <- evalExprInCC "eval@Val" tv
-    return (r,tp,v)
-  mapM_ (\(r,tp,v) -> assignReg r tp v) l'
+  actions <- runEvaluator "eval@Val" $ do
+    forM l $ \(r,tp, tv) -> do
+      v <- evalExpr tv
+      seq r $ seq tp $ seq v $ do
+        return $! assignReg r tp v
+  sequence_ actions
   incPC
 
 step (AllocaStmt reg ty msztv a) = do

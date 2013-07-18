@@ -107,6 +107,7 @@ executable lss
 
   main-is: Main_lss.hs
 
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 

@@ -1188,7 +1188,10 @@ infoMemoryCmd =
 infoStackCmd :: SimCmd sbe m
 infoStackCmd = cmdDef "Print backtrace of the stack." $ do
   runSim $ withActivePath () $ \p -> do
-    dbugM $ show $ ppStackTrace $ p^.pathStack
+    let safeInit [] = []
+        safeInit l = init l
+    let syms = p^.pathFuncSym : safeInit (cfFuncSym <$> (p^.pathStack))
+    dbugM $ show $ indent 2 $ vcat $ ppSymbol <$> syms
 
 padRightMin :: Int -> String -> String
 padRightMin l s | length s < l = replicate (l - length s) ' ' ++ s
@@ -1244,7 +1247,9 @@ withActivePath v action = do
 
 continueCmd :: SimCmd sbe m
 continueCmd = cmdDef "Continue execution." $ do
-  resumeActivePath (\_ -> return ())
+  dr <- getDebuggerRef
+  resumeActivePath $ \_ -> do
+    onPathPosChange .= checkForBreakpoint dr
 
 onReturnFrom :: (Functor sbe, Functor m, MonadIO m, MonadException m)
              => DebuggerRef sbe m -> Int -> Simulator sbe m ()

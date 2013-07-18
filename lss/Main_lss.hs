@@ -100,11 +100,10 @@ main = do
     forM_ (L.modDefines mdl) $ \d -> do
       mr <- let ?sbe = sbe in liftDefine d
       case mr of
-        Left d -> putStrLn $ show $ text "Error:" <+> d
+        Left msg -> putStrLn $ show $ text "Error:" <+> msg
         Right (warnings,sd) -> do
           mapM_ (\w -> putStrLn $ show $ text "Warning:" <$$> nest 2 w) warnings
           putStrLn $ show $ ppSymDefine sd
-    let via s f = mapM_ (putStrLn . show  . f) (s mdl)
     exitWith ExitSuccess
 
   let p     = many $ between spaces spaces $ many1 $ satisfy $ not . isSpace
