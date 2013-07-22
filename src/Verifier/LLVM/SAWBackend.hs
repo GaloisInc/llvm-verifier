@@ -66,15 +66,15 @@ nyi :: String -> a
 nyi nm = error $ "(SAW backend) Not yet implemented: " ++ show nm
 
 scBitwidth :: SharedContext s -> BitWidth -> IO (SharedTerm s)
-scBitwidth sc w = scNat sc (toInteger w)
+scBitwidth sc w = scNat sc (fromIntegral w)
 
 asUnsignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
 asUnsignedBitvector w s2 = do
   (s1, vt) <- R.asApp s2
   (s0, wt) <- R.asApp s1
   when (unwrapTermF  s0 /= preludeBVNatTermF) Nothing
-  when (R.asNatLit wt /= Just (toInteger w)) Nothing
-  R.asNatLit vt
+  when (R.asNatLit wt /= Just (fromIntegral w)) Nothing
+  toInteger <$> R.asNatLit vt
 
 scFloat :: SharedContext s -> Float -> IO (SharedTerm s)
 scFloat sc v = scTermF sc (FTermF (FloatLit v))
@@ -129,7 +129,7 @@ scLLVMIntConst' :: SharedContext s
                 -> IO (SharedTerm s)
 scLLVMIntConst' sc (w,wt) v = do
   cfn <- scApplyLLVMLlvmIntConstant sc 
-  cfn wt =<< scNat sc (v `mod` 2^(toInteger w))
+  cfn wt =<< scNat sc (fromInteger (v `mod` 2^(toInteger w)))
 
 {-
 Essay on how allocations are done:
@@ -167,7 +167,7 @@ data SAWBackendState s l =
        SBS { sbsDataLayout :: DataLayout
            , sbsContext :: SharedContext s
              -- | Cache used for bitblasting shared terms.
-           , sbsBCache :: BCache l
+           , sbsBCache :: BCache s l
              -- | Stores list of fresh variables and their associated terms with
              -- most recently allocated variables first.
            , sbsVars :: IORef [(BitWidth,VarIndex, BValue l)]
@@ -199,8 +199,9 @@ data DecomposeResult s
    | OffsetPtr !(SharedTerm s) !(SharedTerm s)
    | SymbolicPtr
 
-mkBackendState :: forall s l .
-                  DataLayout
+mkBackendState :: forall s l
+               .  (Eq l, LV.Storable l)
+               => DataLayout
                -> BitEngine l
                -> SharedContext s
                -> IO (SAWBackendState s l)
@@ -214,7 +215,7 @@ mkBackendState dl be sc = do
   subFn <- scApplyLLVMLlvmSub sc
 
   -- LLVM Type imports
-  ptrType <- join $ scApplyLLVMPtrType sc <*> scNat sc (toInteger (dl^.ptrSize))
+  ptrType <- join $ scApplyLLVMPtrType sc <*> scNat sc (fromIntegral (dl^.ptrSize))
   llvmFloatType  <- scApplyLLVMFloatType sc
   llvmDoubleType <- scApplyLLVMDoubleType sc
   arrayTypeFn  <- scApplyLLVMArrayType sc 
@@ -260,7 +261,7 @@ mkBackendState dl be sc = do
           (OffsetPtr bx ox, OffsetPtr by oy) | bx == by -> subPrim ox oy
           _ -> subPrim x y
 
-  let decomposeOffset = scIntAsConst' sc ptrWidth
+  let decomposeOffset t = fmap toInteger <$> scIntAsConst' sc ptrWidth t
 
   muxOp <- scTermF sc iteTermF
 
@@ -271,15 +272,15 @@ mkBackendState dl be sc = do
   let mkTypeTerm :: MM.Type -> IO (SharedTerm s)
       mkTypeTerm tp0 =
         case MM.typeF tp0 of
-          MM.Bitvector n -> intTypeFn =<< scNat sc (8*toInteger n)
+          MM.Bitvector n -> intTypeFn =<< scNat sc (8*fromIntegral n)
           MM.Float  -> return llvmFloatType
           MM.Double -> return llvmDoubleType
-          MM.Array n tp -> join $ arrayTypeFn <$> scNat sc (toInteger n) <*> mkTypeTerm tp
+          MM.Array n tp -> join $ arrayTypeFn <$> scNat sc (fromIntegral n) <*> mkTypeTerm tp
           MM.Struct flds -> join $ structTypeFn
-                              <$> scNat sc (toInteger (V.length flds))
+                              <$> scNat sc (fromIntegral (V.length flds))
                               <*> fieldVFn flds
-      fieldFn :: MM.Field MM.Type -> IO (SharedTerm s, Integer)
-      fieldFn f = (, toInteger (MM.fieldPad f)) <$> mkTypeTerm (f^.MM.fieldVal)
+      fieldFn :: MM.Field MM.Type -> IO (SharedTerm s, Nat)
+      fieldFn f = (, fromIntegral (MM.fieldPad f)) <$> mkTypeTerm (f^.MM.fieldVal)
       fieldVFn flds = scFieldInfo sc fieldType =<< traverse fieldFn flds
 
   intToFloat  <- scApplyLLVMLlvmIntToFloat sc
@@ -323,8 +324,8 @@ mkBackendState dl be sc = do
               , MM.tgApplyCtorF = \vcf ->
                  case vcf of
                    MM.ConcatBV xw x yw y -> do
-                     xwt <- scNat sc $ toInteger xw `shiftL` 3
-                     ywt <- scNat sc $ toInteger yw `shiftL` 3
+                     xwt <- scNat sc $ fromIntegral xw `shiftL` 3
+                     ywt <- scNat sc $ fromIntegral yw `shiftL` 3
                      case dl^.intLayout of
                        BigEndian    -> appendInt xwt ywt x y
                        LittleEndian -> appendInt ywt xwt y x         
@@ -333,12 +334,12 @@ mkBackendState dl be sc = do
                    MM.ConsArray tp x n y -> do
                      consFn <- scApplyPreludeConsVec sc
                      tpt <- mkTypeTerm tp
-                     nt <- scNat sc n
+                     nt <- scNat sc (fromInteger n)
                      consFn tpt x nt y
                    MM.AppendArray tp m x n y -> do
                      appendFn <- scApplyPreludeAppend sc
-                     join $ appendFn <$> scNat sc m
-                                     <*> scNat sc n
+                     join $ appendFn <$> scNat sc (fromInteger m)
+                                     <*> scNat sc (fromInteger n)
                                      <*> (valueFn =<< mkTypeTerm tp)
                                      ?? x
                                      ?? y
@@ -350,9 +351,9 @@ mkBackendState dl be sc = do
               , MM.tgApplyViewF = \vf -> do
                   let slice i n o v = do
                         join $ sliceFn
-                                 <$> scNat sc (8*toInteger i)
-                                 <*> scNat sc (8*toInteger n)
-                                 <*> scNat sc (8*toInteger o)
+                                 <$> scNat sc (8*fromIntegral i)
+                                 <*> scNat sc (8*fromIntegral n)
+                                 <*> scNat sc (8*fromIntegral o)
                                  ?? v
                   case vf of
                     MM.SelectLowBV m n v -> do
@@ -366,18 +367,19 @@ mkBackendState dl be sc = do
                     MM.FloatToBV v  -> join $ scApplyLLVMLlvmFloatToInt sc ?? v
                     MM.DoubleToBV v -> join $ scApplyLLVMLlvmDoubleToInt sc ?? v
                     MM.ArrayElt n tp o v -> do
+                      let n' = fromIntegral n
                       join $ scApplyPreludeGet sc
-                             <*> scNat sc (toInteger n)
+                             <*> scNat sc n'
                              <*> (valueFn =<< mkTypeTerm tp)
                              <*> pure v
-                             <*> scFinConst sc (toInteger o) (toInteger n)
+                             <*> scFinConst sc (fromIntegral o) n'
                     MM.FieldVal tps i v -> do
-                      let n = toInteger (V.length tps)
+                      let n = fromIntegral (V.length tps)
                       join $ scApplyLLVMLlvmStructElt sc
                                <*> scNat sc n
                                <*> fieldVFn tps
                                <*> pure v
-                               <*> scFinConst sc (toInteger i) n
+                               <*> scFinConst sc (fromIntegral i) n
               , MM.tgMuxTerm = \c tp x y -> do
                   tpt <- join $ scApplyLLVMValue sc <*> mkTypeTerm tp
                   scApply4 sc muxOp tpt c x y
@@ -413,7 +415,7 @@ mkBackendState dl be sc = do
 
 -- | Attempt to parse the second term as a constant integer.
 -- The first term is the width of the term.
-scIntAsConst' :: SharedContext s -> SharedTerm s -> SharedTerm s -> IO (Maybe Integer)
+scIntAsConst' :: SharedContext s -> SharedTerm s -> SharedTerm s -> IO (Maybe Nat)
 scIntAsConst' sc w t =
   fmap R.asNatLit $ join $
     scApplyLLVMLlvmIntValueNat sc ?? w ?? t
@@ -509,20 +511,20 @@ sbsStructValue :: SAWBackendState s l
                -> IO (ExprEvalFn v (SharedTerm s))
 sbsStructValue sbs flds = do
   let fn fi = do
-         (,toInteger (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
+         (,fromIntegral (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
   createStructValue (sbsContext sbs) =<< (traverse . _1) fn flds
 
 -- | Return term value, length of fields, and vector with the types of the fields.
 createStructValue :: forall s v 
                    . SharedContext s
                      -- For each field, provide type, number of padding bytes, and value.
-                  -> V.Vector ((SharedTerm s, Integer), v)
+                  -> V.Vector ((SharedTerm s, Nat), v)
                   -> IO (ExprEvalFn v (SharedTerm s))
 createStructValue sc flds = do
   fieldType <- scApplyLLVMFieldType sc
-  let foldFn :: ((SharedTerm s, Integer), v)
-             -> (Integer, ExprEvalFn v (SharedTerm s), SharedTerm s)
-             -> IO (Integer, ExprEvalFn v (SharedTerm s), SharedTerm s)
+  let foldFn :: ((SharedTerm s, Nat), v)
+             -> (Nat, ExprEvalFn v (SharedTerm s), SharedTerm s)
+             -> IO (Nat, ExprEvalFn v (SharedTerm s), SharedTerm s)
       foldFn ((mtp,pad),expr) (n,ExprEvalFn reval, rvtp) = do
         nt <- scNat sc n
         padding <- scNat sc pad
@@ -692,14 +694,14 @@ sbsMemType sbs btp = do
     DoubleType -> pure (sbsDoubleType sbs)
     PtrType _  -> pure (sbsPtrType sbs)
     ArrayType n tp -> 
-      join $ sbsArrayTypeFn sbs <$> scNat sc (toInteger n)
+      join $ sbsArrayTypeFn sbs <$> scNat sc (fromIntegral n)
                                 <*> sbsMemType sbs tp
     VecType n tp ->
-      join $ sbsVecTypeFn sbs <$> scNat sc (toInteger n)
+      join $ sbsVecTypeFn sbs <$> scNat sc (fromIntegral n)
                               <*> sbsMemType sbs tp
     StructType si ->
       join $ sbsStructTypeFn sbs 
-               <$> scNat sc (toInteger (siFieldCount si))
+               <$> scNat sc (fromIntegral (siFieldCount si))
                <*> sbsFieldInfo sbs (siFields si)
 
 -- | Returns term (tp,padding) for the given field info. 
@@ -709,15 +711,17 @@ sbsFieldInfo :: SAWBackendState s l
 sbsFieldInfo sbs flds = do
     flds' <- traverse go flds
     scFieldInfo (sbsContext sbs) (sbsFieldType sbs) flds'
-  where go fi = do (,toInteger (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
+  where go fi = do (,fromIntegral (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
 
 -- | Returns term (tp,padding) for the given field info. 
 scFieldInfo :: SharedContext s
               -> SharedTerm s -- ^ Field type function
-              -> V.Vector (SharedTerm s, Integer)
+              -> V.Vector (SharedTerm s, Nat)
               -> IO (SharedTerm s)
 scFieldInfo sc ftp flds = scVecLit sc ftp =<< traverse go flds
-  where go (tp,p) = scNat sc p >>= \pt -> scTuple sc [tp,pt]
+  where go (tp,p) = do
+          pt <- scNat sc p
+          scTuple sc [tp,pt]
 
 scIntType :: SharedContext s -> BitWidth -> IO (SharedTerm s)
 scIntType sc w = join $ scApplyLLVMIntType sc <*> scBitwidth sc w
@@ -758,13 +762,13 @@ typedExprEvalFn sbs expr0 = do
       extOp fn fnV mn dw rw v = do
         dt <- scBitwidth sc dw
         rt <- scBitwidth sc rw
-        case mn of
+        case fromIntegral <$> mn of
           Nothing -> do
             f <- fn sc
             return $ eval1 v (f dt rt)
           Just n  -> do
             f <- fnV sc
-            nt <- scNat sc (toInteger n)
+            nt <- scNat sc n
             return $ eval1 v (f nt dt rt)
   let resizeOp :: OptVectorLength
                -> BitWidth -- ^ Input width
@@ -787,7 +791,7 @@ typedExprEvalFn sbs expr0 = do
     SValStruct si vals -> assert (siFieldCount si == V.length vals) $ do
       sbsStructValue sbs (siFields si `V.zip` vals)
     IntArith iop mn w x y -> do
-      case mn of
+      case fromIntegral <$> mn of
         Nothing -> do
           let defOp :: (SharedContext s -> IO (SharedTerm s -> IO (SharedTerm s)))
                     -> BitWidth
@@ -812,7 +816,7 @@ typedExprEvalFn sbs expr0 = do
               _ -> fail "Illegal arguments to intArith"
         Just n  -> do
           let defOp fn w' =
-                join $ fn sc <*> scNat sc (toInteger n) <*> scBitwidth sc w'
+                join $ fn sc <*> scNat sc n <*> scBitwidth sc w'
           evalBin x y <$>
             case iop of
               Add{}  -> defOp scApplyLLVMLlvmAddV  w
@@ -833,16 +837,16 @@ typedExprEvalFn sbs expr0 = do
       return $ evalBin' x y (MM.tgAddPtr (smGenerator sbs))
     UAddWithOverflow w x y -> do
       let si = mkStructInfo dl False [IntType 1, IntType w]
-      let [p0,p1] = V.toList $ fiPadding <$> siFields si
+      let [p0,p1] = V.toList $ fromIntegral <$> fiPadding <$> siFields si
       fmap (evalBin' x y) $
         scApplyLLVMLlvmAddWithOverflow sc
               <*> scBitwidth sc w
-              <*> scNat sc (toInteger p0)
-              <*> scNat sc (toInteger p1)
+              <*> scNat sc p0
+              <*> scNat sc p1
     ICmp op mn stp x y -> do
         -- Get scalar type bitwidth.
         let w = either id (const (ptrBitwidth dl)) stp
-        case mn of
+        case fromIntegral <$> mn of
           Nothing -> do
             let defOp mkFn w' = fmap (evalBin x y) $ join $ mkFn sc <*> scBitwidth sc w'
             case op of
@@ -859,7 +863,7 @@ typedExprEvalFn sbs expr0 = do
               _ -> fail "Illegal arguments to signed comparison"
           Just n  -> do
             let defOp mkFnV w' = fmap (evalBin x y) $ join $
-                   mkFnV sc <*> scNat sc (toInteger n)
+                   mkFnV sc <*> scNat sc n
                             <*> scBitwidth sc w'
             case op of
               Ieq  -> defOp scApplyLLVMLlvmIeqV  w
@@ -886,23 +890,22 @@ typedExprEvalFn sbs expr0 = do
               Nothing -> scApplyLLVMLlvmSelect sc
               Just n -> do
                 fn <- scApplyLLVMLlvmSelectV sc
-                fn <$> scNat sc (toInteger n)
+                fn <$> scNat sc (fromIntegral n)
       mtp <- sbsMemType sbs tp       
       return $ ExprEvalFn $ \eval -> do
          join $ (\cv xv yv -> liftIO $ fn mtp cv xv yv) <$> eval c <*> eval x <*> eval y 
     GetStructField si v i -> assert (i < siFieldCount si) $ do
-      let n = toInteger (siFieldCount si)
-
+      let n = fromIntegral (siFieldCount si)
       nt <- scNat sc n
       tps <- sbsFieldInfo sbs (siFields si)
-      ft <- scFinConst sc (toInteger i) (toInteger (siFieldCount si))
+      ft <- scFinConst sc (fromIntegral i) n
       fn <- scApplyLLVMLlvmStructElt sc
       return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt tps val ft) =<< eval v
     GetConstArrayElt n tp a i -> assert (i < n) $ do
       fn <- scApplyLLVMLlvmArrayElt sc
-      nt <- scNat sc (toInteger n)
+      nt <- scNat sc (fromIntegral n)
       mtp <- sbsMemType sbs tp
-      it <- scFinConst sc (toInteger i) (toInteger n)
+      it <- scFinConst sc (fromIntegral i) (fromIntegral n)
       return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt mtp val it) =<< eval a
 
 -- | Returns value and rest out of construct.
@@ -1132,8 +1135,11 @@ createSAWBackend' be dl _mg = do
                     vtp <- valueFn =<< intTypeFn =<< scBitwidth sc w
                     i <- scFreshGlobalVar sc
                     t <- scFlatTermF sc (ExtCns (EC i "_" vtp))
-                    Right lits <- bitBlastWith (sbsBCache sbs) t
-                    modifyIORef' (sbsVars sbs) ((w,i,lits):)                    
+                    mlits <- bitBlastWith (sbsBCache sbs) t
+                    case mlits of
+                      Left msg -> fail msg
+                      Right lits -> do
+                        modifyIORef' (sbsVars sbs) ((w,i,lits):)                    
                     return t
                 , typedExprEval = typedExprEvalFn sbs
                 , applyTypedExpr = \expr -> SAWBackend $ do
