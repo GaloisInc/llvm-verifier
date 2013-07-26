@@ -346,13 +346,13 @@ bvEq_commute_ite1 :: (w :: Nat)
 -- These rules are unsound due to overflow:
 
 bvule_sameL :: (n :: Nat)
-            -> (x y z :: bitvector n) 
+            -> (x z :: bitvector n) 
             -> Eq Bool
                   (bvule n x (bvAdd n x z))
                   True;
 
 bvule_sameR :: (n :: Nat)
-            -> (x y z :: bitvector n) 
+            -> (x y :: bitvector n) 
             -> Eq Bool
                   (bvule n (bvAdd n x y) x)
                   (bvEq n y (bvNat n 0));

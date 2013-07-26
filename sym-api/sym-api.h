@@ -84,7 +84,7 @@ void lss_SMTLIB1_write(SMTLIB1_script* s, const char* path) NO_INL;
  */ 
 void lss_SMTLIB1_free(SMTLIB1_script* s) NO_INL;
 
-static
+inline
 void lss_SMTLIB1_write_nonzero_uint8(const char* name, const char* path, uint8_t v) {
   SMTLIB1_script* s;
   s = lss_SMTLIB1_create(name);
@@ -126,7 +126,7 @@ void lss_SMTLIB2_write(SMTLIB2_script* s, const char* path) NO_INL;
  */ 
 void lss_SMTLIB2_free(SMTLIB2_script* s) NO_INL;
 
-static
+inline
 void lss_SMTLIB2_write_nonzero_uint8(const char* path, uint8_t v) {
   SMTLIB2_script* s;
   s = lss_SMTLIB2_create();
