@@ -8,7 +8,7 @@ prove: aigs
 TOP := ../../..
 include ../libgcrypt.mk
 # LSS    := $(TOP)/cabal-dev/bin/lss --errpaths
-LSS    := lss --errpaths -b saw
+LSS    := lss --errpaths -b saw -d 4
 CC     := clang
 CFLAGS := $(libgcrypt_flags) -Wall -I$(TOP)/sym-api -O0
 
@@ -31,11 +31,12 @@ FUNCTIONS :=     \
 IMPL_AIGS := $(patsubst %,impl_AIGs/%.aig,$(FUNCTIONS))
 
 aigs: $(libgcrypt)/config.h prep $(IMPL_AIGS) 
-prep: 
-	@mkdir -p impl_AIGs 
+prep:
+	@mkdir -p impl_AIGs
 
 impl_AIGs/%.aig: sha384op-%.bc
 	@echo Generating implementation AIG $*.aig via LSS...
+	@mkdir -p impl_AIGs
 	@${LSS} $<
 
 ### LLVM bitcode rules

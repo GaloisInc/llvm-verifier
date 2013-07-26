@@ -199,6 +199,18 @@ data DecomposeResult s
    | OffsetPtr !(SharedTerm s) !(SharedTerm s)
    | SymbolicPtr
 
+llvmBBRules :: forall s l . LV.Storable l => RuleSet s l
+llvmBBRules = termRule (matchArgs (asGlobalDef "LLVM.llvmAppendInt") appendFn)
+  where appendFn :: Nat
+                 -> Nat
+                 -> SharedTerm s
+                 -> SharedTerm s
+                 -> RuleBlaster s l (BValue l)
+        appendFn xl yl x y = lift $ do
+          x' <- blastBV xl x
+          y' <- blastBV yl y
+          return (lvVector (y' LV.++ x'))
+
 mkBackendState :: forall s l
                .  (Eq l, LV.Storable l)
                => DataLayout
@@ -206,7 +218,7 @@ mkBackendState :: forall s l
                -> SharedContext s
                -> IO (SAWBackendState s l)
 mkBackendState dl be sc = do
-  bc <- newBCache be
+  bc <- newBCache be (bvRules <> llvmBBRules)
   vars <- newIORef []
   allocs <- newIORef Set.empty
   ptrWidth <- scBitwidth sc (ptrBitwidth dl)
@@ -290,7 +302,7 @@ mkBackendState dl be sc = do
   ptrLeOp <- scApplyLLVMLlvmIuleBool sc
 
   appendInt <- scApplyLLVMLlvmAppendInt sc
-  sliceFn <- scApplyLLVMLlvmIntSlice sc
+  sliceFn   <- scApplyLLVMLlvmIntSlice sc
   valueFn   <- scApplyLLVMValue sc
   let tg = MM.TG 
               { MM.tgPtrWidth = dl^.ptrSize
@@ -491,7 +503,9 @@ allocPtr sbs = do
   -- Create new variable for base address.
   s <- readIORef (sbsAllocations sbs)
   let nm = "$alloc" ++ show (Set.size s)
-  base <- scFreshGlobal (sbsContext sbs) nm (sbsPtrType sbs)
+  let sc = sbsContext sbs
+  tp <- join $ scApplyLLVMValue sc ?? sbsPtrType sbs
+  base <- scFreshGlobal sc nm tp
   writeIORef (sbsAllocations sbs) $! Set.insert base s
   return base
 
@@ -740,7 +754,7 @@ typedExprEvalFn sbs expr0 = do
   let evalBin x y op = evalBin' x y (scApply2 sc op)
       evalBin' x y f = ExprEvalFn $ \eval ->
          liftIO . uncurry f =<< both eval (x,y)
-  let mkVecLit mtp v = do
+  let mkLLVMVecLit mtp v = do
         tp <- join $ scApplyLLVMValue sc <*> sbsMemType sbs mtp
         return $ ExprEvalFn $ \eval -> liftIO . scVecLit sc tp =<< traverse eval v
   let constEvalFn v = ExprEvalFn $ \_ -> return v
@@ -786,8 +800,8 @@ typedExprEvalFn sbs expr0 = do
     SValFloat  v     -> constEvalFn <$> scFloat sc v
     SValDouble v     -> constEvalFn <$> scDouble sc v
     SValNull{}       -> constEvalFn <$> scLLVMIntConst sc (ptrBitwidth dl) 0
-    SValArray  mtp v -> mkVecLit mtp v
-    SValVector mtp v -> mkVecLit mtp v
+    SValArray  mtp v -> mkLLVMVecLit mtp v
+    SValVector mtp v -> mkLLVMVecLit mtp v
     SValStruct si vals -> assert (siFieldCount si == V.length vals) $ do
       sbsStructValue sbs (siFields si `V.zip` vals)
     IntArith iop mn w x y -> do
@@ -1031,11 +1045,12 @@ createSAWBackend be dl mg = do
   (sbe, mem, _) <- createSAWBackend' be dl mg
   return (sbe, mem)
 
-createSAWBackend' :: (Eq l, Storable l)
-                 => BitEngine l
-                 -> DataLayout
-                 -> MemGeom
-                 -> IO (SBE (SAWBackend s l), SAWMemory s, SharedContext s)
+createSAWBackend' :: forall s l 
+                   . (Eq l, Storable l)
+                  => BitEngine l
+                  -> DataLayout
+                  -> MemGeom
+                  -> IO (SBE (SAWBackend s l), SAWMemory s, SharedContext s)
 createSAWBackend' be dl _mg = do
   sc0 <- mkSharedContext llvmModule
   let activeDefs = filter defPred $ allModuleDefs llvmModule
@@ -1077,6 +1092,9 @@ createSAWBackend' be dl _mg = do
   let eqs = [ "Prelude.ite_not"
             , "Prelude.vTake0"
             , "Prelude.vDrop0"
+            , "Prelude.bveq_sameL"
+            , "Prelude.bveq_sameR"
+            , "Prelude.bveq_same2"
             , "LLVM.ite_same"
             , "LLVM.ite_false_false"
             , "LLVM.and_true2"
@@ -1084,9 +1102,6 @@ createSAWBackend' be dl _mg = do
             , "LLVM.bvule_sameL"
             , "LLVM.bvule_sameR"
             , "LLVM.bvule_same2"
-            , "LLVM.bveq_sameL"
-            , "LLVM.bveq_sameR"
-            , "LLVM.bveq_same2"
             ]
   let conversions =
         natConversions
@@ -1096,9 +1111,7 @@ createSAWBackend' be dl _mg = do
            , remove_ident_unsafeCoerce]
         ++ [ getStructElt
            , evalAppendInt
-           ]
-  
-
+           ] 
   simpSet <- scSimpset sc0 activeDefs eqs conversions
   let sc = rewritingSharedContext sc0 simpSet
   sbs <- mkBackendState dl be sc
@@ -1115,7 +1128,7 @@ createSAWBackend' be dl _mg = do
   intTypeFn <- scApplyLLVMIntType sc
   
   let sbe = SBE { sbeTruePred = true
-                , applyIEq = \w x y -> SAWBackend $
+                , applyIEq = \w x y -> SAWBackend $ do
                    join $ apply_bvEq <$> scBitwidth sc w ?? x ?? y
                 , applyAnd  = lift2 pAnd
                 , applyBNot = lift1 pNot
@@ -1236,9 +1249,6 @@ _unused = undefined
   scApplyLLVMLiftSBVRel
   scApplyLLVMAnd_true2
   scApplyLLVMBvEq_commute_ite1
-  scApplyLLVMBveq_same2
-  scApplyLLVMBveq_sameL
-  scApplyLLVMBveq_sameR
   scApplyLLVMBvule_same2
   scApplyLLVMBvule_sameL
   scApplyLLVMBvule_sameR
