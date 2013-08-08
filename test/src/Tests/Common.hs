@@ -143,8 +143,8 @@ runTestLSSCommon createFn v mdl argv' mepsLen mexpectedRV = do
       Just i | i > 0 && v == 0 -> return ()
       _ -> do
         _ <- initializeDebugger
-        when (v > 0) $
-          breakOnMain
+        when (v > 0) $ do
+          breakOnEntry =<< lookupSymbolDef (L.Symbol "main")
     execRslt <- testRunMain argv'
     case mepsLen of
       Nothing -> return ()

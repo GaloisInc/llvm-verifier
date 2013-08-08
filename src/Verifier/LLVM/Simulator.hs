@@ -69,11 +69,13 @@ module Verifier.LLVM.Simulator
   , errorPaths
   , LSSOpts(..)
   , MonadException
+  , lookupSymbolDef
   ) where
 
 import           Control.Applicative
 import Control.Exception ( AsyncException(..)
                          , AssertionFailed(..)
+                         , assert
                          )
 import           Control.Lens hiding (act,from)
 import           Control.Monad.Error
@@ -220,7 +222,7 @@ callDefine calleeSym t args = do
               <+> ppRetType t
               <+>  text "for" <+> ppSymbol calleeSym <+> text "when actual type is"
               <+> ppRetType (sdRetType def) <> text "."
-  callDefine' False entryRetNormalID calleeSym retReg args
+  callDefine' False calleeSym retReg args
   signalPathPosChangeEvent
   run
 
@@ -235,12 +237,11 @@ callDefine' ::
   , Functor sbe
   )
   => Bool                    -- ^ Is this a redirected call?
-  -> SymBlockID              -- ^ Normal call return block id
   -> Symbol                  -- ^ Callee symbol
   -> Maybe (MemType, Ident)  -- ^ Callee return type and result register
   -> [(MemType,SBETerm sbe)]           -- ^ Callee arguments
   -> Simulator sbe m ()
-callDefine' isRedirected normalRetID calleeSym@(Symbol calleeName) mreg args = do
+callDefine' isRedirected calleeSym@(Symbol calleeName) mreg args = do
   -- NB: Check overrides before anything else so we catch overriden intrinsics
   symOver <- use (fnOverrides . at calleeSym)
   case symOver of
@@ -248,11 +249,11 @@ callDefine' isRedirected normalRetID calleeSym@(Symbol calleeName) mreg args = d
     Just (Redirect calleeSym', _)
       -- NB: We break transitive redirection to avoid cycles
       | isRedirected -> normal
-      | otherwise    -> callDefine' True normalRetID calleeSym' mreg args
+      | otherwise    -> callDefine' True calleeSym' mreg args
     Just (Override f, _) -> do
       r <- f calleeSym mreg args
       modifyPathRegs $ setReturnValue mreg r
-      setCurrentBlock normalRetID
+      incPC
   where
     normal
       | isPrefixOf "llvm." calleeName = do
@@ -260,9 +261,9 @@ callDefine' isRedirected normalRetID calleeSym@(Symbol calleeName) mreg args = d
             --TODO: Give option of stopping on warnings like this.
             tellUser $ "Warning: skipping unsupported LLVM intrinsic "
                          ++ show calleeName
-          setCurrentBlock normalRetID
+          incPC
       | otherwise = do
-          runNormalSymbol normalRetID calleeSym mreg (snd <$> args)
+          runNormalSymbol calleeSym mreg (snd <$> args)
 
 -- | Return symbol definition with given name or fail.
 lookupSymbolDef :: (Functor m, MonadIO m, Functor sbe)
@@ -280,19 +281,18 @@ runNormalSymbol ::
   , Functor m
   , Functor sbe
   )
-  => SymBlockID            -- ^ Normal call return block id
-  -> Symbol              -- ^ Callee symbol
-  -> Maybe (MemType, Ident)     -- ^ Callee return type and result register
-  -> [SBETerm sbe] -- ^ Callee arguments
+  => Symbol                 -- ^ Callee symbol
+  -> Maybe (MemType, Ident) -- ^ Callee return type and result register
+  -> [SBETerm sbe]          -- ^ Callee arguments
   -> Simulator sbe m ()
-runNormalSymbol normalRetID calleeSym mreg args = do
+runNormalSymbol calleeSym mreg args = do
   def <- lookupSymbolDef calleeSym
   sbe <- gets symBE
   dbugM' 5 $ "callDefine': callee " ++ show (ppSymbol calleeSym)
   Just cs <- use ctrlStk
   let m = cs^.currentPath^.pathMem
   (c,m') <- withSBE $ \s -> stackPushFrame s m
-  let cs' = cs & pushCallFrame sbe calleeSym normalRetID mreg
+  let cs' = cs & pushCallFrame sbe def mreg
                & activePath . pathRegs .~ bindArgs (sdArgs def) args
                & activePath . pathMem  .~ m'
   ctrlStk ?= ActiveCS cs'
@@ -451,15 +451,6 @@ assignReg :: (Functor m, MonadIO m)
           => Ident -> MemType -> SBETerm sbe -> Simulator sbe m ()
 assignReg reg tp v = modifyPathRegs $ at reg ?~ (v,tp)
 
--- | Evaluate condition in current path.
-evalCond :: (Functor sbe, Functor m, MonadIO m)
-         => SymCond (SBETerm sbe) -> Simulator sbe m (SBEPred sbe)
-evalCond (HasConstValue t w i) = do
-  v <- evalExprInCC "evalCond" t
-  sbe <- gets symBE
-  iv <- liftSBE $ termInt sbe w i
-  liftSBE $ applyIEq sbe w v iv
-
 data EvalContext sbe = EvalContext {
        evalContextName :: String
      , evalGlobals :: GlobalMap sbe
@@ -485,6 +476,31 @@ evalExprInCC :: (Functor m, MonadIO m, Functor sbe)
 evalExprInCC nm sv = runEvaluator nm $ evalExpr sv
 
 type Evaluator sbe = ErrorT FailRsn (ReaderT (EvalContext sbe) IO)
+
+mkIEqPred :: Monad m => SBETerm sbe -> BitWidth -> Integer -> Simulator sbe m (SBEPred sbe)
+mkIEqPred v w expected = do
+  sbe <- gets symBE
+  iv <- liftSBE $ termInt sbe w expected
+  liftSBE $ applyIEq sbe w v iv
+
+negatePred :: Monad m => SBEPred sbe -> Simulator sbe m (SBEPred sbe)
+negatePred p = do
+  sbe <- gets symBE
+  liftSBE $ applyBNot sbe p
+
+andAll :: Monad m => [SBEPred sbe] -> Simulator sbe m (SBEPred sbe)
+andAll [] = gets (sbeTruePred . symBE)
+andAll (h:l) = do
+  sbe <- gets symBE
+  foldM (\x y -> liftSBE (applyAnd sbe x y)) h l
+
+checkPathUnsat :: Monad m => SBEPred sbe -> Simulator sbe m Bool
+checkPathUnsat c = do
+  Just p <- preuse currentPathOfState
+  sbe <- gets symBE
+  a' <- liftSBE $ applyAnd sbe c (p^.pathAssertions)
+  fsat <- liftSBE $ termSAT sbe a'
+  return (fsat == UnSat)
 
 runEvaluator ::
   ( Functor m
@@ -568,6 +584,29 @@ incPC :: Monad m => Simulator sbe m ()
 incPC = do
   currentPathOfState . pathPC %= incPathPC
 
+splitBranches :: (Functor m, MonadIO m)
+              => [(SBEPred sbe, SymBlockID)] -> MergeLocation -> Simulator sbe m ()
+splitBranches allPairs ml = do
+  runSat <- gets (optsSatAtBranches . lssOpts)
+  branches <-
+    if runSat then
+      filterM (\(c,_) -> not <$> checkPathUnsat c) allPairs
+    else
+      return allPairs
+  case branches of
+    [] -> errorPath "Unsatisfiable path detected at switch."
+    ((_,b):r) -> do
+      sbe <- gets symBE
+
+      let pushBranch (c,cb) nm =
+           withActiveCS $ fmap ActiveCS . addCtrlBranch sbe c cb nm ml
+
+      nm <- use pathCounter
+      pathCounter += toInteger (length r)
+
+      mapM_ (uncurry pushBranch) (reverse (r `zip` [nm..]))
+      setCurrentBlock b
+
 -- | Execute a single LLVM-Sym AST instruction
 -- Returns true if execution should continue, and false if
 -- we should enter the debugger.
@@ -577,7 +616,7 @@ step ::
   , Functor sbe
   )
   => SymStmt (SBETerm sbe) -> Simulator sbe m ()
-step (PushCallFrame callee args mres retTgt) = do
+step (Call callee args mres) = do
   sbe <- gets symBE
   join $ runEvaluator "PushCallFrame" $ do
     calleeSym <- 
@@ -596,67 +635,45 @@ step (PushCallFrame callee args mres retTgt) = do
                 ++ show (prettyTermD sbe fp)
             Right sym -> return sym
     argTerms <- (traverse._2) evalExpr args
-    return $ callDefine' False retTgt calleeSym mres argTerms 
+    return $ callDefine' False calleeSym mres argTerms 
 
-step (Return mtv) = do
+step (Ret mtv) = do
   sbe <- gets symBE
-  mrv <- traverse (evalExprInCC "mergeReturn") mtv
+  mrv <- traverse (evalExprInCC "return") mtv
   withActiveCS (returnCurrentPath sbe mrv)
 
-step (PushPendingExecution bid cond ml) = do
+step (Br cond trueBlock falseBlock ml) = do
   sbe <- gets symBE
-  c <- evalCond cond
-  opts <- gets lssOpts
-  Just p <- preuse currentPathOfState
-  tsat <- if optsSatAtBranches opts
-             then do a' <- liftSBE $ applyAnd sbe c (p^.pathAssertions)
-                     liftSBE $ termSAT sbe a'
-             else return Unknown
-  fsat <- if optsSatAtBranches opts
-             then do cnot <- liftSBE $ applyBNot sbe c
-                     a' <- liftSBE $ applyAnd sbe cnot (p^.pathAssertions)
-                     liftSBE $ termSAT sbe a'
-             else return Unknown
-  -- exclude paths which are definitely unsat. If both are unsat, we
-  -- probably couldn't have gotten here, so just throw an error path
-  -- right away
-  when (tsat == UnSat && fsat == UnSat) $ do
-    dbugM' 3 "both branch conditions unsatisfiable -- should have been caught earlier"
-    errorPath "no satisfiable assertions at branch point"
-
-  -- fall through to else branch if true condition is unsat
-  let b = if tsat /= UnSat then asBool sbe c else Just False
-  case b of
-    -- Don't bother with elseStmts as condition is true.
-    Just True  -> do
-      setCurrentBlock bid
-    -- Don't bother with elseStmts if negated condition is unsat
-    Nothing | fsat == UnSat -> do
-      setCurrentBlock bid
-    -- Don't bother with pending path as condition is false.
-    Just False -> incPC
-    -- Don't bother with pending path as condition is unsat
-    Nothing | tsat == UnSat -> incPC
+  v <- evalExprInCC "branch" cond
+  case asUnsignedInteger sbe 1 v of
+    Just 1 -> setCurrentBlock trueBlock
+    Just w -> assert (w == 0) $ setCurrentBlock falseBlock
     Nothing -> do
-      nm <- use pathCounter
-      pathCounter += 1
-      withActiveCS $ \cs ->
-        ActiveCS <$> addCtrlBranch sbe c bid nm ml cs
-      incPC
+      (pt, pf) <- both (mkIEqPred v 1) (1,0)
+      splitBranches [(pt,trueBlock), (pf,falseBlock)] ml
 
-step (SetCurrentBlock bid) = setCurrentBlock bid
+step (Switch w sv defBlock cases ml) = do
+  sbe <- gets symBE
+  v <- evalExprInCC "switch" sv
+  case asUnsignedInteger sbe w v of
+    Just v' ->
+      case M.lookup v' cases of
+        Just cb -> setCurrentBlock cb
+        Nothing -> setCurrentBlock defBlock
+    Nothing -> do
+      preds <- mapM (mkIEqPred v w) (M.keys cases)
+      notPred <- andAll =<< mapM negatePred preds
+      let casePairs = preds `zip` M.elems cases
+          defPair = (notPred, defBlock)
+      splitBranches (casePairs ++ [defPair]) ml
+step (Jump bid) = setCurrentBlock bid
 
-step (Assign l) = do
-  -- Evaluate all expressions.
-  actions <- runEvaluator "eval@Val" $ do
-    forM l $ \(r,tp, tv) -> do
-      v <- evalExpr tv
-      seq r $ seq tp $ seq v $ do
-        return $! assignReg r tp v
-  sequence_ actions
+step (Assign r tp tv) = do
+  v <- runEvaluator "assign" $ evalExpr tv
+  assignReg r tp v
   incPC
 
-step (AllocaStmt reg ty msztv a) = do
+step (Alloca reg ty msztv a) = do
   -- Get number of elements and with of number of elements.
   (aw,sizeTm) <- 
     case msztv of
@@ -668,7 +685,7 @@ step (AllocaStmt reg ty msztv a) = do
   assignReg reg (PtrType (MemType ty)) =<< alloca ty aw sizeTm a
   incPC
 
-step (LoadStmt reg v ty a) = do
+step (Load reg v ty a) = do
   addrTerm <- evalExprInCC "load" v
   dumpMem 6 "lo/ad pre"
   val <- load ty addrTerm a

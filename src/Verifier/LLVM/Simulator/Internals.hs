@@ -339,28 +339,28 @@ modifyCurrentPathM cs f =
 -- | Push a call frame to the active path
 pushCallFrame :: forall sbe
                . SBE sbe
-              -> Symbol -- ^ Function we are jumping to. 
-              -> SymBlockID -- ^ Block to return to.
+              -> SymDefine (SBETerm sbe) -- ^ Function we are jumping to. 
               -> Maybe (MemType, Ident) -- ^ Where to write return value to (if any).
               -> CS sbe -- ^ Current control stack
               -> ActiveCS sbe
-pushCallFrame sbe calleeSym returnBlock retReg cs =
+pushCallFrame sbe def retReg cs =
     case cs of
       FinishedCS p -> ACS (Singleton (newPath p))
       ActiveCS acs -> acs & activePath %~ newPath
   where newPath :: Path sbe -> Path sbe
         newPath p = p'
-          where cf = CallFrame { cfFuncSym = p^.pathFuncSym
-                               , cfReturnBlock = Just (returnBlock,0)
+          where pc = p^.pathPC
+                cf = CallFrame { cfFuncSym = p^.pathFuncSym
+                               , cfReturnBlock = pc & _Just . _2 %~ (+1)
                                , cfRegs = p^.pathRegs
                                , cfRetReg = retReg
                                }
-                p' = p & pathFuncSym    .~ calleeSym
-                       & pathPC         .~ Just (initSymBlockID,0)
+                p' = p & pathFuncSym    .~ sdName def
+                       & pathPC         .~ Just (sdEntry def, 0)
                        & pathRegs       .~ M.empty
                        & pathAssertions .~ sbeTruePred sbe
                        & pathStackHt    +~ 1
-                       & pathStack     %~ (cf:)
+                       & pathStack      %~ (cf:)
 
 -- | Add a control branch
 addCtrlBranch :: SBE sbe
@@ -490,9 +490,9 @@ returnCurrentPath sbe rt cs = do
   m <- sbeRunIO sbe $ stackPopFrame sbe (p^.pathMem)
   let regs' = setReturnValue (cfRetReg cf) rt (cfRegs cf)
   let p' = p & pathFuncSym .~ cfFuncSym cf
-             & pathPC .~ cfReturnBlock cf
+             & pathPC   .~ cfReturnBlock cf
              & pathRegs .~ regs'
-             & pathMem .~ m
+             & pathMem  .~ m
              & pathStackHt -~ 1
              & pathStack .~ cfs
   cs' <- checkForMerge sbe (cs & activePath .~ p')
@@ -587,8 +587,8 @@ incPathPC = over (_Just . _2) (+1)
 
 -- | A Call frame stack for identifying where to return to.
 data CallFrame sbe = CallFrame { cfFuncSym :: Symbol
-                               , cfReturnBlock :: PathPC
-                               , cfRegs :: RegMap (SBETerm sbe)
+                               , cfReturnBlock :: Maybe (SymBlockID, Int)
+                               , cfRegs   :: RegMap (SBETerm sbe)
                                , cfRetReg :: Maybe (MemType, Ident)
                                }
 
