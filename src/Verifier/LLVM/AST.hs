@@ -31,18 +31,15 @@ module Verifier.LLVM.AST
   , TypedExpr(..)
   , StructInfo(..)
   , Int32
-  , SymCond(..)
   , MergeLocation
   , SymStmt(..)
   , SymBlock(..)
   , SymDefine(..)
   , entrySymbol
   , entryRetNormalID
-  , initSymBlockID
   , lookupSymBlock
   , ppSymBlock
   , ppSymBlockID
-  , ppSymCond
   , ppSymDefine
   , ppStmt
   , symBlockID
@@ -87,16 +84,9 @@ type FuncID = L.Symbol
 
 -- | Identifier for a basic block.
 data SymBlockID
-  -- | Identifier for initial block that sets up initial
-  -- post-dominator frames.
-  = InitBlock
   -- | Identifier for blocks derived from LLVM blocks.
-  | NamedBlock !(L.BlockLabel) !Int
+  = NamedBlock !(L.BlockLabel) !Int
   deriving (Eq, Ord, Show)
-
--- | Return init symbolic block id.
-initSymBlockID :: SymBlockID
-initSymBlockID = InitBlock
 
 -- | Create new block id for block with given name and unique integer.
 -- The first block is for the entry point to the LLVM block.
@@ -105,11 +95,9 @@ symBlockID i = NamedBlock i
 
 symBlockLabel :: SymBlockID -> Maybe L.BlockLabel
 symBlockLabel (NamedBlock i _) = Just i
-symBlockLabel _                = Nothing
 
 -- | Pretty print SymBlockID
 ppSymBlockID :: SymBlockID -> Doc
-ppSymBlockID InitBlock = text "init"
 ppSymBlockID (NamedBlock b n) = text (show (L.ppLabel b)) <> char '.' <> int n
 
 -- | NUW flag used with addition, subtraction, multiplication, and left shift to
@@ -287,41 +275,34 @@ ppSymValue = go
 ppAlign :: Alignment -> Doc
 ppAlign a = text (", align " ++ show a)
 
--- | Predicates in symbolic simulator context.
-data SymCond t
-  -- | @HasConstValue v w i@ holds if @v@ corresponds to the constant @i@.
-  = HasConstValue (SymValue t) BitWidth Integer
-
--- | Pretty print symbolic condition.
-ppSymCond :: SymCond t -> Doc
-ppSymCond (HasConstValue v _ i) = ppSymValue v <+> text "==" <+> integer i
-
 -- | A merge location is a block or Nothing if the merge happens at a return.
 type MergeLocation = Maybe SymBlockID
 
 -- | Instruction in symbolic level.
 data SymStmt t
-  -- | @PushCallFrame fn args res retTarget@ pushes a invoke frame to the merge frame stack
+  -- | @Call fn args res@ pushes a invoke frame to the merge frame stack
   -- that will call @fn@ with @args@, and store the result in @res@ if the function
-  -- returns normally.  The calling function will resume execution at retTarget.
-  = PushCallFrame (SymValue t) [(MemType,SymValue t)] (Maybe (MemType, L.Ident)) SymBlockID
-  -- | @Return@ pops top call frame from path, merges (current path return value)
-  -- with call frame, and clears current path.
-  | Return (Maybe (SymValue t))
-  -- | @PushPendingExecution tgt c mergeLoc@ make the current state a pending execution in the
-  -- top-most merge frame with the additional path constraint c, and current block @tgt@.
-  -- @mergeLoc@ indicates where the two execution paths should merge.
-  | PushPendingExecution SymBlockID (SymCond t) MergeLocation
-  -- | Sets the block to the given location.
-  | SetCurrentBlock SymBlockID
+  -- returns normally.
+  = Call (SymValue t) [(MemType,SymValue t)] (Maybe (MemType, L.Ident))
+  -- | @Ret mval@ returns from procedure with value.
+  | Ret (Maybe (SymValue t))
+
+    -- | Jump to target location.
+  | Jump SymBlockID
+    -- | @Br c t f ml@ branch to @t@ if @c@ if true and @f@ if @c@ is false.
+    -- The immediate post dominator is @ml@. 
+  | Br (SymValue t) SymBlockID SymBlockID MergeLocation
+    -- | @Switch w v def cases ml@ switches to a matching case base on @v@.
+  | Switch BitWidth (SymValue t) SymBlockID (Map Integer SymBlockID) MergeLocation
+
     -- | Assign expression values in current context to registers.
-  | Assign [(L.Ident, MemType, SymValue t)]
-    -- | @AllocaStmt r tp sz align@ allocates a new pointer to @sz@ elements of type
+  | Assign L.Ident MemType (SymValue t)
+    -- | @Alloca r tp sz align@ allocates a new pointer to @sz@ elements of type
     -- @tp@ with alignment @align@, and stores result in @r@.
-  | AllocaStmt L.Ident MemType (Maybe (BitWidth, SymValue t)) Alignment
-    -- | @LoadSmt r ptr tp align@ loads the value at @ptr@ as a value with type @tp@, and
+  | Alloca L.Ident MemType (Maybe (BitWidth, SymValue t)) Alignment
+    -- | @Load r ptr tp align@ loads the value at @ptr@ as a value with type @tp@, and
     -- stores the result in @r@.
-  | LoadStmt L.Ident (SymValue t) MemType Alignment
+  | Load L.Ident (SymValue t) MemType Alignment
   -- | @Store v addr@ stores value @v@ in @addr@.
   | Store MemType (SymValue t) (SymValue t) Alignment
   -- | Print out an error message if we reach an unreachable.
@@ -330,22 +311,27 @@ data SymStmt t
   | BadSymStmt L.Stmt
 
 ppStmt :: SymStmt t -> Doc
-ppStmt (PushCallFrame fn args res retTgt)
-  = text "pushCallFrame" <+> ppSymValue fn
+ppStmt (Call fn args res)
+  = text "call" <+> ppSymValue fn
   <> parens (commas (ppSymValue . snd <$> args))
   <+> maybe (text "void") (\(tp,v) -> ppMemType tp <+> ppIdent v) res
-  <+> text "returns to" <+> ppSymBlockID retTgt
-ppStmt (Return mv) = text "return" <+> maybe empty ppSymValue mv
-ppStmt (PushPendingExecution b c ml) =
-    text "pushPendingExecution" <+> ppSymBlockID b <+> ppSymCond c <+> text "merge" <+> loc
+ppStmt (Ret mv) = text "ret" <+> maybe empty ppSymValue mv
+ppStmt (Jump b) = text "jump" <+> ppSymBlockID b
+ppStmt (Br c t f ml) =
+    text "br" <+> ppSymValue c <+> ppSymBlockID t <+> ppSymBlockID f
+                  <+> text "merge" <+> loc
   where loc = maybe (text "return") ppSymBlockID ml
-ppStmt (SetCurrentBlock b) = text "setCurrentBlock" <+> ppSymBlockID b
-ppStmt (Assign l) = nest 2 (vcat (ppAssign <$> l))
-  where ppAssign (v, _, e) = ppIdent v <+> char '=' <+> ppSymValue e
-ppStmt (AllocaStmt r ty mbLen a) = 
+ppStmt (Switch _ c def choices ml) =
+    text "switch" <+> ppSymValue c <+> ppSymBlockID def
+         <+> list (ppChoice <$> Map.toList choices)
+         <+> loc
+  where loc = maybe (text "return") ppSymBlockID ml
+        ppChoice (i,b) = integer i <+> text "label" <+> ppSymBlockID b
+ppStmt (Assign r _ e) = ppIdent r <+> char '=' <+> ppSymValue e
+ppStmt (Alloca r ty mbLen a) = 
     ppIdent r <+> text "= alloca" <+> ppMemType ty <> len <> ppAlign a
   where len   = maybe empty (\(w,l) -> comma <+> ppIntType w <+> ppSymValue l) mbLen
-ppStmt (LoadStmt r ptr tp a) =
+ppStmt (Load r ptr tp a) =
   ppIdent r <+> text "= load" <+> ppPtrType (ppMemType tp) <+> ppSymValue ptr <> ppAlign a
 ppStmt (Store tp v addr a) =
   text "store" <+> ppMemType tp <+> ppSymValue v <> comma
@@ -366,6 +352,7 @@ data SymDefine t = SymDefine {
          sdName :: L.Symbol
        , sdArgs :: [(L.Ident, MemType)]
        , sdRetType :: Maybe MemType
+       , sdEntry :: SymBlockID
        , sdBody :: Map SymBlockID (SymBlock t)
        }
 
@@ -381,5 +368,5 @@ ppSymDefine d = text "define"
               <+> ppSymbol (sdName d)
               <> parens (commas ((\(i,tp) -> ppMemType tp <+> ppIdent i) <$> sdArgs d))
               <+> char '{'
-              <$$> vcat (map ppSymBlock (Map.elems (sdBody d)))
+              <$$> vcat (ppSymBlock <$> Map.elems (sdBody d))
               <$$> char '}'

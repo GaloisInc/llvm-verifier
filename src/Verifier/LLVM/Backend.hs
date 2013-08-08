@@ -108,6 +108,7 @@ data SBE m = SBE
              -> m (Either String (SBETerm m))
     -- | Interpret the term as a concrete boolean if it can be.
   , asBool :: SBEPred m -> Maybe Bool
+
   , prettyPredD :: SBEPred m -> Doc
 
     -- | Evaluate a predicate for given input bits.

@@ -95,11 +95,12 @@ lssImpl sbe mem cb argv0 args = do
       dbugM $ "Heap range  : " ++ sr (mgHeap mg)
     setVerbosity $ fromIntegral $ dbug args
     void $ initializeDebugger
-    when (startDebugger args) breakOnMain
     let mainDef =
           case lookupDefine (L.Symbol "main") cb of
             Nothing -> error "Provided bitcode does not contain main()."
             Just md -> md
+    when (startDebugger args) $ do
+      breakOnEntry mainDef
     runMainFn mainDef ("lss" : argv0)
 
 -- | Runs a function whose signature matches main.

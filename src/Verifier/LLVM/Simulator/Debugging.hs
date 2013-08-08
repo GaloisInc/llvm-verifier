@@ -20,8 +20,7 @@ semantics are loosely based on gdb.
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns        #-}
 module Verifier.LLVM.Simulator.Debugging (
-    breakOnMain
-  , initializeDebugger
+    initializeDebugger
   , resetInterrupt
   , checkForBreakpoint
   ) where
@@ -133,11 +132,6 @@ resetInterrupt = do
   _ <- installHandler sigINT (CatchOnce handler) mask
   return ()
 #endif
-
--- | Add a breakpoint to @main@ in the current codebase
-breakOnMain :: (Functor m, Monad m) => Simulator sbe m ()
-breakOnMain = do
-  addBreakpoint (Symbol "main") (initSymBlockID,0)
 
 checkForBreakpoint :: (Functor sbe, Functor m, MonadException m)
                    => DebuggerRef sbe m -> Simulator sbe m ()
@@ -435,7 +429,7 @@ data Parser (m :: * -> *) (a :: *) where
   Hide :: Grammar m a -> Parser m a
 
   -- | Switch expression.
-  Switch :: SwitchMap m a -> Parser m a
+  SwitchExpr :: SwitchMap m a -> Parser m a
 
   UnionGrammar :: Grammar m a -> Grammar m a -> Parser m a
 
@@ -604,7 +598,7 @@ parseSwitch m ts =
           where msg = text "Internal error: Unexpected ambiguous command."
 
 switch :: forall m a . [(SwitchKey, Grammar m a)] -> Grammar m a
-switch = atom . Switch . impl
+switch = atom . SwitchExpr . impl
     where -- Get map from strings to associated match
           impl cases =
             execState (mapM_ (uncurry addMatch) cases)
@@ -789,7 +783,7 @@ matcherHelp (NP u v) = parserHelp u `seqHelp` matcherHelp (contToApp v)
 parserHelp :: forall m a .Parser m a -> HelpResult
 parserHelp (ArgumentLabel d) = HelpResult (singleArg d) []
 parserHelp (CommandLabel d) = HelpResult emptyArgs [CmdHelp emptyArgs d]
-parserHelp (Switch m) = switchHelp m
+parserHelp (SwitchExpr m) = switchHelp m
 parserHelp (Hide _) = emptyHelp
 parserHelp (UnionGrammar x y) = matcherHelp x `unionHelp` matcherHelp y
 
@@ -861,7 +855,7 @@ resolveToNextState (NP u c) =
   case u of
     ArgumentLabel{} -> resolveToNextState (evalCont () c)
     CommandLabel{} -> resolveToNextState (evalCont () c)
-    Switch m -> composeNextState m c
+    SwitchExpr m -> composeNextState m c
     Hide m -> resolveToNextState (runCont m c)
     UnionGrammar x y -> resolveToNextState (runCont x c) 
        `unionNextState` resolveToNextState (runCont y c)
@@ -968,7 +962,7 @@ commandHelp cmds =
   where help = matcherHelp cmds
 
 nat :: Grammar m Integer
-nat = atom (Switch (fromTokenPred p))
+nat = atom (SwitchExpr (fromTokenPred p))
   where p = TokenPred (Just (text "<nat>")) WordTokenType f idCont
         f (NatToken i) = Just i
         f _ = Nothing
@@ -1006,6 +1000,7 @@ nameBlocks :: SymDefine t -> NameMap -> Grammar m (Symbol, Breakpoint)
 nameBlocks d (NameMap m) = switch $ (entry <$> M.toList m)
   where entry (nm,p) = (fromString nm, pairBlocks d p)
 
+-- | Parses a program location for a breakpoint.
 locSeq :: forall sbe m . Codebase sbe -> Grammar m (Symbol, Breakpoint)
 locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
   where matchDef :: SymDefine (SBETerm sbe)
@@ -1015,9 +1010,9 @@ locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
                               , (,) "" $ end
                               ]
                      )
-         where sym@(Symbol nm) = sdName d
+         where Symbol nm = sdName d
                end :: Grammar m (Symbol, Breakpoint)
-               end = pure (sym, (initSymBlockID,0))
+               end = pure (sdName d, (sdEntry d, 0))
                m = foldl insertName emptyNameMap (M.keys (sdBody d))
 
 

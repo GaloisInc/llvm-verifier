@@ -166,9 +166,9 @@ mkCodebase sbe dl mdl = do
              tp <- liftMemType' (L.globalType lg)
              Global sym tp <$> liftValue tp (L.globalValue lg)
            case mg of
-             Nothing -> liftIO $ warn $ text "Skipping definition of" <+> ppSymbol sym
+             Left{} -> liftIO $ warn $ text "Skipping definition of" <+> ppSymbol sym
                           <> text "; Unsupported type."
-             Just g -> modify $ cbGlobalNameMap . at sym ?~ Left g
+             Right g -> modify $ cbGlobalNameMap . at sym ?~ Left g
 
 -- For now, only take a single bytecode file argument and assume that the world
 -- is linked together a priori.
