@@ -13,14 +13,6 @@ Flag build-library
   description: Build the LLVM-verifier library.
   default: True
 
-Flag build-examples
-  description: Build the example executables
-  default: False
-
-Flag build-tests
-  description: Build the test executables
-  default: True
-
 Flag build-lss
   description: Build the LSS command-line tool
   default: True
