@@ -199,7 +199,7 @@ data DecomposeResult s
    | OffsetPtr !(SharedTerm s) !(SharedTerm s)
    | SymbolicPtr
 
-llvmBBRules :: forall s l . LV.Storable l => RuleSet s l
+llvmBBRules :: forall s l . (Eq l, LV.Storable l) => RuleSet s l
 llvmBBRules = termRule (matchArgs (asGlobalDef "LLVM.llvmAppendInt") appendFn)
   where appendFn :: Nat
                  -> Nat
