@@ -14,6 +14,7 @@ module Verifier.LLVM.SAWBackend
   , SAWMemory
   , createSAWBackend
   , createSAWBackend'
+  , llvmModule
   ) where
 
 import Control.Applicative hiding (empty)
