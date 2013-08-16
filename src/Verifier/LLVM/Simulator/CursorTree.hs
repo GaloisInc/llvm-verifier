@@ -36,7 +36,7 @@ data Orientation
    | RightActive -- ^ The right branch of the tree is active.
  deriving (Show)
 
--- | @CurA cursor tree provides a non-empty binary-tree representation
+-- | A cursor tree provides a non-empty binary-tree representation
 -- where branches and leaves may be annotated (denoted by @b@ and @a@
 -- respectively.  One value in the tree is specially marked as "active";
 -- and can be obtained in constate time.   It is possible to find the index
@@ -246,13 +246,12 @@ moveRight l i (OnRight _ c b r) =
     moveRight (consRight b l r) (i-size r) c
 moveRight r i (OnLeft _ c b l) = moveRight (consLeft b l r) i c
 
--- | @selectWithin @c t i@ returns a cursor tree equivalent to @c[t]@
+-- | @selectWithin c t i@ returns a cursor tree equivalent to @c[t]@
 -- with root at index @i@ in @t@.
 selectWithin :: TreeContext b a
              -> CursorStack b a
-             -- | Index to point to.
-             -- (must be less than size of term). 
-             -> Int         
+             -> Int -- ^ Index to point to (must be less than size of term).
+                      
              -> CursorTree b a
 selectWithin c z i = 
   case z of

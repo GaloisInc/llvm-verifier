@@ -1050,7 +1050,6 @@ registerOverride sym decl handler = do
 -- right type.
 tryFindFunDecl :: MonadIO m
                => Symbol
-                  -- | Returns override if function matches expection.
                -> (FunDecl -> Simulator sbe m ())
                -> Simulator sbe m ()
 tryFindFunDecl nm act = do
@@ -1065,8 +1064,7 @@ tryFindFunDecl nm act = do
 -- right type.
 tryRegisterOverride :: MonadIO m
                     => Symbol
-                       -- | Returns override if function matches expection.
-                    -> (FunDecl -> Maybe (Override sbe m))
+                    -> (FunDecl -> Maybe (Override sbe m)) -- ^ Checks for override.
                     -> Simulator sbe m ()
 tryRegisterOverride nm act = do
   tryFindFunDecl nm $ \d -> do
