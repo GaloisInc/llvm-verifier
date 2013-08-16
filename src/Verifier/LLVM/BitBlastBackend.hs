@@ -375,10 +375,10 @@ data MemModel sbe bytes = MemModel {
                 -> IO (Maybe (SBETerm sbe, [SBETerm sbe], SBEMemory sbe))
   , mmLookupSymbol :: SBEMemory sbe -> SBETerm sbe -> LookupSymbolResult
     -- | Alloc structure on stack
-  , mmStackAlloc :: SBEMemory sbe -- ^ Memory
-                 -> Size          -- ^ Size of each element
-                 -> SBETerm sbe   -- ^ Number of elements
-                 -> Alignment     -- ^ Alignment constraint in bytes.
+  , mmStackAlloc :: SBEMemory sbe -- Memory
+                 -> Size          -- Size of each element
+                 -> SBETerm sbe   -- Number of elements
+                 -> Alignment     -- Alignment constraint in bytes.
                  -> IO (AllocResult sbe)
   , mmStackPush :: SBEMemory sbe -> IO (SBEPred sbe, SBEMemory sbe)
   , mmStackPop  :: SBEMemory sbe -> IO (SBEMemory sbe)
@@ -388,12 +388,12 @@ data MemModel sbe bytes = MemModel {
                 -> Alignment
                 -> IO (AllocResult sbe)
   , mmMemCopy :: SBEMemory sbe
-              -> SBETerm sbe            -- ^ Destination pointer
-              -> SBETerm sbe            -- ^ Source pointer
-              -> BitWidth               -- ^ Width of length value.
-              -> SBETerm sbe            -- ^ Length value 
-              -> SBETerm sbe            -- ^ Alignment in bytes (32-bit value)
-              -> IO (SBEPred sbe, SBEMemory sbe) -- ^ Condition and new value.
+              -> SBETerm sbe            -- Destination pointer
+              -> SBETerm sbe            -- Source pointer
+              -> BitWidth               -- Width of length value.
+              -> SBETerm sbe            -- Length value 
+              -> SBETerm sbe            -- Alignment in bytes (32-bit value)
+              -> IO (SBEPred sbe, SBEMemory sbe) -- Condition and new value.
     -- | Push a merge frame.
   , mmRecordBranch :: SBEMemory sbe -> IO (SBEMemory sbe)
     -- | Pop a merge frame without merging.

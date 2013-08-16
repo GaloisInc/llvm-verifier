@@ -211,11 +211,10 @@ data TypedExpr v
  deriving (Functor, Foldable, Traversable)
 
 -- | Pretty print a typed expression.
-ppTypedExpr :: -- | Pretty printer for conversions
-               (String -> Doc -> e -> Doc -> Doc)
-               -- | Pretty printer for values
-            -> (e -> Doc)
-            -> TypedExpr e -> Doc
+ppTypedExpr :: (String -> Doc -> e -> Doc -> Doc) -- ^ Pretty printer for conversions
+            -> (e -> Doc) -- ^ Pretty printer for values
+            -> TypedExpr e
+            -> Doc
 ppTypedExpr ppConv ppValue tpExpr =
     case tpExpr of
       IntArith op mn w x y ->

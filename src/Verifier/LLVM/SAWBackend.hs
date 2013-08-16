@@ -123,8 +123,7 @@ scLLVMIntConst sc w v = do
 
 -- | Create a bitvector from a constant.
 scLLVMIntConst' :: SharedContext s
-                -- | Result width with corresponding term.
-                -> (BitWidth, SharedTerm s)
+                -> (BitWidth, SharedTerm s) -- ^ Result width with corresponding term.
                 -> Integer -- ^ Value of bitvector.
                 -> IO (SharedTerm s)
 scLLVMIntConst' sc (w,wt) v = do

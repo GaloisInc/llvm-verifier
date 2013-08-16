@@ -68,6 +68,7 @@ library
     Verifier.LLVM.BitBlastBackend
     Verifier.LLVM.DataLayout
     Verifier.LLVM.Debugger
+    Verifier.LLVM.Debugger.Grammar
     Verifier.LLVM.FreeApp
     Verifier.LLVM.LLVMContext
     Verifier.LLVM.LLVMIntrinsics
