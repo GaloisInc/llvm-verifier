@@ -79,7 +79,6 @@ library
     Verifier.LLVM.SAWBackend
     Verifier.LLVM.Simulator
     Verifier.LLVM.Simulator.CursorTree
-    Verifier.LLVM.Simulator.Debugging
     Verifier.LLVM.Simulator.Internals
     Verifier.LLVM.Simulator.SimUtils
     Verifier.LLVM.Translation
