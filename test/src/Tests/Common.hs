@@ -27,9 +27,10 @@ import           Verinf.Symbolic               (Lit, createBitEngine)
 
 import           LSSImpl
 
+import Verifier.LLVM.AST
 import Verifier.LLVM.BitBlastBackend
 import Verifier.LLVM.Codebase
-import Verifier.LLVM.Debugger          
+import Verifier.LLVM.Debugger
 import Verifier.LLVM.SAWBackend
 import Verifier.LLVM.Simulator
 import Verifier.LLVM.Simulator.SimUtils
@@ -49,7 +50,8 @@ testsDir :: FilePath
 testsDir = supportDir
 
 testMDL :: FilePath -> PropertyM IO L.Module
-testMDL bcFile = run $ loadModule $ testsDir </> bcFile
+testMDL bcFile = run $ do
+  loadModule $ testsDir </> bcFile
 
 assertMsg :: Bool -> String -> PropertyM IO ()
 assertMsg b s = when (not b) (run $ putStrLn s) >> assert b
@@ -114,7 +116,7 @@ runTestSimulator :: (Functor sbe, Ord (SBETerm sbe))
 runTestSimulator createFn v mdl action = do
   let dl = parseDataLayout (L.modDataLayout mdl)
   (sbe, mem) <- createFn dl
-  cb <- mkCodebase sbe dl mdl
+  ([],cb) <- mkCodebase sbe dl mdl
   runSimulator cb sbe mem Nothing $ do
     setVerbosity v
     action
@@ -171,7 +173,7 @@ createDagModel dl = do
 createSAWModel :: SBECreateFn (SAWBackend s Lit)
 createSAWModel dl = do
   be <- createBitEngine
-  createSAWBackend be dl (defaultMemGeom dl)
+  createSAWBackend be dl
 
 runTestLSSBuddy :: Int           -- ^ Verbosity
                 -> L.Module      -- ^ Module 

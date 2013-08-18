@@ -15,6 +15,7 @@ import Control.Monad.State (gets)
 import Test.QuickCheck
 import Tests.Common
 
+import Verifier.LLVM.AST
 import Verifier.LLVM.BitBlastBackend
 import Verifier.LLVM.Simulator
 

@@ -14,11 +14,10 @@ import           System.FilePath
 import           Text.PrettyPrint.Leijen hiding ((<$>))
 import qualified Text.LLVM                      as LLVM
 
-import           Verifier.LLVM.AST
-import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.SAWBackend
-import           Verifier.LLVM.Simulator.SimUtils
-import           Verifier.LLVM.Translation
+import Verifier.LLVM.AST
+import Verifier.LLVM.Codebase
+import Verifier.LLVM.SAWBackend
+import Verifier.LLVM.Simulator.SimUtils
 
 import Verinf.Symbolic (createBitEngine)
 
@@ -44,22 +43,14 @@ main = do
 
   mdl <- loadModule bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
   let dl = parseDataLayout $ LLVM.modDataLayout mdl
-  let mg = defaultMemGeom dl
   be <- createBitEngine
-  (sbe, _) <- createSAWBackend be dl mg
-  cb <- mkCodebase sbe dl mdl
+  (sbe, _) <- createSAWBackend be dl
+  (cbWarnings, cb) <- mkCodebase sbe dl mdl
+  mapM_ (\m -> print $ text "Warning:" <+> m) cbWarnings
 
   banners $ "llvm-pretty module"
   putStrLn $ show (LLVM.ppModule mdl)
   putStrLn ""
-  sdl <- forM (LLVM.modDefines mdl) $ \d -> do
-    let ?lc = cbLLVMContext cb
-    md <- let ?sbe = sbe in liftDefine d
-    case md of
-      Left ed -> do putStrLn $ show ed
-                    return empty
-      Right (warnings,sd) -> do
-        mapM_ (putStrLn . show) warnings
-        return $ ppSymDefine sd
+  let sdl = fmap ppSymDefine $ cbDefs cb
   banners $ "translated module"
   putStr $ unlines $ fmap show sdl

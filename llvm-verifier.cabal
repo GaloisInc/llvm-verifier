@@ -65,15 +65,17 @@ library
     Verifier.LLVM.AST
     Verifier.LLVM.Backend
     Verifier.LLVM.Codebase
+    Verifier.LLVM.Codebase.LLVMContext
+    Verifier.LLVM.Codebase.Translation
     Verifier.LLVM.BitBlastBackend
     Verifier.LLVM.DataLayout
     Verifier.LLVM.Debugger
     Verifier.LLVM.Debugger.Grammar
     Verifier.LLVM.FreeApp
-    Verifier.LLVM.LLVMContext
     Verifier.LLVM.LLVMIntrinsics
     Verifier.LLVM.LibcOverrides
     Verifier.LLVM.LSSOverrides
+    Verifier.LLVM.MemGeom
     Verifier.LLVM.MemModel
     Verifier.LLVM.MemModel.Common
     Verifier.LLVM.Printf
@@ -82,7 +84,6 @@ library
     Verifier.LLVM.Simulator.CursorTree
     Verifier.LLVM.Simulator.Internals
     Verifier.LLVM.Simulator.SimUtils
-    Verifier.LLVM.Translation
     Verifier.LLVM.Utils
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count

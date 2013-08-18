@@ -17,14 +17,14 @@ import           Data.Maybe
 import           Data.Word
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
-import           Tests.Common
 import           Verinf.Symbolic         (createBitEngine)
 import qualified Control.Exception       as CE
 import qualified Text.LLVM               as L
 
-import           Verifier.LLVM.BitBlastBackend
-import           Verifier.LLVM.LLVMContext
-import           Verifier.LLVM.Simulator
+import Tests.Common
+import Verifier.LLVM.AST
+import Verifier.LLVM.BitBlastBackend
+import Verifier.LLVM.Simulator
 
 primOpTests :: [(Args, Property)]
 primOpTests =

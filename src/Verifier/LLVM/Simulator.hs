@@ -33,9 +33,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
 module Verifier.LLVM.Simulator
-  ( module Verifier.LLVM.AST
-  , module Verifier.LLVM.Codebase
-  , Simulator (SM)
+  ( Simulator (SM)
   , State(..)
   , onSimError
   , ErrorHandler
