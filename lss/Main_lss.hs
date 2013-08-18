@@ -26,11 +26,14 @@ import           Text.PrettyPrint.Leijen hiding ((<$>))
 
 import           LSSImpl
 
-import           Verifier.LLVM.Backend (prettyTermD, SBEPair(..))
-import           Verifier.LLVM.BitBlastBackend (createBuddyAll, createDagAll)
-import           Verifier.LLVM.SAWBackend (createSAWBackend)
-import           Verifier.LLVM.Codebase
-import           Verifier.LLVM.Translation  (ppSymDefine, liftDefine)
+import Verifier.LLVM.AST (ppSymDefine)
+import Verifier.LLVM.Backend (prettyTermD, SBEPair(..))
+import Verifier.LLVM.BitBlastBackend ( createBuddyAll
+                                     , createDagAll
+                                     , defaultMemGeom
+                                     )
+import Verifier.LLVM.SAWBackend (createSAWBackend)
+import Verifier.LLVM.Codebase
 
 main :: IO ()
 main = do
@@ -76,18 +79,17 @@ main = do
       Just nm -> loadModule nm
 
   let dl = parseDataLayout $ L.modDataLayout mdl
-  let mg = defaultMemGeom dl
   be <- createBitEngine
   SBEPair sbe mem <- 
     case backEnd of
       BitBlastDagBased -> do
-        createDagAll be dl mg
+        createDagAll be dl (defaultMemGeom dl)
       BitBlastBuddyAlloc -> do
-        return $ createBuddyAll be dl mg
+        return $ createBuddyAll be dl (defaultMemGeom dl)
       SAWBackendType -> do
-        uncurry SBEPair <$> createSAWBackend be dl mg
-  cb <- mkCodebase sbe dl mdl
-
+        uncurry SBEPair <$> createSAWBackend be dl
+  (cbWarnings,cb) <- mkCodebase sbe dl mdl
+  mapM_ (\m -> print $ text "Warning:" <+> m) cbWarnings
   -- Print out translation when just asked to translate.
   when (xlate args) $ do
     let ?lc = cbLLVMContext cb
@@ -97,13 +99,7 @@ main = do
     L.modTypes                `via` L.ppTypeDecl
     L.modGlobals              `via` L.ppGlobal
     L.modDeclares             `via` L.ppDeclare
-    forM_ (L.modDefines mdl) $ \d -> do
-      mr <- let ?sbe = sbe in liftDefine d
-      case mr of
-        Left msg -> putStrLn $ show $ text "Error:" <+> msg
-        Right (warnings,sd) -> do
-          mapM_ (\w -> putStrLn $ show $ text "Warning:" <$$> nest 2 w) warnings
-          putStrLn $ show $ ppSymDefine sd
+    mapM_ (print . ppSymDefine) (cbDefs cb)
     exitWith ExitSuccess
 
   let p     = many $ between spaces spaces $ many1 $ satisfy $ not . isSpace

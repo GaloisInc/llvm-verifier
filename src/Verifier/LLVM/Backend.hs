@@ -95,7 +95,7 @@ data SBE m = SBE
     -- | Return conjunction of two predicates.
   , applyAnd :: SBEPred m -> SBEPred m -> m (SBEPred m)
     -- applyAnd sbe x y = applyTypedExpr sbe (IntArith And Nothing 1 x y)
-    -- | @applyBNot @a@ performs negation of a boolean term
+    -- | @applyBNot a@ performs negation of a boolean term
   , applyBNot :: SBEPred m -> m (SBEPred m)
     -- | @applyPredIte a b c@ creates an if-then-else term
   , applyPredIte :: SBEPred m -> SBEPred m -> SBEPred m -> m (SBEPred m)

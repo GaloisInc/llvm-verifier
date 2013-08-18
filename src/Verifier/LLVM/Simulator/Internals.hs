@@ -13,8 +13,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE TupleSections              #-}
 {-# LANGUAGE ViewPatterns #-}
 module Verifier.LLVM.Simulator.Internals
-  ( Simulator(SM)
-  , runSM
+  ( Simulator(SM, runSM)
   , dumpCtrlStk
 
   , GlobalMap

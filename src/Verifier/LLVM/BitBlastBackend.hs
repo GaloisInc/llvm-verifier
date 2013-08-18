@@ -13,7 +13,9 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE TupleSections              #-}
 {-# LANGUAGE ViewPatterns               #-}
 module Verifier.LLVM.BitBlastBackend
-  ( module Verifier.LLVM.Backend
+  ( -- * Re-exports to create and interact with backend.
+    module Verifier.LLVM.Backend
+  , module Verifier.LLVM.MemGeom
   , BitBlastSBE
   , BitTerm
 --  , BitTermClosed(..)
@@ -46,23 +48,25 @@ import           Data.Bits
 import           Data.Foldable
 import           Data.IORef
 import           Data.Map                  (Map)
-import           Data.Set                  (Set)
-import           Verifier.LLVM.Backend
-import           Numeric                   (showHex)
-import Text.PrettyPrint.Leijen hiding ((<$>), align)
-
-import           Verinf.Symbolic.Lit
-import           Verinf.Symbolic.Lit.Functional
 import qualified Data.Map                  as Map
+import           Data.Set                  (Set)
 import qualified Data.Set                  as Set
 import qualified Data.Vector               as V
 import qualified Data.Vector.Storable      as LV
-import qualified Text.LLVM.AST             as L
+import           Numeric                   (showHex)
 import System.IO.Unsafe (unsafePerformIO)
+import qualified Text.LLVM.AST             as L
+import           Text.PrettyPrint.Leijen hiding ((<$>), align)
 
-import           Verifier.LLVM.AST
-import           Verifier.LLVM.Simulator.SimUtils
-import           Verifier.LLVM.Utils
+import Verinf.Symbolic.Lit
+import Verinf.Symbolic.Lit.Functional
+
+
+import Verifier.LLVM.AST
+import Verifier.LLVM.Backend
+import Verifier.LLVM.MemGeom
+import Verifier.LLVM.Simulator.SimUtils
+import Verifier.LLVM.Utils
 
 -- Utility functions and declarations {{{1
 

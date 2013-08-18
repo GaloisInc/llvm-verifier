@@ -13,7 +13,6 @@ module Verifier.LLVM.SAWBackend
   ( SAWBackend
   , SAWMemory
   , createSAWBackend
-  , createSAWBackend'
   ) where
 
 import Control.Applicative hiding (empty)
@@ -1038,19 +1037,17 @@ remove_ident_unsafeCoerce = Conversion $ thenMatcher pat action
 createSAWBackend :: (Eq l, Storable l)
                  => BitEngine l
                  -> DataLayout
-                 -> MemGeom
                  -> IO (SBE (SAWBackend s l), SAWMemory s)
-createSAWBackend be dl mg = do
-  (sbe, mem, _) <- createSAWBackend' be dl mg
+createSAWBackend be dl = do
+  (sbe, mem, _) <- createSAWBackend' be dl
   return (sbe, mem)
 
 createSAWBackend' :: forall s l 
                    . (Eq l, Storable l)
                   => BitEngine l
                   -> DataLayout
-                  -> MemGeom
                   -> IO (SBE (SAWBackend s l), SAWMemory s, SharedContext s)
-createSAWBackend' be dl _mg = do
+createSAWBackend' be dl = do
   sc0 <- mkSharedContext llvmModule
   let activeDefs = filter defPred $ allModuleDefs llvmModule
         where defPred d = defIdent d `Set.notMember` excludedDefs

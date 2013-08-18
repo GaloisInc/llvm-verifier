@@ -567,11 +567,15 @@ infoCtrlStkCmd =
   cmdDef "Print the entire control stack." $ do
     runSim dumpCtrlStk
 
+dumpSymDefine :: MonadIO m => m (Codebase sbe) -> Symbol -> m ()
+dumpSymDefine getCB sym = getCB >>= \cb ->
+  liftIO $ putStrLn $ show $ (ppSymDefine `fmap` lookupDefine sym cb)
+
 infoFunctionCmd :: SimGrammar sbe m
 infoFunctionCmd =
   cmdDef "Print function information." $ do
     runSim $ withActivePath () $ \p -> do
-      dumpSymDefine (gets codebase) (unSym (p^.pathFuncSym))
+      dumpSymDefine (gets codebase) (p^.pathFuncSym)
 
 infoLocalsCmd :: SimGrammar sbe m
 infoLocalsCmd =
@@ -682,6 +686,3 @@ stepiCmd = (opt nat <**>) $
       dr <- getDebuggerRef
       resumeActivePath $ \_ -> do
         onPathPosChange .= enterDebuggerAfterNSteps dr c
-
-unSym :: Symbol -> String
-unSym (Symbol str) = str

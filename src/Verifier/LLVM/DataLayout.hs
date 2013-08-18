@@ -178,7 +178,7 @@ data DataLayout
         , _integerInfo :: !AlignTree
         , _vectorInfo  :: !AlignTree
         , _floatInfo   :: !AlignTree
-           -- | Information abour aggregate size.
+           -- | Information about aggregate size.
         , _aggInfo     :: !AlignTree
            -- | Layout constraints on a stack object with the given size.
         , _stackInfo   :: !AlignTree
@@ -302,7 +302,7 @@ data SymType
 
 ppSymType :: SymType -> Doc
 ppSymType (MemType tp) = ppMemType tp
-ppSymType (Alias i) = text (show (L.ppIdent i))
+ppSymType (Alias i) = ppIdent i
 ppSymType (FunType d) = ppFunDecl d
 ppSymType VoidType = text "void"
 ppSymType OpaqueType = text "opaque"
@@ -446,7 +446,7 @@ mkStructInfo dl packed tps0 = go [] 0 (max a0 (nextAlign a0 tps0)) tps0
         go :: [FieldInfo] -- ^ Fields so far in reverse order.
            -> Size        -- ^ Total size so far (aligned to next element)
            -> Alignment   -- ^ Maximum alignment
-             -> [MemType]   -- ^ Fields to process
+           -> [MemType]   -- ^ Fields to process
            -> StructInfo
         go flds sz maxAlign [] =
             StructInfo { siDataLayout = dl
@@ -510,5 +510,3 @@ siDropLastField si
   | otherwise = Just (si', V.last (siFields si))
  where si' = mkStructInfo (siDataLayout si) (siIsPacked si) flds'
        flds' = V.toList $ V.init $ siFieldTypes si
-
-

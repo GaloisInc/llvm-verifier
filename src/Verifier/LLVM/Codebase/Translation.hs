@@ -1,3 +1,16 @@
+-- | This module defines the translation from LLVM IR to Symbolic IR.
+--
+-- Translation into symbolic IR requires post-dominator information about the
+-- LLVM IR.  This information is analyzed and generated during translation.
+--
+-- In addition to branches, call and phi non-terminal instructions require
+-- special support:
+--
+-- [Phi Statements]
+--   The value of a Phi statement in LLVM depends on which previous block was
+--   executed.  Since phi statements must appear at the top of the block, we can
+--   move phi statements to execute during the transition from the previous
+--   block to the new block.
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
@@ -7,28 +20,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
--- | This module defines the translation from LLVM IR to Symbolic IR.
---
--- Translation into symbolic IR requires post-dominator information about the
--- LLVM IR.  This information is analyzed and generated during translation.
---
--- In addition to branches, call and phi non-terminal instructions require
--- special support:
---
--- [Call Statements]
---    To simplify the simulator, the symbolic representation splits blocks with
---    calls into multiple basic blocks with each basic block except the last
---    terminated with the call.
---
--- [Phi Statements]
---   The value of a Phi statement in LLVM depends on which previous block was
---   executed.  Since phi statements must appear at the top of the block, we can
---   move phi statements to execute during the transition from the previous
---   block to the new block.
-module Verifier.LLVM.Translation
-  ( module Verifier.LLVM.AST
-  , module Verifier.LLVM.Backend
-  , liftDefine
+module Verifier.LLVM.Codebase.Translation
+  ( liftDefine
   , LiftAttempt
   , runLiftAttempt
   , liftMemType'
@@ -38,6 +31,7 @@ module Verifier.LLVM.Translation
 
 import Control.Applicative
 import Control.Lens hiding (op)
+import Control.Monad.Error
 import Control.Monad.State.Strict
 import qualified Data.Foldable as F
 import qualified Data.LLVM.CFG              as CFG
@@ -50,8 +44,9 @@ import qualified Text.LLVM                  as L
 import           Text.LLVM.AST              (Stmt'(..), Typed (..))
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import           Verifier.LLVM.AST
-import           Verifier.LLVM.Backend
+import Verifier.LLVM.AST
+import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.LLVMContext
 
 -- Utility {{{1
 
@@ -82,8 +77,8 @@ ltiBlocks (LTI cfg) = [ bb
 -- | @ltiImmediatePostDominator lti bb@ returns the immediate post dominator
 -- of @bb@ or @Nothing@ if it has no post-dominator.
 ltiImmediatePostDominator :: LLVMTranslationInfo
-                            -> L.BlockLabel
-                            -> Maybe L.BlockLabel
+                          -> L.BlockLabel
+                          -> Maybe L.BlockLabel
 ltiImmediatePostDominator (LTI cfg) bb =
   case CFG.ipdom cfg (CFG.asId cfg bb) of
     Nothing    -> Nothing
@@ -141,7 +136,7 @@ blockPhiMap' blocks = execStateT (traverse go blocks) Map.empty
           mapM_ (parseInstr tgt) sl
         parseInstr tgt stmt@(L.Result r (L.Phi tp vals) _) = do
           forM_ vals $ \(v,src) -> do
-            mentry <- liftIO $ runLiftAttempt $ do
+            mentry <- runLiftAttempt $ do
               mtp <- liftMemType' tp
               val <- liftValue mtp v
               return (r,mtp,val)        
@@ -155,34 +150,16 @@ blockPhiMap' blocks = execStateT (traverse go blocks) Map.empty
                 Left{}  -> m
                 Right l -> Map.insert (src,tgt) (Right (entry:l)) m
 
--- Lift attempt declaration.
-
 -- | Computation that attempts to lift LLVM values to symbolic representation.
-newtype LiftAttempt a = LiftAttempt { runLiftAttempt :: IO (Either String a) }
+-- This runs in IO, because symbolic backends may need to do IO.
+newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: ErrorT String IO a }
+  deriving (Functor, Applicative, Monad, MonadIO)
 
-instance Functor LiftAttempt where
-  fmap f (LiftAttempt m) = LiftAttempt $ over _Right f <$> m
-
-instance Applicative LiftAttempt where
-  pure = LiftAttempt . return . Right 
-  LiftAttempt fm <*> LiftAttempt vm = LiftAttempt $ do
-   mf <- fm 
-   case mf of
-     -- Stop execution at error.
-     Left e -> return (Left e)
-     -- Evaluate function.
-     Right f -> over _Right f <$> vm
-
-instance Monad LiftAttempt where
-  LiftAttempt m >>= h = LiftAttempt $ m >>= either (return . Left) (runLiftAttempt . h)
-  return = pure
-  fail = LiftAttempt . return . Left
-
-instance MonadIO LiftAttempt where
-  liftIO = LiftAttempt . fmap Right
+runLiftAttempt :: (MonadIO m) => LiftAttempt a -> m (Either String a)
+runLiftAttempt = liftIO . runErrorT . unLiftAttempt
 
 liftMaybe :: Maybe a -> LiftAttempt a
-liftMaybe = LiftAttempt . return . maybe (Left "") Right
+liftMaybe = maybe (fail "") return
 
 unsupportedStmt :: (?sbe :: SBE sbe)
                 => L.Stmt
@@ -199,8 +176,8 @@ trySymStmt :: (?sbe :: SBE sbe)
            => L.Stmt
            -> LiftAttempt (SymStmt (SBETerm sbe))
            -> BlockGenerator sbe (SymStmt (SBETerm sbe))
-trySymStmt stmt (LiftAttempt m) = do
-  mr <- liftIO m
+trySymStmt stmt m = do
+  mr <- runLiftAttempt m
   case mr of
     Left msg -> unsupportedStmt stmt msg
     Right s -> return s
@@ -208,7 +185,8 @@ trySymStmt stmt (LiftAttempt m) = do
 -- Lift operations
 
 liftTypedValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
-               => L.Typed L.Value -> LiftAttempt (SymValue (SBETerm sbe))
+               => L.Typed L.Value
+               -> LiftAttempt (SymValue (SBETerm sbe))
 liftTypedValue (L.Typed tp v) = flip liftValue v =<< liftMemType' tp
 
 mkSValExpr :: (?sbe :: SBE sbe, MonadIO m)
@@ -480,7 +458,7 @@ liftStmt stmt =
         L.Select (L.Typed tpc0 c') (L.Typed tpv0 v1') v2' -> do
           tpc <- liftMemType' tpc0
           tpv <- liftMemType' tpv0
-          c <- liftValue tpc c'
+          c  <- liftValue tpc c'
           v1 <- liftValue tpv v1'
           v2 <- liftValue tpv v2'
           case (tpc, tpv) of
@@ -573,7 +551,7 @@ liftBB lti phiMap bb = do
           return [ block ]
 
         impl [stmt@(Effect (L.Br (Typed tp c) tgt1 tgt2) _)] il = do
-          mres <- liftIO $ runLiftAttempt $ do 
+          mres <- runLiftAttempt $ do 
             IntType 1 <- liftMemType' tp
             liftValue (IntType 1) c
           case mres of
@@ -587,7 +565,7 @@ liftBB lti phiMap bb = do
               return $ mkSymBlock (blockName 0) (reverse (branchStmt:il))
                          : F.toList rest
         impl [stmt@(Effect (L.Switch (Typed tp v) def cases) _)] il = do
-          mr <- liftIO $ runLiftAttempt $ do
+          mr <- runLiftAttempt $ do
             IntType w <- liftMemType' tp
             tsv <- liftValue (IntType w) v
             return (w, tsv)

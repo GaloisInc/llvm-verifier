@@ -44,7 +44,7 @@ module Verifier.LLVM.AST
   , ppStmt
   , symBlockID
   , symBlockLabel
-  , module Verifier.LLVM.LLVMContext
+  , module Verifier.LLVM.DataLayout
   , commas
   ) where
 
@@ -60,7 +60,7 @@ import qualified Data.Vector as V
 import qualified Text.LLVM.AST as L
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import Verifier.LLVM.LLVMContext
+import Verifier.LLVM.DataLayout
 import Verifier.LLVM.Utils
 
 ppSymbol :: L.Symbol -> Doc

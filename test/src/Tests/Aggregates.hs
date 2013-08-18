@@ -18,8 +18,9 @@ import           Control.Monad.State
 import           Test.QuickCheck
 import           Tests.Common
 
-import           Verifier.LLVM.Backend
-import           Verifier.LLVM.Simulator
+import Verifier.LLVM.AST
+import Verifier.LLVM.Backend
+import Verifier.LLVM.Simulator
 
 aggTests :: [(Args, Property)]
 aggTests =

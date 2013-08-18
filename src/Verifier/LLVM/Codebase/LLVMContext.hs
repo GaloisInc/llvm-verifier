@@ -1,10 +1,14 @@
-{- |
-Module           : $Header$
-Description      : Provides information about types in an LLVM Module.
-Stability        : provisional
-Point-of-contact : jhendrix
--}
-
+------------------------------------------------------------------------
+-- |
+-- Module           : Verifier.LLVM.LLVMContext
+-- Copyright        : (c) Galois, Inc 2011-2013
+-- Maintainer       : Joe Hendrix <jhendrix@galois.com>
+-- Stability        : provisional
+-- 
+-- This module provides the functions for querying simulator type
+-- information in a module, and converting llvm-pretty types into
+-- simulator types.
+------------------------------------------------------------------------
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
@@ -12,24 +16,24 @@ Point-of-contact : jhendrix
 {-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE ViewPatterns               #-}
 {-# OPTIONS_GHC -fno-warn-orphans       #-}
-module Verifier.LLVM.LLVMContext
-  ( module Verifier.LLVM.DataLayout
+module Verifier.LLVM.Codebase.LLVMContext
+  ( -- * LLVMContext
+    LLVMContext
+  , mkLLVMContext
+  , llvmContextFromModel
+  , module Verifier.LLVM.DataLayout
+  , llvmDataLayout
+  , AliasMap
+  , llvmAliasMap
+    -- * LLVMContext query functions.
   , compatMemTypes
   , compatRetTypes
   , compatMemTypeLists
-  , LLVMContext
-  , llvmContextFromModel
-  , mkLLVMContext
-  , llvmDataLayout
-  , llvmAliasMap
   , lookupAlias
   , liftType
   , liftMemType
   , liftRetType
   , asMemType
-  , Addr
-  , MemGeom(..)
-  , defaultMemGeom
   ) where
 
 import Control.Applicative
@@ -154,6 +158,7 @@ tcStruct packed fldTys = do
 
 type AliasMap = Map Ident SymType
 
+-- | Provides information about the types in an LLVM bitcode file.
 data LLVMContext = LLVMContext
   { llvmDataLayout :: DataLayout
   , llvmAliasMap  :: AliasMap
@@ -170,29 +175,33 @@ ppLLVMContext lc =
 lookupAlias :: (?lc :: LLVMContext) => Ident -> Maybe SymType
 lookupAlias i = llvmAliasMap ?lc ^. at i
 
+-- | If argument corresponds to a @MemType@ possibly via aliases,
+-- then return it.  Otherwise, returns @Nothing@.
 asMemType :: (?lc :: LLVMContext) => SymType -> Maybe MemType
 asMemType (MemType mt) = return mt
 asMemType (Alias i) = asMemType =<< lookupAlias i
 asMemType _ = Nothing
 
+-- | If argument corresponds to a @RetType@ possibly via aliases,
+-- then return it.  Otherwise, returns @Nothing@.
 asRetType :: (?lc :: LLVMContext) => SymType -> Maybe RetType
 asRetType (MemType mt) = Just (Just mt)
 asRetType VoidType = Just Nothing
 asRetType (Alias i) = asRetType =<< lookupAlias i
 asRetType _ = Nothing
 
--- | Creates an LLVMContext directly from a model.  Errors reported
--- in first argument.
-llvmContextFromModel :: L.Module -> ([Doc], LLVMContext)
-llvmContextFromModel mdl = mkLLVMContext dl (L.modTypes mdl)
-  where dl = parseDataLayout $ L.modDataLayout mdl
-
 -- | Creates an LLVMContext from a parsed data layout and lists of types.
+--  Errors reported in first argument.
 mkLLVMContext :: DataLayout -> [L.TypeDecl]  -> ([Doc], LLVMContext)
 mkLLVMContext dl decls =
     runTC dl (Pending <$> Map.fromList tps) $ do
       LLVMContext dl . Map.fromList <$> traverse (_2 tcType) tps
   where tps = [ (L.typeName d, L.typeValue d) | d <- decls ]
+
+-- | Utility function to creates an LLVMContext directly from a model.
+llvmContextFromModel :: L.Module -> ([Doc], LLVMContext)
+llvmContextFromModel mdl = mkLLVMContext dl (L.modTypes mdl)
+  where dl = parseDataLayout $ L.modDataLayout mdl
 
 liftType :: (?lc :: LLVMContext) => L.Type -> Maybe SymType
 liftType tp | null edocs = Just stp
@@ -242,67 +251,3 @@ compatMemTypeVectors :: (?lc :: LLVMContext) => V.Vector MemType -> V.Vector Mem
 compatMemTypeVectors x y =
   V.length x == V.length y &&
   allOf traverse (uncurry compatMemTypes) (V.zip x y)
-
-{-
-compatFunDecls :: (?lc :: LLVMContext) => FunDecl -> FunDecl -> Bool
-compatFunDecls x y =
-  (fdRetType x `compatRetTypes` fdRetType y) &&
-  (fdArgTypes x `compatMemTypeLists` fdArgTypes y) &&
-  (fdVarArgs x == fdVarArgs y)  
--}
-
-{-
-compatSymTypes :: (?lc :: LLVMContext) => SymType -> SymType -> Bool
-compatSymTypes x0 y0 =
-  case (x0, y0) of
-    (MemType x, MemType y) -> compatMemTypes x y
-    (Alias i, y) -> maybe False (`compatSymTypes` y) (lookupAlias i)
-    (x, Alias i) -> maybe False (x `compatSymTypes`) (lookupAlias i)
-    (FunType x, FunType y) -> compatFunDecls x y
-    (UnsupportedType{}, UnsupportedType{}) -> True
-    (VoidType, VoidType) -> True
-    (_,_) -> False
--}
-
--- Memory Geometry
-
-type Addr = Integer
-
-data MemGeom = MemGeom {
-        mgStack :: (Addr, Addr)
-      , mgCode :: (Addr, Addr)
-      , mgData :: (Addr, Addr)
-      , mgHeap :: (Addr, Addr)
-      }
-
--- We make a keep it simple concession and divide up the address space as
--- follows:
---
--- Top  1/4: Stack
--- Next 1/8: Code
--- Next 1/8: Data
--- Last 1/2: Heap
---
--- One advantage of this is that it's easy to tell the segment to which a
--- pointer belongs simply by inspecting its address.
---
--- TODO: Allow user overrides of memory geom
-defaultMemGeom :: DataLayout  -> MemGeom
-defaultMemGeom dl
-    | w < 16 =  error "Pointers must be at least 16bits to get sufficient memory size."
-    | otherwise = 
-        MemGeom (stackStart, stackEnd)
-                (codeStart,  codeEnd)
-                (dataStart,  dataEnd)
-                (heapStart,  heapEnd)
-  where
-    w = ptrBitwidth dl
-    stackStart  = 4096 -- Start at first page rather than null
-    codeStart   = 2 ^ w `div` 4
-    dataStart   = codeStart + 2 ^ w `div` 8
-    heapStart   = dataStart + 2 ^ w `div` 8
-
-    stackEnd    = codeStart - 1
-    codeEnd     = dataStart - 1
-    dataEnd     = heapStart - 1
-    heapEnd     = 2 ^ w - 1
