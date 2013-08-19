@@ -20,8 +20,8 @@ import           Test.QuickCheck
 import qualified Text.LLVM               as L
 
 import Tests.Common
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator
 
 aesTests :: [(Args, Property)]

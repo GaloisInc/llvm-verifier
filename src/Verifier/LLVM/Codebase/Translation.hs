@@ -35,17 +35,17 @@ import Control.Monad.Error
 import Control.Monad.State.Strict
 import qualified Data.Foldable as F
 import qualified Data.LLVM.CFG              as CFG
-import           Data.Map                   (Map)
+import Data.Map                   (Map)
 import qualified Data.Map                   as Map
 import Data.Maybe
 import qualified Data.Sequence as Seq
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as L
-import           Text.LLVM.AST              (Stmt'(..), Typed (..))
+import Text.LLVM.AST              (Stmt'(..), Typed (..))
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Codebase.LLVMContext
 
 -- Utility {{{1

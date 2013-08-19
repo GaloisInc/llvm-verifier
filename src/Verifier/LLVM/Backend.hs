@@ -39,10 +39,9 @@ import           Data.Bits (testBit)
 import qualified Data.Vector as V
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-
 import Verinf.Symbolic (beCheckSat, SatResult(..))
 
-import Verifier.LLVM.AST
+import Verifier.LLVM.Codebase.AST
 
 -- | SBEPred yields the type used to represent predicates in particular SBE interface
 -- implementation.

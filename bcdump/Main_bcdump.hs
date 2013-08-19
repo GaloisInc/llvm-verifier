@@ -14,9 +14,8 @@ import           System.FilePath
 import           Text.PrettyPrint.Leijen hiding ((<$>))
 import qualified Text.LLVM                      as LLVM
 
-import Verifier.LLVM.AST
+import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Codebase
-import Verifier.LLVM.SAWBackend
 import Verifier.LLVM.Simulator.SimUtils
 
 import Verinf.Symbolic (createBitEngine)

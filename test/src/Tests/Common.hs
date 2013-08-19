@@ -27,11 +27,10 @@ import           Verinf.Symbolic               (Lit, createBitEngine)
 
 import           LSSImpl
 
-import Verifier.LLVM.AST
-import Verifier.LLVM.BitBlastBackend
+import Verifier.LLVM.Backend.BitBlast
+import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Debugger
-import Verifier.LLVM.SAWBackend
 import Verifier.LLVM.Simulator
 import Verifier.LLVM.Simulator.SimUtils
 

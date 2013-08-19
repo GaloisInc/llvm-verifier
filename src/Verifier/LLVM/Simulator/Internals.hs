@@ -148,7 +148,6 @@ import System.Console.Haskeline.MonadException (MonadException)
 
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Simulator.CursorTree
@@ -586,7 +585,7 @@ incPathPC = over (_Just . _2) (+1)
 
 -- | A Call frame stack for identifying where to return to.
 data CallFrame sbe = CallFrame { cfFuncSym :: Symbol
-                               , cfReturnBlock :: Maybe (SymBlockID, Int)
+                               , cfReturnBlock :: PathPC
                                , cfRegs   :: RegMap (SBETerm sbe)
                                , cfRetReg :: Maybe (MemType, Ident)
                                }
