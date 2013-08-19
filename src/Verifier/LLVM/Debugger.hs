@@ -116,8 +116,8 @@ checkForBreakpoint :: (Functor sbe, Functor m, MonadException m)
                    => DebuggerRef sbe m -> Simulator sbe m ()
 checkForBreakpoint r = do
   Just p <- preuse currentPathOfState
-  mbps <- use (breakpoints . at (p^.pathFuncSym))
-  let atBP = fromMaybe False $ S.member <$> (p^.pathPC) <*> mbps
+  mbps <- use $ breakpoints . at (pathFuncSym p)
+  let atBP = fromMaybe False $ S.member (p^.pathBlock) <$> mbps
   when atBP (enterDebuggerAtBreakpoint r)
 
 setPrevCommand :: MonadIO m
@@ -231,7 +231,7 @@ enterDebuggerOnError :: (Functor sbe, Functor m, MonadException m)
                      -> ErrorHandler sbe m
 enterDebuggerOnError r cs rsn = do
   -- Reset state
-  ctrlStk ?= ActiveCS cs
+  ctrlStk ?= cs
   -- Get current path before last step.
   dbugM $ show $
     text "Simulation error:" <+> ppFailRsn rsn
@@ -320,14 +320,14 @@ warnIfResumeThrowsError = do
   rte <- use resumeThrowsError
   mcs <- runSim $ use ctrlStk
   case mcs of
-    Just (ActiveCS cs) | rte -> do
+    Just cs | rte -> do
       dbugM "Resuming execution on this path should rethrow the simulation error."
-      if length (cs^..activePaths) == 1 then do
+      if csHasSinglePath cs then do
         dbugM "Should lss kill the current path, and stop simulation?"
         ync <- promptYesNoCancel
         case ync of
           Just Yes -> do
-            killPathByDebugger cs
+            killPathByDebugger
             resume
           Just No -> return True
           Nothing -> return False
@@ -336,12 +336,12 @@ warnIfResumeThrowsError = do
         ync <- promptYesNoCancel
         case ync of
           Just Yes -> do
-            killPathByDebugger cs
+            killPathByDebugger
             return True
           Just No -> return True
           Nothing -> return False
-    Just ActiveCS{} -> return True
-    _ -> return False
+    Just cs -> return (pathIsActive (cs^.currentPath))
+    Nothing -> return False
 
 -- | @resumeActivePath m@ runs @m@ with the current path,
 -- and resumes execution if there is a current path and @m@
@@ -457,28 +457,28 @@ pathListCmd = cmdDef "List all current execution paths." $ runSim $ do
     Nothing ->
       dbugM "No active paths."
     Just cs -> dbugM $ show $ printTable table
-      where paths = case cs of
-                      FinishedCS p -> [p]
-                      ActiveCS acs -> acs^..activePaths
-            ppPathItem :: Integer -> Path sbe -> [String]
+      where ppPathItem :: Integer -> Path sbe -> [String]
             ppPathItem i p = [ padRightMin 3 (show i), show (ppPathInfo p)]              
+            -- Header for table.
             header = [ " Num", "Location"]
-            table = header : zipWith ppPathItem [1..] paths
+            -- Entries for table.
+            table = header : zipWith ppPathItem [1..] (cs^..currentPaths)
+
 
 pathSatCmd :: SimGrammar sbe m
 pathSatCmd =
   cmdDef "Check satisfiability of path assertions with SAT solver." $ do
-    withActiveCS () $ \cs -> do
+    withActiveCS () $ do
       sat <- runSim $ do
         sbe <- gets symBE
-        cond <- assumptionsForActivePath cs
+        cond <- assumptionsForActivePath
         liftSBE $ termSAT sbe cond
       case sat of
         UnSat -> do
           dbugM "The current path is infeasible.  Should simulation of the path be terminated?"
           yn <- promptYesNo
           when (yn == Yes) $ do
-            killPathByDebugger cs
+            killPathByDebugger
         Sat _ ->
           dbugM "Conditions along path are satisfiable."
         Unknown ->
@@ -487,17 +487,15 @@ pathSatCmd =
 -- | Kills the current path with the debugger.
 -- Assumes that there is an active path.
 killPathByDebugger :: (Functor sbe, Functor m, MonadException m)
-                   => ActiveCS sbe
-                   -> Debugger sbe m ()
-killPathByDebugger _ = do
+                   => Debugger sbe m ()
+killPathByDebugger = do
   runSim $ killCurrentPath (FailRsn "Terminated by debugger.")
   resumeThrowsError .= False
 
-
 pathKillCmd :: SimGrammar sbe m
 pathKillCmd = cmdDef "Kill the current execution path." $ do
-  withActiveCS () $ \cs -> do
-    killPathByDebugger cs
+  withActiveCS () $ do
+    killPathByDebugger
     mp <- runSim $ preuse currentPathOfState
     case mp of
       Nothing -> dbugM "Killed last path."
@@ -543,8 +541,8 @@ infoBlockCmd :: SimGrammar sbe m
 infoBlockCmd =
   cmdDef "Print block information." $ do
     runSim $ withActivePath () $ \p -> do
-      let sym = p^.pathFuncSym
-          Just (pcb,_) = p^.pathPC
+      let sym = pathFuncSym p
+          (pcb,_) = p^.pathBlock
       Just def <- lookupDefine sym <$> gets codebase
       dbugM $ show $ ppSymBlock $ lookupSymBlock def pcb
 
@@ -574,14 +572,14 @@ infoFunctionCmd :: SimGrammar sbe m
 infoFunctionCmd =
   cmdDef "Print function information." $ do
     runSim $ withActivePath () $ \p -> do
-      dumpSymDefine (gets codebase) (p^.pathFuncSym)
+      dumpSymDefine (gets codebase) (pathFuncSym p)
 
 infoLocalsCmd :: SimGrammar sbe m
 infoLocalsCmd =
   cmdDef "Print local variables in current stack frame." $ do
     runSim $ withActivePath () $ \p -> do
       sbe <- gets symBE
-      let locals = M.toList (p^.pathRegs)
+      let locals = M.toList (p^.pathTopCallFrame^.cfRegs)
           ppLocal (nm, (v,_)) =
             ppIdent nm `equalSep` prettyTermD sbe v           
       dbugM $ show $ vcat $ ppLocal <$> locals
@@ -597,7 +595,7 @@ infoStackCmd = cmdDef "Print backtrace of the stack." $ do
   runSim $ withActivePath () $ \p -> do
     let safeInit [] = []
         safeInit l = init l
-    let syms = p^.pathFuncSym : safeInit (cfFuncSym <$> (p^.pathStack))
+    let syms = safeInit (cfFuncSym <$> (p^.pathStack^..stackCallFrames))
     dbugM $ show $ indent 2 $ vcat $ ppSymbol <$> syms
 
 
@@ -627,14 +625,15 @@ ppBreakpoint :: Breakpoint -> Doc
 ppBreakpoint (sbid,0) = ppSymBlockID sbid 
 ppBreakpoint (sbid,i) = ppSymBlockID sbid PP.<> char ':' PP.<> int i
 
+-- | Run a computation if there is an active 
 withActiveCS :: (Functor sbe, Functor m, MonadException m)
-             => a
-             -> (ActiveCS sbe -> Debugger sbe m a)
+             => a -- ^ Result to return if there is no execution path.
+             -> Debugger sbe m a -- ^ Action to run if there is an active path.
              -> Debugger sbe m a
 withActiveCS v action = do
   mcs <- runSim $ use ctrlStk
   case mcs of
-    Just (ActiveCS cs) -> action cs
+    Just cs | pathIsActive (cs^.currentPath) -> action
     _ -> dbugM "No active execution path." >> return v
 
 -- | @withActivePath v act@ runs @act p@ with the active path
@@ -645,7 +644,7 @@ withActivePath :: MonadIO m
 withActivePath v action = do
   mcs <- use ctrlStk
   case mcs of
-    Just (ActiveCS cs) -> action (cs^.activePath)
+    Just cs | pathIsActive (cs^.currentPath) -> action (cs^.currentPath)
     _ -> dbugM "No active execution path." >> return v
 
 continueCmd :: SimGrammar sbe m
@@ -658,7 +657,7 @@ onReturnFrom :: (Functor sbe, Functor m, MonadIO m, MonadException m)
              => DebuggerRef sbe m -> Int -> Simulator sbe m ()
 onReturnFrom dr ht = do
   Just p <- preuse currentPathOfState
-  if p^.pathStackHt < ht then
+  if pathStackHt p < ht then
     enterDebuggerAtBreakpoint dr
   else
     checkForBreakpoint dr
@@ -667,7 +666,7 @@ finishCmd :: SimGrammar sbe m
 finishCmd = cmdDef desc $ do
     dr <- getDebuggerRef
     resumeActivePath $ \p -> do
-      onPathPosChange .= onReturnFrom dr (p^.pathStackHt)
+      onPathPosChange .= onReturnFrom dr (pathStackHt p)
   where desc = "Execute until the current stack frame returns."
 
 enterDebuggerAfterNSteps
