@@ -34,7 +34,7 @@ class Sized a where
 data Orientation
    = LeftActive  -- ^ The left branch of the tree is active.
    | RightActive -- ^ The right branch of the tree is active.
- deriving (Show)
+ deriving (Eq, Show)
 
 -- | A cursor tree provides a non-empty binary-tree representation
 -- where branches and leaves may be annotated (denoted by @b@ and @a@

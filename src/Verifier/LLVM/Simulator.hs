@@ -98,16 +98,6 @@ import Verifier.LLVM.Simulator.Internals
 import Verifier.LLVM.Simulator.SimUtils
 
 
--- Utility functions
-
-withActiveCS :: (MonadIO m)
-             => (ActiveCS sbe -> IO (CS sbe))
-             -> Simulator sbe m ()
-withActiveCS f = do
-  Just (ActiveCS cs) <- use ctrlStk
-  cs' <- liftIO (f cs)
-  ctrlStk ?= cs'
-
 -- | Obtain the first pending path in the topmost merge frame; @Nothing@ means
 -- that the control stack is empty or the top entry of the control stack has no
 -- pending paths recorded.
@@ -223,11 +213,6 @@ callDefine calleeSym t args = do
   signalPathPosChangeEvent
   run
 
-setCurrentBlock :: MonadIO m => SymBlockID -> Simulator sbe m ()
-setCurrentBlock b = do
-  sbe <- gets symBE
-  withActiveCS $ \cs -> ActiveCS <$> jumpCurrentPath sbe b cs
-
 callDefine' ::
   ( MonadIO m
   , Functor m
@@ -284,15 +269,14 @@ runNormalSymbol ::
   -> Simulator sbe m ()
 runNormalSymbol calleeSym mreg args = do
   def <- lookupSymbolDef calleeSym
-  sbe <- gets symBE
   dbugM' 5 $ "callDefine': callee " ++ show (ppSymbol calleeSym)
   Just cs <- use ctrlStk
   let m = cs^.currentPath^.pathMem
   (c,m') <- withSBE $ \s -> stackPushFrame s m
-  let cs' = cs & pushCallFrame sbe def mreg
-               & activePath . pathRegs .~ bindArgs (sdArgs def) args
-               & activePath . pathMem  .~ m'
-  ctrlStk ?= ActiveCS cs'
+  let cs' = cs & pushCallFrame def mreg
+               & currentPath . pathRegs .~ bindArgs (sdArgs def) args
+               & currentPath . pathMem  .~ m'
+  ctrlStk ?= cs'
   -- Push stack frame in current process memory.
   let fr = "Stack push frame failure: insufficient stack space"
   processMemCond fr c
@@ -331,9 +315,9 @@ killPathOnError :: (Functor sbe, Functor m, MonadException m)
                 => ErrorHandler sbe m
 killPathOnError cs rsn = do
   -- Reset state
-  ctrlStk ?= ActiveCS cs
+  ctrlStk ?= cs
   -- Get current path before last step.
-  let p = cs^.activePath
+  let p = cs^.currentPath
   sbe <- gets symBE
   -- Log error path  
   whenVerbosity (>=1) $ do
@@ -369,7 +353,8 @@ run = do
         tellUser "All paths yielded errors!" >> dumpErrorPaths
       else
         tellUser "All paths yielded errors! To see details, use --errpaths."
-    Just (FinishedCS p) -> do
+    Just cs | not (pathIsActive (cs^.currentPath)) -> assert (csHasSinglePath cs) $ do      
+      let p = cs^.currentPath
       -- Normal program termination on at least one path.
       -- Report termination info at appropriate verbosity levels; also,
       -- inform user about error paths when present and optionally dump
@@ -387,8 +372,9 @@ run = do
         when (numErrs > 0 && showEPs) $ do
           dbugM $ showErrCnt numErrs
           dumpErrorPaths
-    Just (ActiveCS cs) -> do
-      let p = cs^.activePath
+    
+    Just cs -> assert (pathIsActive (cs^.currentPath)) $ do
+      let p = cs^.currentPath
       let onError rsn = do
             h <- use onSimError
             h cs rsn
@@ -397,16 +383,16 @@ run = do
             onError (FailRsn msg)                
       let userIntHandler :: AsyncException -> Simulator sbe m ()
           userIntHandler UserInterrupt = do
-            ctrlStk ?= ActiveCS cs -- Reset control stack.
+            ctrlStk ?= cs -- Reset control stack.
             join $ use onUserInterrupt
             run
           userIntHandler e = throwIO e
       handle assertionFailedHandler $
        handle userIntHandler $ do
         flip catchError onError $ do
-          let Just (pcb,pc) = p^.pathPC
           -- Get name of function we are in.
-          let sym = p^.pathFuncSym
+          let sym = pathFuncSym p 
+          let (pcb,pc) = p^.pathBlock
           -- Get statement to execute
           Just def <- lookupDefine sym <$> gets codebase
           let sb = lookupSymBlock def pcb
@@ -578,8 +564,7 @@ insertGlobalTerm errMsg sym _ act = do
 -- Instruction stepper and related functions
 
 incPC :: Monad m => Simulator sbe m ()
-incPC = do
-  currentPathOfState . pathPC %= incPathPC
+incPC = currentPathOfState . pathTopCallFrame . cfPC += 1
 
 splitBranches :: (Functor m, MonadIO m)
               => [(SBEPred sbe, SymBlockID)] -> MergeLocation -> Simulator sbe m ()
@@ -593,10 +578,7 @@ splitBranches allPairs ml = do
   case branches of
     [] -> errorPath "Unsatisfiable path detected at switch."
     ((_,b):r) -> do
-      sbe <- gets symBE
-
-      let pushBranch (c,cb) nm =
-           withActiveCS $ fmap ActiveCS . addCtrlBranch sbe c cb nm ml
+      let pushBranch (c,cb) nm = addCtrlBranch c cb nm ml
 
       nm <- use pathCounter
       pathCounter += toInteger (length r)
@@ -635,9 +617,8 @@ step (Call callee args mres) = do
     return $ callDefine' False calleeSym mres argTerms 
 
 step (Ret mtv) = do
-  sbe <- gets symBE
   mrv <- traverse (evalExprInCC "return") mtv
-  withActiveCS (returnCurrentPath sbe mrv)
+  returnCurrentPath mrv
 
 step (Br cond trueBlock falseBlock ml) = do
   sbe <- gets symBE
