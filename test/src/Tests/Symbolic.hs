@@ -15,8 +15,8 @@ import Control.Monad.State (gets)
 import Test.QuickCheck
 import Tests.Common
 
-import Verifier.LLVM.AST
-import Verifier.LLVM.BitBlastBackend
+import Verifier.LLVM.Backend.BitBlast
+import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator
 
 symTests :: [(Args, Property)]

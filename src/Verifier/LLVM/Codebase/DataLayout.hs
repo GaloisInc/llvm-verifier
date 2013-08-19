@@ -4,7 +4,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
-module Verifier.LLVM.DataLayout
+module Verifier.LLVM.Codebase.DataLayout
   ( Size
   , Offset
   , Alignment

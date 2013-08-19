@@ -26,14 +26,14 @@ import           Text.PrettyPrint.Leijen hiding ((<$>))
 
 import           LSSImpl
 
-import Verifier.LLVM.AST (ppSymDefine)
 import Verifier.LLVM.Backend (prettyTermD, SBEPair(..))
-import Verifier.LLVM.BitBlastBackend ( createBuddyAll
-                                     , createDagAll
-                                     , defaultMemGeom
-                                     )
-import Verifier.LLVM.SAWBackend (createSAWBackend)
+import Verifier.LLVM.Backend.BitBlast
+     ( createBuddyAll
+     , createDagAll
+     )
+import Verifier.LLVM.Backend.SAW (createSAWBackend)
 import Verifier.LLVM.Codebase
+import Verifier.LLVM.MemModel.Geometry (defaultMemGeom)
 
 main :: IO ()
 main = do

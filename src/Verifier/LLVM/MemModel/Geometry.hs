@@ -1,20 +1,20 @@
 ------------------------------------------------------------------------
 -- |
--- Module           : Verifier.LLVM.LLVMContext
+-- Module           : Verifier.LLVM.MemModel.Geometry
 -- Copyright        : (c) Galois, Inc 2011-2013
 -- Maintainer       : Joe Hendrix <jhendrix@galois.com>
 -- Stability        : provisional
 -- 
 -- This module provides a data structure for storing memory geometry
--- information when using concreate addresses.
+-- information when using concrete addresses.
 ------------------------------------------------------------------------
-module Verifier.LLVM.MemGeom
+module Verifier.LLVM.MemModel.Geometry
   ( MemGeom(..)
   , Addr
   , defaultMemGeom
   ) where
 
-import Verifier.LLVM.DataLayout
+import Verifier.LLVM.Codebase.DataLayout
 
 -- | Represents ranges of addresses for stack, code, data, and heap.
 data MemGeom = MemGeom {

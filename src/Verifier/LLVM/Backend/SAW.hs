@@ -9,7 +9,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -O0 #-}
-module Verifier.LLVM.SAWBackend
+module Verifier.LLVM.Backend.SAW
   ( SAWBackend
   , SAWMemory
   , createSAWBackend
@@ -43,8 +43,8 @@ import Verifier.SAW.Prim
 import qualified Verifier.SAW.Recognizer as R
 import Verifier.SAW.Rewriter
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend as LLVM
+import Verifier.LLVM.Codebase.AST
 import qualified Verifier.LLVM.MemModel as MM
 
 import Verinf.Symbolic.Lit

@@ -11,7 +11,7 @@
 --
 -- * The Symbolic IR includes explicit instructions for pushing and popping frames from
 --   the merge frame stack.
-module Verifier.LLVM.AST
+module Verifier.LLVM.Codebase.AST
   ( FuncID
   , SymBlockID
   , ExprEvalFn(..)
@@ -44,8 +44,8 @@ module Verifier.LLVM.AST
   , ppStmt
   , symBlockID
   , symBlockLabel
-  , module Verifier.LLVM.DataLayout
   , commas
+  , module Verifier.LLVM.Codebase.DataLayout
   ) where
 
 import Control.Applicative (Applicative, (<$>))
@@ -60,7 +60,7 @@ import qualified Data.Vector as V
 import qualified Text.LLVM.AST as L
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import Verifier.LLVM.DataLayout
+import Verifier.LLVM.Codebase.DataLayout
 import Verifier.LLVM.Utils
 
 ppSymbol :: L.Symbol -> Doc

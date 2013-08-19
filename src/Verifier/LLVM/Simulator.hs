@@ -89,15 +89,14 @@ import           System.Exit
 import           System.IO
 import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase
+import Verifier.LLVM.Overrides.Intrinsics
+import Verifier.LLVM.Overrides.Libc
+import Verifier.LLVM.Overrides.LSS
 import Verifier.LLVM.Simulator.Internals
 import Verifier.LLVM.Simulator.SimUtils
 
-import Verifier.LLVM.LLVMIntrinsics
-import Verifier.LLVM.LibcOverrides
-import Verifier.LLVM.LSSOverrides
 
 -- Utility functions
 

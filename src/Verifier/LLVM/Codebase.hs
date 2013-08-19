@@ -35,9 +35,8 @@ module Verifier.LLVM.Codebase
   , LLVMContext
   , compatMemTypeLists
   , compatRetTypes
-    -- * DataLayout re-exports.
-  , DataLayout
-  , parseDataLayout
+    -- * AST re-exports.
+  , module Verifier.LLVM.Codebase.AST
   )
 
 where
@@ -55,8 +54,8 @@ import qualified Data.Map                       as M
 import qualified Text.LLVM                      as LLVM
 import qualified Text.LLVM                      as L
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Codebase.LLVMContext
 import Verifier.LLVM.Codebase.Translation
 

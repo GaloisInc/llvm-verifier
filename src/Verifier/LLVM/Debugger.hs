@@ -54,7 +54,6 @@ import qualified Text.PrettyPrint.Leijen as PP
 -- by getAppUserDataDirectory.
 import GHC.IO.Exception
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Debugger.Grammar

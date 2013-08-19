@@ -12,10 +12,10 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
 {-# LANGUAGE ViewPatterns               #-}
-module Verifier.LLVM.BitBlastBackend
+module Verifier.LLVM.Backend.BitBlast
   ( -- * Re-exports to create and interact with backend.
     module Verifier.LLVM.Backend
-  , module Verifier.LLVM.MemGeom
+  , module Verifier.LLVM.MemModel.Geometry
   , BitBlastSBE
   , BitTerm
 --  , BitTermClosed(..)
@@ -62,9 +62,9 @@ import Verinf.Symbolic.Lit
 import Verinf.Symbolic.Lit.Functional
 
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
-import Verifier.LLVM.MemGeom
+import Verifier.LLVM.Codebase.AST
+import Verifier.LLVM.MemModel.Geometry
 import Verifier.LLVM.Simulator.SimUtils
 import Verifier.LLVM.Utils
 

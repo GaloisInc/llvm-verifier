@@ -22,8 +22,8 @@ import qualified Control.Exception       as CE
 import qualified Text.LLVM               as L
 
 import Tests.Common
-import Verifier.LLVM.AST
-import Verifier.LLVM.BitBlastBackend
+import Verifier.LLVM.Backend.BitBlast
+import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator
 
 primOpTests :: [(Args, Property)]

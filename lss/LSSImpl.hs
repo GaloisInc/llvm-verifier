@@ -29,12 +29,11 @@ import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, ver
 import           Verinf.Utils.LogMonad
 import qualified Text.LLVM                       as L
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase
-import Verifier.LLVM.MemGeom
-import Verifier.LLVM.Simulator
 import Verifier.LLVM.Debugger
+import Verifier.LLVM.MemModel.Geometry
+import Verifier.LLVM.Simulator
 
 data LSS = LSS
   { dbug          :: DbugLvl

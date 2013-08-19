@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
-module Verifier.LLVM.LLVMIntrinsics 
+module Verifier.LLVM.Overrides.Intrinsics 
   ( registerLLVMIntrinsicOverrides
   ) where
 
@@ -12,7 +12,7 @@ import Data.String
 import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
 
 import Verifier.LLVM.Backend
-import Verifier.LLVM.DataLayout
+import Verifier.LLVM.Codebase.DataLayout
 import Verifier.LLVM.Simulator.Internals
 
 llvm_uadd_with_overflow :: BitWidth -> StdOvd m sbe

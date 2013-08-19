@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Verifier.LLVM.LSSOverrides
+module Verifier.LLVM.Overrides.LSS
   ( registerLSSOverrides
   ) where
 
@@ -22,7 +22,6 @@ import qualified Data.Vector as V
 import System.IO
 import Text.PrettyPrint.Leijen (nest)
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Simulator.Internals

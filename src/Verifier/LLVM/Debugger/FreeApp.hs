@@ -1,5 +1,5 @@
 {-# LANGUAGE GADTs #-}
-module Verifier.LLVM.FreeApp 
+module Verifier.LLVM.Debugger.FreeApp 
  ( App(..)
  , Cont
  , atom

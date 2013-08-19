@@ -38,7 +38,7 @@ import System.Console.Haskeline (Completion(..))
 import Text.PrettyPrint.Leijen hiding ((<$>), (</>))
 import qualified Text.PrettyPrint.Leijen as PP
 
-import Verifier.LLVM.FreeApp
+import Verifier.LLVM.Debugger.FreeApp
 
 ------------------------------------------------------------------------
 -- Generic

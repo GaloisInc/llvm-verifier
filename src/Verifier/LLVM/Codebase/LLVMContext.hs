@@ -1,11 +1,12 @@
 ------------------------------------------------------------------------
 -- |
 -- Module           : Verifier.LLVM.LLVMContext
+-- Description      : Provides simulator type information and conversions.
 -- Copyright        : (c) Galois, Inc 2011-2013
 -- Maintainer       : Joe Hendrix <jhendrix@galois.com>
 -- Stability        : provisional
 -- 
--- This module provides the functions for querying simulator type
+-- This module provides functionality for querying simulator type
 -- information in a module, and converting llvm-pretty types into
 -- simulator types.
 ------------------------------------------------------------------------
@@ -21,7 +22,6 @@ module Verifier.LLVM.Codebase.LLVMContext
     LLVMContext
   , mkLLVMContext
   , llvmContextFromModel
-  , module Verifier.LLVM.DataLayout
   , llvmDataLayout
   , AliasMap
   , llvmAliasMap
@@ -47,7 +47,7 @@ import qualified Data.Vector as V
 import qualified Text.LLVM         as L
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import Verifier.LLVM.DataLayout
+import Verifier.LLVM.Codebase.DataLayout
 
 data IdentStatus
   = Resolved SymType

@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Verifier.LLVM.LibcOverrides
+module Verifier.LLVM.Overrides.Libc
   ( registerLibcOverrides
   ) where
 
@@ -14,8 +14,8 @@ import Data.String
 import qualified Data.Vector as V
 import Numeric                   (showHex, showOct)
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator.Internals
 import Verifier.LLVM.Simulator.SimUtils
 
