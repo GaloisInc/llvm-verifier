@@ -45,7 +45,7 @@ symTests =
     -- output against a golden AIG file.
   , lssTestAll 0 "ctests/test-fresh-array"      [] Nothing (Just 0)
   , lssTestAll 0 "ctests/test-const-false-path" [] (Just 0) (Just 1)
-  , lssTestAll 0 "ctests/test-divergent-unreachables" [] (Just 2) Nothing
+  , lssTestAll 0 "ctests/test-divergent-unreachables" [] (Just 1) (Just 1)
   , lssTestAll 0 "ctests/test-missing-define" [] (Just 1) (Just 1)
   , lssTestAll 0 "ctests/test-fresh-incremental" [] (Just 0) (Just 0)
   , lssTestAll 0 "ctests/test-fresh-array-incremental" [] (Just 0) (Just 0)

@@ -31,7 +31,8 @@ import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Error
 import Control.Monad.Identity
-import Control.Monad.State as MTL
+import qualified Control.Monad.State as MTL
+import Control.Monad.State.Class
 import Control.Lens hiding (createInstance)
 import Data.Char
 import Data.IORef
@@ -115,10 +116,13 @@ resetInterrupt = do
 checkForBreakpoint :: (Functor sbe, Functor m, MonadException m)
                    => DebuggerRef sbe m -> Simulator sbe m ()
 checkForBreakpoint r = do
-  Just p <- preuse currentPathOfState
-  mbps <- use $ breakpoints . at (pathFuncSym p)
-  let atBP = fromMaybe False $ S.member (p^.pathBlock) <$> mbps
-  when atBP (enterDebuggerAtBreakpoint r)
+  mcf <- preuse currentCallFrameOfState
+  case mcf of
+    Just cf -> do
+      mbps <- use $ breakpoints . at (cfFuncSym cf)
+      let atBP = fromMaybe False $ S.member (cf^.cfBlock) <$> mbps
+      when atBP (enterDebuggerAtBreakpoint r)
+    Nothing -> return ()
 
 setPrevCommand :: MonadIO m
                => DebuggerRef sbe m'
@@ -192,7 +196,7 @@ instance (Functor sbe, Functor m, MonadException m)
     runNextCommand dr
 
 instance (Functor sbe, Functor m, MonadException m)
-      => MonadState (DebuggerState sbe m) (Debugger sbe m) where
+      => MTL.MonadState (DebuggerState sbe m) (Debugger sbe m) where
   get   = Debugger $ \c r -> liftIO (readIORef r) >>= flip c r
   put v = Debugger $ \c r -> liftIO (writeIORef r v) >> c () r
 
@@ -262,7 +266,7 @@ enterDebugger :: (Functor sbe, Functor m, MonadException m)
 enterDebugger r eoe = do
   liftIO $ modifyIORef r $ resumeThrowsError .~ eoe
   withActivePath () $ \p -> do
-    dbugM $ show $ indent 2 (text "at" <+> ppPathInfo p)
+    dbugM $ show $ indent 2 (text "at" <+> ppPathNameAndLoc p)
   grammar <- liftIO $ dsGrammar <$> readIORef r
   historyPath <- liftIO getLSSHistoryPath
   let settings = setComplete (matcherCompletions grammar)
@@ -458,7 +462,9 @@ pathListCmd = cmdDef "List all current execution paths." $ runSim $ do
       dbugM "No active paths."
     Just cs -> dbugM $ show $ printTable table
       where ppPathItem :: Integer -> Path sbe -> [String]
-            ppPathItem i p = [ padRightMin 3 (show i), show (ppPathInfo p)]              
+            ppPathItem i p = [ padRightMin 3 (show i)
+                             , show (ppPathNameAndLoc p)
+                             ]              
             -- Header for table.
             header = [ " Num", "Location"]
             -- Entries for table.
@@ -500,11 +506,15 @@ pathKillCmd = cmdDef "Kill the current execution path." $ do
     case mp of
       Nothing -> dbugM "Killed last path."
       Just p -> dbugM $ show $
-        text "Switched to path:" <+> ppPathInfo p
+        text "Switched to path:" <+> ppPathNameAndLoc p
 
 quitCmd :: SimGrammar sbe m
 quitCmd = cmdDef "Exit LSS." $ do
-  liftIO $ exitWith ExitSuccess
+  mcs <- runSim $ use ctrlStk
+  case mcs of
+    Just cs | pathIsActive (cs^.currentPath) ->
+      liftIO $ exitWith ExitSuccess
+    _ -> resume
 
 breakCmd :: Codebase sbe -> SimGrammar sbe m
 breakCmd cb = (locSeq cb <**>) $ cmdDef desc $ \(b,p) -> do
@@ -540,9 +550,9 @@ infoCmd
 infoBlockCmd :: SimGrammar sbe m
 infoBlockCmd =
   cmdDef "Print block information." $ do
-    runSim $ withActivePath () $ \p -> do
-      let sym = pathFuncSym p
-          (pcb,_) = p^.pathBlock
+    runSim $ withActiveCallFrame () $ \cf -> do
+      let sym = cfFuncSym cf
+          (pcb,_) = cf^.cfBlock
       Just def <- lookupDefine sym <$> gets codebase
       dbugM $ show $ ppSymBlock $ lookupSymBlock def pcb
 
@@ -571,15 +581,15 @@ dumpSymDefine getCB sym = getCB >>= \cb ->
 infoFunctionCmd :: SimGrammar sbe m
 infoFunctionCmd =
   cmdDef "Print function information." $ do
-    runSim $ withActivePath () $ \p -> do
-      dumpSymDefine (gets codebase) (pathFuncSym p)
+    runSim $ withActiveCallFrame () $ \cf -> do
+      dumpSymDefine (gets codebase) (cfFuncSym cf)
 
 infoLocalsCmd :: SimGrammar sbe m
 infoLocalsCmd =
   cmdDef "Print local variables in current stack frame." $ do
-    runSim $ withActivePath () $ \p -> do
+    runSim $ withActiveCallFrame () $ \cf -> do
       sbe <- gets symBE
-      let locals = M.toList (p^.pathTopCallFrame^.cfRegs)
+      let locals = M.toList (cf^.cfRegs)
           ppLocal (nm, (v,_)) =
             ppIdent nm `equalSep` prettyTermD sbe v           
       dbugM $ show $ vcat $ ppLocal <$> locals
@@ -593,12 +603,8 @@ infoMemoryCmd =
 infoStackCmd :: SimGrammar sbe m
 infoStackCmd = cmdDef "Print backtrace of the stack." $ do
   runSim $ withActivePath () $ \p -> do
-    let safeInit [] = []
-        safeInit l = init l
-    let syms = safeInit (cfFuncSym <$> (p^.pathStack^..stackCallFrames))
+    let syms = cfFuncSym <$> (p^..pathCallFrames)
     dbugM $ show $ indent 2 $ vcat $ ppSymbol <$> syms
-
-
 
 listCmd :: Codebase sbe -> SimGrammar sbe m
 listCmd cb = (locSeq cb <**>) $ cmdDef "List specified function in line." $ \loc -> do
@@ -636,7 +642,7 @@ withActiveCS v action = do
     Just cs | pathIsActive (cs^.currentPath) -> action
     _ -> dbugM "No active execution path." >> return v
 
--- | @withActivePath v act@ runs @act p@ with the active path
+-- | @withActivePath v act@ runs @act@ with the active path
 withActivePath :: MonadIO m
                => a
                -> (Path sbe -> Simulator sbe m a)
@@ -645,6 +651,17 @@ withActivePath v action = do
   mcs <- use ctrlStk
   case mcs of
     Just cs | pathIsActive (cs^.currentPath) -> action (cs^.currentPath)
+    _ -> dbugM "No active execution path." >> return v
+
+-- | @withActiveCallFrame v act@ runs @act@ with the active call frame.
+withActiveCallFrame :: MonadIO m
+                    => a
+                    -> (CallFrame sbe -> Simulator sbe m a)
+                    -> Simulator sbe m a
+withActiveCallFrame v action = do
+  mcf <- preuse currentCallFrameOfState
+  case mcf of
+    Just cf -> action cf
     _ -> dbugM "No active execution path." >> return v
 
 continueCmd :: SimGrammar sbe m
