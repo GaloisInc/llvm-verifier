@@ -78,6 +78,7 @@ import Control.Exception ( AsyncException(..)
 import           Control.Lens hiding (act,from)
 import           Control.Monad.Error
 import           Control.Monad.State.Class
+import qualified Control.Monad.State as MTL
 import           Control.Monad.Reader
 import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)
@@ -85,8 +86,6 @@ import qualified Data.Map as M
 import           Data.Maybe
 import qualified Data.Vector as V
 import System.Console.Haskeline.MonadException (MonadException, handle, throwIO)
-import           System.Exit
-import           System.IO
 import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
 
 import Verifier.LLVM.Backend
@@ -105,12 +104,19 @@ getPath :: (Functor m, Monad m)
         => Simulator sbe m (Maybe (Path sbe))
 getPath = preuse currentPathOfState
 
-modifyPathRegs :: (Functor m, Monad m)
-               => (RegMap (SBETerm sbe) -> RegMap (SBETerm sbe))
-               -> Simulator sbe m ()
-modifyPathRegs f = do
-  Just p <- preuse currentPathOfState
-  currentPathOfState .= over pathRegs f p
+withCurrentCallStack :: Monad m
+                     => String
+                     -> MTL.State (CallStack sbe) a
+                     -> Simulator sbe m a
+withCurrentCallStack _nm m = do
+  Just cs <- use ctrlStk
+  let CallStack stk = cs^.currentPathStack
+  let (v,stk') = MTL.runState m stk
+  let cs' = cs & currentPathStack .~ CallStack stk'
+  ctrlStk ?= cs'
+  return v
+
+
 
 -- @getMem@ yields the memory model of the current path if any.
 getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
@@ -186,6 +192,12 @@ initGlobals = do
        insertGlobalTerm noDataSpc (globalSym g) (MemType (globalType g)) $
           \s m -> memInitGlobal s m (globalType g) cdata
 
+--------------------------------------------------------------------------------
+-- Misc utility functions
+
+entryRsltReg :: Ident
+entryRsltReg = Ident "__galois_final_rslt"
+
 -- | External entry point for a function call.  This will push a callFrame
 -- for the function to the stack, and run the function until termination.
 callDefine ::
@@ -234,8 +246,11 @@ callDefine' isRedirected calleeSym@(Symbol calleeName) mreg args = do
       | otherwise    -> callDefine' True calleeSym' mreg args
     Just (Override f, _) -> do
       r <- f calleeSym mreg args
-      modifyPathRegs $ setReturnValue mreg r
-      incPC
+      withCurrentCallStack "callDefine'" $ do
+        -- Set return value
+        topCallFrame . cfRegs %= setReturnValue mreg r
+        -- Increment PC
+        incPC
   where
     normal
       | isPrefixOf "llvm." calleeName = do
@@ -243,7 +258,7 @@ callDefine' isRedirected calleeSym@(Symbol calleeName) mreg args = do
             --TODO: Give option of stopping on warnings like this.
             tellUser $ "Warning: skipping unsupported LLVM intrinsic "
                          ++ show calleeName
-          incPC
+          withCurrentCallStack "callDefine" incPC
       | otherwise = do
           runNormalSymbol calleeSym mreg (snd <$> args)
 
@@ -271,32 +286,21 @@ runNormalSymbol calleeSym mreg args = do
   def <- lookupSymbolDef calleeSym
   dbugM' 5 $ "callDefine': callee " ++ show (ppSymbol calleeSym)
   Just cs <- use ctrlStk
+  sbe <- gets symBE
   let m = cs^.currentPath^.pathMem
-  (c,m') <- withSBE $ \s -> stackPushFrame s m
-  let cs' = cs & pushCallFrame def mreg
-               & currentPath . pathRegs .~ bindArgs (sdArgs def) args
+  (c,m') <- liftSBE $ stackPushFrame sbe m
+  let cf = newCallFrame def args
+  let cs' = cs & currentPath . pathStack %~ pushCallFrame cf mreg
                & currentPath . pathMem  .~ m'
   ctrlStk ?= cs'
   -- Push stack frame in current process memory.
   let fr = "Stack push frame failure: insufficient stack space"
   processMemCond fr c
- where
-    err doc = error $ "callDefine/bindArgs: " ++ show doc
-
-    bindArgs formals actuals
-      | length formals /= length actuals =
-          err $ text "incorrect number of actual parameters"
-            <$$> text "formals: " <> text (show (fst <$> formals))
-      | otherwise =
-          foldr (uncurry bindArg) M.empty (formals `zip` actuals)
-    bindArg (r,tp) v = M.insert r (v,tp)
-
-finalRetValOfPath :: Simple Traversal (Path sbe) (SBETerm sbe)
-finalRetValOfPath = pathRegs . at entryRsltReg . _Just . _1
 
 getProgramReturnValue :: (Monad m, Functor m)
                       => Simulator sbe m (Maybe (SBETerm sbe))
-getProgramReturnValue = preuse $ currentPathOfState . finalRetValOfPath
+getProgramReturnValue = 
+  preuse $ currentPathOfState . pathStack . pathStackReturnValue
 
 getProgramFinalMem :: (Monad m, Functor m)
                    => Simulator sbe m (Maybe (SBEMemory sbe))
@@ -324,7 +328,7 @@ killPathOnError cs rsn = do
     dbugM $ show $ text "Simulation error:" <+> ppFailRsn rsn
   -- Just print location at verbosity 1 and 2.
   whenVerbosity (`elem` [1,2]) $ do
-    dbugM $ show $ indent 2 (text "at" <+> ppPathInfo p)
+    dbugM $ show $ indent 2 (text "at" <+> ppPathNameAndLoc p)
   -- Print full path at verbosity 3+.
   whenVerbosity (>=3) $ do
     dbugM $ show $ ppPath sbe p
@@ -353,61 +357,63 @@ run = do
         tellUser "All paths yielded errors!" >> dumpErrorPaths
       else
         tellUser "All paths yielded errors! To see details, use --errpaths."
-    Just cs | not (pathIsActive (cs^.currentPath)) -> assert (csHasSinglePath cs) $ do      
-      let p = cs^.currentPath
-      -- Normal program termination on at least one path.
-      -- Report termination info at appropriate verbosity levels; also,
-      -- inform user about error paths when present and optionally dump
-      -- them.
-      whenVerbosity (>=5) $ dumpCtrlStk
-      whenVerbosity (>=2) $ do
-        dbugM "run terminating normally: found valid exit frame"        
-        case p ^? finalRetValOfPath of
-          Nothing -> dbugM "Program had no return value."
-          Just rv -> dbugTerm "Program returned value" rv
-        numErrs <- length <$> use errorPaths
-        showEPs <- optsErrorPathDetails <$> gets lssOpts
-        when (numErrs > 0 && not showEPs) $
-          tellUser "Warning: Some paths yielded errors. To see details, use --errpaths."
-        when (numErrs > 0 && showEPs) $ do
-          dbugM $ showErrCnt numErrs
-          dumpErrorPaths
-    
-    Just cs -> assert (pathIsActive (cs^.currentPath)) $ do
-      let p = cs^.currentPath
-      let onError rsn = do
-            h <- use onSimError
-            h cs rsn
-            run
-      let assertionFailedHandler (AssertionFailed msg) = do
-            onError (FailRsn msg)                
-      let userIntHandler :: AsyncException -> Simulator sbe m ()
-          userIntHandler UserInterrupt = do
-            ctrlStk ?= cs -- Reset control stack.
-            join $ use onUserInterrupt
-            run
-          userIntHandler e = throwIO e
-      handle assertionFailedHandler $
-       handle userIntHandler $ do
-        flip catchError onError $ do
-          -- Get name of function we are in.
-          let sym = pathFuncSym p 
-          let (pcb,pc) = p^.pathBlock
-          -- Get statement to execute
-          Just def <- lookupDefine sym <$> gets codebase
-          let sb = lookupSymBlock def pcb
-          let stmt = sbStmts sb V.! pc
-          -- Log what we're about to execute
-          whenVerbosity (>=2) $ do
-            dbugM $ show $
-              text "Executing" <+> parens (ppPathInfo p) <> colon 
-                      <+> ppStmt stmt
-          -- Execute statement
-          step stmt
-          whenVerbosity (>=5) dumpCtrlStk
-          -- Check to see if we have hit a breakpoint from previous step.
-          signalPathPosChangeEvent
-          run
+
+    Just cs ->
+      case cs^.currentPathStack of
+        CallStack stk -> do
+          let onError rsn = do
+                h <- use onSimError
+                h cs rsn
+                run
+          let assertionFailedHandler (AssertionFailed msg) = do
+                onError (FailRsn msg)                
+          handle assertionFailedHandler $ do
+            let userIntHandler :: AsyncException -> Simulator sbe m ()
+                userIntHandler UserInterrupt = do
+                  ctrlStk ?= cs -- Reset control stack.
+                  join $ use onUserInterrupt
+                  run
+                userIntHandler e = throwIO e
+            handle userIntHandler $ do
+              flip catchError onError $ do
+               let cf =  stk^.topCallFrame 
+               -- Get name of function we are in.
+               let sym = cfFuncSym cf 
+               let (pcb,pc) = cf^.cfBlock
+               -- Get statement to execute
+               Just def <- lookupDefine sym <$> gets codebase
+               let sb = lookupSymBlock def pcb
+               let stmt = sbStmts sb V.! pc
+               -- Log what we're about to execute
+               whenVerbosity (>=2) $ do
+                 let p = cs^.currentPath
+                 dbugM $ show $
+                   text "Executing" <+> parens (ppPathNameAndLoc p) <> colon 
+                     <+> ppStmt stmt
+               -- Execute statement
+               step stmt
+               whenVerbosity (>=5) dumpCtrlStk
+               -- Check to see if we have hit a breakpoint from previous step.
+               signalPathPosChangeEvent
+               run
+        FinStack mr -> assert (csHasSinglePath cs) $ do      
+           -- Normal program termination on at least one path.
+           -- Report termination info at appropriate verbosity levels; also,
+           -- inform user about error paths when present and optionally dump
+           -- them.
+           whenVerbosity (>=5) $ dumpCtrlStk
+           whenVerbosity (>=2) $ do
+             dbugM "run terminating normally: found valid exit frame"        
+             case mr of
+               Nothing -> dbugM "Program had no return value."
+               Just (rv,_) -> dbugTerm "Program returned value" rv
+             numErrs <- length <$> use errorPaths
+             showEPs <- optsErrorPathDetails <$> gets lssOpts
+             when (numErrs > 0 && not showEPs) $
+               tellUser "Warning: Some paths yielded errors. To see details, use --errpaths."
+             when (numErrs > 0 && showEPs) $ do
+               dbugM $ showErrCnt numErrs
+               dumpErrorPaths
   where
     showErrCnt x
       | x == 1    = "Encountered errors on exactly one path. Details below."
@@ -430,9 +436,11 @@ run = do
 --------------------------------------------------------------------------------
 -- LLVM-Sym operations
 
-assignReg :: (Functor m, MonadIO m)
-          => Ident -> MemType -> SBETerm sbe -> Simulator sbe m ()
-assignReg reg tp v = modifyPathRegs $ at reg ?~ (v,tp)
+incPC :: MTL.State (CallStack sbe) ()
+incPC = topCallFrame . cfPC += 1
+
+assignReg :: Ident -> MemType -> SBETerm sbe -> MTL.State (CallStack sbe) ()
+assignReg reg tp v = topCallFrame . cfRegs . at reg ?= (v,tp)
 
 data EvalContext sbe = EvalContext {
        evalContextName :: String
@@ -446,7 +454,7 @@ getCurrentEvalContext :: (Functor m, Monad m)
                       -> Simulator sbe m (EvalContext sbe)
 getCurrentEvalContext nm =do
   gm <- use globalTerms
-  mr <- preuse (currentPathOfState . pathRegs)
+  mr <- preuse (currentCallFrameOfState . cfRegs)
   mmem <- preuse currentPathMem
   return EvalContext { evalContextName = nm
                      , evalGlobals = gm
@@ -563,8 +571,6 @@ insertGlobalTerm errMsg sym _ act = do
 --------------------------------------------------------------------------------
 -- Instruction stepper and related functions
 
-incPC :: Monad m => Simulator sbe m ()
-incPC = currentPathOfState . pathTopCallFrame . cfPC += 1
 
 splitBranches :: (Functor m, MonadIO m)
               => [(SBEPred sbe, SymBlockID)] -> MergeLocation -> Simulator sbe m ()
@@ -648,8 +654,9 @@ step (Jump bid) = setCurrentBlock bid
 
 step (Assign r tp tv) = do
   v <- runEvaluator "assign" $ evalExpr tv
-  assignReg r tp v
-  incPC
+  withCurrentCallStack "assign" $ do
+    assignReg r tp v
+    incPC
 
 step (Alloca reg ty msztv a) = do
   -- Get number of elements and with of number of elements.
@@ -660,23 +667,28 @@ step (Alloca reg ty msztv a) = do
         aw <- ptrBitwidth <$> getDL
         sbe <- gets symBE
         (aw,) <$> liftSBE (termInt sbe aw 1)
-  assignReg reg (PtrType (MemType ty)) =<< alloca ty aw sizeTm a
-  incPC
+  ptr <- alloca ty aw sizeTm a
+  withCurrentCallStack "alloca" $ do
+    assignReg reg (PtrType (MemType ty)) ptr
+    incPC
 
 step (Load reg v ty a) = do
   addrTerm <- evalExprInCC "load" v
   dumpMem 6 "lo/ad pre"
   val <- load ty addrTerm a
   dumpMem 6 "load post"
-  assignReg reg ty val
-  incPC
+  withCurrentCallStack "load" $ do
+    assignReg reg ty val
+    incPC
 
 step (Store valType val addr a) = do
   whenVerbosity (<=6) $ dumpMem 6 "store pre"
   join $ runEvaluator "store" $ do
     valTerm <- evalExpr val
     addrTerm <- evalExpr addr
-    return $ store valType valTerm addrTerm a >> incPC
+    return $ store valType valTerm addrTerm a
+  withCurrentCallStack "store" $ do
+    incPC
   whenVerbosity (<=6) $ dumpMem 6 "store post"
 
 step Unreachable
@@ -686,39 +698,9 @@ step s@BadSymStmt{} = do
   errorPath $ "Path execution encountered unsupported statement:\n"
             ++ show (ppStmt s)
 
---------------------------------------------------------------------------------
--- Misc utility functions
-
-entryRsltReg :: Ident
-entryRsltReg = Ident "__galois_final_rslt"
 
 --------------------------------------------------------------------------------
 -- Debugging
-
-
-
-repl :: (Functor m, MonadIO m) => Simulator sbe m ()
-repl = do
-  liftIO $ putStr "lss> " >> hFlush stdout
-  inp <- liftIO getLine
-  unless (null inp) $ case inp of
-    "cs"   -> dumpCtrlStk >> repl
-    "mem"  -> dumpMem 1 "User request" >> repl
-    "path" -> do sbe <- gets symBE
-                 Just p   <- getPath
-                 liftIO $ putStrLn $ show $ ppPath sbe p
-                 repl
-    "quit"   -> liftIO $ exitWith ExitSuccess
-    other    -> case other of
-                  ('v':rest) -> case reads rest of
-                                  [(v, "")] -> do
-                                    dbugM $ "Verbosity set to " ++ show v ++ "."
-                                    setVerbosity v
-                                    repl
-                                  _ -> unknown
-                  _          -> unknown
-  where
-    unknown = dbugM "Unknown command. Options are cs, mem, path, quit, vx." >> repl
 
 dbugTerm :: (MonadIO m, Functor m) => String -> SBETerm sbe -> Simulator sbe m ()
 dbugTerm desc t = do
@@ -728,7 +710,6 @@ dbugTerm desc t = do
 _nowarn_unused :: a
 _nowarn_unused = undefined
   (dbugTerm undefined undefined :: Simulator IO IO ())
-  (repl :: Simulator IO IO ())
 
 --------------------------------------------------------------------------------
 -- Standard overrides
@@ -738,6 +719,6 @@ warning msg = do
   mp <- getPath
   -- Get location information
   let prefix = maybe (text "Warning") 
-                     (\p -> text "Warning at" <+> ppPathInfo p)
+                     (\p -> text "Warning at" <+> ppPathNameAndLoc p)
                      mp
   liftIO $ putStrLn $ show prefix ++ ". " ++ msg
