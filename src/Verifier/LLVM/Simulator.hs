@@ -446,7 +446,7 @@ getCurrentEvalContext :: (Functor m, Monad m)
                       -> Simulator sbe m (EvalContext sbe)
 getCurrentEvalContext nm =do
   gm <- use globalTerms
-  mr <- preuse (currentCallFrameOfState . cfRegs)
+  mr <- preuse (currentPathOfState . pathCallFrames . cfRegs)
   mmem <- preuse currentPathMem
   return EvalContext { evalContextName = nm
                      , evalGlobals = gm
