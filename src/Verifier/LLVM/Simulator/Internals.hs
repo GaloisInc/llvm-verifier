@@ -53,7 +53,6 @@ module Verifier.LLVM.Simulator.Internals
   , csHasSinglePath
   , currentPathStack
   , currentPathOfState
-  , currentCallFrameOfState
   , currentPathMem
 
     -- * Path information
@@ -377,7 +376,7 @@ pathStackReturnValue :: Simple Traversal (PathStack sbe) (SBETerm sbe)
 pathStackReturnValue f (FinStack mr) = FinStack <$> (_Just . _1) f mr 
 pathStackReturnValue _ ps = pure ps
 
-
+-- | Return height of path stack.
 pathStackHt' :: PathStack sbe -> Int
 pathStackHt' (CallStack stk) = callStackHt stk
 pathStackHt' FinStack{} = 0
@@ -663,10 +662,6 @@ onUserInterrupt = lens _onUserInterrupt (\s v -> s { _onUserInterrupt = v })
 -- | Traversal for current path of simulator state.
 currentPathOfState :: Simple Traversal (State sbe m) (Path sbe)
 currentPathOfState = ctrlStk . _Just . currentPath
-
--- | Traverse current path of simulator state.
-currentCallFrameOfState :: Simple Traversal (State sbe m) (CallFrame sbe)
-currentCallFrameOfState = currentPathOfState . pathStack . pathStackCallFrames
 
 -- | Traversal for current path memory if any.
 currentPathMem :: Simple Traversal (State sbe m) (SBEMemory sbe)

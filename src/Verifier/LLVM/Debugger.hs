@@ -10,15 +10,16 @@ semantics are loosely based on gdb.
 
 -}
 
-{-# LANGUAGE CPP                 #-}
-{-# LANGUAGE DoAndIfThenElse     #-}
-{-# LANGUAGE GADTs               #-}
-{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DoAndIfThenElse #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE Rank2Types          #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGe PatternGuards #-}
+{-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ViewPatterns        #-}
+{-# LANGUAGE ViewPatterns #-}
 module Verifier.LLVM.Debugger
   ( initializeDebugger
   , addBreakpoint
@@ -66,6 +67,14 @@ import Verifier.LLVM.Utils.PrettyPrint
 import Control.Concurrent (myThreadId)
 import System.Posix.Signals
 #endif
+
+-- | Treat as IORef as a state transformer.
+withIORef :: MonadIO m => IORef s -> MTL.StateT s m a -> m a
+withIORef r m = do
+  s <- liftIO $ readIORef r 
+  (v,s') <- MTL.runStateT m s
+  liftIO $ writeIORef r $! s'
+  return v
 
 -- | Break on entry to the function.
 breakOnEntry :: (Functor m, Monad m)
@@ -117,7 +126,7 @@ resetInterrupt = do
 checkForBreakpoint :: (Functor sbe, Functor m, MonadException m)
                    => DebuggerRef sbe m -> Simulator sbe m ()
 checkForBreakpoint r = do
-  mcf <- preuse currentCallFrameOfState
+  mcf <- preuse $ currentPathOfState . pathCallFrames
   case mcf of
     Just cf -> do
       mbps <- use $ breakpoints . at (sdName (cfFunc cf))
@@ -129,8 +138,7 @@ setPrevCommand :: MonadIO m
                => DebuggerRef sbe m'
                -> Debugger sbe m' ()
                -> m ()
-setPrevCommand dr cmd = do
-  liftIO $ modifyIORef dr $! onNoInput .~ cmd
+setPrevCommand dr cmd = withIORef dr $ onNoInput .= cmd
 
 runNextCommand :: (Functor sbe, Functor m, MonadException m)
                => DebuggerCont sbe m
@@ -155,9 +163,26 @@ runNextCommand dr = do
 data DebuggerState sbe m 
    = DebuggerState { -- | Grammar to use for parsing commands
                      dsGrammar :: SimGrammar sbe m
+                   , _selectedFrame :: Int
                    , _onNoInput :: Debugger sbe m ()
                    , _resumeThrowsError :: Bool
                    }
+
+-- | Create initial debugger state.
+initialState :: (Functor sbe, Functor m, MonadException m)
+             => Codebase sbe
+             -> DebuggerState sbe m
+initialState cb = 
+  DebuggerState { dsGrammar = allCmds cb
+                , _selectedFrame = 0
+                , _onNoInput = return ()
+                , _resumeThrowsError = False
+                }
+
+-- | Index of frame selected in the debugger.
+-- 0 is the top frame.
+selectedFrame :: Simple Lens (DebuggerState sbe m) Int
+selectedFrame = lens _selectedFrame (\s v -> s { _selectedFrame = v })
 
 -- | Command to run if no input is provided.
 onNoInput :: Simple Lens (DebuggerState sbe m) (Debugger sbe m ())
@@ -167,6 +192,7 @@ onNoInput = lens _onNoInput (\s v -> s { _onNoInput = v })
 resumeThrowsError :: Simple Lens (DebuggerState sbe m) Bool
 resumeThrowsError = lens _resumeThrowsError (\s v -> s { _resumeThrowsError = v })
 
+-- | Reference to persistent debugger state.
 type DebuggerRef sbe m = IORef (DebuggerState sbe m)
 
 type DebuggerCont sbe m
@@ -178,7 +204,6 @@ newtype Debugger sbe m a
                                -> DebuggerCont sbe m
                  }
 
-
 instance Functor (Debugger sbe m) where
   fmap f d = Debugger (\c -> runDebugger d (c . f))
 
@@ -187,8 +212,7 @@ instance Applicative (Debugger sbe m) where
   mf <*> mv = Debugger $ \c -> do
     runDebugger mf (\f -> runDebugger mv (c.f))
 
-instance (Functor sbe, Functor m, MonadException m)
-      => Monad (Debugger sbe m) where
+instance (Functor sbe, Functor m, MonadException m) => Monad (Debugger sbe m) where
   m >>= h = Debugger $ \c -> runDebugger m (\v -> runDebugger (h v) c)
   return v = Debugger ($v)
   fail m = Debugger $ \_c dr -> do
@@ -201,8 +225,7 @@ instance (Functor sbe, Functor m, MonadException m)
   get   = Debugger $ \c r -> liftIO (readIORef r) >>= flip c r
   put v = Debugger $ \c r -> liftIO (writeIORef r v) >> c () r
 
-instance (Functor sbe, Functor m, MonadException m)
-      => MonadIO (Debugger sbe m) where
+instance (Functor sbe, Functor m, MonadException m) => MonadIO (Debugger sbe m) where
   liftIO m = Debugger (\c r -> liftIO m >>= flip c r)
 
 getDebuggerRef :: Debugger sbe m (DebuggerRef sbe m)
@@ -220,16 +243,35 @@ initializeDebugger :: (Functor sbe, Functor m, MonadException m)
                    => Simulator sbe m (DebuggerRef sbe m)
 initializeDebugger = do
   cb <- gets codebase
-  let grammar = allCmds cb
-  let ds = DebuggerState { dsGrammar = grammar
-                         , _onNoInput = return ()
-                         , _resumeThrowsError = False
-                         }
-  r <- liftIO $ newIORef ds
+  r <- liftIO $ newIORef (initialState cb)
   onPathPosChange .= checkForBreakpoint r
   onSimError      .= enterDebuggerOnError r
   onUserInterrupt .= enterDebuggerOnInterrupt r
   return r
+
+-- | Enter debugger repl.
+enterDebugger :: (Functor sbe, Functor m, MonadException m)
+              => DebuggerRef sbe m
+              -> Bool -- ^ Indicates if debugger was entered due to error in current path.
+              -> Simulator sbe m ()
+enterDebugger r eoe = do
+  -- Print path location.
+  mcs <- use ctrlStk
+  case mcs of
+    Just cs | pathIsActive (cs^.currentPath) -> do
+      let p = cs^.currentPath                  
+      dbugM $ show $ indent 2 (text "at" <+> ppPathNameAndLoc p)
+    _ -> dbugM "No active execution path."
+  -- Update debugger state.
+  withIORef r $ do
+    selectedFrame .= 0
+    resumeThrowsError .= eoe
+  -- Run command.
+  grammar <- liftIO $ dsGrammar <$> readIORef r
+  historyPath <- liftIO getLSSHistoryPath
+  let settings = setComplete (matcherCompletions grammar)
+               $ defaultSettings { historyFile = historyPath }
+  runInputT settings (runNextCommand r)
 
 enterDebuggerOnError :: (Functor sbe, Functor m, MonadException m)
                      => DebuggerRef sbe m
@@ -259,20 +301,6 @@ enterDebuggerAtBreakpoint :: (Functor sbe, Functor m, MonadException m)
 enterDebuggerAtBreakpoint dr = do
   dbugM "Encountered breakpoint"
   enterDebugger dr False
-
-enterDebugger :: (Functor sbe, Functor m, MonadException m)
-              => DebuggerRef sbe m
-              -> Bool -- ^ Indicates if debugger was entered due to error in current path.
-              -> Simulator sbe m ()
-enterDebugger r eoe = do
-  liftIO $ modifyIORef r $ resumeThrowsError .~ eoe
-  withActivePath () $ \p -> do
-    dbugM $ show $ indent 2 (text "at" <+> ppPathNameAndLoc p)
-  grammar <- liftIO $ dsGrammar <$> readIORef r
-  historyPath <- liftIO getLSSHistoryPath
-  let settings = setComplete (matcherCompletions grammar)
-               $ defaultSettings { historyFile = historyPath }
-  runInputT settings (runNextCommand r)
 
 ------------------------------------------------------------------------
 -- Completions
@@ -355,14 +383,16 @@ resumeActivePath :: (Functor sbe, Functor m, MonadException m)
                  => (Path sbe -> Simulator sbe m ())
                  -> Debugger sbe m ()
 resumeActivePath action = do
-  c <- warnIfResumeThrowsError
-  when c $ do
-    join $ runSim $ do
-      withActivePath (return ()) $ \p -> 
-        action p >> return resume
+  continueResume <- warnIfResumeThrowsError
+  when continueResume $ 
+    withActivePath () $ \p -> do
+      runSim (action p)
+      resume
+
+type DebuggerGrammar a = Grammar Identity a
 
 type SimGrammar sbe m = (Functor sbe, Functor m, MonadException m)
-                     => Grammar Identity (Debugger sbe m ())
+                     => DebuggerGrammar (Debugger sbe m ())
 
 commandHelp :: Grammar m a -> Doc
 commandHelp cmds = 
@@ -423,6 +453,12 @@ locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
                m = foldl insertName emptyNameMap (M.keys (sdBody d))
 
 
+optNatArg :: -- ^ Default value if argument is missing.
+             Integer
+          -> DebuggerGrammar (Integer -> Debugger sbe m ())
+          -> DebuggerGrammar (Debugger sbe m ())
+optNatArg def g = (fromMaybe def <$> opt nat) <**> g
+
 -- | List of commands for debugger.
 allCmds :: Codebase sbe -> SimGrammar sbe m
 allCmds cb = res 
@@ -437,6 +473,13 @@ allCmds cb = res
             -- Information about current path.
             <||> keyword "info"   *> infoCmd
             <||> keyword "list"   *> listCmd cb
+            -- Stack control
+            <||> hide (keyword "bt"     *> backtraceCmd)
+            <||> keyword "backtrace"    *> backtraceCmd
+            <||> keyword "frame"        *> frameCmd
+            <||> keyword "up"           *> upFrameCmd
+            <||> keyword "down"         *> downFrameCmd
+            <||> keyword "select_frame" *> selectFrameCmd
             -- Function for switching between paths
             <||> keyword "path" *> pathCmd
             -- Control and information about debugger.
@@ -528,6 +571,8 @@ deleteCmd cb = (opt (locSeq cb) <**>) $ cmdDef desc $ \mbp -> do
         case mbp of
           Just (b,p) -> removeBreakpoint b p
           Nothing -> dbugM "Remove all breakpoints"
+            --TODO: implement this.
+
   where desc = "Clear a breakpoint at a function."
 
 concatBreakpoints :: M.Map Symbol (S.Set Breakpoint)
@@ -544,19 +589,19 @@ infoCmd
   <||> keyword "function"    *> infoFunctionCmd
   <||> keyword "locals"      *> infoLocalsCmd
   <||> keyword "memory"      *> infoMemoryCmd
-  <||> keyword "stack"       *> infoStackCmd
+  <||> keyword "stack"       *> backtraceCmd
 
 infoArgsCmd :: SimGrammar sbe m
 infoArgsCmd =
   cmdDef "Print argument variables in the current stack frame." $ do
-    runSim $ withActiveCallFrame () $ \cf -> do
+    withActiveCallFrame () $ \cf -> do
       sbe <- gets symBE
       dbugM $ show $ ppLocals sbe $ cfArgValues cf
 
 infoBlockCmd :: SimGrammar sbe m
 infoBlockCmd =
   cmdDef "Print block information." $ do
-    runSim $ withActiveCallFrame () $ \cf -> do
+    withActiveCallFrame () $ \cf -> do
       dbugM $ show $ ppSymBlock $ cfBlock cf
 
 infoBreakpointsCmd :: SimGrammar sbe m
@@ -580,13 +625,13 @@ infoCtrlStkCmd =
 infoFunctionCmd :: SimGrammar sbe m
 infoFunctionCmd =
   cmdDef "Print function information." $ do
-    runSim $ withActiveCallFrame () $ \cf -> do
+    withActiveCallFrame () $ \cf -> do
       dbugM $ show $ ppSymDefine (cfFunc cf)
 
 infoLocalsCmd :: SimGrammar sbe m
 infoLocalsCmd =
   cmdDef "Print local variables in the current stack frame." $ do
-    runSim $ withActiveCallFrame () $ \cf -> do
+    withActiveCallFrame () $ \cf -> do
       sbe <- gets symBE
       dbugM $ show $ ppLocals sbe $ cfLocalValues cf
 
@@ -594,23 +639,6 @@ infoMemoryCmd :: SimGrammar sbe m
 infoMemoryCmd =
   cmdDef "Print memory information." $ do
     runSim $ dumpMem 0 "memory"
-
---TODO: Revisit this command to check formatting.
-infoStackCmd :: SimGrammar sbe m
-infoStackCmd = cmdDef "Print backtrace of the stack." $ do
-  runSim $ withActivePath () $ \p -> do
-    sbe <- gets symBE
-    let ppFrameLoc i cf = char '#' <> text (show i `padRight` 2)
-                          <+> ppSymbol (sdName (cfFunc cf))
-                          <> parens (commaSepList argDocs)
-                          <+> text "at"
-                          <+> ppLocation (cf^.cfLocation)
-          where argDocs = ppArg <$> cfArgValues cf 
-                ppArg (nm,v) =
-                  ppIdent nm <> char '=' <+> prettyTermD sbe v
-
-    dbugM $ show $ indent 2 $ vcat $
-      zipWith ppFrameLoc [(0::Int)..] (p^..pathCallFrames)
 
 listCmd :: Codebase sbe -> SimGrammar sbe m
 listCmd cb = (locSeq cb <**>) $ cmdDef "List specified function in line." $ \loc -> do
@@ -652,26 +680,30 @@ withActiveCS v action = do
     _ -> dbugM "No active execution path." >> return v
 
 -- | @withActivePath v act@ runs @act@ with the active path
-withActivePath :: MonadIO m
+withActivePath :: (Functor sbe, Functor m, MonadException m)
                => a
-               -> (Path sbe -> Simulator sbe m a)
-               -> Simulator sbe m a
+               -> (Path sbe -> Debugger sbe m a)
+               -> Debugger sbe m a
 withActivePath v action = do
-  mcs <- use ctrlStk
+  mcs <- runSim $ use ctrlStk
   case mcs of
     Just cs | pathIsActive (cs^.currentPath) -> action (cs^.currentPath)
     _ -> dbugM "No active execution path." >> return v
 
 -- | @withActiveCallFrame v act@ runs @act@ with the active call frame.
-withActiveCallFrame :: MonadIO m
+withActiveCallFrame :: (Functor sbe, Functor m, MonadException m)
                     => a
                     -> (CallFrame sbe -> Simulator sbe m a)
-                    -> Simulator sbe m a
+                    -> Debugger sbe m a
 withActiveCallFrame v action = do
-  mcf <- preuse currentCallFrameOfState
-  case mcf of
-    Just cf -> action cf
-    _ -> dbugM "No active execution path." >> return v
+  i <- use selectedFrame
+  runSim $ do
+    mp <- preuse currentPathOfState
+    case mp of
+      -- Get call frame if pth is active.
+      Just p | cf:_ <- drop i (p^..pathCallFrames) -> do
+        action cf
+      _ -> dbugM "No active execution path." >> return v
 
 continueCmd :: SimGrammar sbe m
 continueCmd = cmdDef "Continue execution." $ do
@@ -679,7 +711,7 @@ continueCmd = cmdDef "Continue execution." $ do
   resumeActivePath $ \_ -> do
     onPathPosChange .= checkForBreakpoint dr
 
-onReturnFrom :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+onReturnFrom :: (Functor sbe, Functor m, MonadException m)
              => DebuggerRef sbe m -> Int -> Simulator sbe m ()
 onReturnFrom dr ht = do
   Just p <- preuse currentPathOfState
@@ -696,17 +728,101 @@ finishCmd = cmdDef desc $ do
   where desc = "Execute until the current stack frame returns."
 
 enterDebuggerAfterNSteps
-  :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+  :: (Functor sbe, Functor m, MonadException m) 
   => DebuggerRef sbe m -> Integer -> Simulator sbe m ()
 enterDebuggerAfterNSteps dr n
   | n <= 1 = enterDebugger dr False
   | otherwise = onPathPosChange .= enterDebuggerAfterNSteps dr (n-1)
 
 stepiCmd :: SimGrammar sbe m
-stepiCmd = (opt nat <**>) $
-  cmdDef "Execute one symbolic statement" $ \mc -> do
-    let c = fromMaybe 1 mc
+stepiCmd = optNatArg 1 $
+  cmdDef "Execute one symbolic statement." $ \c -> do
     when (c > 0) $ do
       dr <- getDebuggerRef
       resumeActivePath $ \_ -> do
         onPathPosChange .= enterDebuggerAfterNSteps dr c
+
+
+------------------------------------------------------------------------
+-- Stack frame commands.
+
+-- | Pretty print the location of the frame.
+ppFrameLoc :: SBE sbe -> Int -> CallFrame sbe -> Doc
+ppFrameLoc sbe i cf =
+   char '#' <> text (show i `padRight` 2)
+   <+> ppSymbol (sdName (cfFunc cf)) <> parens (commaSepList argDocs)
+   <+> text "at" <+> ppLocation (cf^.cfLocation)
+  where argDocs = ppArg <$> cfArgValues cf 
+        ppArg (nm,v) =
+          ppIdent nm <> char '=' <+> prettyTermD sbe v
+
+-- | Run action with call frame list if path is active.
+withActiveStack :: (Functor sbe, Functor m, MonadException m)
+                => ([CallFrame sbe] -> Debugger sbe m ())
+                -> Debugger sbe m ()
+withActiveStack action = do
+  mp <- runSim $ preuse currentPathOfState
+  case mp of
+    Just p | cfl <- p^..pathCallFrames, not (null cfl) -> action cfl
+    _ -> dbugM "No stack."
+
+-- | @selectFrame i action@ checks that @i@ is a valid frame,
+-- and is so, selects the frame and runs @action@ with the frame.
+selectFrame :: (Functor sbe, Functor m, MonadException m)
+            => Int -> (CallFrame sbe -> Debugger sbe m ()) -> Debugger sbe m ()
+selectFrame i action =
+  withActiveStack $ \cfl -> do
+    if 0 <= i && i < length cfl then do
+      selectedFrame .= i
+      action (cfl !! i)
+    else do
+      dbugM $ "No frame #" ++ show i ++ "."
+
+printFrameLoc :: MonadIO m => Int -> CallFrame sbe -> Debugger sbe m ()
+printFrameLoc i cf = runSim $ do
+  sbe <- gets symBE
+  dbugM $ show $ ppFrameLoc sbe i cf
+
+-- | Print backtrace of the stack.
+backtraceCmd :: SimGrammar sbe m
+backtraceCmd = cmdDef "Print backtrace of the stack." $ do
+  withActivePath () $ \p -> do
+    zipWithM_ printFrameLoc [0..] (p^..pathCallFrames)
+
+-- | Select a specific frame.
+selectFrameCmd :: SimGrammar sbe m
+selectFrameCmd = (<**>) nat $
+  cmdDef "Select a stack frame without printing anything." $ \(fromInteger -> i) -> do
+    selectFrame i $ \_ -> return ()
+
+-- | Select a frame and print it's location.
+frameCmd :: SimGrammar sbe m
+frameCmd = (<**>) nat $
+  cmdDef "Select and print a stack frame." $ \(fromInteger -> i) -> do
+    selectFrame i $ \cf -> do
+      printFrameLoc i cf
+
+upFrameCmd :: SimGrammar sbe m
+upFrameCmd = optNatArg 1 $
+  cmdDef "Select and print stack frame that called this one." $ \c -> do
+    withActiveStack $ \cfl -> do
+      i <- use selectedFrame
+      if i > 0 then do
+        let i' = max 0 (i - fromInteger c)
+        selectedFrame .= i'
+        printFrameLoc i' $ cfl !! i'
+      else do
+        dbugM "Initial frame already selected; you cannot go up."
+
+downFrameCmd :: SimGrammar sbe m
+downFrameCmd = optNatArg 1 $
+  cmdDef "Select and print stack frame called by this one." $ \c -> do
+    withActiveStack $ \cfl -> do
+      i <- use selectedFrame
+      let maxIdx = length cfl - 1
+      if i < maxIdx then do
+        let i' = min maxIdx (i + fromInteger c)
+        selectedFrame .= i'
+        printFrameLoc i' $ cfl !! i'
+      else do
+        dbugM "Bottom frame selected; you cannot go down."
