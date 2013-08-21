@@ -39,6 +39,7 @@ import Text.PrettyPrint.Leijen hiding ((<$>), (</>))
 import qualified Text.PrettyPrint.Leijen as PP
 
 import Verifier.LLVM.Debugger.FreeApp
+import Verifier.LLVM.Utils.PrettyPrint
 
 ------------------------------------------------------------------------
 -- Generic
@@ -46,9 +47,6 @@ import Verifier.LLVM.Debugger.FreeApp
 unionMaybe :: (a -> a -> a) -> Maybe a -> Maybe a -> Maybe a
 unionMaybe u (Just x) y = Just (maybe x (u x) y)
 unionMaybe _ Nothing y  = y
-
-commaSepList :: [Doc] -> Doc
-commaSepList l = hcat (punctuate (comma PP.<> char ' ') l)
 
 ------------------------------------------------------------------------
 -- List utilities

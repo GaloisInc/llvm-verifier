@@ -71,7 +71,8 @@ import qualified Data.Vector as V
 import Data.Word (Word32, Word64)
 import qualified Text.LLVM as L
 import Text.PrettyPrint.Leijen hiding ((<$>))
-import Verifier.LLVM.Utils
+import Verifier.LLVM.Utils.Arithmetic
+import Verifier.LLVM.Utils.PrettyPrint
 
 ppIdent :: L.Ident -> Doc
 ppIdent = text . show . L.ppIdent

@@ -66,7 +66,7 @@ import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.MemModel.Geometry
 import Verifier.LLVM.Simulator.SimUtils
-import Verifier.LLVM.Utils
+import Verifier.LLVM.Utils.Arithmetic
 
 -- Utility functions and declarations {{{1
 

@@ -84,7 +84,6 @@ import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Map as M
 import           Data.Maybe
-import qualified Data.Vector as V
 import System.Console.Haskeline.MonadException (MonadException, handle, throwIO)
 import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
 
@@ -135,11 +134,9 @@ runSimulator :: forall sbe a .
   -> Simulator sbe IO a     -- ^ Simulator action to perform
   -> IO a
 runSimulator cb sbe mem mopts m = do
-  let lifter :: forall v . sbe v -> Simulator sbe IO v
-      lifter = SM . lift . lift . sbeRunIO sbe
   let newSt = State { codebase     = cb
                     , symBE        = sbe
-                    , liftSymBE    = lifter
+                    , liftSymBE    = sbeRunIO sbe
                     , verbosity    = 6
                     , lssOpts      = fromMaybe defaultLSSOpts mopts
                     , _ctrlStk     = Just $ initialCtrlStk sbe mem
@@ -377,13 +374,8 @@ run = do
             handle userIntHandler $ do
               flip catchError onError $ do
                let cf =  stk^.topCallFrame 
-               -- Get name of function we are in.
-               let sym = cfFuncSym cf 
-               let (pcb,pc) = cf^.cfBlock
-               -- Get statement to execute
-               Just def <- lookupDefine sym <$> gets codebase
-               let sb = lookupSymBlock def pcb
-               let stmt = sbStmts sb V.! pc
+               -- Get statement to execute next.
+               let stmt = cfStmt cf
                -- Log what we're about to execute
                whenVerbosity (>=2) $ do
                  let p = cs^.currentPath
@@ -503,9 +495,7 @@ runEvaluator ::
 runEvaluator nm m = do
   ec <- getCurrentEvalContext nm
   mr <- liftIO $ runReaderT (runErrorT m) ec
-  case mr of
-    Left (FailRsn fr) -> errorPath fr
-    Right v -> return v
+  either throwError return mr
 
 evalExpr :: SymValue (SBETerm sbe)
          -> Evaluator sbe (SBETerm sbe)
@@ -645,8 +635,8 @@ step (Switch w sv defBlock cases ml) = do
         Just cb -> setCurrentBlock cb
         Nothing -> setCurrentBlock defBlock
     Nothing -> do
-      preds <- mapM (mkIEqPred v w) (M.keys cases)
-      notPred <- andAll =<< mapM negatePred preds
+      preds <- traverse (mkIEqPred v w) (M.keys cases)
+      notPred <- andAll =<< traverse negatePred preds
       let casePairs = preds `zip` M.elems cases
           defPair = (notPred, defBlock)
       splitBranches (casePairs ++ [defPair]) ml
