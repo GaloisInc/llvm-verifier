@@ -85,6 +85,7 @@ appendContext d Empty = d
 appendContext d (OnLeft  s c b l) = OnLeft  (s+size d) (appendContext d c) b l
 appendContext d (OnRight s c b r) = OnRight (s+size d) (appendContext d c) b r
 
+-- | @instContext' c v@ returns the tree @c[a]@. 
 instContext' :: TreeContext b a -> a -> CursorTree b a
 instContext' d a =
   case d of
@@ -207,6 +208,8 @@ toStack' Empty s = s
 toStack' (OnRight _ c b r) l = toStack' c (consRight b l r) -- c[s >< u]
 toStack' (OnLeft  _ c b l) r = toStack' c (consLeft b l r) -- c[l >< r]
 
+-- | View the tree as either a single element or a branch with a left and right
+-- branch.
 topView :: CursorTree b a -> Either a (b, Orientation, CursorTree b a, CursorTree b a)
 topView t =
   case toStack t of

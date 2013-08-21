@@ -60,6 +60,7 @@ import Verifier.LLVM.Codebase
 import Verifier.LLVM.Debugger.Grammar
 import Verifier.LLVM.Simulator.Internals
 import Verifier.LLVM.Simulator.SimUtils
+import Verifier.LLVM.Utils.PrettyPrint
 
 #if !defined(mingw32_HOST_OS) && !defined(__MINGW32__)
 import Control.Concurrent (myThreadId)
@@ -119,8 +120,8 @@ checkForBreakpoint r = do
   mcf <- preuse currentCallFrameOfState
   case mcf of
     Just cf -> do
-      mbps <- use $ breakpoints . at (cfFuncSym cf)
-      let atBP = fromMaybe False $ S.member (cf^.cfBlock) <$> mbps
+      mbps <- use $ breakpoints . at (sdName (cfFunc cf))
+      let atBP = fromMaybe False $ S.member (cf^.cfLocation) <$> mbps
       when atBP (enterDebuggerAtBreakpoint r)
     Nothing -> return ()
 
@@ -221,7 +222,7 @@ initializeDebugger = do
   cb <- gets codebase
   let grammar = allCmds cb
   let ds = DebuggerState { dsGrammar = grammar
-                         , _onNoInput = undefined
+                         , _onNoInput = return ()
                          , _resumeThrowsError = False
                          }
   r <- liftIO $ newIORef ds
@@ -462,7 +463,7 @@ pathListCmd = cmdDef "List all current execution paths." $ runSim $ do
       dbugM "No active paths."
     Just cs -> dbugM $ show $ printTable table
       where ppPathItem :: Integer -> Path sbe -> [String]
-            ppPathItem i p = [ padRightMin 3 (show i)
+            ppPathItem i p = [ 3 `padLeft` (show i)
                              , show (ppPathNameAndLoc p)
                              ]              
             -- Header for table.
@@ -534,27 +535,29 @@ concatBreakpoints :: M.Map Symbol (S.Set Breakpoint)
 concatBreakpoints m =
   [ (sym,bp) | (sym, bps) <- M.toList m, bp <- S.toList bps ]
 
-equalSep :: Doc -> Doc -> Doc
-equalSep x y = x <+> char '=' <+> y
-
 infoCmd :: SimGrammar sbe m
 infoCmd
-  = keyword "block" *> infoBlockCmd
+  =    keyword "args"        *> infoArgsCmd
+  <||> keyword "block"       *> infoBlockCmd
   <||> keyword "breakpoints" *> infoBreakpointsCmd
-  <||> keyword "ctrlstk"  *> infoCtrlStkCmd
-  <||> keyword "function" *> infoFunctionCmd
-  <||> keyword "locals" *> infoLocalsCmd
-  <||> keyword "memory" *> infoMemoryCmd
-  <||> keyword "stack"  *> infoStackCmd
+  <||> keyword "ctrlstk"     *> infoCtrlStkCmd
+  <||> keyword "function"    *> infoFunctionCmd
+  <||> keyword "locals"      *> infoLocalsCmd
+  <||> keyword "memory"      *> infoMemoryCmd
+  <||> keyword "stack"       *> infoStackCmd
+
+infoArgsCmd :: SimGrammar sbe m
+infoArgsCmd =
+  cmdDef "Print argument variables in the current stack frame." $ do
+    runSim $ withActiveCallFrame () $ \cf -> do
+      sbe <- gets symBE
+      dbugM $ show $ ppLocals sbe $ cfArgValues cf
 
 infoBlockCmd :: SimGrammar sbe m
 infoBlockCmd =
   cmdDef "Print block information." $ do
     runSim $ withActiveCallFrame () $ \cf -> do
-      let sym = cfFuncSym cf
-          (pcb,_) = cf^.cfBlock
-      Just def <- lookupDefine sym <$> gets codebase
-      dbugM $ show $ ppSymBlock $ lookupSymBlock def pcb
+      dbugM $ show $ ppSymBlock $ cfBlock cf
 
 infoBreakpointsCmd :: SimGrammar sbe m
 infoBreakpointsCmd =
@@ -574,25 +577,18 @@ infoCtrlStkCmd =
   cmdDef "Print the entire control stack." $ do
     runSim dumpCtrlStk
 
-dumpSymDefine :: MonadIO m => m (Codebase sbe) -> Symbol -> m ()
-dumpSymDefine getCB sym = getCB >>= \cb ->
-  liftIO $ putStrLn $ show $ (ppSymDefine `fmap` lookupDefine sym cb)
-
 infoFunctionCmd :: SimGrammar sbe m
 infoFunctionCmd =
   cmdDef "Print function information." $ do
     runSim $ withActiveCallFrame () $ \cf -> do
-      dumpSymDefine (gets codebase) (cfFuncSym cf)
+      dbugM $ show $ ppSymDefine (cfFunc cf)
 
 infoLocalsCmd :: SimGrammar sbe m
 infoLocalsCmd =
-  cmdDef "Print local variables in current stack frame." $ do
+  cmdDef "Print local variables in the current stack frame." $ do
     runSim $ withActiveCallFrame () $ \cf -> do
       sbe <- gets symBE
-      let locals = M.toList (cf^.cfRegs)
-          ppLocal (nm, (v,_)) =
-            ppIdent nm `equalSep` prettyTermD sbe v           
-      dbugM $ show $ vcat $ ppLocal <$> locals
+      dbugM $ show $ ppLocals sbe $ cfLocalValues cf
 
 infoMemoryCmd :: SimGrammar sbe m
 infoMemoryCmd =
@@ -603,18 +599,32 @@ infoMemoryCmd =
 infoStackCmd :: SimGrammar sbe m
 infoStackCmd = cmdDef "Print backtrace of the stack." $ do
   runSim $ withActivePath () $ \p -> do
-    let syms = cfFuncSym <$> (p^..pathCallFrames)
-    dbugM $ show $ indent 2 $ vcat $ ppSymbol <$> syms
+    sbe <- gets symBE
+    let ppFrameLoc i cf = char '#' <> text (show i `padRight` 2)
+                          <+> ppSymbol (sdName (cfFunc cf))
+                          <> parens (commaSepList argDocs)
+                          <+> text "at"
+                          <+> ppLocation (cf^.cfLocation)
+          where argDocs = ppArg <$> cfArgValues cf 
+                ppArg (nm,v) =
+                  ppIdent nm <> char '=' <+> prettyTermD sbe v
+
+    dbugM $ show $ indent 2 $ vcat $
+      zipWith ppFrameLoc [(0::Int)..] (p^..pathCallFrames)
 
 listCmd :: Codebase sbe -> SimGrammar sbe m
 listCmd cb = (locSeq cb <**>) $ cmdDef "List specified function in line." $ \loc -> do
   error "internal: listCmd undefined" loc
 
--- | @padRightMin n s@ adds extra spaces before @s@ so that the result has
+-- | @padLeft n s@ adds extra spaces before @s@ so that the result has
 -- at least @n@ characters.
-padRightMin :: Int -> String -> String
-padRightMin l s | length s < l = replicate (l - length s) ' ' ++ s
-                | otherwise = s
+padLeft :: Int -> String -> String
+padLeft l s = replicate (l - length s) ' ' ++ s
+
+-- | @padRight n s@ adds extra spaces after @s@ so that the result has
+-- at least @n@ characters.
+padRight :: String -> Int -> String
+padRight s l = s ++ replicate (l - length s) ' '
 
 printTable :: [[String]] -> Doc
 printTable m = vcat padded
@@ -624,8 +634,7 @@ printTable m = vcat padded
         -- Maximum lengths of each column.          
         ll = fmap length <$> m
         maxLengths = foldr maxl (repeat 0) ll
-        pad l s = text (s ++ replicate (l - length s) ' ')
-        padded = hsep . zipWith pad maxLengths <$> m
+        padded = hsep . fmap text . zipWith padLeft maxLengths <$> m
 
 ppBreakpoint :: Breakpoint -> Doc
 ppBreakpoint (sbid,0) = ppSymBlockID sbid 

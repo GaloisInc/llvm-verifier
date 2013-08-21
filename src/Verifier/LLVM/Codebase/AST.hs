@@ -61,7 +61,7 @@ import qualified Text.LLVM.AST as L
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import Verifier.LLVM.Codebase.DataLayout
-import Verifier.LLVM.Utils
+import Verifier.LLVM.Utils.PrettyPrint
 
 ppSymbol :: L.Symbol -> Doc
 ppSymbol = text . show . L.ppSymbol
