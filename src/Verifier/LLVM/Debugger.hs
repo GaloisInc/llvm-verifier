@@ -802,6 +802,7 @@ frameCmd = (<**>) nat $
     selectFrame i $ \cf -> do
       printFrameLoc i cf
 
+-- | Move up one or more frames to a function that called the current frame.
 upFrameCmd :: SimGrammar sbe m
 upFrameCmd = optNatArg 1 $
   cmdDef "Select and print stack frame that called this one." $ \c -> do
@@ -814,6 +815,7 @@ upFrameCmd = optNatArg 1 $
       else do
         dbugM "Initial frame already selected; you cannot go up."
 
+-- | Move down one or more frames to a function called by the current frame.
 downFrameCmd :: SimGrammar sbe m
 downFrameCmd = optNatArg 1 $
   cmdDef "Select and print stack frame called by this one." $ \c -> do
