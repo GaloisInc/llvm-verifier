@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE ImplicitParams      #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}

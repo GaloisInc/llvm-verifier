@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : jhendrix
 -}
 
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
