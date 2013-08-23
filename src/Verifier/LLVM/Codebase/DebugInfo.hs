@@ -1,4 +1,5 @@
 {-# LANGUAGE Rank2Types #-}
+{-# OPTIONS_GHC -O0 #-}
 module Verifier.LLVM.Codebase.DebugInfo 
   ( -- * Reader
     DebugInfo
