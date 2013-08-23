@@ -472,7 +472,7 @@ allCmds cb = res
             <||> keyword "stepi" *> stepiCmd
             -- Information about current path.
             <||> keyword "info"   *> infoCmd
-            <||> keyword "list"   *> listCmd cb
+--            <||> keyword "list"   *> listCmd cb
             -- Stack control
             <||> hide (keyword "bt"     *> backtraceCmd)
             <||> keyword "backtrace"    *> backtraceCmd
@@ -640,9 +640,11 @@ infoMemoryCmd =
   cmdDef "Print memory information." $ do
     runSim $ dumpMem 0 "memory"
 
+{-
 listCmd :: Codebase sbe -> SimGrammar sbe m
 listCmd cb = (locSeq cb <**>) $ cmdDef "List specified function in line." $ \loc -> do
   error "internal: listCmd undefined" loc
+-}
 
 -- | @padLeft n s@ adds extra spaces before @s@ so that the result has
 -- at least @n@ characters.
