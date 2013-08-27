@@ -5,6 +5,7 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE ImplicitParams      #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,9 +13,10 @@ Point-of-contact : jstanley
 {-# OPTIONS_GHC -fno-warn-unused-do-bind #-}
 
 module Verifier.LLVM.Codebase
-  ( module Verifier.LLVM.LLVMContext
-  , Global(..)
+  ( Global(..)
+  , GlobalNameMap
   , Codebase
+  , mkCodebase
   , cbLLVMContext
   , cbDataLayout
   , cbGlobalNameMap
@@ -22,14 +24,20 @@ module Verifier.LLVM.Codebase
   , cbFunctionTypes
   , cbDefs
   , cbUndefinedFns
-  , dumpSymDefine
-  , loadModule
-  , mkCodebase
-  , loadCodebase
   , lookupDefine
   , lookupSym
   , lookupFunctionType
+    -- * Translation utilities.
   , liftStringValue
+    -- * Loading utilities.
+  , loadModule
+  , loadCodebase
+    -- * LLVMContext re-exports.
+  , LLVMContext
+  , compatMemTypeLists
+  , compatRetTypes
+    -- * AST re-exports.
+  , module Verifier.LLVM.Codebase.AST
   )
 
 where
@@ -47,9 +55,10 @@ import qualified Data.Map                       as M
 import qualified Text.LLVM                      as LLVM
 import qualified Text.LLVM                      as L
 
-import           Verifier.LLVM.LLVMContext
-import           Verifier.LLVM.AST
-import           Verifier.LLVM.Translation
+import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.AST
+import Verifier.LLVM.Codebase.LLVMContext
+import Verifier.LLVM.Codebase.Translation
 
 -- NB: We assume for the moment that we can be given a single .bc input (whether
 -- or not we invoke the llvm linker ourselves in order to do this is something
@@ -109,8 +118,63 @@ lookupSym :: LLVM.Symbol
 lookupSym sym cb = cb^.cbGlobalName sym
 
 lookupDefine :: LLVM.Symbol -> Codebase sbe -> Maybe (SymDefine (SBETerm sbe))
-lookupDefine sym = lookupSym sym >=> (^? _Right)
+lookupDefine sym cb = cb^.cbGlobalName sym >>= (^? _Right)
 
+-- | Create codebase from backend, parsed datalayout and module.
+-- Return warnings during loading.
+mkCodebase :: SBE sbe
+           -> DataLayout
+           -> L.Module
+           -> IO ([Doc], Codebase sbe)
+mkCodebase sbe dl mdl = do
+  let (err0, lc) = mkLLVMContext dl (L.modTypes mdl)
+
+  let cb0 = Codebase { cbLLVMContext = lc
+                     , _cbGlobalNameMap = M.empty
+                     , _cbFunctionTypes = M.empty
+                     }
+  fmap (over _1 reverse) $ flip execStateT ([],cb0) $ do
+    let warn :: MonadState ([Doc],a) m => Doc -> m ()
+        warn msg = _1 %= (msg:)
+    when (null $ LLVM.modDataLayout mdl) $
+      warn $ text "No target data layout found; will use defaults."
+    mapM_ warn err0
+    let ?lc = lc
+    let ?sbe = sbe
+     -- Add definitions
+    forM_ (L.modDefines mdl) $ \d -> do
+      md <- liftIO $ liftDefine d
+      case md of
+        Left emsg -> warn emsg
+        Right (msgs,sd) -> do
+          mapM_ warn msgs
+          let nm = sdName sd
+          _2 . cbGlobalNameMap . at nm ?= Right sd
+          _2 . cbFunctionType  nm ?= FunDecl (sdRetType sd) (snd <$> sdArgs sd) False
+    -- Add declarations
+    forM_ (L.modDeclares mdl) $ \d -> do
+      let mtp = FunDecl <$> liftRetType (L.decRetType d)
+                        <*> mapM liftMemType (L.decArgs d)
+                        <*> pure (L.decVarArgs d)
+      case mtp of
+        Nothing -> warn $ text "Skipping import of" <+> ppSymbol (L.decName d)
+                       <> text "; Unsupported type."
+        Just tp -> _2 . cbFunctionType (L.decName d) ?= tp
+    -- Add globals
+    forM_ (L.modGlobals mdl) $ \lg -> do
+      let sym = L.globalSym lg
+      mg <- liftIO $ runLiftAttempt $ do
+        tp <- liftMemType' (L.globalType lg)
+        Global sym tp <$> liftValue tp (L.globalValue lg)
+      case mg of
+        Left{} -> warn $ text "Skipping definition of" <+> ppSymbol sym
+                      <> text "; Unsupported type."
+        Right g -> _2 . cbGlobalNameMap . at sym ?= Left g
+
+------------------------------------------------------------------------
+-- LLVM helper utilities.
+
+-- | Load a module, calling fail if parsing or loading fails.
 loadModule :: FilePath -> IO L.Module
 loadModule bcFile = do
   eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
@@ -119,65 +183,14 @@ loadModule bcFile = do
     Right mdl -> return mdl
  where
     parse = BS.readFile >=> BC.parseBitCode
-    err msg = error $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
+    err msg = fail $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
               ++ show (nest 2 (vcat $ map text $ lines msg))
 
-mkCodebase :: SBE sbe
-           -> DataLayout
-           -> L.Module
-           -> IO (Codebase sbe)
-mkCodebase sbe dl mdl = do
-  when (null $ LLVM.modDataLayout mdl) $
-    warn $ text "No target data layout found; will use defaults."
-  mapM_ warn err0
-  execStateT go cb0
- where warn msg = putStrLn $ show $ text "Warning:" <+> msg
-       (err0, lc) = mkLLVMContext dl (L.modTypes mdl)
-       cb0 = Codebase { cbLLVMContext = lc
-                      , _cbGlobalNameMap = M.empty
-                      , _cbFunctionTypes = M.empty
-                      }
-       go = do
-         let ?lc = lc
-         let ?sbe = sbe
-         -- Add definitions
-         forM_ (L.modDefines mdl) $ \d -> do
-           md <- liftIO $ liftDefine d
-           case md of
-             Left emsg -> liftIO $ warn emsg
-             Right (msgs,sd) -> do
-               mapM_ (liftIO . warn) msgs
-               let nm = sdName sd
-               cbGlobalNameMap . at nm ?= Right sd
-               cbFunctionType  nm ?= FunDecl (sdRetType sd) (snd <$> sdArgs sd) False
-         -- Add declarations
-         forM_ (L.modDeclares mdl) $ \d -> do
-           let mtp = FunDecl <$> liftRetType (L.decRetType d)
-                             <*> mapM liftMemType (L.decArgs d)
-                             <*> pure (L.decVarArgs d)
-           case mtp of
-             Nothing -> liftIO $ warn $ text "Skipping import of" <+> ppSymbol (L.decName d)
-                          <> text "; Unsupported type."
-             Just tp -> cbFunctionType (L.decName d) ?= tp
-         -- Add globals
-         forM_ (L.modGlobals mdl) $ \lg -> do
-           let sym = L.globalSym lg
-           mg <- liftIO $ runLiftAttempt $ do
-             tp <- liftMemType' (L.globalType lg)
-             Global sym tp <$> liftValue tp (L.globalValue lg)
-           case mg of
-             Nothing -> liftIO $ warn $ text "Skipping definition of" <+> ppSymbol sym
-                          <> text "; Unsupported type."
-             Just g -> modify $ cbGlobalNameMap . at sym ?~ Left g
-
--- For now, only take a single bytecode file argument and assume that the world
--- is linked together a priori.
+-- | Load module and return codebase with given backend.
 loadCodebase :: SBE sbe -> FilePath -> IO (Codebase sbe)
 loadCodebase sbe bcFile = do
   mdl <- loadModule bcFile
   let dl = parseDataLayout $ L.modDataLayout mdl
-  mkCodebase sbe dl mdl
-
-dumpSymDefine :: MonadIO m => m (Codebase sbe) -> String -> m ()
-dumpSymDefine getCB sym = getCB >>= \cb ->
-  liftIO $ putStrLn $ show $ (ppSymDefine `fmap` lookupDefine (LLVM.Symbol sym) cb)
+  (warnings,cb) <- mkCodebase sbe dl mdl
+  mapM_ (\m -> putStrLn $ show $ text "Warning:" <+> m) warnings 
+  return cb

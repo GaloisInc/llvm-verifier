@@ -521,10 +521,10 @@ fixedOffsetRangeLoad :: Addr
                      -> RangeLoadMux Addr
 fixedOffsetRangeLoad l tp s
    | s < l = do -- Store is before load.
-     let sd = l - s -- ^ Number of bytes load comes after store
+     let sd = l - s -- Number of bytes load comes after store
      try (storeSize .<= fromIntegral sd |-> loadFail)
          (iterUp (sd+1) loadCase)
-   | le <= s = loadFail -- ^ No load if load ends before write.
+   | le <= s = loadFail -- No load if load ends before write.
    | otherwise = iterUp 0 loadCase
  where le = typeEnd l tp
        loadCase i | i < le-s  = storeSize .== fromIntegral i |-> loadVal i
@@ -558,8 +558,7 @@ loadFromStoreStart pref tp i j = adjustOffset inFn outFn <$> rangeLoad 0 tp (R i
   where inFn = fromIntegral
         outFn = fixLoadBeforeStoreOffset pref i
 
-fixedSizeRangeLoad :: -- | Function should try use addresses relative to store instead of load.
-                      BasePreference
+fixedSizeRangeLoad :: BasePreference -- ^ Whether addresses are based on store or load.
                    -> Type
                    -> Size
                    -> RangeLoadMux (Value Var)
@@ -749,8 +748,7 @@ valueLoad lo ltp so v
 
 type ValueLoadMux = Mux (Cond Var) (ValueCtor (ValueLoad (Value Var)))
 
-symbolicValueLoad :: -- | Function should try use addresses relative to store instead of load.
-                     BasePreference
+symbolicValueLoad :: BasePreference -- ^ Whether addresses are based on store or load.
                   -> Type
                   -> ValueView Type
                   -> ValueLoadMux

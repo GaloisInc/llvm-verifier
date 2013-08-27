@@ -39,10 +39,9 @@ import           Data.Bits (testBit)
 import qualified Data.Vector as V
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-
 import Verinf.Symbolic (beCheckSat, SatResult(..))
 
-import Verifier.LLVM.AST
+import Verifier.LLVM.Codebase.AST
 
 -- | SBEPred yields the type used to represent predicates in particular SBE interface
 -- implementation.
@@ -95,7 +94,7 @@ data SBE m = SBE
     -- | Return conjunction of two predicates.
   , applyAnd :: SBEPred m -> SBEPred m -> m (SBEPred m)
     -- applyAnd sbe x y = applyTypedExpr sbe (IntArith And Nothing 1 x y)
-    -- | @applyBNot @a@ performs negation of a boolean term
+    -- | @applyBNot a@ performs negation of a boolean term
   , applyBNot :: SBEPred m -> m (SBEPred m)
     -- | @applyPredIte a b c@ creates an if-then-else term
   , applyPredIte :: SBEPred m -> SBEPred m -> SBEPred m -> m (SBEPred m)
@@ -108,6 +107,7 @@ data SBE m = SBE
              -> m (Either String (SBETerm m))
     -- | Interpret the term as a concrete boolean if it can be.
   , asBool :: SBEPred m -> Maybe Bool
+
   , prettyPredD :: SBEPred m -> Doc
 
     -- | Evaluate a predicate for given input bits.
@@ -154,20 +154,20 @@ data SBE m = SBE
     -- additional path constraint that ensures the address @p@ is a valid memory
     -- location in @m@.
   , memStore :: SBEMemory m
-             -> SBETerm m -- ^ Address to store value at. 
-             -> MemType   -- ^ Type of value
-             -> SBETerm m -- ^ Value to store
+             -> SBETerm m -- Address to store value at. 
+             -> MemType   -- Type of value
+             -> SBETerm m -- Value to store
              -> Alignment
              -> m (SBEPartialResult m (SBEMemory m))
     -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
     -- both of which must be aligned according to @align@ and must refer to
     -- non-overlapping regions.
   , memCopy :: SBEMemory m
-            -> SBETerm m -- ^ Destination pointer
-            -> SBETerm m -- ^ Source pointer
-            -> BitWidth  -- ^ Bitwidth for counting number of bits.
-            -> SBETerm m -- ^ Number of bytes to copy (should have
-            -> SBETerm m -- ^ Alignment in bytes (should have 32-bit bits)
+            -> SBETerm m -- Destination pointer
+            -> SBETerm m -- Source pointer
+            -> BitWidth  -- Bitwidth for counting number of bits.
+            -> SBETerm m -- Number of bytes to copy (should have
+            -> SBETerm m -- Alignment in bytes (should have 32-bit bits)
             -> m (SBEPartialResult m (SBEMemory m))
 
 
@@ -198,11 +198,11 @@ data SBE m = SBE
     -- | @stackAlloca h tp i align@ allocates memory on the stack for the given
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
-  , stackAlloc :: SBEMemory m -- ^ Memory to allocate within.
-               -> MemType     -- ^ Type of elements to allocate.
-               -> BitWidth    -- ^ Width of count in bits. 
-               -> SBETerm m   -- ^ Count
-               -> Alignment   -- ^ Alignment required for allocation
+  , stackAlloc :: SBEMemory m -- Memory to allocate within.
+               -> MemType     -- Type of elements to allocate.
+               -> BitWidth    -- Width of count in bits. 
+               -> SBETerm m   -- Count
+               -> Alignment   -- Alignment required for allocation
                -> m (AllocResult m)
     -- | @stackPushFrame mem@ returns the memory obtained by pushing a new
     -- stack frame to @mem@.
@@ -214,11 +214,11 @@ data SBE m = SBE
     -- | @heapAlloc m tp iw i a@ allocates memory in the heap for @m@ for
     -- @i@ elements with the type @tp@ with an address aligned at a @2^align@
     -- byte boundary.
-  , heapAlloc :: SBEMemory m -- ^ Memory to allocate from.
-              -> MemType     -- ^ Type of value to allocate.
-              -> BitWidth    -- ^ Bitwidth of umber of elements to allocate.
-              -> SBETerm m   -- ^ Number of elements to allocate.
-              -> Alignment   -- ^ Alignment constraint.
+  , heapAlloc :: SBEMemory m -- Memory to allocate from.
+              -> MemType     -- Type of value to allocate.
+              -> BitWidth    -- Bitwidth of umber of elements to allocate.
+              -> SBETerm m   -- Number of elements to allocate.
+              -> Alignment   -- Alignment constraint.
               -> m (AllocResult m)
 
     -- | @memBranch mem@ records that this memory is for a path that is

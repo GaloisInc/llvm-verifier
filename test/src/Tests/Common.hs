@@ -27,10 +27,10 @@ import           Verinf.Symbolic               (Lit, createBitEngine)
 
 import           LSSImpl
 
-import Verifier.LLVM.BitBlastBackend
+import Verifier.LLVM.Backend.BitBlast
+import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Codebase
-import Verifier.LLVM.Debugger          
-import Verifier.LLVM.SAWBackend
+import Verifier.LLVM.Debugger
 import Verifier.LLVM.Simulator
 import Verifier.LLVM.Simulator.SimUtils
 
@@ -49,7 +49,8 @@ testsDir :: FilePath
 testsDir = supportDir
 
 testMDL :: FilePath -> PropertyM IO L.Module
-testMDL bcFile = run $ loadModule $ testsDir </> bcFile
+testMDL bcFile = run $ do
+  loadModule $ testsDir </> bcFile
 
 assertMsg :: Bool -> String -> PropertyM IO ()
 assertMsg b s = when (not b) (run $ putStrLn s) >> assert b
@@ -114,7 +115,7 @@ runTestSimulator :: (Functor sbe, Ord (SBETerm sbe))
 runTestSimulator createFn v mdl action = do
   let dl = parseDataLayout (L.modDataLayout mdl)
   (sbe, mem) <- createFn dl
-  cb <- mkCodebase sbe dl mdl
+  ([],cb) <- mkCodebase sbe dl mdl
   runSimulator cb sbe mem Nothing $ do
     setVerbosity v
     action
@@ -143,8 +144,8 @@ runTestLSSCommon createFn v mdl argv' mepsLen mexpectedRV = do
       Just i | i > 0 && v == 0 -> return ()
       _ -> do
         _ <- initializeDebugger
-        when (v > 0) $
-          breakOnMain
+        when (v > 0) $ do
+          breakOnEntry =<< lookupSymbolDef (L.Symbol "main")
     execRslt <- testRunMain argv'
     case mepsLen of
       Nothing -> return ()
@@ -171,7 +172,7 @@ createDagModel dl = do
 createSAWModel :: SBECreateFn (SAWBackend s Lit)
 createSAWModel dl = do
   be <- createBitEngine
-  createSAWBackend be dl (defaultMemGeom dl)
+  createSAWBackend be dl
 
 runTestLSSBuddy :: Int           -- ^ Verbosity
                 -> L.Module      -- ^ Module 

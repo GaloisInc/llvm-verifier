@@ -17,12 +17,12 @@ import           Control.Monad (forM)
 import           Control.Monad.State (gets)
 import qualified Data.Vector as V
 import           Test.QuickCheck
-import           Tests.Common
 import qualified Text.LLVM               as L
 
-import           Verifier.LLVM.Backend
-import           Verifier.LLVM.LLVMContext
-import           Verifier.LLVM.Simulator
+import Tests.Common
+import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.AST
+import Verifier.LLVM.Simulator
 
 aesTests :: [(Args, Property)]
 aesTests =

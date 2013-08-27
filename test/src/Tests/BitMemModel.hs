@@ -12,8 +12,8 @@ import Verinf.Symbolic (createBitEngine)
 import Verinf.Symbolic.Lit
 import Verinf.Symbolic.Lit.Functional
 
-import Verifier.LLVM.BitBlastBackend
-import Verifier.LLVM.LLVMContext
+import Verifier.LLVM.Backend.BitBlast
+import Verifier.LLVM.Codebase.DataLayout
 
 mmTest :: String
        -> Int

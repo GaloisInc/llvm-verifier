@@ -62,28 +62,37 @@ library
   hs-source-dirs: src
 
   exposed-modules:
-    Verifier.LLVM.AST
     Verifier.LLVM.Backend
+    Verifier.LLVM.Backend.BitBlast
+    Verifier.LLVM.Backend.SAW
+
     Verifier.LLVM.Codebase
-    Verifier.LLVM.BitBlastBackend
-    Verifier.LLVM.DataLayout
+    Verifier.LLVM.Codebase.AST
+    Verifier.LLVM.Codebase.DataLayout
+    Verifier.LLVM.Codebase.DebugInfo
+    Verifier.LLVM.Codebase.LLVMContext
+    Verifier.LLVM.Codebase.Translation
+
     Verifier.LLVM.Debugger
-    Verifier.LLVM.FreeApp
-    Verifier.LLVM.LLVMContext
-    Verifier.LLVM.LLVMIntrinsics
-    Verifier.LLVM.LibcOverrides
-    Verifier.LLVM.LSSOverrides
+    Verifier.LLVM.Debugger.Grammar
+    Verifier.LLVM.Debugger.FreeApp
+
     Verifier.LLVM.MemModel
     Verifier.LLVM.MemModel.Common
-    Verifier.LLVM.Printf
-    Verifier.LLVM.SAWBackend
+    Verifier.LLVM.MemModel.Geometry
+
+    Verifier.LLVM.Overrides.Intrinsics
+    Verifier.LLVM.Overrides.Libc
+    Verifier.LLVM.Overrides.LSS
+    Verifier.LLVM.Overrides.Printf
+
     Verifier.LLVM.Simulator
     Verifier.LLVM.Simulator.CursorTree
-    Verifier.LLVM.Simulator.Debugging
     Verifier.LLVM.Simulator.Internals
     Verifier.LLVM.Simulator.SimUtils
-    Verifier.LLVM.Translation
-    Verifier.LLVM.Utils
+
+    Verifier.LLVM.Utils.Arithmetic
+    Verifier.LLVM.Utils.PrettyPrint
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   if os(darwin)

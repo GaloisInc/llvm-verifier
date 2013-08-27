@@ -34,9 +34,9 @@ class Sized a where
 data Orientation
    = LeftActive  -- ^ The left branch of the tree is active.
    | RightActive -- ^ The right branch of the tree is active.
- deriving (Show)
+ deriving (Eq, Show)
 
--- | @CurA cursor tree provides a non-empty binary-tree representation
+-- | A cursor tree provides a non-empty binary-tree representation
 -- where branches and leaves may be annotated (denoted by @b@ and @a@
 -- respectively.  One value in the tree is specially marked as "active";
 -- and can be obtained in constate time.   It is possible to find the index
@@ -85,6 +85,7 @@ appendContext d Empty = d
 appendContext d (OnLeft  s c b l) = OnLeft  (s+size d) (appendContext d c) b l
 appendContext d (OnRight s c b r) = OnRight (s+size d) (appendContext d c) b r
 
+-- | @instContext' c v@ returns the tree @c[a]@. 
 instContext' :: TreeContext b a -> a -> CursorTree b a
 instContext' d a =
   case d of
@@ -207,6 +208,8 @@ toStack' Empty s = s
 toStack' (OnRight _ c b r) l = toStack' c (consRight b l r) -- c[s >< u]
 toStack' (OnLeft  _ c b l) r = toStack' c (consLeft b l r) -- c[l >< r]
 
+-- | View the tree as either a single element or a branch with a left and right
+-- branch.
 topView :: CursorTree b a -> Either a (b, Orientation, CursorTree b a, CursorTree b a)
 topView t =
   case toStack t of
@@ -246,13 +249,12 @@ moveRight l i (OnRight _ c b r) =
     moveRight (consRight b l r) (i-size r) c
 moveRight r i (OnLeft _ c b l) = moveRight (consLeft b l r) i c
 
--- | @selectWithin @c t i@ returns a cursor tree equivalent to @c[t]@
+-- | @selectWithin c t i@ returns a cursor tree equivalent to @c[t]@
 -- with root at index @i@ in @t@.
 selectWithin :: TreeContext b a
              -> CursorStack b a
-             -- | Index to point to.
-             -- (must be less than size of term). 
-             -> Int         
+             -> Int -- ^ Index to point to (must be less than size of term).
+                      
              -> CursorTree b a
 selectWithin c z i = 
   case z of
