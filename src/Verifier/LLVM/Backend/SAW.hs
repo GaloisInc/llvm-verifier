@@ -9,7 +9,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -O0 #-}
-module Verifier.LLVM.SAWBackend
+module Verifier.LLVM.Backend.SAW
   ( SAWBackend
   , SAWMemory
   , createSAWBackend
@@ -45,8 +45,8 @@ import Verifier.SAW.Prim
 import qualified Verifier.SAW.Recognizer as R
 import Verifier.SAW.Rewriter
 
-import Verifier.LLVM.AST
 import Verifier.LLVM.Backend as LLVM
+import Verifier.LLVM.Codebase.AST
 import qualified Verifier.LLVM.MemModel as MM
 
 import Verinf.Symbolic.Lit
@@ -124,8 +124,7 @@ scLLVMIntConst sc w v = do
 
 -- | Create a bitvector from a constant.
 scLLVMIntConst' :: SharedContext s
-                -- | Result width with corresponding term.
-                -> (BitWidth, SharedTerm s)
+                -> (BitWidth, SharedTerm s) -- ^ Result width with corresponding term.
                 -> Integer -- ^ Value of bitvector.
                 -> IO (SharedTerm s)
 scLLVMIntConst' sc (w,wt) v = do
@@ -1040,19 +1039,17 @@ remove_ident_unsafeCoerce = Conversion $ thenMatcher pat action
 createSAWBackend :: (Eq l, Storable l)
                  => BitEngine l
                  -> DataLayout
-                 -> MemGeom
                  -> IO (SBE (SAWBackend s l), SAWMemory s)
-createSAWBackend be dl mg = do
-  (sbe, mem, _) <- createSAWBackend' be dl mg
+createSAWBackend be dl = do
+  (sbe, mem, _) <- createSAWBackend' be dl
   return (sbe, mem)
 
 createSAWBackend' :: forall s l 
                    . (Eq l, Storable l)
                   => BitEngine l
                   -> DataLayout
-                  -> MemGeom
                   -> IO (SBE (SAWBackend s l), SAWMemory s, SharedContext s)
-createSAWBackend' be dl _mg = do
+createSAWBackend' be dl = do
   sc0 <- mkSharedContext llvmModule
   let activeDefs = filter defPred $ allModuleDefs llvmModule
         where defPred d = defIdent d `Set.notMember` excludedDefs

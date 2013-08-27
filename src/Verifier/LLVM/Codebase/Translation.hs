@@ -1,3 +1,16 @@
+-- | This module defines the translation from LLVM IR to Symbolic IR.
+--
+-- Translation into symbolic IR requires post-dominator information about the
+-- LLVM IR.  This information is analyzed and generated during translation.
+--
+-- In addition to branches, call and phi non-terminal instructions require
+-- special support:
+--
+-- [Phi Statements]
+--   The value of a Phi statement in LLVM depends on which previous block was
+--   executed.  Since phi statements must appear at the top of the block, we can
+--   move phi statements to execute during the transition from the previous
+--   block to the new block.
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
@@ -7,28 +20,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
--- | This module defines the translation from LLVM IR to Symbolic IR.
---
--- Translation into symbolic IR requires post-dominator information about the
--- LLVM IR.  This information is analyzed and generated during translation.
---
--- In addition to branches, call and phi non-terminal instructions require
--- special support:
---
--- [Call Statements]
---    To simplify the simulator, the symbolic representation splits blocks with
---    calls into multiple basic blocks with each basic block except the last
---    terminated with the call.
---
--- [Phi Statements]
---   The value of a Phi statement in LLVM depends on which previous block was
---   executed.  Since phi statements must appear at the top of the block, we can
---   move phi statements to execute during the transition from the previous
---   block to the new block.
-module Verifier.LLVM.Translation
-  ( module Verifier.LLVM.AST
-  , module Verifier.LLVM.Backend
-  , liftDefine
+module Verifier.LLVM.Codebase.Translation
+  ( liftDefine
   , LiftAttempt
   , runLiftAttempt
   , liftMemType'
@@ -38,18 +31,22 @@ module Verifier.LLVM.Translation
 
 import Control.Applicative
 import Control.Lens hiding (op)
+import Control.Monad.Error
 import Control.Monad.State.Strict
+import qualified Data.Foldable as F
 import qualified Data.LLVM.CFG              as CFG
-import           Data.Map                   (Map)
+import Data.Map                   (Map)
 import qualified Data.Map                   as Map
 import Data.Maybe
+import qualified Data.Sequence as Seq
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as L
-import           Text.LLVM.AST              (Stmt'(..), Stmt, Typed (..))
+import Text.LLVM.AST              (Stmt'(..), Typed (..))
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import           Verifier.LLVM.AST
-import           Verifier.LLVM.Backend
+import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.AST
+import Verifier.LLVM.Codebase.LLVMContext
 
 -- Utility {{{1
 
@@ -80,8 +77,8 @@ ltiBlocks (LTI cfg) = [ bb
 -- | @ltiImmediatePostDominator lti bb@ returns the immediate post dominator
 -- of @bb@ or @Nothing@ if it has no post-dominator.
 ltiImmediatePostDominator :: LLVMTranslationInfo
-                            -> L.BlockLabel
-                            -> Maybe L.BlockLabel
+                          -> L.BlockLabel
+                          -> Maybe L.BlockLabel
 ltiImmediatePostDominator (LTI cfg) bb =
   case CFG.ipdom cfg (CFG.asId cfg bb) of
     Nothing    -> Nothing
@@ -94,9 +91,12 @@ ltiImmediatePostDominator (LTI cfg) bb =
 type TranslationWarning = Doc
 
 data BlockGeneratorState t =
-     BlockGeneratorState { bgBlocks :: [SymBlock t]
+     BlockGeneratorState { _bgBlocks :: [SymBlock t]
                          , _bgRevWarnings :: [TranslationWarning]
                          }
+
+bgBlocks :: Simple Lens (BlockGeneratorState t) [SymBlock t]
+bgBlocks = lens _bgBlocks (\s v -> s { _bgBlocks = v })
 
 bgRevWarnings :: Simple Lens (BlockGeneratorState t) [TranslationWarning]
 bgRevWarnings = lens _bgRevWarnings (\s v -> s { _bgRevWarnings = v })
@@ -107,10 +107,10 @@ runBlockGenerator :: (?sbe :: SBE sbe)
                   => BlockGenerator sbe ()
                   -> IO ([TranslationWarning], [SymBlock (SBETerm sbe)])
 runBlockGenerator m = final <$> execStateT m s0
-  where s0 = BlockGeneratorState { bgBlocks = [] 
+  where s0 = BlockGeneratorState { _bgBlocks = [] 
                                  , _bgRevWarnings = []
                                  }
-        final s1 = (reverse (_bgRevWarnings s1), bgBlocks s1)
+        final s1 = (reverse (_bgRevWarnings s1), _bgBlocks s1)
 
 mkSymBlock :: SymBlockID -> [SymStmt t] -> SymBlock t
 mkSymBlock sbid stmts = SymBlock { sbId = sbid, sbStmts = V.fromList stmts }
@@ -118,62 +118,48 @@ mkSymBlock sbid stmts = SymBlock { sbId = sbid, sbStmts = V.fromList stmts }
 addWarning :: (?sbe :: SBE sbe) => Doc -> BlockGenerator sbe ()
 addWarning d = bgRevWarnings %= (d:)
 
--- | Define block with given identifier.
-defineBlock :: (?sbe :: SBE sbe)
-            => SymBlockID -> [SymStmt (SBETerm sbe)] -> BlockGenerator sbe ()
-defineBlock sbid stmts = modify fn
-  where fn s = s { bgBlocks = mkSymBlock sbid stmts : bgBlocks s }
-
 -- Phi instruction parsing {{{1
 
-type PhiInstr = (L.Ident, L.Type, L.Stmt, Map L.BlockLabel L.Value)
 
--- Define init block that pushes post dominator frames then jumps to first
--- block.
-parsePhiStmts :: [Stmt] -> [PhiInstr]
-parsePhiStmts sl =
-  [ (r, tp, stmt, valMap)
-  | stmt@(L.Result r (L.Phi tp vals) _) <- sl
-  , let valMap = Map.fromList [(b, v) | (v,b) <- vals]]
+-- | Maps source target pairs to either an unsupported stmt or list of
+-- assignments.
+type PhiMap t = Map (L.BlockLabel, L.BlockLabel) 
+                    (Either L.Stmt [(L.Ident, MemType, SymValue t)])
 
--- | Maps LLVM Blocks to associated phi instructions.
-blockPhiMap :: [CFG.BB] -> Map L.BlockLabel [PhiInstr]
-blockPhiMap blocks =
-  Map.fromList
-    [ (l, parsePhiStmts sl)
-    | L.BasicBlock { L.bbLabel = (_bbid, l), L.bbStmts = sl } <- blocks ]
 
--- Lift attempt declaration.
+blockPhiMap' :: (?lc::LLVMContext, ?sbe :: SBE sbe)
+             => [CFG.BB] -> IO (PhiMap (SBETerm sbe))
+blockPhiMap' blocks = execStateT (traverse go blocks) Map.empty
+  where go :: (?lc::LLVMContext, ?sbe :: SBE sbe)
+           => CFG.BB -> StateT (PhiMap (SBETerm sbe)) IO ()
+        go (L.BasicBlock { L.bbLabel = (_,tgt), L.bbStmts = sl }) =
+          mapM_ (parseInstr tgt) sl
+        parseInstr tgt stmt@(L.Result r (L.Phi tp vals) _) = do
+          forM_ vals $ \(v,src) -> do
+            mentry <- runLiftAttempt $ do
+              mtp <- liftMemType' tp
+              val <- liftValue mtp v
+              return (r,mtp,val)        
+            modify (updateInstr stmt src tgt mentry)
+        parseInstr _ _ = return ()
+        updateInstr stmt src tgt mr m =
+          case mr of
+            Left{} -> Map.insert (src,tgt) (Left stmt) m
+            Right entry ->
+              case fromMaybe (Right []) $ Map.lookup (src,tgt) m of
+                Left{}  -> m
+                Right l -> Map.insert (src,tgt) (Right (entry:l)) m
 
 -- | Computation that attempts to lift LLVM values to symbolic representation.
-newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: IO (Either String a) }
+-- This runs in IO, because symbolic backends may need to do IO.
+newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: ErrorT String IO a }
+  deriving (Functor, Applicative, Monad, MonadIO)
 
-instance Functor LiftAttempt where
-  fmap f (LiftAttempt m) = LiftAttempt $ over _Right f <$> m
-
-instance Applicative LiftAttempt where
-  pure = LiftAttempt . return . Right 
-  LiftAttempt fm <*> LiftAttempt vm = LiftAttempt $ do
-   mf <- fm 
-   case mf of
-     -- Stop execution at error.
-     Left e -> return (Left e)
-     -- Evaluate function.
-     Right f -> over _Right f <$> vm
-
-instance Monad LiftAttempt where
-  LiftAttempt m >>= h = LiftAttempt $ m >>= either (return . Left) (unLiftAttempt . h)
-  return = pure
-  fail = LiftAttempt . return . Left
-
-instance MonadIO LiftAttempt where
-  liftIO = LiftAttempt . fmap Right
-
-runLiftAttempt :: LiftAttempt a -> IO (Maybe a)
-runLiftAttempt (LiftAttempt m) = either (\_ -> Nothing) Just <$> m
+runLiftAttempt :: (MonadIO m) => LiftAttempt a -> m (Either String a)
+runLiftAttempt = liftIO . runErrorT . unLiftAttempt
 
 liftMaybe :: Maybe a -> LiftAttempt a
-liftMaybe = LiftAttempt . return . maybe (Left "") Right
+liftMaybe = maybe (fail "") return
 
 unsupportedStmt :: (?sbe :: SBE sbe)
                 => L.Stmt
@@ -190,33 +176,17 @@ trySymStmt :: (?sbe :: SBE sbe)
            => L.Stmt
            -> LiftAttempt (SymStmt (SBETerm sbe))
            -> BlockGenerator sbe (SymStmt (SBETerm sbe))
-trySymStmt stmt (LiftAttempt m) = do
-  mr <- liftIO m
+trySymStmt stmt m = do
+  mr <- runLiftAttempt m
   case mr of
-    Right s -> return s
     Left msg -> unsupportedStmt stmt msg
-
--- | Attempts to parse a list of values and return a single statement.
-trySymStmtList :: (?sbe :: SBE sbe)
-               => -- | Function to call if all values parse correctly.
-                  ([b] -> SymStmt (SBETerm sbe))
-                  -- | Function to call if a parse failure occurs.
-               -> (a -> L.Stmt)
-               -> [a] -- ^ List of values to parse
-               -> (a -> LiftAttempt b)  -- ^ Parse function.
-               -> BlockGenerator sbe (SymStmt (SBETerm sbe))
-trySymStmtList sfn ffn l pfn = impl [] l
-  where impl rest [] = return (sfn (reverse rest))
-        impl rest (h:r) = do
-          mr <- liftIO $ unLiftAttempt (pfn h)
-          case mr of
-            Left msg -> unsupportedStmt (ffn h) msg
-            Right v -> impl (v:rest) r
+    Right s -> return s
 
 -- Lift operations
 
 liftTypedValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
-               => L.Typed L.Value -> LiftAttempt (SymValue (SBETerm sbe))
+               => L.Typed L.Value
+               -> LiftAttempt (SymValue (SBETerm sbe))
 liftTypedValue (L.Typed tp v) = flip liftValue v =<< liftMemType' tp
 
 mkSValExpr :: (?sbe :: SBE sbe, MonadIO m)
@@ -372,20 +342,29 @@ liftMemType' tp = liftMaybe $ liftMemType tp
 
 liftStmt :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
          => L.Stmt  
-         -> BlockGenerator sbe (SymStmt (SBETerm sbe))
-liftStmt stmt = do
+         -> LiftAttempt (SymStmt (SBETerm sbe))
+liftStmt stmt =
   case stmt of
-    Effect (L.Store (L.Typed tp0 v) addr a) _ ->
-      trySymStmt stmt $ do
-        tp <- liftMemType' tp0
-        tptr <- liftValue tp v
-        taddr <- liftTypedValue addr 
-        return $ Store tp tptr taddr (liftAlign tp a)
-    Effect{} -> unsupportedStmt stmt ""
-    Result r app _ -> trySymStmt stmt $ do
+    Effect (L.Call _b tp v tpvl) _ -> do
+      mtp <- liftMemType' tp
+      sv <- liftValue mtp v
+      svl <- traverse liftArgValue tpvl
+      return $ Call sv svl Nothing
+    Effect (L.Store (L.Typed tp0 v) addr a) _ -> do
+      tp <- liftMemType' tp0
+      tptr <- liftValue tp v
+      taddr <- liftTypedValue addr 
+      return $ Store tp tptr taddr (liftAlign tp a)
+    Effect{} -> fail ""
+    Result reg (L.Call _b tp v tpvl) _ -> do
+      mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType' tp
+      sv <- liftValue mtp v
+      svl <- traverse liftArgValue tpvl
+      return $ Call sv svl (Just (rty, reg))
+    Result r app _ -> do
       -- Return an assignemnt statement for the value.
-      let retExpr tp v = return $ Assign [(r, tp, v)]
-      let retTExpr tp v = (\v' -> Assign [(r, tp, v')]) <$> mkSValExpr v
+      let retExpr tp v = return $ Assign r tp v
+      let retTExpr tp v = Assign r tp <$> mkSValExpr v
       let retIntArith op tp0 u v = do
             tp <- liftMemType' tp0 
             x <- liftValue tp u
@@ -454,12 +433,12 @@ liftStmt stmt = do
                      IntType w <- liftMemType' szTp0
                      v <- liftValue (IntType w) sz
                      return (Just (w,v))
-          return $ AllocaStmt r tp ssz (liftAlign tp a)
+          return $ Alloca r tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) malign -> do
           tp@(PtrType etp0) <- liftMemType' tp0
           etp <- liftMaybe $ asMemType etp0
           v <- liftValue tp ptr
-          return $ LoadStmt r v etp (liftAlign etp malign)
+          return $ Load r v etp (liftAlign etp malign)
         L.ICmp op (L.Typed tp0 u) v -> do
           tp <- liftMemType' tp0
           x <- liftValue tp u
@@ -479,7 +458,7 @@ liftStmt stmt = do
         L.Select (L.Typed tpc0 c') (L.Typed tpv0 v1') v2' -> do
           tpc <- liftMemType' tpc0
           tpv <- liftMemType' tpv0
-          c <- liftValue tpc c'
+          c  <- liftValue tpc c'
           v1 <- liftValue tpv v1'
           v2 <- liftValue tpv v2'
           case (tpc, tpv) of
@@ -511,22 +490,6 @@ liftArgValue (Typed tp val) = do
   (mtp,) <$> liftValue mtp val
 
 
--- | Returns set block instructions for jumping to a particular target.
--- This includes setting the current block and executing any phi
--- instructions.
-phiInstrs :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
-          => Map L.BlockLabel [PhiInstr] -- ^ Map from targets to phi instructions for target.
-          -> L.BlockLabel -- ^ Source
-          -> L.BlockLabel -- ^ Target block
-          -> BlockGenerator sbe (SymStmt (SBETerm sbe))
-phiInstrs phiMap llvmId tgt = do
-  let phiEntries = fromMaybe [] $ Map.lookup tgt phiMap
-  trySymStmtList Assign (\(_,_,s,_) -> s) phiEntries $ \(r,tp,_,valMap) -> do
-    mtp <- liftMemType' tp
-    Just v <- return $ Map.lookup llvmId valMap
-    val <- liftValue mtp v
-    return (r, mtp, val)
-
 -- Lift LLVM basic block to symbolic block {{{1
 --
 -- Invariants assumed by block:
@@ -535,112 +498,107 @@ phiInstrs phiMap llvmId tgt = do
 --   * The current block must set the phi value registers.
 liftBB :: forall sbe . (?lc :: LLVMContext, ?sbe :: SBE sbe)
        => LLVMTranslationInfo -- ^ Translation information from analysis
-       -> Map L.BlockLabel [PhiInstr] -- ^ Maps block identifiers to phi instructions for block.
+       -> PhiMap (SBETerm sbe) -- ^ Maps block identifiers to phi instructions for block.
        -> CFG.BB -- ^ Basic block to generate.
        -> BlockGenerator sbe ()
-liftBB lti phiMap bb = impl (L.bbStmts bb) 0 []
+liftBB lti phiMap bb = do
+    symBlocks <- impl (L.bbStmts bb) []
+    bgBlocks %= (symBlocks ++)
   where llvmId = CFG.blockName bb
         -- Block for post dominator
         pd = flip symBlockID 0 <$> ltiImmediatePostDominator lti llvmId
+
         blockName :: Int -> SymBlockID
         blockName = symBlockID llvmId
-        -- Generate instructions for adding phi statements and setting
-        -- current block.
-        brSymInstrs tgt = appendSet <$> phiInstrs phiMap llvmId tgt
-          where appendSet i = [i, SetCurrentBlock (symBlockID tgt 0)]
+
+        emptyBlock :: L.BlockLabel
+                   -> State (Seq.Seq (SymBlock (SBETerm sbe))) SymBlockID
+        emptyBlock tgt = do
+          let mkNewBlock stmts = do
+                l <- get
+                let n = Seq.length l + 1
+                let jumpStmt = Jump (symBlockID tgt 0)
+                put $ l Seq.|> mkSymBlock (blockName n) (reverse (jumpStmt : stmts))
+                return (blockName n)
+          case Map.lookup (llvmId, tgt) phiMap of
+            Nothing -> return (symBlockID tgt 0)
+            Just (Left stmt) -> mkNewBlock [BadSymStmt stmt]
+            Just (Right pairs) -> mkNewBlock ((\(r,tp,v) -> Assign r tp v) <$> pairs)
         -- | Sequentially process statements.
-        impl :: [L.Stmt] -- ^ Remaining statements
-             -> Int -- ^ Index of symbolic block that we are defining.
+        impl :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
+             => [L.Stmt] -- ^ Remaining statements
              -> [SymStmt (SBETerm sbe)] -- ^ Previously generated statements in reverse order.
-             -> BlockGenerator sbe ()
-        impl [] idx il = liftError $
+             -> BlockGenerator sbe [SymBlock (SBETerm sbe)]
+        impl [] il = liftError $
                          text "Missing terminal instruction in block" <+>
-                         int idx <+>
                          text "after generating the following statements:" <$$>
                          (nest 2 . vcat $ ppStmt <$> il)
-        impl [stmt@(Effect (L.Ret tpv) _)] idx il = do
+        impl [stmt@(Effect (L.Ret tpv) _)] il = do
           symStmt <- trySymStmt stmt $ do
-            Return . Just <$> liftTypedValue tpv
-          defineBlock (blockName idx) (reverse (symStmt:il))
-        impl [Effect L.RetVoid _] idx il =
-          defineBlock (blockName idx) (reverse (Return Nothing:il))
+            Ret . Just <$> liftTypedValue tpv
+          return [ mkSymBlock (blockName 0) (reverse (symStmt:il)) ]
 
+        impl [Effect L.RetVoid _] il =
+          return [ mkSymBlock (blockName 0) (reverse (Ret Nothing:il)) ]
 
-        -- Case for function calls.
+        impl [Effect (L.Jump tgt) _] il = do
+          let il' = case Map.lookup (llvmId, tgt) phiMap of
+                      Nothing -> []
+                      Just (Left stmt) -> [BadSymStmt stmt]
+                      Just (Right pairs) -> (\(r,tp,v) -> Assign r tp v) <$> pairs
+              jumpStmt = Jump (symBlockID tgt 0)
+              block = mkSymBlock (blockName 0) (reverse (jumpStmt : (il' ++ il)))
+          return [ block ]
 
-        impl (stmt@(Result reg (L.Call _b tp v tpvl) _):r) idx il = do
-          symStmt <- trySymStmt stmt $ do
-            mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType' tp
-            sv <- liftValue mtp v
-            svl <- traverse liftArgValue tpvl
-            return $ PushCallFrame sv svl (Just (rty, reg)) (blockName (idx + 1))
-          defineBlock (blockName idx) $ reverse (symStmt:il)
-          impl r (idx+1) []
-        -- Skip certain intrinsics
-        impl (Effect (L.Call _ _ (L.ValSymbol v) _) _:r) idx il
-          | v `elem` [ "llvm.dbg.declare", "llvm.dbg.value"]
-          = impl r idx il
-        -- Function call that does not return a value (see comment for other call case).
-        impl (stmt@(Effect (L.Call _b tp v tpvl) _):r) idx il = do
-          symStmt <- trySymStmt stmt $ do
-            mtp <- liftMemType' tp
-            sv <- liftValue mtp v
-            svl <- traverse liftArgValue tpvl
-            return $ PushCallFrame sv svl Nothing (blockName (idx+1))
-          defineBlock (blockName idx) $ reverse (symStmt:il)
-          impl r (idx+1) []
-        impl [Effect (L.Jump tgt) _] idx il = do
-          brStmts <- brSymInstrs tgt
-          defineBlock (blockName idx) $ reverse il ++ brStmts
-        impl [stmt@(Effect (L.Switch (Typed tp v) def cases) _)] idx il = do
-           brStmts <- brSymInstrs def
-           mcases <- liftIO $ runLiftAttempt $ do
-             mtp@(IntType w) <- liftMemType' tp
-             tsv <- liftValue mtp v
-             let mkCase (cv, bid) rest =
-                   (PushPendingExecution bid (HasConstValue tsv w cv) pd) : rest
-             return $ foldr mkCase brStmts $ zip consts caseBlockIds
-           case mcases of
-              Just symbolicCases -> do
-                defineBlock (blockName idx) $ reverse il ++ symbolicCases
-                brStmtsList <- traverse brSymInstrs targets
-                zipWithM_ defineBlock caseBlockIds brStmtsList
-              _ -> do
-                symStmt <- unsupportedStmt stmt "Unparsable cases."
-                defineBlock (blockName idx) $ reverse (symStmt:il)
-          where -- Get values and targets
-                (consts,targets) = unzip cases
-                caseBlockIds     = blockName <$> [(idx + 1)..(idx + length cases)]
-        impl [stmt@(Effect (L.Br (Typed tp c) tgt1 tgt2) _)] idx il = do
-          mres <- liftIO $ runLiftAttempt $ do 
+        impl [stmt@(Effect (L.Br (Typed tp c) tgt1 tgt2) _)] il = do
+          mres <- runLiftAttempt $ do 
             IntType 1 <- liftMemType' tp
             liftValue (IntType 1) c
           case mres of
-            Just tc -> do
-              let suspendSymBlockID = blockName (idx + 1)
-              brStmts1 <- brSymInstrs tgt1
-              let pendingStmt = 
-                    PushPendingExecution suspendSymBlockID
-                                         (HasConstValue tc 1 0)
-                                         pd
-              defineBlock (blockName idx) $ reverse il ++ (pendingStmt : brStmts1)
-              brStmts2 <- brSymInstrs tgt2
-              -- Define block for suspended thread.
-              defineBlock suspendSymBlockID brStmts2
-            _ -> do
+            Left{} -> do
               ss <- unsupportedStmt stmt "Unparsable condition."
-              defineBlock (blockName idx) $ reverse (ss:il)
-        impl [Effect L.Unreachable _] idx il = do
-          defineBlock (blockName idx) (reverse (Unreachable : il))
-        impl [stmt@(Effect L.Unwind _)] idx il = do
+              return [ mkSymBlock (blockName 0) (reverse (ss:il)) ]
+            Right tc -> do
+              let ((b1,b2), rest) = 
+                    runState (both emptyBlock (tgt1, tgt2)) Seq.empty
+              let branchStmt = Br tc b1 b2 pd
+              return $ mkSymBlock (blockName 0) (reverse (branchStmt:il))
+                         : F.toList rest
+        impl [stmt@(Effect (L.Switch (Typed tp v) def cases) _)] il = do
+          mr <- runLiftAttempt $ do
+            IntType w <- liftMemType' tp
+            tsv <- liftValue (IntType w) v
+            return (w, tsv)
+          case mr of
+            Left{} -> do
+              symStmt <- unsupportedStmt stmt "Unparsable switch statement."
+              return [ mkSymBlock (blockName 0) $ reverse (symStmt:il) ]
+            Right (w, tsv) -> return (initBlock : F.toList caseBlocks)
+              where (consts, targets) = unzip cases
+                    ((caseBlockIds,defBlock), caseBlocks) = flip runState Seq.empty $ do
+                      (,) <$> traverse emptyBlock targets <*> emptyBlock def
+                    symCases = Map.fromList $ zip consts caseBlockIds
+                    switchStmt = Switch w tsv defBlock symCases pd 
+                    initBlock  = mkSymBlock (blockName 0) (reverse (switchStmt:il))
+
+        impl [Effect L.Unreachable _] il = do
+          return [ mkSymBlock (blockName 0) (reverse (Unreachable : il)) ]
+
+        impl [stmt@(Effect L.Unwind _)] il = do
           ss <- unsupportedStmt stmt ""
-          defineBlock (blockName idx) (reverse (ss : il))
-        -- | Phi statements are handled by initial blocks.
-        impl (Result _id (L.Phi _ _) _:r) idx il = impl r idx il
-        impl (Effect (L.Comment _) _:r) idx il = impl r idx il
-        impl (stmt:rest) idx il = do
-          s' <- liftStmt stmt
-          impl rest idx (s' : il)
+          return [ mkSymBlock (blockName 0) (reverse (ss : il)) ]
+
+        -- Skip certain intrinsics
+        impl (Effect (L.Call _ _ (L.ValSymbol v) _) _:r) il
+          | v `elem` [ "llvm.dbg.declare", "llvm.dbg.value"]
+          = impl r il
+
+        -- Phi statements are handled by initial blocks.
+        impl (Result _ L.Phi{} _:r) il = impl r il
+        impl (Effect (L.Comment _) _:r) il = impl r il
+        impl (stmt:rest) il = do
+          s' <- trySymStmt stmt $ liftStmt stmt
+          impl rest (s' : il)
 
 -- Lift LLVM definition to symbolic definition {{{1
 liftDefine :: forall sbe . (?lc :: LLVMContext, ?sbe :: SBE sbe)
@@ -652,12 +610,14 @@ liftDefine d
     | otherwise =
        case mfd of
          Just (FunDecl rtp args _) -> do
+              phiMap <- blockPhiMap' blocks
               (warnings,symBlocks) <- runBlockGenerator (mapM_ (liftBB lti phiMap) blocks)
               let sd = SymDefine { sdName = L.defName d
                                  , sdArgs = zip (L.typedValue <$> L.defArgs d) args
                                  , sdRetType = rtp
+                                 , sdEntry = symBlockID initBlockLabel 0
                                  , sdBody = Map.fromList
-                                              [ (sbId b,b) | b <- initSymBlock : symBlocks ]
+                                              [ (sbId b,b) | b <- symBlocks ]
                                  }
               return $ Right (warnings, sd)
             where cfg            = CFG.buildCFG (L.defBody d)
@@ -665,10 +625,6 @@ liftDefine d
                   blocks         = ltiBlocks lti
                   initBlock      = CFG.bbById cfg (CFG.entryId cfg)
                   initBlockLabel = CFG.blockName initBlock
-                  initSymBlock =
-                    mkSymBlock initSymBlockID
-                      [SetCurrentBlock (symBlockID initBlockLabel 0)]
-                  phiMap = blockPhiMap blocks
          Nothing -> return $ Left (text "Unsupported type for function" <+> symd <> char '.')
   where mfd = FunDecl <$> liftRetType (L.defRetType d)
                       <*> traverse liftMemType (L.typedType <$> L.defArgs d)

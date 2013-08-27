@@ -3,14 +3,11 @@ Module           : $Header$
 Description      : Printf-style formatting for symbolic terms
 Stability        : provisional
 Point-of-contact : atomb
-
-Based on suggestions from emertens.
 -}
 
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE Rank2Types #-}
-
-module Verifier.LLVM.Printf where
+module Verifier.LLVM.Overrides.Printf where
 
 import Text.Printf
 

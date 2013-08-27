@@ -12,8 +12,10 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
 {-# LANGUAGE ViewPatterns               #-}
-module Verifier.LLVM.BitBlastBackend
-  ( module Verifier.LLVM.Backend
+module Verifier.LLVM.Backend.BitBlast
+  ( -- * Re-exports to create and interact with backend.
+    module Verifier.LLVM.Backend
+  , module Verifier.LLVM.MemModel.Geometry
   , BitBlastSBE
   , BitTerm
 --  , BitTermClosed(..)
@@ -46,23 +48,25 @@ import           Data.Bits
 import           Data.Foldable
 import           Data.IORef
 import           Data.Map                  (Map)
-import           Data.Set                  (Set)
-import           Verifier.LLVM.Backend
-import           Numeric                   (showHex)
-import Text.PrettyPrint.Leijen hiding ((<$>), align)
-
-import           Verinf.Symbolic.Lit
-import           Verinf.Symbolic.Lit.Functional
 import qualified Data.Map                  as Map
+import           Data.Set                  (Set)
 import qualified Data.Set                  as Set
 import qualified Data.Vector               as V
 import qualified Data.Vector.Storable      as LV
-import qualified Text.LLVM.AST             as L
+import           Numeric                   (showHex)
 import System.IO.Unsafe (unsafePerformIO)
+import qualified Text.LLVM.AST             as L
+import           Text.PrettyPrint.Leijen hiding ((<$>), align)
 
-import           Verifier.LLVM.AST
-import           Verifier.LLVM.Simulator.SimUtils
-import           Verifier.LLVM.Utils
+import Verinf.Symbolic.Lit
+import Verinf.Symbolic.Lit.Functional
+
+
+import Verifier.LLVM.Backend
+import Verifier.LLVM.Codebase.AST
+import Verifier.LLVM.MemModel.Geometry
+import Verifier.LLVM.Simulator.SimUtils
+import Verifier.LLVM.Utils.Arithmetic
 
 -- Utility functions and declarations {{{1
 
@@ -375,10 +379,10 @@ data MemModel sbe bytes = MemModel {
                 -> IO (Maybe (SBETerm sbe, [SBETerm sbe], SBEMemory sbe))
   , mmLookupSymbol :: SBEMemory sbe -> SBETerm sbe -> LookupSymbolResult
     -- | Alloc structure on stack
-  , mmStackAlloc :: SBEMemory sbe -- ^ Memory
-                 -> Size          -- ^ Size of each element
-                 -> SBETerm sbe   -- ^ Number of elements
-                 -> Alignment     -- ^ Alignment constraint in bytes.
+  , mmStackAlloc :: SBEMemory sbe -- Memory
+                 -> Size          -- Size of each element
+                 -> SBETerm sbe   -- Number of elements
+                 -> Alignment     -- Alignment constraint in bytes.
                  -> IO (AllocResult sbe)
   , mmStackPush :: SBEMemory sbe -> IO (SBEPred sbe, SBEMemory sbe)
   , mmStackPop  :: SBEMemory sbe -> IO (SBEMemory sbe)
@@ -388,12 +392,12 @@ data MemModel sbe bytes = MemModel {
                 -> Alignment
                 -> IO (AllocResult sbe)
   , mmMemCopy :: SBEMemory sbe
-              -> SBETerm sbe            -- ^ Destination pointer
-              -> SBETerm sbe            -- ^ Source pointer
-              -> BitWidth               -- ^ Width of length value.
-              -> SBETerm sbe            -- ^ Length value 
-              -> SBETerm sbe            -- ^ Alignment in bytes (32-bit value)
-              -> IO (SBEPred sbe, SBEMemory sbe) -- ^ Condition and new value.
+              -> SBETerm sbe            -- Destination pointer
+              -> SBETerm sbe            -- Source pointer
+              -> BitWidth               -- Width of length value.
+              -> SBETerm sbe            -- Length value 
+              -> SBETerm sbe            -- Alignment in bytes (32-bit value)
+              -> IO (SBEPred sbe, SBEMemory sbe) -- Condition and new value.
     -- | Push a merge frame.
   , mmRecordBranch :: SBEMemory sbe -> IO (SBEMemory sbe)
     -- | Pop a merge frame without merging.
