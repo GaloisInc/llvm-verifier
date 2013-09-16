@@ -68,6 +68,8 @@ module Verifier.LLVM.Simulator
   , LSSOpts(..)
   , MonadException
   , lookupSymbolDef
+  , getPath
+  , run
   ) where
 
 import           Control.Applicative
