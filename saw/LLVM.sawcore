@@ -18,6 +18,23 @@ data LLVMType :: sort 0 where {
     VectorType :: (n :: Nat) -> LLVMType -> LLVMType;
   }
 
+mkIntType :: Nat -> LLVMType;
+mkIntType n = IntType n;
+
+mkFloatType :: LLVMType;
+mkFloatType = FloatType;
+
+mkDoubleType :: LLVMType;
+mkDoubleType = FloatType;
+
+mkPtrType :: Nat -> LLVMType;
+mkPtrType n = PtrType n;
+
+mkArrayType :: Nat -> LLVMType -> LLVMType;
+mkArrayType n t = ArrayType n t;
+
+mkValue :: (a :: sort 0) -> String -> a;
+
 fieldType :: sort 0;
 fieldType = #(LLVMType,Nat); 
 
