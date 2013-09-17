@@ -31,7 +31,7 @@ import Verifier.LLVM.Backend.BitBlast
 import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Debugger
-import Verifier.LLVM.Simulator
+import Verifier.LLVM.Simulator hiding (run)
 import Verifier.LLVM.Simulator.SimUtils
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
