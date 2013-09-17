@@ -24,7 +24,7 @@ import qualified Text.LLVM               as L
 import Tests.Common
 import Verifier.LLVM.Backend.BitBlast
 import Verifier.LLVM.Codebase.AST
-import Verifier.LLVM.Simulator
+import Verifier.LLVM.Simulator hiding (run)
 
 primOpTests :: [(Args, Property)]
 primOpTests =

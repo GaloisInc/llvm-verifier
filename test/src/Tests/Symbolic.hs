@@ -17,7 +17,7 @@ import Tests.Common
 
 import Verifier.LLVM.Backend.BitBlast
 import Verifier.LLVM.Codebase.AST
-import Verifier.LLVM.Simulator
+import Verifier.LLVM.Simulator hiding (run)
 
 symTests :: [(Args, Property)]
 symTests =
