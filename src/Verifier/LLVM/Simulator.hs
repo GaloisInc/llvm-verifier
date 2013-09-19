@@ -39,6 +39,7 @@ module Verifier.LLVM.Simulator
   , ErrorHandler
   , killPathOnError
   , callDefine
+  , callDefine'
   , getProgramReturnValue
   , getProgramFinalMem
   , evalExpr
