@@ -85,6 +85,7 @@ import qualified Control.Monad.State as MTL
 import           Control.Monad.Reader
 import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)
+import qualified Data.Graph as G
 import qualified Data.Map as M
 import           Data.Maybe
 import System.Console.Haskeline.MonadException (MonadException, handle, throwIO)
@@ -174,19 +175,26 @@ initGlobals ::
   )
   => Simulator sbe m ()
 initGlobals = do
-  nms <- use (to codebase . cbGlobalNameMap)
+  cb <- gets codebase
+  let nms = cb^.cbGlobalNameMap
   -- Register all function definitions.
   do let defines = [ d | (_,Right d) <- M.toList nms]
      forM_ defines $ \d -> do
        let idl       = nub $ mapMaybe symBlockLabel $ M.keys (sdBody d)
        insertGlobalFn (sdName d) idl
   -- Add symbol for declarations.
-  do declares <- gets (cbUndefinedFns . codebase)
+  do let declares = cbUndefinedFns cb
      forM_ declares $ \(sym,_) -> do
        insertGlobalFn sym []
   -- Initialize global data
   do let globals = [ g | (_,Left g) <- M.toList nms]
-     forM_ globals $ \g -> do
+         -- Topologically sort globals so that they're initialized in
+         -- dependency order.
+         edges = [ (g, globalSym g, cbGlobalDeps cb g) | g <- globals ]
+         (gr, vertexFn) = G.graphFromEdges' edges
+         sortedGlobals = map ((\(g, _, _) -> g) . vertexFn) $
+                         G.topSort (G.transposeG gr)
+     forM_ sortedGlobals $ \g -> do
        cdata <- evalExprInCC "addGlobal" (globalValue g)
        let noDataSpc = "Not enough space in data segment to allocate new global."
        insertGlobalTerm noDataSpc (globalSym g) (MemType (globalType g)) $
@@ -519,7 +527,8 @@ evalExpr sv = do
     SValSymbol sym -> do
       case evalGlobals ec ^. at sym of
         Just t -> return t
-        Nothing -> error "evalExp' called with missing global symbol."
+        Nothing ->
+          error $ "evalExp' called with missing global symbol: " ++ show sym
     SValExpr _ (ExprEvalFn fn) -> fn evalExpr
 
 insertGlobalFn ::
