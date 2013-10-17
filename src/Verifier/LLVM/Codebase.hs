@@ -20,6 +20,7 @@ module Verifier.LLVM.Codebase
   , cbLLVMContext
   , cbDataLayout
   , cbGlobalNameMap
+  , cbGlobalDeps
   , cbFunctionType
   , cbFunctionTypes
   , cbDefs
@@ -50,6 +51,7 @@ import Text.PrettyPrint.Leijen hiding ((<$>))
 
 import qualified Control.Exception              as CE
 import qualified Data.ByteString                as BS
+import qualified Data.Foldable                  as F
 import qualified Data.LLVM.BitCode              as BC
 import qualified Data.Map                       as M
 import qualified Text.LLVM                      as LLVM
@@ -109,6 +111,16 @@ type EitherGlobal sbe = Either (Global (SBETerm sbe)) (SymDefine (SBETerm sbe))
 cbGlobalName :: L.Symbol
              -> Simple Lens (Codebase sbe) (Maybe (EitherGlobal sbe))
 cbGlobalName sym = cbGlobalNameMap . at sym
+
+cbGlobalDeps :: Codebase sbe -> Global (SBETerm sbe) -> [L.Symbol]
+cbGlobalDeps cb = globalRefs . globalValue
+  where globalRefs (SValIdent _) = []
+        globalRefs (SValSymbol sym) =
+          case M.lookup sym nms of
+            Just (Left _) -> [sym]
+            _ -> []
+        globalRefs (SValExpr e _) = F.concatMap globalRefs e
+        nms = cb^.cbGlobalNameMap
 
 -- | Returns the global variable or symbolic definition associated with the
 -- given symbol.
