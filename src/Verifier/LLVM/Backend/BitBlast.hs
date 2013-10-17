@@ -1739,6 +1739,7 @@ sbeBitBlast dl mm = sbe
           , writeCnf         = \f _ t -> BitIO $ do
               let ?be = be
               V.toList <$> beWriteCNF be f mempty (lIsZero (flattenTerm t))
+          , writeSAWCore = Nothing
           , createSMTLIB1Script = Nothing
           , createSMTLIB2Script = Nothing
           , sbeRunIO = liftSBEBitBlast 
