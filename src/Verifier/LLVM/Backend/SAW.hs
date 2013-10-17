@@ -1189,6 +1189,8 @@ createSAWBackend' be dl = do
                 , writeAiger = lift2 (scWriteAiger sbs)
                 , writeCnf   = do
                     nyi "writeCnf"
+                , writeSAWCore = Just $ \nm t -> SAWBackend $ do
+                    writeFile nm (scWriteExternal t)
                 , createSMTLIB1Script = Just $ \nm -> SAWBackend $ do
                     ref <- newIORef $ SMT1.qf_aufbv_WriterState sc (fromString nm)
                     let runSMTLIB1 a = SAWBackend $ do

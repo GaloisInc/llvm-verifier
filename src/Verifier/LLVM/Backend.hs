@@ -251,6 +251,10 @@ data SBE m = SBE
     -- file @f@.
   , writeCnf :: FilePath -> BitWidth -> SBETerm m -> m [Maybe Int]
 
+    -- | @writeSAWCore f t@ writes a SAWCore representation of @t@ into
+    -- file @f@, if this backend supports SAWCore output.
+  , writeSAWCore :: Maybe (FilePath -> SBETerm m -> m ())
+
     -- | Returns allocator to make new SMTLib1 script if this backend
     -- supports SMTLIB1 output.
   , createSMTLIB1Script :: Maybe (String -> m (SMTLIB1Script m))

@@ -341,6 +341,19 @@ lss_write_cnf =
         void $ withSBE $ \s -> writeCnf s file 32 t
       _ -> wrongArguments "lss_write_cnf"
 
+lss_write_sawcore :: StdOvdEntry sbe m
+lss_write_sawcore =
+  voidOverrideEntry "lss_write_sawcore_uint32" [i32, strTy] $ \args ->
+    case args of
+      [(IntType w, t), (PtrType{},fptr)] | w == 32 -> do
+        file <- loadString "lss_write_sawcore_uint32" fptr
+        sbe <- gets symBE
+        case writeSAWCore sbe of
+          Just writeCoreFunc -> liftSBE $ writeCoreFunc file t
+          Nothing ->
+            error "lss_write_sawcore_uint32: backend does not support writing SAWCore files"
+      _ -> wrongArguments "lss_write_sawcore_uint32"
+
 ------------------------------------------------------------------------
 -- SMTLIB common
 
@@ -486,6 +499,7 @@ registerLSSOverrides = do
   let groundOverrides =
         [ lss_write_aiger
         , lss_write_cnf
+        , lss_write_sawcore
           -- Override support
         , lss_override_function_by_addr
         , lss_override_function_by_name
