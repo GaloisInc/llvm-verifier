@@ -9,7 +9,7 @@ if [ ! -e ./cabal-dev/bin/happy ] ; then
 fi
 
 if [ ! -e ./cabal-dev/bin/c2hs ] ; then
-  cabal-dev install c2hs
+  cabal-dev install c2hs-0.16.5
 fi
 
 cabal --version
