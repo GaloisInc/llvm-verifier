@@ -1241,12 +1241,10 @@ _unused = undefined
   scApplyLLVMSbvVecZipWith
   scApplyLLVMMkOverflowResult
   scApplyLLVMLiftVecBVRel
-  scApplyLLVMLiftVecSBVRel
   scApplyLLVMBinVRel
   scApplyLLVMBvMap
   scApplyLLVMBvVecZipWith
   scApplyLLVMLiftBVRel
-  scApplyLLVMLiftSBVRel
   scApplyLLVMAnd_true2
   scApplyLLVMBvEq_commute_ite1
   scApplyLLVMBvule_same2
@@ -1254,3 +1252,9 @@ _unused = undefined
   scApplyLLVMBvule_sameR
   scApplyLLVMIte_false_false
   scApplyLLVMIte_same
+  scApplyLLVMMkArrayType
+  scApplyLLVMMkDoubleType
+  scApplyLLVMMkFloatType
+  scApplyLLVMMkIntType
+  scApplyLLVMMkPtrType
+  scApplyLLVMMkValue
