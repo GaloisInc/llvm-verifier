@@ -199,10 +199,6 @@ liftBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
 liftBVRel f w x y = ite (bitvector 1) (f w x y) (bvNat 1 1) (bvNat 1 0);
 
 
-liftSBVRel :: ((w :: Nat) -> bitvector (Succ w) -> bitvector (Succ w) -> Bool)
-          -> (w :: Nat) -> binRel (bitvector (Succ w));
-liftSBVRel f w x y = ite (bitvector 1) (f w x y) (bvNat 1 1) (bvNat 1 0);
-
 liftVecBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
              -> (n w :: Nat)
              -> binVRel n (bitvector w);
@@ -212,17 +208,6 @@ liftVecBVRel f n w =
            (bitvector 1)
            (liftBVRel f w)
            n;
-
-liftVecSBVRel :: ((w :: Nat) -> bitvector (Succ w) -> bitvector (Succ w) -> Bool)
-              -> (n w :: Nat)
-              -> binVRel n (bitvector (Succ w));
-liftVecSBVRel f n w =
-  vZipWith (bitvector (Succ w))
-           (bitvector (Succ w))
-           (bitvector 1)
-           (liftSBVRel f w)
-           n;
-
 
 llvmIeqBool :: (w :: Nat) -> bitvector w -> bitvector w -> Bool;
 llvmIeqBool = bvEq;
@@ -250,17 +235,17 @@ llvmIugeV = liftVecBVRel bvuge;
 llvmIultV = liftVecBVRel bvult;
 llvmIuleV = liftVecBVRel bvule;
 
-llvmIsgt  llvmIsge  llvmIslt  llvmIsle  :: (w :: Nat)   -> binRel (bitvector (Succ w));
-llvmIsgt = liftSBVRel bvsgt;
-llvmIsge = liftSBVRel bvsge;
-llvmIslt = liftSBVRel bvslt;
-llvmIsle = liftSBVRel bvsle;
+llvmIsgt  llvmIsge  llvmIslt  llvmIsle  :: (w :: Nat)   -> binRel (bitvector w);
+llvmIsgt = liftBVRel bvsgt;
+llvmIsge = liftBVRel bvsge;
+llvmIslt = liftBVRel bvslt;
+llvmIsle = liftBVRel bvsle;
 
-llvmIsgtV llvmIsgeV llvmIsltV llvmIsleV :: (n w :: Nat) -> binVRel n (bitvector (Succ w));
-llvmIsgtV = liftVecSBVRel bvsgt;
-llvmIsgeV = liftVecSBVRel bvsge;
-llvmIsltV = liftVecSBVRel bvslt;
-llvmIsleV = liftVecSBVRel bvsle;
+llvmIsgtV llvmIsgeV llvmIsltV llvmIsleV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsgtV = liftVecBVRel bvsgt;
+llvmIsgeV = liftVecBVRel bvsge;
+llvmIsltV = liftVecBVRel bvslt;
+llvmIsleV = liftVecBVRel bvsle;
 --TODO
 
 -- | Defines a function that maps array elements from one range to another.
