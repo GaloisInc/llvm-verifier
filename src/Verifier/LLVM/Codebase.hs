@@ -103,7 +103,7 @@ cbDefs = toListOf (folded . _Right) . view cbGlobalNameMap
 -- | Return all functions that are declared, but not defined.
 cbUndefinedFns :: Codebase sbe -> [(L.Symbol,FunDecl)]
 cbUndefinedFns cb =
-  toListOf (folded . filtered (not . ((cb^.cbGlobalNameMap) ^.) . contains . fst))
+  toListOf (folded . filtered (\(k,_) -> not (M.member k (cb^.cbGlobalNameMap))))
            (M.toList (cb^.cbFunctionTypes))
 
 type EitherGlobal sbe = Either (Global (SBETerm sbe)) (SymDefine (SBETerm sbe))
