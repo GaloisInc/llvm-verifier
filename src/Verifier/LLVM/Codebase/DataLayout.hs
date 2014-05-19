@@ -162,6 +162,9 @@ updateAlign w (AT t) ma = AT $
 type instance Index AlignTree = Int
 type instance IxValue AlignTree = Alignment
  
+instance Ixed AlignTree where
+  ix k = at k . traverse
+
 instance At AlignTree where
   at k f m = updateAlign k m <$> indexed f k (findExact k m)
 
