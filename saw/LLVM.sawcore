@@ -310,7 +310,7 @@ llvmStructElt :: (n :: Nat)
               -> value (fst LLVMType Nat (get n fieldType tps i));
 llvmStructElt _ _ (ConsStruct _ _ _ _ v _) (FinVal Zero _) = v;
 llvmStructElt _ (ConsVec _ _ _ v) (ConsStruct _ _ _ _ _ r) (FinVal (Succ i) j) =
-  llvmStructElt (Succ (addNat j i)) v r (FinVal i j);
+  llvmStructElt (Succ (addNat i j)) v r (FinVal i j);
 
 llvmArrayElt :: (n :: Nat)
              -> (tp :: LLVMType)
