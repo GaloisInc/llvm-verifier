@@ -37,6 +37,7 @@ library
 
   build-depends:
       base >= 4
+    , aig
     , bytestring
     , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
@@ -96,7 +97,7 @@ library
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   if os(darwin)
-    GHC-options: -optl-Wl,-dead_strip
+    GHC-options: -optl-Wl
 
 executable lss
   if !flag(build-lss)
@@ -117,6 +118,7 @@ executable lss
 
   build-depends:
       base >= 4
+    , abcBridge
     , cmdargs >= 0.8
     , lens >= 3.9
     , llvm-pretty >= 0.1.1.0
@@ -140,6 +142,7 @@ executable bcdump
 
   build-depends:
       base >= 4
+    , abcBridge
     , bytestring
     , directory
     , filepath
@@ -147,7 +150,6 @@ executable bcdump
     , llvm-verifier
     , process
     , wl-pprint
-    , Verinf
 
 test-suite test-llvm
   type:       exitcode-stdio-1.0
@@ -164,6 +166,8 @@ test-suite test-llvm
 
   build-depends:
       base >= 4
+    , abcBridge
+    , aig
     , bytestring
     , cmdargs >= 0.8
     , containers >= 0.4.0.0

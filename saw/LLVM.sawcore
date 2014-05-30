@@ -266,28 +266,30 @@ llvmIsleV = liftVecSBVRel bvsle;
 -- | Defines a function that maps array elements from one range to another.
 bvMap :: (x y :: Nat)
       -> (bitvector x -> bitvector y)
-      -> (n :: Nat) -> Vec n (bitvector x) -> Vec n (bitvector y);
+      -> (n :: Nat)
+      -> Vec n (bitvector x)
+      -> Vec n (bitvector y);
 bvMap x y = vMap (bitvector x) (bitvector y);
 
-llvmTrunc :: (d r :: Nat) -> bitvector (addNat r d) -> bitvector r;
+llvmTrunc :: (d r :: Nat) -> bitvector (addNat d r) -> bitvector r;
 llvmTrunc = bvTrunc;
 
-llvmTruncV :: (n d r :: Nat) -> Vec n (bitvector (addNat r d)) -> Vec n (bitvector r);
-llvmTruncV n d r = bvMap (addNat r d) r (bvTrunc d r) n;
+llvmTruncV :: (n d r :: Nat) -> Vec n (bitvector (addNat d r)) -> Vec n (bitvector r);
+llvmTruncV n d r = bvMap (addNat d r) r (bvTrunc d r) n;
 
-llvmZExt  :: (d i :: Nat)   -> bitvector i -> bitvector (addNat i d);
+llvmZExt  :: (d i :: Nat)   -> bitvector i -> bitvector (addNat d i);
 llvmZExt = bvUExt;
 
-llvmZExtV :: (n d i :: Nat) -> Vec n (bitvector i) -> Vec n (bitvector (addNat i d));
-llvmZExtV n d i = bvMap i (addNat i d) (bvUExt d i) n;
+llvmZExtV :: (n d i :: Nat) -> Vec n (bitvector i) -> Vec n (bitvector (addNat d i));
+llvmZExtV n d i = bvMap i (addNat d i) (bvUExt d i) n;
 
-llvmSExt  :: (d i :: Nat)   -> bitvector (Succ i) -> bitvector (addNat (Succ i) d);
+llvmSExt  :: (d i :: Nat) -> bitvector (Succ i) -> bitvector (addNat d (Succ i));
 llvmSExt = bvSExt;
 
 llvmSExtV :: (n d i :: Nat)
           -> Vec n (bitvector (Succ i))
-          -> Vec n (bitvector (addNat (Succ i) d));
-llvmSExtV n d i = bvMap (Succ i) (addNat (Succ i) d) (bvSExt d i) n;
+          -> Vec n (bitvector (addNat d (Succ i)));
+llvmSExtV n d i = bvMap (Succ i) (addNat d (Succ i)) (bvSExt d i) n;
 
 llvmSelect  :: (tp :: LLVMType) -> bitvector 1 -> value tp -> value tp -> value tp;
 llvmSelect tp c = ite (value tp) (get 1 Bool c (FinVal 0 0));
