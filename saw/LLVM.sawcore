@@ -277,7 +277,7 @@ llvmTrunc = bvTrunc;
 llvmTruncV :: (n d r :: Nat) -> Vec n (bitvector (addNat d r)) -> Vec n (bitvector r);
 llvmTruncV n d r = bvMap (addNat d r) r (bvTrunc d r) n;
 
-llvmZExt  :: (d i :: Nat)   -> bitvector i -> bitvector (addNat d i);
+llvmZExt  :: (d i :: Nat) -> bitvector i -> bitvector (addNat d i);
 llvmZExt = bvUExt;
 
 llvmZExtV :: (n d i :: Nat) -> Vec n (bitvector i) -> Vec n (bitvector (addNat d i));
