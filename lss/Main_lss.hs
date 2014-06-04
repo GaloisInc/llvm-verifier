@@ -14,18 +14,19 @@ module Main where
 
 import           Control.Applicative             hiding (many)
 import           Control.Monad
+import qualified Data.ABC as ABC
 import           Data.Char
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           System.Environment              (getArgs)
 import           System.Exit
 import           Text.ParserCombinators.Parsec
-import           Verinf.Symbolic                 (createBitEngine)
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
 import           Text.PrettyPrint.Leijen hiding ((<$>))
 
 import           LSSImpl
 
+import           Verinf.Symbolic                 (createBitEngine)
 import Verifier.LLVM.Backend (prettyTermD, SBEPair(..))
 import Verifier.LLVM.Backend.BitBlast
      ( createBuddyAll
@@ -79,14 +80,16 @@ main = do
       Just nm -> loadModule nm
 
   let dl = parseDataLayout $ L.modDataLayout mdl
-  be <- createBitEngine
   SBEPair sbe mem <- 
     case backEnd of
       BitBlastDagBased -> do
+        be <- createBitEngine
         createDagAll be dl (defaultMemGeom dl)
       BitBlastBuddyAlloc -> do
+        be <- createBitEngine
         return $ createBuddyAll be dl (defaultMemGeom dl)
       SAWBackendType -> do
+        ABC.SomeGraph be <- ABC.newGraph ABC.giaNetwork
         uncurry SBEPair <$> createSAWBackend be dl
   (cbWarnings,cb) <- mkCodebase sbe dl mdl
   mapM_ (\m -> print $ text "Warning:" <+> m) cbWarnings

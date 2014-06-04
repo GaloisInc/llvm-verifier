@@ -17,6 +17,7 @@ import           Control.Applicative
 import           Control.Lens hiding (act, (<.>))
 import           Control.Monad 
 import           Control.Monad.State (gets, MonadIO)
+import qualified Data.ABC as ABC
 import           Data.Int
 import           System.FilePath
 import qualified Text.LLVM                     as L
@@ -169,10 +170,10 @@ createDagModel dl = do
   let sbe = let ?be = be in sbeBitBlast dl mm
   return (sbe,mem)
 
-createSAWModel :: SBECreateFn (SAWBackend s Lit)
+createSAWModel :: SBECreateFn (SAWBackend t)
 createSAWModel dl = do
-  be <- createBitEngine
-  createSAWBackend be dl
+  ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
+  createSAWBackend g dl
 
 runTestLSSBuddy :: Int           -- ^ Verbosity
                 -> L.Module      -- ^ Module 
