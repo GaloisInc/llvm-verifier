@@ -11,7 +11,6 @@ import Control.Lens
 import qualified Data.Vector as V
 import System.Random
 import Test.QuickCheck
-import Test.QuickCheck.Arbitrary
 import Test.QuickCheck.Monadic
 
 import Verifier.LLVM.MemModel.Common
@@ -31,7 +30,7 @@ instance (Bounded a,Integral a) => Num (CheckedNum a) where
   CN x * CN y = fromInteger (toInteger x * toInteger y)
   abs (CN x) = fromInteger (abs (toInteger x))
   signum (CN x) = CN (signum x)
-  fromInteger x = CN r 
+  fromInteger x = CN r
     where minB :: Bounded a => a -> a
           minB _ = minBound
           maxB :: Bounded a => a -> a
@@ -98,17 +97,19 @@ instance Arbitrary BasePreference where
                _ -> NeitherFixed
 
 printEqn :: (Show a, Testable prop) => String -> a -> prop -> Property
-printEqn nm x = printTestCase (nm ++ " = " ++ show x) 
+printEqn nm x = counterexample (nm ++ " = " ++ show x)
 
-forArbitraryVar :: (Arbitrary a, Show a, Testable prop) => String -> (a -> prop) -> Property
+forArbitraryVar :: (Arbitrary a, Show a, Testable prop) =>
+                   String -> (a -> prop) -> Gen Property
 forArbitraryVar nm prop = do
   x <- arbitrary
-  shrinking shrink x $ \y ->
+  return $ shrinking shrink x $ \y ->
     printEqn nm y (prop y)
 
 -- | Generates a named variable that will be printed if the test case fails.
-forVar :: (Show a, Testable prop) => String -> Gen a -> (a -> prop) -> Property
-forVar nm gen prop = gen >>= \v -> printEqn nm v (prop v)
+forVar :: (Show a, Testable prop) =>
+          String -> Gen a -> (a -> prop) -> Gen Property
+forVar nm gen prop = gen >>= \v -> return (printEqn nm v (prop v))
 
 type TestCase = (String, Property)
 
@@ -120,12 +121,14 @@ runTestCase (nm,p) = do
 mkTestCase :: Testable prop => String -> prop -> TestCase
 mkTestCase nm p = (nm, property p)
 
-rangeLoadTestCase :: String
-                  -> (Addr -> Type
-                           -> Range
-                           -> (ValueCtor (RangeLoad Addr) -> Property)
-                           -> Property)
-                  -> TestCase 
+rangeLoadTestCase :: Testable prop =>
+                     String
+                  -> (Size
+                      -> Type
+                      -> Range
+                      -> (ValueCtor (RangeLoad Addr) -> Property)
+                      -> prop)
+                  -> TestCase
 rangeLoadTestCase nm fn = mkTestCase nm $
   forArbitraryVar "l" $ \l ->
   forArbitraryVar "tp" $ \tp ->
@@ -139,7 +142,7 @@ testMaybeEq :: (Eq v, Show v, Testable prop)
             -> prop
             -> Property
 testMaybeEq nm Nothing _ prop =
-  printTestCase ("Missing " ++ show nm) prop
+  counterexample ("Missing " ++ show nm) prop
 testMaybeEq nm (Just v) expected prop
   | v == expected = property prop
   | otherwise = printEqn nm v False
@@ -147,21 +150,22 @@ testMaybeEq nm (Just v) expected prop
 -- | Checks that the a value created has the correct type,
 -- all imports are in increasing order, and have correctly
 -- recorded whether they are in the store range.
-checkRangeValueLoad :: Addr -> Type -> Range -> ValueCtor (RangeLoad Addr) -> Property
-checkRangeValueLoad lo ltp s v = 
+checkRangeValueLoad :: Addr -> Type -> Range -> ValueCtor (RangeLoad Addr)
+                    -> Property
+checkRangeValueLoad lo ltp s v =
     testMaybeEq "Return type" (typeOfValue (Just . rangeLoadType) v) ltp $
     checkReads lo (valueImports v)
   where le = typeEnd lo ltp
         checkReads po [] = po <= le
         checkReads po (OutOfRange o tp:r) =
-            po <= o && isDisjoint (R o e) s && checkReads e r 
+            po <= o && isDisjoint (R o e) s && checkReads e r
           where e = typeEnd o tp
         checkReads po (InRange o tp:r) =
-            (po <= rStart s + o) && e <= _rEnd s && checkReads e r 
+            (po <= rStart s + o) && e <= _rEnd s && checkReads e r
           where e = rStart s + typeEnd o tp
 
 testRangeLoad :: TestCase
-testRangeLoad = rangeLoadTestCase "rangeLoad" $ \l tp s p -> 
+testRangeLoad = rangeLoadTestCase "rangeLoad" $ \l tp s p ->
   p $ adjustOffset fromIntegral fromIntegral <$> rangeLoad l tp s
 
 testFixedOffsetRangeLoad :: TestCase
@@ -184,12 +188,14 @@ testSymbolicRangeLoad =
     let ec = evalContext l tp s
     p $ fmap (fromInteger . evalV ec) <$> eval ec (symbolicRangeLoad pref tp)
 
-valueLoadTestCase :: String
-                  -> (Addr -> Type 
-                           -> Addr
-                           -> Type
-                           -> (ValueCtor (ValueLoad Addr) -> Property)
-                           -> Property)
+valueLoadTestCase :: Testable prop =>
+                     String
+                  -> (Addr
+                      -> Type
+                      -> Addr
+                      -> Type
+                      -> (ValueCtor (ValueLoad Addr) -> Property)
+                      -> prop)
                   -> TestCase
 valueLoadTestCase nm f = mkTestCase nm $
   forArbitraryVar "lo" $ \lo ->
@@ -197,10 +203,11 @@ valueLoadTestCase nm f = mkTestCase nm $
   forArbitraryVar "so" $ \so ->
   forArbitraryVar "stp" $ \stp -> do
   f lo ltp so stp $ \v ->
-    printTestCase ("result = " ++ show v) $
+    counterexample ("result = " ++ show v) $
     property $ checkValueLoad lo ltp so stp v
 
-checkValueLoad :: Addr -> Type -> Addr -> Type -> ValueCtor (ValueLoad Addr) -> Bool
+checkValueLoad :: Addr -> Type -> Addr -> Type -> ValueCtor (ValueLoad Addr)
+               -> Bool
 checkValueLoad _ ltp _ _ v =
     Just ltp == typeOfValue valueLoadType v
 
@@ -229,4 +236,4 @@ testCases =
 
 memModelTests :: [(Args, Property)]
 memModelTests = fn <$> testCases
- where fn (nm,p) = (stdArgs, monadicIO (run (putStrLn nm)) >> p)
+ where fn (nm,p) = (stdArgs, monadicIO (run (putStrLn nm)) .&&. p)
