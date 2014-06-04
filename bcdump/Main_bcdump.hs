@@ -7,6 +7,7 @@ module Main where
 
 import qualified Control.Exception as CE
 import           Control.Monad
+import qualified Data.ABC as ABC
 import           System.Environment
 import           System.Process
 import           System.Directory
@@ -17,8 +18,6 @@ import qualified Text.LLVM                      as LLVM
 import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Simulator.SimUtils
-
-import Verinf.Symbolic (createBitEngine)
 
 main :: IO ()
 main = do
@@ -42,7 +41,7 @@ main = do
 
   mdl <- loadModule bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
   let dl = parseDataLayout $ LLVM.modDataLayout mdl
-  be <- createBitEngine
+  ABC.SomeGraph be <- ABC.newGraph ABC.giaNetwork
   (sbe, _) <- createSAWBackend be dl
   (cbWarnings, cb) <- mkCodebase sbe dl mdl
   mapM_ (\m -> print $ text "Warning:" <+> m) cbWarnings
