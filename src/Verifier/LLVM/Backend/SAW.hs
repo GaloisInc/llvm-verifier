@@ -964,7 +964,7 @@ scWriteAiger sbs path terms = do
   case mbits of
     Left msg -> fail $ "Could not write Aig as term could not be bitblasted: " ++ msg
     Right bits -> do
-      let outputs = undefined $ AIG.concat $ flattenBValue <$> bits
+      let outputs = AIG.bvToList $ AIG.concat $ flattenBValue <$> bits
       AIG.writeAiger path (AIG.Network (bcEngine bc) outputs)
 
 intFromBV :: V.Vector Bool -> Integer
