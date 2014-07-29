@@ -1035,16 +1035,17 @@ createSAWBackend :: AIG.IsAIG l g
                  -> DataLayout
                  -> IO (SBE (SAWBackend t), SAWMemory t)
 createSAWBackend be dl = do
-  (sbe, mem, _) <- createSAWBackend' be dl
+  (sbe, mem, _) <- createSAWBackend' be dl []
   return (sbe, mem)
 
 createSAWBackend' :: forall t l g s
                    . AIG.IsAIG l g
                   => g s
                   -> DataLayout
+                  -> [Module]
                   -> IO (SBE (SAWBackend t), SAWMemory t, SharedContext t)
-createSAWBackend' be dl = do
-  sc0 <- mkSharedContext llvmModule
+createSAWBackend' be dl imps = do
+  sc0 <- mkSharedContext (foldr insImport llvmModule imps)
   let activeDefs = filter defPred $ allModuleDefs llvmModule
         where defPred d = defIdent d `Set.notMember` excludedDefs
               excludedDefs = Set.fromList
