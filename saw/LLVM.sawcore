@@ -304,10 +304,11 @@ llvmStructElt _ (ConsVec _ _ _ v) (ConsStruct _ _ _ _ _ r) (FinVal (Succ i) j) =
 
 llvmArrayElt :: (n :: Nat)
              -> (tp :: LLVMType)
+             -> (w :: Nat)
              -> Vec n (value tp)
-             -> Fin n
+             -> bitvector w
              -> value tp;
-llvmArrayElt n tp = get n (value tp);
+llvmArrayElt n tp = bvAt n (value tp);
 
 -- | Append the one bitvector to another.  The first vector is the most significant.
 llvmAppendInt :: (u v :: Nat)

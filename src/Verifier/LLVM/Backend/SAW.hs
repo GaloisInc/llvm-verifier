@@ -379,11 +379,13 @@ mkBackendState dl be sc = do
                     MM.DoubleToBV v -> join $ scApplyLLVMLlvmDoubleToInt sc ?? v
                     MM.ArrayElt n tp o v -> do
                       let n' = fromIntegral n
-                      join $ scApplyPreludeGet sc
+                          o' = fromIntegral o
+                          w  = 64 -- TODO: don't hard-code size
+                      join $ scApplyPreludeAt sc
                              <*> scNat sc n'
                              <*> (valueFn =<< mkTypeTerm tp)
                              <*> pure v
-                             <*> scFinConst sc (fromIntegral o) n'
+                             <*> scNat sc o'
                     MM.FieldVal tps i v -> do
                       let n = fromIntegral (V.length tps)
                       join $ scApplyLLVMLlvmStructElt sc
@@ -912,10 +914,10 @@ typedExprEvalFn sbs expr0 = do
       fn <- scApplyLLVMLlvmStructElt sc
       return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt tps val ft) =<< eval v
     GetConstArrayElt n tp a i -> assert (i < n) $ do
-      fn <- scApplyLLVMLlvmArrayElt sc
+      fn <- scApplyPreludeAt sc
       nt <- scNat sc (fromIntegral n)
       mtp <- sbsMemType sbs tp
-      it <- scFinConst sc (fromIntegral i) (fromIntegral n)
+      it <- scNat sc (fromIntegral i)
       return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt mtp val it) =<< eval a
 
 -- | Returns value and rest out of construct.
