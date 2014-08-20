@@ -26,7 +26,6 @@ import           Data.Int
 import qualified Data.Vector as V
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
-import           Verinf.Utils.LogMonad
 import qualified Text.LLVM                       as L
 
 import Verifier.LLVM.Backend

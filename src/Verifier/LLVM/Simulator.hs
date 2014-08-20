@@ -34,6 +34,9 @@ Point-of-contact : jstanley
 {-# LANGUAGE ViewPatterns          #-}
 module Verifier.LLVM.Simulator
   ( Simulator (SM)
+  , getVerbosity
+  , setVerbosity
+  , whenVerbosity
   , State(..)
   , onSimError
   , ErrorHandler
