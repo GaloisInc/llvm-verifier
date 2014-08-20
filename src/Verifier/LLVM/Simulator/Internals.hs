@@ -16,6 +16,10 @@ Point-of-contact : jhendrix
 {-# LANGUAGE ViewPatterns #-}
 module Verifier.LLVM.Simulator.Internals
   ( Simulator(SM, runSM)
+  , getVerbosity
+  , setVerbosity
+  , whenVerbosity
+  , dbugM'
   , dumpCtrlStk
 
   , GlobalMap
@@ -914,9 +918,17 @@ toggleBreakpoint fn sym bp = do
 --------------------------------------------------------------------------------
 -- Misc typeclass instances
 
-instance MonadIO m => LogMonad (Simulator sbe m) where
-  getVerbosity   = gets verbosity
-  setVerbosity v = modify $ \s -> s{ verbosity = v }
+getVerbosity :: Monad m => Simulator sbe m Int
+getVerbosity = gets verbosity
+
+setVerbosity :: Monad m => Int -> Simulator sbe m ()
+setVerbosity v = modify $ \s -> s{ verbosity = v }
+
+whenVerbosity :: Monad m => (Int -> Bool) -> Simulator sbe m () -> Simulator sbe m ()
+whenVerbosity f m = getVerbosity >>= \v -> when (f v) m
+
+dbugM' :: (Monad m, MonadIO m) => Int -> String -> Simulator sbe m ()
+dbugM' lvl = whenVerbosity (>=lvl) . dbugM
 
 instance (Monad m, Functor m) => Applicative (Simulator sbe m) where
   pure      = return
