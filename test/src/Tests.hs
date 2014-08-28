@@ -38,11 +38,11 @@ runTests chooseTest = do
     noOfSelected = length qcProps
     qcProps      = filter chooseTest allTests
     allTests     = [ ("PrimOps", primOpTests)
-                   , ("Aggregates", aggTests)
-                   , ("Symbolic", symTests)
-                   , ("AES", aesTests)
-                   , ("I/O", ioTests)
-                   , ("BitMemModel", bitMemModelTests)
-                   , ("MemModel", memModelTests)
-                   , ("Errors", errorTests)
+                   -- , ("Aggregates", aggTests)
+                   -- , ("Symbolic", symTests)
+                   -- , ("AES", aesTests)
+                   -- , ("I/O", ioTests)
+                   -- , ("BitMemModel", bitMemModelTests)
+                   -- , ("MemModel", memModelTests)
+                   -- , ("Errors", errorTests)
                    ]

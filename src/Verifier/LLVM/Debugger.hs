@@ -524,14 +524,14 @@ pathSatCmd =
         cond <- assumptionsForActivePath
         liftSBE $ termSAT sbe cond
       case sat of
-        UnSat -> do
+        Unsat -> do
           dbugM "The current path is infeasible.  Should simulation of the path be terminated?"
           yn <- promptYesNo
           when (yn == Yes) $ do
             killPathByDebugger
         Sat _ ->
           dbugM "Conditions along path are satisfiable."
-        Unknown ->
+        SatUnknown ->
           dbugM "Could not determine if path is feasible."
 
 -- | Kills the current path with the debugger.

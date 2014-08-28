@@ -24,16 +24,24 @@ import qualified Text.LLVM                     as L
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import qualified Test.QuickCheck.Test          as T
-import           Verinf.Symbolic               (Lit, createBitEngine)
+
 
 import           LSSImpl
 
-import Verifier.LLVM.Backend.BitBlast
+import Verifier.LLVM.Backend.BitBlastNew
+import qualified Verifier.LLVM.Backend.BitBlast as Old
+import qualified Verinf.Symbolic as Verinf
+
 import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Debugger
 import Verifier.LLVM.Simulator hiding (run)
 import Verifier.LLVM.Simulator.SimUtils
+
+import qualified Data.AIG as AIG
+import           Data.AIG (IsAIG)
+import qualified Data.ABC as ABC
+
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
 
@@ -82,9 +90,7 @@ type SBEPropM a = forall sbe . (Functor sbe, Ord (SBETerm sbe)) => Simulator sbe
 forAllMemModels :: forall a. Int -> FilePath -> SBEPropM a -> PropertyM IO [a]
 forAllMemModels v bcFile testProp = do
   mdl <- testMDL bcFile
-  let runTest :: (Functor sbe, Ord (SBETerm sbe))
-              => SBECreateFn sbe
-              -> PropertyM IO a
+  let runTest :: SBECreateFn -> PropertyM IO a
       runTest createFn = run $ runTestSimulator createFn v mdl testProp
   sequence
     [ 
@@ -107,15 +113,14 @@ type ExecRsltHndlr sbe crt a =
   -> ExecRslt sbe crt -- ^ Execution results; final memory is embedded here
   -> IO a
 
-runTestSimulator :: (Functor sbe, Ord (SBETerm sbe))
-                 => SBECreateFn sbe
+runTestSimulator :: SBECreateFn
                  -> Int -- ^ Verbosity
                  -> L.Module -- ^ Code to run in.
-                 -> Simulator sbe IO a
+                 -> SBEPropM a -- Simulator sbe IO a
                  -> IO a
 runTestSimulator createFn v mdl action = do
   let dl = parseDataLayout (L.modDataLayout mdl)
-  (sbe, mem) <- createFn dl
+  createFn dl $ \sbe mem -> do
   ([],cb) <- mkCodebase sbe dl mdl
   runSimulator cb sbe mem Nothing $ do
     setVerbosity v
@@ -129,10 +134,13 @@ testRunMain args = do
     Nothing -> error "Provided bitcode does not contain main()."
     Just mainDef -> runMainFn mainDef ("lss" : args)
 
-type SBECreateFn sbe = DataLayout -> IO (SBE sbe, SBEMemory sbe)
+type SBECreateFn = forall a.
+                       DataLayout -> 
+                       (forall sbe. (Functor sbe, Ord (SBETerm sbe)) => SBE sbe -> SBEMemory sbe -> IO a) ->
+                       IO a
+-- IO (SBE sbe, SBEMemory sbe)
 
-runTestLSSCommon :: (Functor sbe, Ord (SBETerm sbe))
-                 => SBECreateFn sbe
+runTestLSSCommon :: SBECreateFn
                  -> Int
                  -> L.Module
                  -> [String]
@@ -153,27 +161,47 @@ runTestLSSCommon createFn v mdl argv' mepsLen mexpectedRV = do
       Just epsLen -> checkErrorPaths epsLen execRslt
     checkReturnValue mexpectedRV execRslt
 
+type Lit = ABC.GIALit
 
 -- | Create buddy backend and initial memory.
-createBuddyModel :: SBECreateFn (BitIO (BitMemory Lit) Lit)
-createBuddyModel dl = do
-  be <- createBitEngine
-  let sbe = let ?be = be in sbeBitBlast dl (buddyMemModel dl be)
+createBuddyModel :: SBECreateFn
+createBuddyModel dl k = do
+  (AIG.SomeGraph g) <- AIG.newGraph ABC.giaNetwork
+  let sbe = sbeBitBlast g (error "no CNF writer!") dl (buddyMemModel dl g)
       mem = buddyInitMemory (defaultMemGeom dl)
-  return (sbe,mem)
+  k sbe mem
+
+createOldBuddyModel :: SBECreateFn
+createOldBuddyModel dl k = do
+  be <- Verinf.createBitEngine
+  let sbe = let ?be = be in Old.sbeBitBlast dl (Old.buddyMemModel dl be)
+      mem = Old.buddyInitMemory (defaultMemGeom dl)
+  k sbe mem
+
+
+--  return (sbe,mem)
 
 -- | Create buddy backend and initial memory.
-createDagModel :: SBECreateFn (BitIO (DagMemory Lit) Lit)
-createDagModel dl = do
-  be <- createBitEngine
-  (mm,mem) <- createDagMemModel dl be (defaultMemGeom dl)
-  let sbe = let ?be = be in sbeBitBlast dl mm
-  return (sbe,mem)
+createDagModel :: SBECreateFn
+createDagModel dl k = do
+  (AIG.SomeGraph g) <- AIG.newGraph ABC.giaNetwork
+  (mm,mem) <- createDagMemModel dl g (defaultMemGeom dl)
+  let sbe = sbeBitBlast g (error "no CNF writer!") dl mm
+  k sbe mem
 
-createSAWModel :: SBECreateFn (SAWBackend t)
-createSAWModel dl = do
+createOldDagModel :: SBECreateFn
+createOldDagModel dl k = do
+  be <- Verinf.createBitEngine
+  (mm,mem) <- Old.createDagMemModel dl be (defaultMemGeom dl)
+  let sbe = let ?be = be in Old.sbeBitBlast dl mm
+  k sbe mem
+--return (sbe,mem)
+
+createSAWModel :: SBECreateFn
+createSAWModel dl k = do
   ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
-  createSAWBackend g dl
+  (sbe,mem) <- createSAWBackend g dl
+  k sbe mem
 
 runTestLSSBuddy :: Int           -- ^ Verbosity
                 -> L.Module      -- ^ Module 
@@ -195,17 +223,20 @@ lssTest :: FilePath -> (L.Module -> PropertyM IO ()) -> (Args, Property)
 lssTest bc act = test 1 False bc $ act =<< testMDL (bc <.> "bc")
 
 testEachBackend :: FilePath
-                -> (forall sbe . (Functor sbe, Ord (SBETerm sbe))
-                               => L.Module
+                -> 
+                                ( L.Module
                                -> String
-                               -> SBECreateFn sbe
+                               -> SBECreateFn
                                -> PropertyM IO ())
                 -> (Args,Property)
 testEachBackend nm f = do
   test 1 False nm $ do
     mdl <- testMDL (nm <.> "bc")
+    f mdl "bitblast.old" createOldBuddyModel
+    f mdl "dag.old" createOldDagModel
     f mdl "bitblast" createBuddyModel
     f mdl "dag" createDagModel
+
 --    f "saw" createSAWModel
 
 -- | Run test on all backends
@@ -216,7 +247,8 @@ lssTestAll :: Int
            -> Maybe Integer -- ^ Expected return value
            -> (Args,Property)
 lssTestAll v nm args elen erv =
-  testEachBackend nm $ \mdl _backendName createFn -> do
+  testEachBackend nm $ \mdl backendName createFn -> do
+    run $ putStrLn $ unwords ["--- Backend:", backendName,"---"]
     runTestLSSCommon createFn v mdl args elen erv
 
 checkErrorPaths :: Monad m => Int -> ExecRslt sbe crt -> m ()
