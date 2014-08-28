@@ -8,20 +8,27 @@ import qualified Data.Vector.Storable as LV
 import Test.QuickCheck
 import Test.QuickCheck.Monadic
 
-import Verinf.Symbolic (createBitEngine)
-import Verinf.Symbolic.Lit
-import Verinf.Symbolic.Lit.Functional
+-- import Verinf.Symbolic (createBitEngine)
+-- import Verinf.Symbolic.Lit
+-- import Verinf.Symbolic.Lit.Functional
 
-import Verifier.LLVM.Backend.BitBlast
+-- import Verifier.LLVM.Backend.BitBlast
+
+import qualified Data.AIG as AIG
+import           Data.AIG (IsAIG)
+import qualified Data.ABC as ABC
+import Verifier.LLVM.Backend.BitBlastNew
+
+
 import Verifier.LLVM.Codebase.DataLayout
 
 mmTest :: String
        -> Int
-       -> (forall mem l . (Eq l, LV.Storable l)
+       -> (forall mem g l s. (IsAIG l g, Eq (l s))
             => DataLayout
-            -> BitEngine l
-            -> SBE (BitIO mem l)
-            -> BitBlastMemModel mem l
+            -> g s
+            -> SBE (BitIO mem (l s))
+            -> BitBlastMemModel mem (l s)
             -> mem
             -> PropertyM IO ()) 
        -> (Args, Property)
@@ -35,23 +42,21 @@ mmTest testName n fn =
                  , mgData = (0x0, 0x0)
                  , mgHeap = (0x0,0x0)
                  }
-      be <- run $ createBitEngine
-      (mm, mem) <- run $ createDagMemModel dl be mg
-      let ?be = be
-      fn dl be (sbeBitBlast dl mm) mm mem
-      run $ beFree be)
+      (AIG.SomeGraph g) <- run $ AIG.newGraph ABC.giaNetwork
+      (mm, mem) <- run $ createDagMemModel dl g mg
+      fn dl g (sbeBitBlast g (error "No CNF writer function defined!") dl mm) mm mem
+   )
 
 
 -- | Generate bit vector from integer.
-bfi :: Int -> Integer -> LV.Vector Bool
-bfi w v = LV.generate w (testBit v)
+bfi :: Int -> Integer -> [Bool]
+bfi w v = AIG.bvToList $ AIG.generate_lsb0 w (testBit v)
 
 bitMemModelTests :: [(Args, Property)]
 bitMemModelTests =
-  [ mmTest "symbolicTests" 1 $ \dl be sbe@SBE { .. } MemModel { .. } m0 -> do
+  [ mmTest "symbolicTests" 1 $ \dl g sbe@SBE { .. } MemModel { .. } m0 -> do
       let ptrWidth = ptrBitwidth dl
-      let ?be = be
-      let bytes = lVectorFromInt 8 7
+      let bytes = AIG.bvFromInteger g 8 7
       let tTrue = sbeTruePred
       cnt <- runSBE $ freshInt 1
       -- Try allocating symbolic ammount.
@@ -70,8 +75,7 @@ bitMemModelTests =
          rptr <- runSBE $ applyTypedExpr (PtrAdd ptr cntExt)
          (c2, _) <- run $ mmLoad m2 rptr 1 0 
          assert =<< runSBE (evalPred [False] c2)
-  , mmTest "mergeTest" 1 $ \_lc be sbe@SBE { .. } MemModel { .. } m0 -> do
-      let ?be = be
+  , mmTest "mergeTest" 1 $ \_lc g sbe@SBE { .. } MemModel { .. } m0 -> do
       let tTrue = sbeTruePred
       -- Allocate space on stack.
       cnt <- runSBE $ termInt sbe 8 1
@@ -79,7 +83,7 @@ bitMemModelTests =
       AResult c0 ptr m1 <- run $ mmStackAlloc m0' 1 cnt 0
       assert (c0 == tTrue)
       -- Store bytes
-      let lvi = lVectorFromInt
+      let lvi = AIG.bvFromInteger g
       (ct, mt) <- run $ mmStore m1 ptr (lvi 8 1) 0
       assert =<< runSBE (evalPred [] ct)
       (cf, mf) <- run $ mmStore m1 ptr (lvi 8 0) 0
@@ -91,8 +95,8 @@ bitMemModelTests =
       -- Check result of merge
       (c2, v) <- run $ mmLoad m2 ptr 1 0 
       assert (c2 == tTrue)
-      v1 <- run $ lEvalAig (LV.fromList [False]) v
-      v2 <- run $ lEvalAig (LV.fromList [True ]) v
+      v1 <- run $ AIG.evaluate (AIG.Network g (AIG.bvToList v)) [False]
+      v2 <- run $ AIG.evaluate (AIG.Network g (AIG.bvToList v)) [True]
       assert (v1 == bfi 8 0)
       assert (v2 == bfi 8 1)
   ] 
