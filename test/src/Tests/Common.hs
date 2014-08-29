@@ -93,12 +93,11 @@ forAllMemModels v bcFile testProp = do
   let runTest :: SBECreateFn -> PropertyM IO a
       runTest createFn = run $ runTestSimulator createFn v mdl testProp
   sequence
-    [ 
-{-
-      runTest =<< run (createBuddyModel dl)
-    , runTest =<< run (createDagModel dl)
--}
-      runTest createSAWModel
+    [ (run $ putStrLn "--- old buddy model ---") >> runTest createOldBuddyModel
+    , (run $ putStrLn "--- old dag model ---") >> runTest createOldDagModel
+    , (run $ putStrLn "--- buddy model ---") >> runTest createBuddyModel
+    , (run $ putStrLn "--- dag model ---") >> runTest createDagModel
+    , (run $ putStrLn "--- SAW model ---") >> runTest createSAWModel
     ]
 
 type AllMemModelTest = Functor sbe => Simulator sbe IO Bool
@@ -138,7 +137,6 @@ type SBECreateFn = forall a.
                        DataLayout -> 
                        (forall sbe. (Functor sbe, Ord (SBETerm sbe)) => SBE sbe -> SBEMemory sbe -> IO a) ->
                        IO a
--- IO (SBE sbe, SBEMemory sbe)
 
 runTestLSSCommon :: SBECreateFn
                  -> Int
@@ -161,8 +159,6 @@ runTestLSSCommon createFn v mdl argv' mepsLen mexpectedRV = do
       Just epsLen -> checkErrorPaths epsLen execRslt
     checkReturnValue mexpectedRV execRslt
 
-type Lit = ABC.GIALit
-
 -- | Create buddy backend and initial memory.
 createBuddyModel :: SBECreateFn
 createBuddyModel dl k = do
@@ -179,8 +175,6 @@ createOldBuddyModel dl k = do
   k sbe mem
 
 
---  return (sbe,mem)
-
 -- | Create buddy backend and initial memory.
 createDagModel :: SBECreateFn
 createDagModel dl k = do
@@ -195,7 +189,6 @@ createOldDagModel dl k = do
   (mm,mem) <- Old.createDagMemModel dl be (defaultMemGeom dl)
   let sbe = let ?be = be in Old.sbeBitBlast dl mm
   k sbe mem
---return (sbe,mem)
 
 createSAWModel :: SBECreateFn
 createSAWModel dl k = do
@@ -236,8 +229,7 @@ testEachBackend nm f = do
     f mdl "dag.old" createOldDagModel
     f mdl "bitblast" createBuddyModel
     f mdl "dag" createDagModel
-
---    f "saw" createSAWModel
+    f mdl "SAW" createSAWModel
 
 -- | Run test on all backends
 lssTestAll :: Int

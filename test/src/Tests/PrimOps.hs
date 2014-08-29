@@ -67,11 +67,11 @@ primOpTests =
   , lssTestAll 0 "ctests/test-call-malloc" [] Nothing (Just 34289)
   , lssTestAll 0 "ctests/test-main-return" [] Nothing (Just 42)
   , lssTestAll 0 "ctests/test-select" [] Nothing (Just 1)
-  --, lssTestAll 0 "ctests/test-user-override-by-name" [] Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-user-override-by-name" [] Nothing (Just 1)
   , lssTestAll 0 "ctests/test-user-override-by-addr" [] Nothing (Just 1)
   , lssTestAll 0 "ctests/test-user-override-by-addr-cycle" [] Nothing (Just 1)
---  , lssTestAll 0 "ctests/test-user-override-reset" [] Nothing (Just 1)
---  , lssTestAll 0 "ctests/test-user-override-intrinsic" [] Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-user-override-reset" [] Nothing (Just 1)
+  , lssTestAll 0 "ctests/test-user-override-intrinsic" [] Nothing (Just 1)
   , lssTestAll 0 "ctests/test-merge-mem-problem" [] Nothing (Just 1)
   ]
   where
