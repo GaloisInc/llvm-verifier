@@ -41,6 +41,8 @@ import           Control.Exception         (assert)
 import           Control.Lens hiding (ix, op)
 import           Control.Monad (ap, unless, when, join, (<=<), foldM, zipWithM)
 import           Control.Monad.IO.Class
+import           Control.Monad.State hiding (zipWithM, replicateM, mapM, forM_)
+
 import           Data.Binary.IEEE754
 import           Data.Bits
 import           Data.Foldable
@@ -58,6 +60,7 @@ import           Text.PrettyPrint.Leijen hiding ((<$>), align)
 import qualified Data.AIG as AIG
 import           Data.AIG ( IsAIG, BV )
 import qualified Data.AIG.Operations as BV
+
 
 
 import Verifier.LLVM.Backend
@@ -106,17 +109,19 @@ byteSize v = BV.length v `shiftR` 3
 
 -- | Slice a vector into a list of vectors, one for each byte.
 sliceIntoBytes :: BV l -> V.Vector (BV l)
-sliceIntoBytes v = V.reverse $ V.generate (byteSize v) $ \i -> BV.slice v (i `shiftL` 3) 8
+sliceIntoBytes v = V.generate (byteSize v) $ \i -> BV.sliceRev v (i `shiftL` 3) 8
+
+--sliceIntoBytes v = V.reverse $ V.generate (byteSize v) $ \i -> BV.slice v (i `shiftL` 3) 8
 
 -- | Slice a single vector into a vector of lit vectors with n elements.
 sliceN :: Int -> BV l -> V.Vector (BV l)
 sliceN n v = assert (n > 0 && r == 0) $
-    V.generate n $ \i -> BV.slice v (l*i) l
+    V.generate n $ \i -> BV.sliceRev v (l*i) l
   where (l,r) = BV.length v `divMod` n
 
 -- | Slice a single vector into a vector of lit vectors each with the given number of elements.
 joinN :: V.Vector (BV l) -> BV l
-joinN = BV.concat . V.toList
+joinN = BV.concat . V.toList . V.reverse
 
 -- | @alignUp addr i@ returns the smallest multiple of @2^i@ that it
 -- at least @addr@.
@@ -218,7 +223,8 @@ mergeCondVector g c x y
 -- | @lInRange be p (s,e)@ returns predicate that holds in @s <= p & p < e@
 -- when treated as unsigned values.
 bvInRange :: (IsAIG l g) => g s -> BV (l s) -> (BV (l s), BV (l s)) -> IO (l s)
-bvInRange g p (s,e) = join $ pure (AIG.and g) <*> (BV.ule g s p) <*> (BV.ult g p e)
+bvInRange g p (s,e) = BV.lAnd g (BV.ule g s p) (BV.ult g p e)
+-- join $ pure (AIG.and g) <*> (BV.ule g s p) <*> (BV.ult g p e)
 
 -- | @bvRangeCovered g subFn r1 r2@ returns true if @subFn@ returns true for
 -- all ranges in @r1 - r2@.  N.B. Only calls subFn on an empty range if @r1@ is
@@ -237,9 +243,9 @@ bvRangeCovered g subFn (s1,e1) (s2,e2) =
 
   where lt = BV.ult g
         le = BV.ule g
-        ite x y z = join $ pure (AIG.mux g) <*> x <*> y <*> z
-        x &&& y = join $ pure (AIG.and g) <*> x <*> y
-        x ||| y = join $ pure (AIG.or g) <*> x <*> y
+        ite x y z = x >>= \x' -> AIG.lazyMux g x' y z
+        x &&& y = BV.lAnd g x y
+        x ||| y = BV.lOr g x y
 
 -- BitTerm {{{1
 
@@ -310,7 +316,7 @@ bytesToTerm g dl tp0 v =
     ArrayType n etp -> ArrayTerm <$> traverse (bytesToTerm g dl etp) (sliceN n v)
     VecType n etp   -> VecTerm <$> traverse (bytesToTerm g dl etp) (sliceN n v)
     StructType si   -> StructTerm <$> traverse go (siFields si)
-      where go fi = bytesToTerm g dl (fiType fi) (BV.slice v o sz)
+      where go fi = bytesToTerm g dl (fiType fi) (BV.sliceRev v o sz)
               where o = 8 * fromIntegral (fiOffset fi)
                     sz = 8 * fromIntegral (memTypeSize dl (fiType fi))
     _ -> error $ unwords ["internalError: bytes to term given mismatched arguments",show (ppMemType tp0),BV.bvShow g v]
@@ -1171,9 +1177,9 @@ dmLoadByteFromStore :: (IsAIG l g, Ord (l s))
                     -> (BV (l s) -> IO (BV (l s)))
 dmLoadByteFromStore g (s,e) bytes mem p = do
   c <- bvInRange g p (s, e)
-  diff <- BV.sub g p s
   BV.iteM g c 
-            (BV.muxInteger (BV.iteM g)
+            (do diff <- BV.sub g p s
+                BV.muxInteger (BV.iteM g)
                           (toInteger (V.length bytes - 1))
                           diff
                           (\i -> return $ bytes V.! fromInteger i))
@@ -1196,6 +1202,25 @@ dmRawStore g ref b e bytes mem = do
         , dmLoadByte = loadFn
         }
 
+{-
+concreteSubC
+   :: (IsAIG l g)
+   => g s
+   -> BV (l s)
+   -> BV (l s)
+   -> Maybe (BV (l s), Bool)
+concreteSubC g x _ | BV.length x == 0 = return (x, False)
+concreteSubC g x y = do
+  let unfold i = StateT $ sub (x BV.! i) (y BV.! i)
+      sub a b c_in = do
+          a' <- AIG.asConstant g a
+          b' <- AIG.asConstant g b
+          let z = a' == (b' == c_in)
+          let c_out = (b' && c_in) || (not a' && (b' || c_in))
+          return (AIG.constant g z, c_out)
+   in runStateT (BV.generateM_lsb0 (BV.length x) unfold) False
+-}
+
 dmStore :: (IsAIG l g, Ord (l s))
            => g s
            -> RefIdx
@@ -1206,8 +1231,7 @@ dmStore :: (IsAIG l g, Ord (l s))
            -> IO (DagMemory (l s))
 dmStore g ref = simp
   where simp nb ne nvals mem0@DagMemory{ dmNodeApp = DMMod m@(DMStore ob oe ovals) mem } = do
- -- (dmNodeApp -> DMMod m@(DMStore ob oe ovals) mem) = do
-           (diff, b) <- BV.subC g ne ob
+           (diff, b)   <- BV.subC g ne ob
            (diffo, bo) <- BV.subC g oe nb
            case () of
              _ | b AIG.=== AIG.trueLit g
@@ -1226,6 +1250,30 @@ dmStore g ref = simp
                | otherwise -> dmRawStore g ref nb ne nvals mem0
 
         simp nb ne nvals mem0 = dmRawStore g ref nb ne nvals mem0
+
+{-
+  where simp nb ne nvals mem0@DagMemory{ dmNodeApp = DMMod m@(DMStore ob oe ovals) mem }
+               | Just (diff,b) <- concreteSubC g ne ob
+               , b == True
+                    = dmMod g ref m =<< simp nb ne nvals mem
+
+               | Just (diff,b) <- concreteSubC g ne ob
+               , b == False
+               , Just off <- BV.asUnsigned g diff
+               , off <= toInteger (V.length nvals)
+                    = simp nb oe (nvals V.++ V.drop (fromInteger off) ovals) mem
+
+               | Just (diffo, bo) <- concreteSubC g oe nb
+               , bo == False
+               , Just off <- BV.asUnsigned g diffo
+               , off <= toInteger (V.length nvals) 
+                    = simp ob ne (dropEnd (fromInteger off) ovals V.++ nvals) mem
+
+               | otherwise = dmRawStore g ref nb ne nvals mem0
+
+        simp nb ne nvals mem0 = dmRawStore g ref nb ne nvals mem0
+-}
+
 
 dropEnd :: Int -> V.Vector a -> V.Vector a
 dropEnd i v = V.take (V.length v - i) v
@@ -1249,7 +1297,8 @@ dmStoreBytes g ref mem (PtrTerm ptr) flatBytes _
   | otherwise = do
 
     --TODO: Figure out how to handle possibility that ptrEnd addition overflows.
-    (ptrEnd,_of) <- BV.addC g ptr (BV.bvFromInteger g (BV.length ptr) (toInteger byteCount))
+    --(ptrEnd,_of) <- BV.addC g ptr (BV.bvFromInteger g (BV.length ptr) (toInteger byteCount))
+    ptrEnd <- BV.addConst g ptr (toInteger byteCount)
     m <- dmStore g ref ptr ptrEnd newBytes mem
     isalloc <- dmIsAllocated mem (ptr,ptrEnd)
     return (isalloc, m)
@@ -1484,7 +1533,8 @@ dmMemCopyImpl g ref dest destEnd src mem = do
              bvRangeCovered g (dmIsInitialized mem) range (dest, destEnd)
   loadFn <- memo $ \p -> do
                (offset,b) <- BV.subC g p dest
-               inRange <- join $ pure (AIG.and g (AIG.not b)) <*> (BV.ult g p destEnd)
+               inRange <- BV.lAnd g (return (AIG.not b)) (BV.ult g p destEnd)
+                            -- join $ pure (AIG.and g (AIG.not b)) <*> (BV.ult g p destEnd)
                ptr <- BV.iteM g inRange (BV.add g src offset) (return p)
                dmLoadByte mem ptr
   dmGetMem ref (DMMod (DMMemCopy dest destEnd src) mem) $
@@ -1782,7 +1832,7 @@ sbeBitBlast g cnfFunc dl mm =
                   BitIO $ BV.bvEq g x y
            , applyAnd         = BitIO `c2` AIG.and g
            , applyBNot        = return . AIG.not
-           , applyPredIte     = BitIO `c3` AIG.lazyMux g
+           , applyPredIte     = \x y z -> BitIO $ AIG.lazyMux g x (return y) (return z)
            , applyIte         = \_ c x y -> BitIO $ muxTerm g c x y
            , freshInt         = \w -> BitIO $
                  IntTerm <$> BV.replicateM w (AIG.newInput g)
@@ -1819,12 +1869,12 @@ sbeBitBlast g cnfFunc dl mm =
                let outputs = BV.concat (flattenTerm g . snd <$> ts)
                AIG.writeAiger f (AIG.Network g (BV.bvToList outputs))
 
-           , evalAiger        = BitIO `c3` evalAigerImpl g dl
+           , evalAiger        = \ins mt tm -> BitIO $ evalAigerImpl g dl (reverse ins) mt tm
            , writeCnf         = \f _ t -> BitIO $ BV.isZero g (flattenTerm g t) >>= cnfFunc f
            , writeSAWCore = Nothing
            , createSMTLIB1Script = Nothing
            , createSMTLIB2Script = Nothing
-           , sbeRunIO = liftSBEBitBlast 
+           , sbeRunIO = liftSBEBitBlast
            }
 
 ppBitTerm :: (IsAIG l g) => g s -> BitTerm (l s) -> Doc
@@ -1933,7 +1983,7 @@ unflattenTerm g dl tp0 v =
       where flv = siFieldTypes si
             szv = memTypeBitsize dl <$> flv
             ofv = V.prescanl (+) 0 szv
-            vv = V.zipWith (\i o-> BV.slice v i o) ofv szv
+            vv = V.zipWith (\i o-> BV.sliceRev v i o) ofv szv
  where badVec nm = error $
         "internalError: unflattern given incorrect number of bits for "
         ++ nm ++ "."
