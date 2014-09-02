@@ -17,10 +17,12 @@ ioTests =
     lssTest "ctests/test-call-printf" $ \cb -> do
       runTestLSSBuddy 0 cb [] Nothing (Just 3)
       runTestLSSDag   0 cb [] Nothing (Just 3)
+      runTestLSSCommon createSAWModel 0 cb [] Nothing (Just 3)
 
   , lssTest "ctests/test-printf-str" $ \cb -> do
       runTestLSSBuddy 0 cb [] Nothing (Just 8)
       runTestLSSDag   0 cb [] Nothing (Just 8)
+      runTestLSSCommon createSAWModel 0 cb [] Nothing (Just 8)
   ]
 
 --------------------------------------------------------------------------------
