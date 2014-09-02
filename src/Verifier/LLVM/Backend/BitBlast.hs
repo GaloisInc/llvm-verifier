@@ -58,6 +58,8 @@ import System.IO.Unsafe (unsafePerformIO)
 import qualified Text.LLVM.AST             as L
 import           Text.PrettyPrint.Leijen hiding ((<$>), align)
 
+import qualified Data.AIG as AIG
+
 import Verinf.Symbolic.Lit
 import Verinf.Symbolic.Lit.Functional
 
@@ -1185,6 +1187,14 @@ dmMod :: (?be :: BitEngine l, Ord l, LV.Storable l)
 dmMod ref (DMStore s e b) m = dmStore ref s e b m
 dmMod ref (DMMemCopy s e src) m = dmMemCopyImpl ref s e src m
 
+showbv :: (?be::BitEngine l, Eq l, LV.Storable l)
+       => LV.Vector l
+       -> String
+showbv = reverse . map f . LV.toList 
+ where f x | x == lTrue = '1'
+           | x == lFalse = '0'
+           | otherwise = 'x'
+
 -- | Store bytes in memory
 dmStoreBytes :: (?be :: BitEngine l, Ord l, LV.Storable l)
              => RefIdx
@@ -1708,6 +1718,7 @@ sbeBitBlast dl mm = sbe
           , evalPred = \inps p -> BitIO $ do
               (LV.! 0) <$> beEvalAigV be (LV.fromList inps) (LV.singleton p)
           , asUnsignedInteger = \_ -> lGetUnsigned . asIntTerm
+          , asSignedInteger   = \_ -> lGetSigned . asIntTerm
           , asConcretePtr     = lGetUnsigned . asPtrTerm
           , memDump          = BitIO `c2` mmDump mm True
           , memLoad          = BitIO `c4` loadTerm dl mm
@@ -1729,8 +1740,8 @@ sbeBitBlast dl mm = sbe
 
           , termSAT          =
               case beCheckSat be of
-                Nothing  -> BitIO . return . const Unknown
-                Just sat -> BitIO . sat
+                Nothing  -> BitIO . return . const AIG.SatUnknown
+                Just sat -> BitIO . (\l -> fmap translateSat $ sat l)
           , writeAiger       = \f ts -> BitIO $ do
               inputs <- beInputLits be
               let outputs = LV.concat (flattenTerm . snd <$> ts)
@@ -1744,6 +1755,11 @@ sbeBitBlast dl mm = sbe
           , createSMTLIB2Script = Nothing
           , sbeRunIO = liftSBEBitBlast 
           }
+
+translateSat :: Verinf.Symbolic.Lit.SatResult -> AIG.SatResult
+translateSat Verinf.Symbolic.Lit.UnSat = AIG.Unsat
+translateSat (Verinf.Symbolic.Lit.Sat bs) = AIG.Sat (LV.toList bs)
+translateSat Verinf.Symbolic.Lit.Unknown = AIG.SatUnknown
 
 ppBitTerm :: (?be :: BitEngine l, LV.Storable l) => BitTerm l -> Doc
 ppBitTerm (IntTerm t) = text "i" <> lPrettyLV t

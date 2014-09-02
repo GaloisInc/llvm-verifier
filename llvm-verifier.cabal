@@ -66,6 +66,7 @@ library
   exposed-modules:
     Verifier.LLVM.Backend
     Verifier.LLVM.Backend.BitBlast
+    Verifier.LLVM.Backend.BitBlastNew
     Verifier.LLVM.Backend.SAW
 
     Verifier.LLVM.Codebase
@@ -96,7 +97,7 @@ library
     Verifier.LLVM.Utils.Arithmetic
     Verifier.LLVM.Utils.PrettyPrint
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -auto-all -caf-all
   if os(darwin)
     GHC-options: -optl-Wl
 
@@ -110,7 +111,7 @@ executable lss
 
   main-is: Main_lss.hs
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M -auto-all -caf-all
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
@@ -138,7 +139,7 @@ executable bcdump
   main-is        : Main_bcdump.hs
   hs-source-dirs : bcdump
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -auto-all -caf-all
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 
@@ -163,7 +164,7 @@ test-suite test-llvm
   main-is        : Tests.hs
   hs-source-dirs : src lss test/src
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -auto-all -caf-all
   if os(darwin)
     GHC-options: -optl-Wl,-dead_strip
 

@@ -27,19 +27,15 @@ module Verifier.LLVM.Backend
   , termMul
   , termZExt
   , termTruncScalar
-  , asSignedInteger
-  , beCheckSat
-  , SatResult(..)
+  , AIG.SatResult(..)
   , SMTLIB1Script(..)
   , SMTLIB2Script(..)
   ) where
 
-import           Control.Applicative ((<$>))
-import           Data.Bits (testBit)
 import qualified Data.Vector as V
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-import Verinf.Symbolic (beCheckSat, SatResult(..))
+import qualified Data.AIG as AIG
 
 import Verifier.LLVM.Codebase.AST
 
@@ -127,6 +123,10 @@ data SBE m = SBE
     -- | Interpret the term as a concrete unsigned integer if it can be.
     -- The first int is the bitwidth.
   , asUnsignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
+
+    -- | Interpret the term as a concrete signed integer if it can be.
+    -- The first int is the bitwidth.
+  , asSignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
 
     -- | Interpret a pointer as an unsigned integer.
   , asConcretePtr :: SBETerm m -> Maybe Integer
@@ -235,10 +235,10 @@ data SBE m = SBE
     -- and merge frames.
   , memMerge :: SBEPred m -> SBEMemory m -> SBEMemory m -> m (SBEMemory m)
 
-  -- | @predSAT t@ returns a 'Sym.SatResult' for the given
+  -- | @predSAT t@ returns a 'AIG.SatResult' for the given
   -- predicate. If the current backend does not support SAT checking,
   -- returns 'Unknown' and prints a warning
-  , termSAT :: SBEPred m -> m SatResult
+  , termSAT :: SBEPred m -> m AIG.SatResult
 
     ----------------------------------------------------------------------------
     -- Output functions
@@ -284,14 +284,6 @@ data SMTLIB2Script sbe = SMTLIB2Script {
          -- | Write SMTLIB2Script to file.
        , writeSMTLIB2ToFile :: FilePath -> IO () 
        }
-
--- | Interpret the term as a concrete signed integer if it can be.
-asSignedInteger :: SBE m -> BitWidth -> SBETerm m -> Maybe Integer
-asSignedInteger sbe w t 
-    | w == 0 = error "Bad bitwidth"
-    | otherwise = s2u <$> asUnsignedInteger sbe w t
-  where s2u v | v `testBit` (w-1) = v - 2^w 
-              | otherwise = v
 
 -- | @termInt w n@ creates a term representing the constant @w@-bit
 -- value @n@

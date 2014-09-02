@@ -15,7 +15,7 @@ import Control.Monad.State (gets)
 import Test.QuickCheck
 import Tests.Common
 
-import Verifier.LLVM.Backend.BitBlast
+import Verifier.LLVM.Backend.BitBlastNew
 import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator hiding (run)
 
@@ -30,7 +30,8 @@ symTests =
       runAllMemModelTest v "test-sym-simple.bc" $
         trivBranchImpl "sym_read" (99,42)
   , lssTest "ctests/test-symbolic-alloc" $ \mdl -> do
-      let mkTest createFn expectedFails expectedRV = run $ do
+      let mkTest :: SBECreateFn -> Int -> Maybe Integer -> PropertyM IO ()
+          mkTest createFn expectedFails expectedRV = run $ do
             runTestSimulator createFn 0 mdl $ do
               er <- testRunMain []
               checkErrorPaths expectedFails er

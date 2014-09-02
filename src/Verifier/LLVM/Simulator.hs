@@ -497,7 +497,7 @@ checkPathUnsat c = do
   sbe <- gets symBE
   a' <- liftSBE $ applyAnd sbe c (p^.pathAssertions)
   fsat <- liftSBE $ termSAT sbe a'
-  return (fsat == UnSat)
+  return (fsat == Unsat)
 
 runEvaluator ::
   ( Functor m

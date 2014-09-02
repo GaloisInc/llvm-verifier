@@ -24,7 +24,7 @@ import Control.Monad
 import Control.Monad.Error
 import Control.Monad.State
 import qualified Data.AIG as AIG
-import Data.Bits (setBit, shiftL)
+import Data.Bits (setBit, shiftL, testBit)
 import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -75,6 +75,13 @@ asUnsignedBitvector w s2 = do
   when (unwrapTermF  s0 /= preludeBVNatTermF) Nothing
   when (R.asNatLit wt /= Just (fromIntegral w)) Nothing
   toInteger <$> R.asNatLit vt
+
+asSignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
+asSignedBitvector w s2
+    | w == 0 = error "Bad bitwidth"
+    | otherwise = s2u <$> asUnsignedBitvector w s2
+  where s2u v | v `testBit` (w-1) = v - 2^w 
+              | otherwise = v
 
 scFloat :: SharedContext s -> Float -> IO (SharedTerm s)
 scFloat sc v = scTermF sc (FTermF (FloatLit v))
@@ -1155,6 +1162,7 @@ createSAWBackend' be dl imps = do
                     fn return
                 , prettyTermD = scPrettyTermDoc
                 , asUnsignedInteger = asUnsignedBitvector
+                , asSignedInteger   = asSignedBitvector
                 , asConcretePtr     = asUnsignedBitvector (ptrBitwidth dl)
                 , memDump      = \m _ -> SAWBackend $ do
                     print $ MM.ppMem scTermMemPrettyPrinter (m^.memState)

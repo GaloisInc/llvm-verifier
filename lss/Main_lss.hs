@@ -32,6 +32,9 @@ import Verifier.LLVM.Backend.BitBlast
      ( createBuddyAll
      , createDagAll
      )
+import qualified Verifier.LLVM.Backend.BitBlastNew as BBNew
+
+
 import Verifier.LLVM.Backend.SAW (createSAWBackend)
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.MemModel.Geometry (defaultMemGeom)
@@ -66,6 +69,7 @@ main = do
   backEnd <- case eatWS <$> backend args of
     Just "bitblast" -> return BitBlastBuddyAlloc
     Just "dag"      -> return BitBlastDagBased
+    Just "dagnew"   -> return BitBlastDagNew
     Just "saw"      -> return SAWBackendType
     Nothing         -> return BitBlastBuddyAlloc
     _               -> do
@@ -82,6 +86,9 @@ main = do
   let dl = parseDataLayout $ L.modDataLayout mdl
   SBEPair sbe mem <- 
     case backEnd of
+      BitBlastDagNew -> do
+        ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
+        BBNew.createDagAll g (error "no CNF writer!!") dl (defaultMemGeom dl)
       BitBlastDagBased -> do
         be <- createBitEngine
         createDagAll be dl (defaultMemGeom dl)
