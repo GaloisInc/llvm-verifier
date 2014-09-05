@@ -338,8 +338,14 @@ lss_write_cnf =
     case args of
       [(IntType w, t), (PtrType{},fptr)] | w == 32 -> do
         file <- loadString "lss_write_cnf" fptr
-        void $ withSBE $ \s -> writeCnf s file 32 t
+        sbe <- gets symBE
+        case writeCnf sbe of
+           Just writeCnfFunc -> void $ liftSBE $ writeCnfFunc file 32 t
+           Nothing -> error "lss_write_cnf: backend does not support writing CNF files"
       _ -> wrongArguments "lss_write_cnf"
+
+--        void $ withSBE $ \s -> writeCnf s file 32 t
+
 
 lss_write_sawcore :: StdOvdEntry sbe m
 lss_write_sawcore =

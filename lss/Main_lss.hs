@@ -15,6 +15,8 @@ module Main where
 import           Control.Applicative             hiding (many)
 import           Control.Monad
 import qualified Data.ABC as ABC
+import qualified Data.ABC.GIA
+
 import           Data.Char
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
 import           System.Environment              (getArgs)
@@ -70,6 +72,7 @@ main = do
     Just "bitblast" -> return BitBlastBuddyAlloc
     Just "dag"      -> return BitBlastDagBased
     Just "dagnew"   -> return BitBlastDagNew
+    Just "bitblastnew" -> return BitBlastBuddyNew
     Just "saw"      -> return SAWBackendType
     Nothing         -> return BitBlastBuddyAlloc
     _               -> do
@@ -84,11 +87,17 @@ main = do
       Just nm -> loadModule nm
 
   let dl = parseDataLayout $ L.modDataLayout mdl
+
+  let cnfWriter g fp l = fmap (map Just) $ Data.ABC.GIA.writeCNF g l fp
+
   SBEPair sbe mem <- 
     case backEnd of
       BitBlastDagNew -> do
         ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
-        BBNew.createDagAll g (error "no CNF writer!!") dl (defaultMemGeom dl)
+        BBNew.createDagAll g (cnfWriter g) dl (defaultMemGeom dl)
+      BitBlastBuddyNew -> do
+        ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
+        return (BBNew.createBuddyAll g (cnfWriter g) dl (defaultMemGeom dl))
       BitBlastDagBased -> do
         be <- createBitEngine
         createDagAll be dl (defaultMemGeom dl)

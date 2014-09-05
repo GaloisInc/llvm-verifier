@@ -20,8 +20,6 @@ import           Test.QuickCheck.Monadic
 import qualified Control.Exception       as CE
 import qualified Text.LLVM               as L
 
-import qualified Data.AIG as AIG
-import           Data.AIG (IsAIG)
 import qualified Data.ABC as ABC
 
 import Tests.Common
@@ -122,7 +120,7 @@ chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a)
                     => BitWidth -> Bool -> IntArithOp -> (a -> a -> a)
                     -> PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
-  (AIG.SomeGraph g) <- run $ AIG.newGraph ABC.giaNetwork
+  (ABC.SomeGraph g) <- run $ ABC.newGraph ABC.giaNetwork
   let dl = defaultDataLayout
   let sbe = sbeBitBlast g (error "no CNF writer!") dl (buddyMemModel dl g)
   forAllM arbitrary $ \(NonZero x,NonZero y) -> do

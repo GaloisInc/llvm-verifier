@@ -17,7 +17,6 @@ import           Control.Applicative
 import           Control.Lens hiding (act, (<.>))
 import           Control.Monad 
 import           Control.Monad.State (gets, MonadIO)
-import qualified Data.ABC as ABC
 import           Data.Int
 import           System.FilePath
 import qualified Text.LLVM                     as L
@@ -25,6 +24,9 @@ import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import qualified Test.QuickCheck.Test          as T
 
+import qualified Data.ABC as ABC
+import qualified Data.ABC.AIG
+import qualified Data.ABC.GIA
 
 import           LSSImpl
 
@@ -36,11 +38,6 @@ import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Debugger
 import Verifier.LLVM.Simulator hiding (run)
-import Verifier.LLVM.Simulator.SimUtils
-
-import qualified Data.AIG as AIG
-import           Data.AIG (IsAIG)
-import qualified Data.ABC as ABC
 
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving Functor
@@ -159,11 +156,24 @@ runTestLSSCommon createFn v mdl argv' mepsLen mexpectedRV = do
       Just epsLen -> checkErrorPaths epsLen execRslt
     checkReturnValue mexpectedRV execRslt
 
+abcNetwork = ABC.giaNetwork
+cnfWriter = giaCnfWriter
+
+--abcNetwork = ABC.aigNetwork
+--cnfWriter = aigCnfWriter
+
+giaCnfWriter :: Data.ABC.GIA.GIA s -> FilePath -> Data.ABC.GIA.Lit s -> IO [Maybe Int]
+giaCnfWriter g fp l = fmap (map Just) $ Data.ABC.GIA.writeCNF g l fp
+
+aigCnfWriter :: Data.ABC.AIG.AIG s -> FilePath -> Data.ABC.AIG.Lit s -> IO [Maybe Int]
+aigCnfWriter g fp l = fmap (map Just) $ Data.ABC.AIG.writeToCNF g l fp
+
+
 -- | Create buddy backend and initial memory.
 createBuddyModel :: SBECreateFn
 createBuddyModel dl k = do
-  (AIG.SomeGraph g) <- AIG.newGraph ABC.giaNetwork
-  let sbe = sbeBitBlast g (error "no CNF writer!") dl (buddyMemModel dl g)
+  (ABC.SomeGraph g) <- ABC.newGraph abcNetwork
+  let sbe = sbeBitBlast g (cnfWriter g) dl (buddyMemModel dl g)
       mem = buddyInitMemory (defaultMemGeom dl)
   k sbe mem
 
@@ -178,9 +188,9 @@ createOldBuddyModel dl k = do
 -- | Create buddy backend and initial memory.
 createDagModel :: SBECreateFn
 createDagModel dl k = do
-  (AIG.SomeGraph g) <- AIG.newGraph ABC.giaNetwork
+  (ABC.SomeGraph g) <- ABC.newGraph abcNetwork
   (mm,mem) <- createDagMemModel dl g (defaultMemGeom dl)
-  let sbe = sbeBitBlast g (error "no CNF writer!") dl mm
+  let sbe = sbeBitBlast g (cnfWriter g) dl mm
   k sbe mem
 
 createOldDagModel :: SBECreateFn
@@ -192,7 +202,7 @@ createOldDagModel dl k = do
 
 createSAWModel :: SBECreateFn
 createSAWModel dl k = do
-  ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
+  ABC.SomeGraph g <- ABC.newGraph abcNetwork
   (sbe,mem) <- createSAWBackend g dl
   k sbe mem
 

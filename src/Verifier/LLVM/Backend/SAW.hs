@@ -1190,8 +1190,8 @@ createSAWBackend' be dl imps = do
                 -- TODO: SAT checking for SAW backend
                 , termSAT    = nyi "termSAT"
                 , writeAiger = lift2 (scWriteAiger sbs)
-                , writeCnf   = do
-                    nyi "writeCnf"
+                , writeCnf   = Nothing -- FIXME? implement
+
                 , writeSAWCore = Just $ \nm t -> SAWBackend $ do
                     writeFile nm (scWriteExternal t)
                 , createSMTLIB1Script = Just $ \nm -> SAWBackend $ do

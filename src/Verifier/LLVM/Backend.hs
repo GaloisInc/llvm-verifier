@@ -249,7 +249,7 @@ data SBE m = SBE
 
     -- | @writeCnf f t@ writes a CNF representation of @t /= 0@ into
     -- file @f@.
-  , writeCnf :: FilePath -> BitWidth -> SBETerm m -> m [Maybe Int]
+  , writeCnf :: Maybe (FilePath -> BitWidth -> SBETerm m -> m [Maybe Int])
 
     -- | @writeSAWCore f t@ writes a SAWCore representation of @t@ into
     -- file @f@, if this backend supports SAWCore output.
