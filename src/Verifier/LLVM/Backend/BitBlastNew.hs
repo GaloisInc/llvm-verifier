@@ -144,13 +144,13 @@ bvAlignUp :: (IsAIG l g) => g s -> BV (l s) -> Alignment -> IO (l s, BV (l s))
 bvAlignUp g addr i = do 
    let n = BV.length addr
    (s,c) <- BV.addC g addr (bvSetBits g n (< fromIntegral i))
-   s' <- BV.zipWithM (AIG.and g) s (bvSetBits g n (>= fromIntegral i))
+   s' <- BV.zipWithM (AIG.lAnd' g) s (bvSetBits g n (>= fromIntegral i))
    return (c, s')
         
 -- | @lAlignDown addr i@ returns pair @(c,v)@ where @v@ is the largest multiple of @2^i@
 -- not larger than @addr@, and @c@ is set if computation overflowed.
 bvAlignDn :: (IsAIG l g) => g s -> BV (l s) -> Alignment -> IO (BV (l s))
-bvAlignDn g addr i = BV.zipWithM (AIG.and g) addr (bvSetBits g (BV.length addr) (>= fromIntegral i))
+bvAlignDn g addr i = BV.zipWithM (AIG.lAnd' g) addr (bvSetBits g (BV.length addr) (>= fromIntegral i))
 
 bmError :: String -> a
 bmError = error
@@ -224,7 +224,6 @@ mergeCondVector g c x y
 -- when treated as unsigned values.
 bvInRange :: (IsAIG l g) => g s -> BV (l s) -> (BV (l s), BV (l s)) -> IO (l s)
 bvInRange g p (s,e) = BV.lAnd g (BV.ule g s p) (BV.ult g p e)
--- join $ pure (AIG.and g) <*> (BV.ule g s p) <*> (BV.ult g p e)
 
 -- | @bvRangeCovered g subFn r1 r2@ returns true if @subFn@ returns true for
 -- all ranges in @r1 - r2@.  N.B. Only calls subFn on an empty range if @r1@ is
@@ -542,9 +541,9 @@ mergeStorage g c x y = impl x y
           | otherwise = bmError "Attempt to merge memories with incompatible block values."
         impl SUnallocated SUnallocated = return SUnallocated
         impl (SValue ax ix vx) SUnallocated =
-          (\az -> SValue az ix vx) <$> AIG.and g c ax
+          (\az -> SValue az ix vx) <$> AIG.lAnd' g c ax
         impl SUnallocated (SValue ay iy vy) =
-          (\az -> SValue az iy vy) <$> AIG.and g (AIG.not c) ay
+          (\az -> SValue az iy vy) <$> AIG.lAnd' g (AIG.not c) ay
         impl b@SBranch{} SUnallocated =
           impl b (SBranch SUnallocated SUnallocated)
         impl SUnallocated b@SBranch{} =
@@ -568,7 +567,7 @@ loadBytes byteLoader g (PtrTerm ptr) sz _ =
   where impl l c 0 = return (c, BV.concat (reverse l))
         impl l c i = do
           (bc, bv) <- byteLoader =<< BV.addConst g ptr (i-1)
-          c' <- AIG.and g c bc
+          c' <- AIG.lAnd' g c bc
           impl (bv:l) c' (i-1)
 loadBytes _ _ _ _ _ = illegalArgs "loadBytes"
 
@@ -594,12 +593,12 @@ storeByte g mem new ptr = impl mem (BV.length ptr) (AIG.trueLit g)
           | lo AIG.=== AIG.falseLit g = (\fr -> SBranch fr t) <$> impl f (i-1) c
           | lo AIG.=== AIG.trueLit g  = (\tr -> SBranch f tr) <$> impl t (i-1) c
           | otherwise = do
-            fr <- impl f (i-1) =<< AIG.and g c (AIG.not lo)
-            tr <- impl t (i-1) =<< AIG.and g c lo
+            fr <- impl f (i-1) =<< AIG.lAnd' g c (AIG.not lo)
+            tr <- impl t (i-1) =<< AIG.lAnd' g c lo
             return (SBranch fr tr)
           where lo = ptr BV.! (i-1)
         impl (SValue ax ix vx) i c = assert (i == 0) $
-          return (SValue ax) `ap` AIG.or g c ix
+          return (SValue ax) `ap` AIG.lOr' g c ix
                              `ap` BV.iteM g c (return new) (return vx)
         impl m _ _ = return m
 
@@ -616,7 +615,7 @@ storeBytes g mem ptr value _ = impl 0 (AIG.trueLit g) mem
           | i == byteSize value = return (c,m)
           | otherwise = do
             p <- BV.addConst g ptr (toInteger i)
-            c' <- AIG.and g c =<< storeByteCond g m p
+            c' <- AIG.lAnd' g c =<< storeByteCond g m p
             m' <- storeByte g m (bv V.! i) p
             impl (i+1) c' m'
 
@@ -943,7 +942,7 @@ bmMemCopy g m (PtrTerm dst) src _ (IntTerm len0) (IntTerm _align0) = do
   -- TODO: Alignment and overlap checks?
   (cr, bytes) <- loadBytes (bmLoadByte g m) g src len 0
   (cw, newStorage) <- storeBytes g (bmStorage m) dst bytes 0
-  c <- AIG.and g cr cw
+  c <- AIG.lAnd' g cr cw
   return (c, m { bmStorage = newStorage })
   where
     len = case bvToMaybeInt g len0 of
@@ -1409,7 +1408,7 @@ dmStackAlloc g ptrWidth stackGrowsUp stackEnd ref mem eltSize (IntTerm eltCount)
   let extVector v   = BV.zext g v extSize
   let truncVector v = BV.trunc ptrWidth v
   let stackEndExt = extVector stackEnd
-  let x &&& y = join $ pure (AIG.and g) <*> x <*> y
+  let x &&& y = AIG.lAnd g x y
   let x .<= y = BV.ule g x y
   let lneg x = return (AIG.not x)
   (c, newStack) <-
@@ -1464,8 +1463,8 @@ dmStackPopFrame g stackGrowsUp ref mem =
 
          leq = BV.ule g
          eq = BV.bvEq g
-         x &&& y = join $ pure (AIG.and g) <*> x <*> y
-         x ||| y = join $ pure (AIG.or g) <*> x <*> y
+         x &&& y = AIG.lAnd g x y
+         x ||| y = AIG.lOr g x y
          x `isLeq` y = (Just (<=) <*> BV.asUnsigned g x <*> BV.asUnsigned g y) == Just True
 
          notInRange (s,e) = (e `leq` ptr) ||| (ptrEnd `leq` s) ||| (ptr `eq` ptrEnd)
@@ -1510,7 +1509,7 @@ dmHeapAlloc g ptrWidth heapEnd ref mem eltSize (IntTerm eltCount) _align = do
         let extVector v = BV.zext g v extSize
         let truncVector v = BV.trunc ptrWidth v
         (newHeapExt, ao) <- BV.addC g (extVector heap) newSizeExt
-        c <- AIG.and g (AIG.not ao) =<< BV.ule g newHeapExt (extVector heapEnd)
+        c <- AIG.lAnd' g (AIG.not ao) =<< BV.ule g newHeapExt (extVector heapEnd)
         let mmem = if c AIG.=== AIG.falseLit g
                       then return mem
                       else let a = (dmState mem) { dmsHeap = newHeap }
@@ -1534,7 +1533,6 @@ dmMemCopyImpl g ref dest destEnd src mem = do
   loadFn <- memo $ \p -> do
                (offset,b) <- BV.subC g p dest
                inRange <- BV.lAnd g (return (AIG.not b)) (BV.ult g p destEnd)
-                            -- join $ pure (AIG.and g (AIG.not b)) <*> (BV.ult g p destEnd)
                ptr <- BV.iteM g inRange (BV.add g src offset) (return p)
                dmLoadByte mem ptr
   dmGetMem ref (DMMod (DMMemCopy dest destEnd src) mem) $
@@ -1566,11 +1564,11 @@ dmMemCopy g ptrWidth ref mem (PtrTerm dest) (PtrTerm src) _ (IntTerm l) _
     lenOverflow <- if lWidth >= ptrWidth
                       then BV.nonZero g (BV.trunc (lWidth - ptrWidth) l)
                       else return (AIG.falseLit g)
-    addrOverflow <- foldM (AIG.or g) (AIG.falseLit g) [lenOverflow, srcOverflow, destOverflow]
+    addrOverflow <- foldM (AIG.lOr' g) (AIG.falseLit g) [lenOverflow, srcOverflow, destOverflow]
                              -- Check src is readable and dest is writable
-    memValid <- join $ pure (AIG.and g) <*> (dmIsInitialized mem (src, srcEnd))
-                                        <*> (dmIsAllocated mem (dest, destEnd))
-    c <- join $ pure (AIG.or g) <*> (BV.isZero g l) <*> (AIG.and g (AIG.not addrOverflow) memValid)
+    memValid <- AIG.lAnd g (dmIsInitialized mem (src, srcEnd))
+                           (dmIsAllocated mem (dest, destEnd))
+    c <- AIG.lOr g (BV.isZero g l) (AIG.lAnd' g (AIG.not addrOverflow) memValid)
     mem' <- dmMemCopyImpl g ref dest destEnd src mem
     return (c,mem')
 dmMemCopy _ _ _ _ _ _ _ _ _ = illegalArgs "dmMemCopy"
@@ -1735,9 +1733,9 @@ applyIntArithOp g op = vf
               Shl _ _ -> BV.shl
               Lshr _  -> BV.ushr
               Ashr _  -> BV.sshr
-              And -> BV.zipWithM . AIG.and
-              Or  -> BV.zipWithM . AIG.or
-              Xor -> BV.zipWithM . AIG.xor
+              And -> BV.zipWithM . AIG.lAnd'
+              Or  -> BV.zipWithM . AIG.lOr'
+              Xor -> BV.zipWithM . AIG.lXor'
 
 
 applyExpr :: forall l g s
@@ -1830,7 +1828,7 @@ sbeBitBlast g cnfFunc dl mm =
            { sbeTruePred      = AIG.trueLit g
            , applyIEq         = \_ (IntTerm x) (IntTerm y) -> do
                   BitIO $ BV.bvEq g x y
-           , applyAnd         = BitIO `c2` AIG.and g
+           , applyAnd         = BitIO `c2` AIG.lAnd' g
            , applyBNot        = return . AIG.not
            , applyPredIte     = \x y z -> BitIO $ AIG.lazyMux g x (return y) (return z)
            , applyIte         = \_ c x y -> BitIO $ muxTerm g c x y
