@@ -236,4 +236,4 @@ testCases =
 
 memModelTests :: [(Args, Property)]
 memModelTests = fn <$> testCases
- where fn (nm,p) = (stdArgs, monadicIO (run (putStrLn nm)) .&&. p)
+ where fn (nm,p) = (stdArgs, p)

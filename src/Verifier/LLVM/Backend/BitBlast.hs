@@ -1747,7 +1747,7 @@ sbeBitBlast dl mm = sbe
               let outputs = LV.concat (flattenTerm . snd <$> ts)
               beWriteAigerV be f inputs outputs
           , evalAiger        = BitIO `c3` evalAigerImpl dl
-          , writeCnf         = \f _ t -> BitIO $ do
+          , writeCnf         = Just $ \f _ t -> BitIO $ do
               let ?be = be
               V.toList <$> beWriteCNF be f mempty (lIsZero (flattenTerm t))
           , writeSAWCore = Nothing

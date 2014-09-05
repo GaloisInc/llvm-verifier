@@ -60,6 +60,7 @@ data BackendType = BitBlastBuddyAlloc
                  | BitBlastDagBased
                  | SAWBackendType
                  | BitBlastDagNew
+                 | BitBlastBuddyNew
   deriving (Show)
 
 data ExecRslt sbe crt
