@@ -41,7 +41,7 @@ import qualified Verifier.SAW.Export.SMT.Version1 as SMT1
 import qualified Verifier.SAW.Export.SMT.Version2 as SMT2
 import Verifier.SAW.ParserUtils as SAW
 import Verifier.SAW.Prelude
-import Verifier.SAW.Prim
+import qualified Verifier.SAW.Prim as Prim
 import qualified Verifier.SAW.Recognizer as R
 import Verifier.SAW.Rewriter
 
@@ -948,7 +948,7 @@ getStructElt = Conversion $
                    <:> asFinValLit -- Index
                   )
                 (\(_ :*: s :*: i) -> 
-                   return <$> structElt s (finVal i))
+                   return <$> structElt s (Prim.finVal i))
 
 
 evalAppendInt :: Conversion (SharedTerm s)
@@ -959,7 +959,7 @@ evalAppendInt = Conversion $
                 <:> asBvNatLit
                 <:> asBvNatLit)
               (\(_ :*: u :*: v :*: x :*: y) ->
-                  let r = (unsigned x `shiftL` fromIntegral v) + unsigned y
+                  let r = (Prim.unsigned x `shiftL` fromIntegral v) + Prim.unsigned y
                     in Just (mkBvNat (u + v) r))
 
 scWriteAiger :: AIG.IsAIG l g
