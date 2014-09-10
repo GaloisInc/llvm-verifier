@@ -5,7 +5,7 @@ module Main where
 import Test.Tasty
 import Test.Tasty.Options
 import Test.Tasty.Ingredients
--- import Test.Tasty.Runners.AntXML
+import Test.Tasty.Runners.AntXML
 import Data.Proxy
 
 import Tests.AES
@@ -25,7 +25,7 @@ ingrs :: [Ingredient]
 ingrs =
    [ includingOptions [ Option (Proxy :: Proxy VerbosityOption)
                       ]
-   -- , antXMLRunner
+   , antXMLRunner
    ]
    ++
    defaultIngredients

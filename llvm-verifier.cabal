@@ -177,10 +177,17 @@ test-suite test-llvm
     , llvm-verifier
     , QuickCheck >= 2.7
     , HUnit
-    , tasty
+
+    -- , tasty >= 0.10
+    -- , tasty-ant-xml >= 1.0.0.10
+
+    -- note: temporary, until tasty-ant-xml is updated to use tasty >= 0.10
+    , tasty == 0.9.*
+    , tasty-ant-xml == 1.0.0.9
+
     , tasty-hunit
     , tasty-quickcheck
-    -- , tasty-ant-xml >= 1.0.0.10
+
     , abcBridge
     , aig
     , mtl
