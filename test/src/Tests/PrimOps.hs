@@ -5,85 +5,94 @@ Stability        : provisional
 Point-of-contact : jstanley
 -}
 
+{-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams   #-}
 {-# LANGUAGE ViewPatterns     #-}
+{-# LANGUAGE TupleSections        #-}
+{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE DeriveFunctor        #-}
+{-# LANGUAGE DeriveDataTypeable      #-}
+
 
 module Tests.PrimOps (primOpTests) where
 
 import           Control.Applicative
+import qualified Control.Exception as CE
+import           Control.Lens hiding (act, (<.>), op)
+import           Control.Monad.State (liftIO)
+
 import           Data.Int
 import           Data.Maybe
 import           Data.Word
-import           Test.QuickCheck
-import           Test.QuickCheck.Monadic
-import qualified Control.Exception       as CE
+
+import           System.FilePath
+
+import           Test.Tasty
+import           Test.Tasty.QuickCheck
+import qualified Test.Tasty.HUnit as HU
+import qualified Test.QuickCheck as QC
+import qualified Test.QuickCheck.Monadic as QC
+
 import qualified Text.LLVM               as L
+
 
 import qualified Data.ABC as ABC
 
-import Tests.Common
+import Verifier.LLVM.Codebase
+import Verifier.LLVM.Backend
 import Verifier.LLVM.Backend.BitBlastNew
-import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator hiding (run)
 
-testCnt :: Int
-testCnt = 10
+import Tests.Common
 
-primOpTests :: [(Args, Property)]
+
+primOpTests :: [TestTree]
 primOpTests =
   [ testBinaryPrim "int32_add" (+)
   , testBinaryPrim "int32_muladd" $ \x y -> sqr (x + y)
-  , testUnaryPrim  "int32_square" arbitrary sqr
-  , testUnaryPrim  "factorial" (elements [0..12]) fact
+  , testUnaryPrim  "int32_square" QC.arbitrary sqr
+  , testUnaryPrim  "factorial" (QC.elements [0..12]) fact
 
-  , test testCnt False "direct int32 add"      $ dirInt32add     1
-  , test testCnt  False "direct int32 sub"      $ dirInt32sub     1
-  , test testCnt  False "direct int32 mul"      $ dirInt32mul     1
-  , test testCnt False "direct int32 sdiv"     $ dirInt32sdiv    1
-  , test testCnt  False "direct int32 udiv"     $ dirInt32udiv    1
-  , test testCnt  False "direct int32 srem"     $ dirInt32srem    1
-  , test testCnt  False "direct int32 urem"     $ dirInt32urem    1
-  , testMain "test-arith"  0
-  , testMain "test-branch" 0
+  , qctest False "direct int32 add"      $ dirInt32add
+  , qctest False "direct int32 sub"      $ dirInt32sub
+  , qctest False "direct int32 mul"      $ dirInt32mul
+  , qctest False "direct int32 sdiv"     $ dirInt32sdiv
+  , qctest False "direct int32 udiv"     $ dirInt32udiv
+  , qctest False "direct int32 srem"     $ dirInt32srem
+  , qctest False "direct int32 urem"     $ dirInt32urem
 
-  , test  1  False "test-call-voidrty" $ 
-      runMainVoid 1 "test-call-voidrty.bc"
-  , testMain "test-ptr-simple" 99
+  , testMainBasic "test-arith"  (RV 0)
+  , testMainBasic "test-branch" (RV 0)
+  , testMainBasic "test-call-voidrty" VoidRV
+  , testMainBasic "test-ptr-simple" (RV 99)
 
-  , test  1  False "test-setup-ptr-arg"    $ do
-      let v = 1 -- verbosity
-      runAllMemModelTest v "test-primops.bc" testSetupPtrArgImpl
+  , forAllMemModels "test-setup-ptr-arg" "test-primops.bc" $ \bkName v sbeCF mdlio ->
+          HU.testCase bkName $ runTestSimulator v sbeCF mdlio $ testSetupPtrArgImpl
 
--- Disabled until exit runs again.
---  , test  1  False  "test-call-exit"       $ do
---      let v = 1 -- verbosity
---      runMain' True v "test-call-exit.bc" AllPathsErr
+  , testMainBasic "test-call-exit" AllPathsErr
 
-  , lssTestAll 0  "test-call-simple" [] Nothing (Just 1)
-  , lssTestAll 0 "ctests/test-call-alloca" [] Nothing (Just 34289)
-  , lssTestAll 0 "ctests/test-call-malloc" [] Nothing (Just 34289)
-  , lssTestAll 0 "ctests/test-main-return" [] Nothing (Just 42)
-  , lssTestAll 0 "ctests/test-select" [] Nothing (Just 1)
-  , lssTestAll 0 "ctests/test-user-override-by-name" [] Nothing (Just 1)
-  , lssTestAll 0 "ctests/test-user-override-by-addr" [] Nothing (Just 1)
-  , lssTestAll 0 "ctests/test-user-override-by-addr-cycle" [] Nothing (Just 1)
-  , lssTestAll 0 "ctests/test-user-override-reset" [] Nothing (Just 1)
-  , lssTestAll 0 "ctests/test-user-override-intrinsic" [] Nothing (Just 1)
-  , lssTestAll 0 "ctests/test-merge-mem-problem" [] Nothing (Just 1)
+  , lssTestAll "test-call-simple" [] Nothing (RV 1)
+  , lssTestAll "test-call-simple" [] Nothing (RV 1)
+  , lssTestAll "ctests/test-call-alloca" [] Nothing (RV 34289)
+  , lssTestAll "ctests/test-call-malloc" [] Nothing (RV 34289)
+  , lssTestAll "ctests/test-main-return" [] Nothing (RV 42)
+  , lssTestAll "ctests/test-select" [] Nothing (RV 1)
+  , lssTestAll "ctests/test-user-override-by-name" [] Nothing (RV 1)
+  , lssTestAll "ctests/test-user-override-by-addr" [] Nothing  (RV 1)
+  , lssTestAll "ctests/test-user-override-by-addr-cycle" [] Nothing (RV 1)
+  , lssTestAll "ctests/test-user-override-reset" [] Nothing (RV 1)
+  , lssTestAll "ctests/test-user-override-intrinsic" [] Nothing (RV 1)
+  , lssTestAll "ctests/test-merge-mem-problem" [] Nothing (RV 1)
   ]
   where
-    -- The 'v' parameter to all of these tests controls the verbosity; a
-    -- verbosity of '0' turns the test into a successful no-op, but issues a
-    -- warning.
-
-    dirInt32add v     = psk v $ chkArithBitEngineFn 32 True (Add False False) add
-    dirInt32sub v     = psk v $ chkArithBitEngineFn 32 True (Sub False False) sub
-    dirInt32mul v     = psk v $ chkArithBitEngineFn 32 True (Mul False False) mul
-    dirInt32sdiv v    = psk v $ chkArithBitEngineFn 32 True (SDiv False) idiv
-    dirInt32udiv v    = psk v $ chkArithBitEngineFn 32 False (UDiv False) wdiv
-    dirInt32srem v    = psk v $ chkArithBitEngineFn 32 True SRem irem
-    dirInt32urem v    = psk v $ chkArithBitEngineFn 32 False URem wrem
+    dirInt32add      = chkArithBitEngineFn 32 True (Add False False) add
+    dirInt32sub      = chkArithBitEngineFn 32 True (Sub False False) sub
+    dirInt32mul      = chkArithBitEngineFn 32 True (Mul False False) mul
+    dirInt32sdiv     = chkArithBitEngineFn 32 True (SDiv False) idiv
+    dirInt32udiv     = chkArithBitEngineFn 32 False (UDiv False) wdiv
+    dirInt32srem     = chkArithBitEngineFn 32 True SRem irem
+    dirInt32urem     = chkArithBitEngineFn 32 False URem wrem
 
     add, sub, mul, idiv, irem :: Int32 -> Int32 -> Int32
     add               = (+)
@@ -94,47 +103,49 @@ primOpTests =
     wdiv, wrem        :: Word32 -> Word32 -> Word32
     wdiv              = div
     wrem              = rem
+
     sqr x             = x * x
 
     fact 0            = 1
     fact x            = x * fact (x-1)
 
-    testUnaryPrim nm g f = do
-      let v = 1 -- verbosity
-      test testCnt False ("test " ++ nm) $ do
-        forAllM g $ \x -> do
-          runCInt32Fn v "test-primops.bc" (L.Symbol nm) [x] (RV (toInteger (f x)))
+    testUnaryPrim :: String -> Gen Int32 -> (Int32 -> Int32) -> TestTree
+    testUnaryPrim nm g f =
+       forAllMemModels ("concrete " ++ nm) "test-primops.bc" $ \bkName v sbeCF mdlio ->
+           testProperty bkName $ QC.monadicIO $ QC.forAllM g $ \x ->
+               liftIO $ runTestSimulator v sbeCF mdlio $
+                   runCInt32Fn (L.Symbol nm) [x] (RV (toInteger (f x)))
 
-    testBinaryPrim nm f = do 
-      let v = 1 -- verbosity
-      test testCnt False ("concrete " ++ nm) $
-        forAllM arbitrary $ \(x,y) ->
-          runCInt32Fn v "test-primops.bc" (L.Symbol nm) [x, y] (RV (toInteger (f x y)))
+    testBinaryPrim nm f =
+      forAllMemModels ("concrete " ++ nm) "test-primops.bc" $ \bkName v sbeCF mdlio ->
+          testProperty bkName $ QC.monadicIO $ QC.forAllM QC.arbitrary $ \(x,y) ->
+              liftIO $ runTestSimulator v sbeCF mdlio $
+                  runCInt32Fn (L.Symbol nm) [x,y] (RV (toInteger (f x y)))
 
-    testMain nm ev = do
-      let v = 1 -- verbosity
-      test 1 False nm $ runMain v (nm ++ ".bc") (RV ev)
+    testMainBasic nm ev =
+      forAllMemModels nm (nm <.> "bc") $ \bkName v sbeCF mdlio ->
+          HU.testCase bkName $ runTestSimulator v sbeCF mdlio $
+              runCInt32Fn (L.Symbol "main") [] ev
 
-
-chkArithBitEngineFn :: (Integral a, Arbitrary a, Show a)
+chkArithBitEngineFn :: (Integral a, QC.Arbitrary a, Show a)
                     => BitWidth -> Bool -> IntArithOp -> (a -> a -> a)
-                    -> PropertyM IO ()
+                    -> QC.PropertyM IO ()
 chkArithBitEngineFn w s op fn = do
-  (ABC.SomeGraph g) <- run $ ABC.newGraph ABC.giaNetwork
+  (ABC.SomeGraph g) <- QC.run $ ABC.newGraph ABC.giaNetwork
   let dl = defaultDataLayout
   let sbe = sbeBitBlast g (error "no CNF writer!") dl (buddyMemModel dl g)
-  forAllM arbitrary $ \(NonZero x,NonZero y) -> do
+  QC.forAllM QC.arbitrary $ \(QC.NonZero x, QC.NonZero y) -> do
     let r = fn x y
         proj = if s then asSignedInteger else asUnsignedInteger
-    x' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral x)
-    y' <- run . liftSBEBitBlast $ termInt sbe w (fromIntegral y)
-    r' <- run . liftSBEBitBlast $ applyTypedExpr sbe (IntArith op Nothing w x' y')
-    assert (proj sbe w r' == Just (fromIntegral r))
+    x' <- QC.run . liftSBEBitBlast $ termInt sbe w (fromIntegral x)
+    y' <- QC.run . liftSBEBitBlast $ termInt sbe w (fromIntegral y)
+    r' <- QC.run . liftSBEBitBlast $ applyTypedExpr sbe (IntArith op Nothing w x' y')
+    QC.assert (proj sbe w r' == Just (fromIntegral r))
 
 testSetupPtrArgImpl ::
   ( Functor sbe
   )
-  => Simulator sbe IO Bool
+  => Simulator sbe IO ()
 testSetupPtrArgImpl = do
   a <- withDL (view ptrAlign)
   let w = 1
@@ -145,16 +156,8 @@ testSetupPtrArgImpl = do
   CE.assert (isNothing mrv) $ return ()
   mm  <- getProgramFinalMem
   case mm of
-    Nothing  -> return False
+    Nothing  -> liftIO $ HU.assertFailure "no final memory!"
     Just mem -> do
       (_,r) <- withSBE (\sbe -> memLoad sbe mem i32 p a)
-      (`constTermEq` 42) <$> withSBE' (\s -> asUnsignedInteger s 32 r)
-
---------------------------------------------------------------------------------
--- Scratch
-
-_nowarn :: a
-_nowarn = undefined main
-
-main :: IO ()
-main = runTests primOpTests
+      liftIO . HU.assertBool "Expected value 42"
+         =<< (`constTermEq` 42) <$> withSBE' (\s -> asUnsignedInteger s 32 r)

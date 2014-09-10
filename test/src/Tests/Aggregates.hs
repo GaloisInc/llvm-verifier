@@ -13,74 +13,67 @@ Point-of-contact : jstanley
 
 module Tests.Aggregates (aggTests) where
 
-import           Control.Applicative
-import           Control.Monad.State
-import           Test.QuickCheck
-import           Tests.Common
+import           Control.Monad
+import           Control.Monad.State (liftIO, gets)
 
-import Verifier.LLVM.Backend
-import Verifier.LLVM.Codebase.AST
+import           Test.Tasty
+import qualified Test.Tasty.HUnit as HU
+
 import Verifier.LLVM.Simulator
+import Verifier.LLVM.Codebase.AST
+import Verifier.LLVM.Backend
 
-aggTests :: [(Args, Property)]
+import Tests.Common
+
+
+aggTests :: [TestTree]
 aggTests =
-  [
-    test 1 False "test-array-index-base"            $ arrayBaseIdx     1
-  , test 1 False "test-array-index-offset"          $ arrayOffsetIdx   1
-  , test 1 False "test-array-1d-initializer"        $ do
-      let v = 1 -- verbosity
-      testArrays v "onedim_init" (RV 3)
-  , test 1 False "test-array-2d-initializer"        $ arrayInit2D      1
-  , test 1 False "test-array-mat4x4-mult"           $ do
-      let v = 1 -- verbosity
-      chkNullaryCInt32Fn v "test-mat4x4.bc" (Symbol "matrix_mul_4x4") (RV 304)
-  , test 1 False "test-struct-init-and-access"      $ 
-      runStruct 1 structInitAccessImpl
-  , test 1 False "test-array-of-structs"            $
-      runStruct 1 structArrayImpl
---  , lssTest 0 "ctests/test-struct-member-indirect-call" $ \v cb -> do
---      runTestLSSBuddy v cb [] Nothing (Just 0)
---      runTestLSSDag v cb []   Nothing (Just 0)
+  [ testArrays "test-array-index-base"     "test-arrays.bc" "arr1" (RV 42)
+  , testArrays "test-array-index-offset"   "test-arrays.bc" "arr2" (RV 141)
+  , testArrays "test-array-1d-initializer" "test-arrays.bc" "onedim_init" (RV 3)
+  , testArrays "test-array-2d-initializer" "test-arrays.bc" "twodim_init" (RV 21)
+  , testArrays "test-array-mat4x4-mult"    "test-mat4x4.bc" "matrix_mul_4x4" (RV 304)
+
+  , runStruct "test-struct-init-and-access" "test-structs.bc" structInitAccessImpl
+  , runStruct "test-array-of-structs"       "test-structs.bc" structArrayImpl
+
+-- We appear to be missing the C source for this test....
+--  , lssTestAll "ctests/test-struct-member-indirect-call" [] (RV 0)
   ]
   where
-    arrayBaseIdx v        = testArrays v "arr1" (RV 42)
-    arrayOffsetIdx v      = testArrays v "arr2" (RV 141)
-    arrayInit2D v         = testArrays v "twodim_init" (RV 21)
-    testArrays v nm       = chkNullaryCInt32Fn v "test-arrays.bc" (Symbol nm)
-    runStruct v           = \(f :: AllMemModelTest) ->
-                              runAllMemModelTest v "test-structs.bc" f
+    testArrays gnm bc nm res = 
+          forAllMemModels gnm bc $ \bkName v sbeCF mdlio ->
+                HU.testCase bkName $ runTestSimulator v sbeCF mdlio $
+                     runCInt32Fn (Symbol nm) [] res
 
-structInitAccessImpl :: AllMemModelTest
+    runStruct :: String -> String -> (forall sbe. Functor sbe => Simulator sbe IO ()) -> TestTree
+    runStruct gnm bc m =
+          forAllMemModels gnm bc $ \bkName v sbeCF mdlio ->
+                HU.testCase bkName $ runTestSimulator v sbeCF mdlio m
+
+structInitAccessImpl :: Functor sbe => Simulator sbe IO ()
 structInitAccessImpl = do
   dl <- withDL id
   let si = mkStructInfo dl False [i32, i8]
   void $ callDefine (Symbol "struct_test") (Just (StructType si)) []
   mrv <- getProgramReturnValue
   case mrv of
-    Nothing -> dbugM "No return value (fail)" >> return False
+    Nothing -> liftIO $ HU.assertFailure "No return value (fail)"
     Just rv -> do
       sbe <- gets symBE
       bx <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 0)
       by <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 1)
       let bxc = asSignedInteger sbe 32 bx
           byc = asSignedInteger sbe  8 by
-      return $ bxc == Just 42
-               &&
-               byc == Just (fromIntegral (fromEnum 'z'))
+          res = bxc == Just 42
+                &&
+                byc == Just (fromIntegral (fromEnum 'z'))
+      liftIO $ HU.assertBool "incorrect value returned" res
 
-structArrayImpl :: AllMemModelTest
+structArrayImpl :: Functor sbe => Simulator sbe IO ()
 structArrayImpl = do
   void $ callDefine (Symbol "struct_test_two") (Just i32) []
   mrv <- getProgramReturnValue
   case mrv of
-    Nothing -> dbugM "No return value (fail)" >> return False
-    Just rv -> (`constTermEq` 1) <$> withSBE' (\s -> asSignedInteger s 32 rv)
-
---------------------------------------------------------------------------------
--- Scratch
-
-_nowarn :: a
-_nowarn = undefined main
-
-main :: IO ()
-main = runTests aggTests
+    Nothing -> liftIO $ HU.assertFailure "No return value (fail)"
+    Just rv -> liftIO . HU.assertBool "Expected 1" . (`constTermEq` 1) =<< withSBE' (\s -> asSignedInteger s 32 rv)

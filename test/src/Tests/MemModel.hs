@@ -10,8 +10,10 @@ import Control.Applicative
 import Control.Lens
 import qualified Data.Vector as V
 import System.Random
+
+import Test.Tasty
+import Test.Tasty.QuickCheck
 import Test.QuickCheck
-import Test.QuickCheck.Monadic
 
 import Verifier.LLVM.MemModel.Common
 
@@ -234,6 +236,6 @@ testCases =
   , testSymbolicValueLoad
   ]
 
-memModelTests :: [(Args, Property)]
+memModelTests :: [TestTree]
 memModelTests = fn <$> testCases
- where fn (nm,p) = (stdArgs, p)
+ where fn (nm,p) = testProperty nm p

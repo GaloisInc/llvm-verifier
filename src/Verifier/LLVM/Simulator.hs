@@ -129,21 +129,24 @@ getMem :: (Functor m, Monad m) =>  Simulator sbe m (Maybe (SBEMemory sbe))
 getMem = preuse currentPathMem
 
 -- | Run simulator in given context.
-runSimulator :: forall sbe a .
+runSimulator :: forall sbe a m.
   ( Functor sbe
   , Ord (SBETerm sbe)
+  , Functor m
+  , MonadIO m
+  , MonadException m
   )
   => Codebase sbe          -- ^ Post-transform LLVM code, memory alignment, and
                            -- type aliasing info
   -> SBE sbe               -- ^ A symbolic backend
   -> SBEMemory sbe         -- ^ The SBE's LLVM memory model
   -> Maybe LSSOpts         -- ^ Simulation options
-  -> Simulator sbe IO a     -- ^ Simulator action to perform
-  -> IO a
+  -> Simulator sbe m a     -- ^ Simulator action to perform
+  -> m a
 runSimulator cb sbe mem mopts m = do
   let newSt = State { codebase     = cb
                     , symBE        = sbe
-                    , liftSymBE    = sbeRunIO sbe
+                    , liftSymBE    = liftIO . sbeRunIO sbe
                     , verbosity    = 6
                     , lssOpts      = fromMaybe defaultLSSOpts mopts
                     , _ctrlStk     = Just $ initialCtrlStk sbe mem
