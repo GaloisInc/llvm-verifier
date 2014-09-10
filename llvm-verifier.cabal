@@ -113,7 +113,8 @@ executable lss
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M -auto-all -caf-all
   if os(darwin)
-    GHC-options: -optl-Wl,-dead_strip
+    GHC-options: -optl-Wl
+-- ,-dead_strip
 
   if flag(static)
     ld-options: -static -pthread
@@ -141,7 +142,8 @@ executable bcdump
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -auto-all -caf-all
   if os(darwin)
-    GHC-options: -optl-Wl,-dead_strip
+    GHC-options: -optl-Wl
+-- ,-dead_strip
 
   build-depends:
       base >= 4
@@ -162,39 +164,35 @@ test-suite test-llvm
     cpp-options: -DUseABC
 
   main-is        : Tests.hs
-  hs-source-dirs : src lss test/src
+  hs-source-dirs : test/src lss
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -auto-all -caf-all
   if os(darwin)
-    GHC-options: -optl-Wl,-dead_strip
+    GHC-options: -optl-Wl
+-- ,-dead_strip
 
   build-depends:
       base >= 4
+    , cmdargs >= 0.8
+    , llvm-verifier
+    , QuickCheck >= 2.7
+    , HUnit
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
+    -- , tasty-ant-xml >= 1.0.0.10
     , abcBridge
     , aig
-    , bytestring
-    , cmdargs >= 0.8
-    , containers >= 0.4.0.0
-    , data-binary-ieee754 >= 0.4.2
-    , directory
+    , mtl
+    , vector
     , filepath
-    , fingertree
+    , random
     , haskeline >= 0.7
     , lens >= 3.9
     , llvm-pretty >= 0.1.0.0
     , llvm-pretty-bc-parser >= 0.1.2.0
-    , llvm-verifier
-    , mtl
-    , random
-    , saw-core
-    , split
-    , tuple
-    , transformers
-    , vector
-    , wl-pprint
-    , MaybeT
-    , QuickCheck >= 2.4.1
     , Verinf
+
 
   if !os(windows)
     build-depends: unix

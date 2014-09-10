@@ -14,9 +14,11 @@ module Tests.AES (aesTests) where
 
 import           Control.Applicative
 import           Control.Monad (forM)
-import           Control.Monad.State (gets)
+import           Control.Monad.State (gets, liftIO)
 import qualified Data.Vector as V
-import           Test.QuickCheck
+import           Test.Tasty
+import qualified Test.Tasty.HUnit as HU
+
 import qualified Text.LLVM               as L
 
 import Tests.Common
@@ -24,16 +26,14 @@ import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator
 
-aesTests :: [(Args, Property)]
+aesTests :: [TestTree]
 aesTests =
-  [
-    test 1 False "test-aes128-concrete" $ do
-      let v = 1 -- verbosity
-      runAllMemModelTest v "aes128BlockEncrypt.bc" aes128ConcreteImpl
+  [ forAllMemModels "test-aes128-concrete" "aes128BlockEncrypt.bc" $ \bkName v sbeCF mdlio ->
+        HU.testCase bkName $ runTestSimulator v sbeCF mdlio aes128ConcreteImpl
   ]
 
 
-aes128ConcreteImpl :: forall sbe . Functor sbe => Simulator sbe IO Bool
+aes128ConcreteImpl :: forall sbe . Functor sbe => Simulator sbe IO ()
 aes128ConcreteImpl = do
   ptptr  <- initArr ptVals
   keyptr <- initArr keyVals
@@ -48,7 +48,9 @@ aes128ConcreteImpl = do
   sbe <- gets symBE
   ctVals <- forM [0..3] $ \i ->
     liftSBE $ getVal sbe <$> applyTypedExpr sbe (GetConstArrayElt 4 i32 ctarr i)
-  return (ctVals == fmap Just ctChks)
+
+  liftIO $ HU.assertEqual "unexpected result" (fmap Just ctChks) ctVals
+
   where
     getVal :: SBE sbe -> SBETerm sbe -> Maybe Integer
     getVal s v = asUnsignedInteger s 32 v
@@ -68,11 +70,4 @@ aes128ConcreteImpl = do
     keyVals = [0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f]
     ctChks  = [0x69c4e0d8, 0x6a7b0430, 0xd8cdb780, 0x70b4c55a]
 
---------------------------------------------------------------------------------
--- Scratch
 
-_nowarn :: a
-_nowarn = undefined main
-
-main :: IO ()
-main = runTests aesTests
