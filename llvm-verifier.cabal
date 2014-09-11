@@ -204,6 +204,7 @@ test-suite test-llvm
     , llvm-pretty >= 0.1.0.0
     , llvm-pretty-bc-parser >= 0.1.2.0
     , Verinf
+    , tagged
 
 
   if !os(windows)
