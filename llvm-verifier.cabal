@@ -183,8 +183,8 @@ test-suite test-llvm
     , QuickCheck >= 2.7
     , HUnit
 
-    , tasty >= 0.10
-    , tasty-ant-xml >= 1.0.0.10
+    , tasty
+    , tasty-ant-xml
     , tasty-hunit
     , tasty-quickcheck
 
