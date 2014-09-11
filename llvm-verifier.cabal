@@ -97,7 +97,9 @@ library
     Verifier.LLVM.Utils.Arithmetic
     Verifier.LLVM.Utils.PrettyPrint
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -auto-all -caf-all
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  GHC-prof-options: -auto-all -caf-all
+
   if os(darwin)
     GHC-options: -optl-Wl
 
@@ -111,7 +113,8 @@ executable lss
 
   main-is: Main_lss.hs
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M -auto-all -caf-all
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M
+  GHC-prof-options: -auto-all -caf-all
   if os(darwin)
     GHC-options: -optl-Wl
 -- ,-dead_strip
@@ -140,7 +143,8 @@ executable bcdump
   main-is        : Main_bcdump.hs
   hs-source-dirs : bcdump
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -auto-all -caf-all
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  GHC-prof-options: -auto-all -caf-all
   if os(darwin)
     GHC-options: -optl-Wl
 -- ,-dead_strip
@@ -166,7 +170,8 @@ test-suite test-llvm
   main-is        : Tests.hs
   hs-source-dirs : test/src lss
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -auto-all -caf-all
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count 
+  GHC-prof-options: -auto-all -caf-all
   if os(darwin)
     GHC-options: -optl-Wl
 -- ,-dead_strip
