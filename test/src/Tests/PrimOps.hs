@@ -41,7 +41,7 @@ import qualified Data.ABC as ABC
 
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Backend
-import Verifier.LLVM.Backend.BitBlastNew
+import Verifier.LLVM.Backend.BitBlast
 import Verifier.LLVM.Simulator hiding (run)
 
 import Tests.Common

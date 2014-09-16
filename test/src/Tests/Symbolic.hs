@@ -16,7 +16,7 @@ import qualified Test.Tasty.HUnit as HU
 
 import Tests.Common
 
-import Verifier.LLVM.Backend.BitBlastNew
+import Verifier.LLVM.Backend.BitBlast
 import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator hiding (run)
 
@@ -33,9 +33,7 @@ symTests =
     -- FIXME?? is this right? getting different results in the various bakends?
   , withVerbModel "ctests/test-symbolic-alloc.bc" $ \v getmdl ->
         testGroup "ctests/test-symbolic-alloc"
-            [ runLssTest "old buddy model" v createOldBuddyModel getmdl [] (Just 1) AllPathsErr
-            , runLssTest "old dag model"   v createOldDagModel   getmdl [] (Just 0) (RV 0)
-            , runLssTest "buddy model"     v createBuddyModel    getmdl [] (Just 1) AllPathsErr
+            [ runLssTest "buddy model"     v createBuddyModel    getmdl [] (Just 1) AllPathsErr
             , runLssTest "dag model"       v createDagModel      getmdl [] (Just 0) (RV 0)
             , runLssTest "SAW model"       v createSAWModel      getmdl [] (Just 0) (RV 0)
             ]

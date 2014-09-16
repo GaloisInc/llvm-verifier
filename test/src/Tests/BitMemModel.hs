@@ -8,7 +8,7 @@ import Data.Bits
 import qualified Data.AIG as AIG
 import           Data.AIG (IsAIG)
 import qualified Data.ABC as ABC
-import Verifier.LLVM.Backend.BitBlastNew
+import Verifier.LLVM.Backend.BitBlast
 
 import Test.Tasty
 import Test.Tasty.HUnit as HU

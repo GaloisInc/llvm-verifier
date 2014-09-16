@@ -56,7 +56,6 @@ library
     , vector
     , wl-pprint
     , MaybeT
-    , Verinf
 
   if !os(windows)
     build-depends: unix
@@ -66,7 +65,6 @@ library
   exposed-modules:
     Verifier.LLVM.Backend
     Verifier.LLVM.Backend.BitBlast
-    Verifier.LLVM.Backend.BitBlastNew
     Verifier.LLVM.Backend.SAW
 
     Verifier.LLVM.Codebase
@@ -134,7 +132,6 @@ executable lss
     , parsec >= 2.1.0.1
     , wl-pprint
     , vector
-    , Verinf
 
 executable bcdump
   if !flag(build-utils)
@@ -198,7 +195,6 @@ test-suite test-llvm
     , lens >= 3.9
     , llvm-pretty >= 0.1.0.0
     , llvm-pretty-bc-parser >= 0.1.2.0
-    , Verinf
     , tagged
 
 
