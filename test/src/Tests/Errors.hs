@@ -21,9 +21,7 @@ errorTests =
   , localOption (mkTimeout 5000000) $ -- 5 second local timeout
     withVerbModel "ctests/test-error-paths-bad-mem-symsize.bc" $ \v getmdl ->
         testGroup "ctests/test-error-paths-bad-mem-symsize"
-            [ runLssTest "old buddy model" v createOldBuddyModel getmdl [] (Just 1) (RV 1)
-            , runLssTest "old dag model"   v createOldDagModel   getmdl [] Nothing  (RV 1)
-            , runLssTest "buddy model"     v createBuddyModel    getmdl [] (Just 1) (RV 1)
+            [ runLssTest "buddy model"     v createBuddyModel    getmdl [] (Just 1) (RV 1)
             , runLssTest "dag model"       v createDagModel      getmdl [] Nothing  (RV 1)
             , runLssTest "SAW model"       v createSAWModel      getmdl [] (Just 1) (RV 1)
             ]

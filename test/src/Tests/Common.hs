@@ -30,11 +30,8 @@ import           LSSImpl
 
 import Verifier.LLVM.Codebase
 import Verifier.LLVM.Backend.BitBlastNew
-import qualified Verifier.LLVM.Backend.BitBlast as Old
 import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Simulator hiding (run)
-
-import qualified Verinf.Symbolic as Verinf
 
 import qualified Test.QuickCheck as QC
 import qualified Test.QuickCheck.Monadic as QC
@@ -72,26 +69,12 @@ createBuddyModel dl = do
       mem = buddyInitMemory (defaultMemGeom dl)
   return (SBEPair sbe mem)
 
-createOldBuddyModel :: SBECreateFn
-createOldBuddyModel dl = do
-  be <- Verinf.createBitEngine
-  let sbe = let ?be = be in Old.sbeBitBlast dl (Old.buddyMemModel dl be)
-      mem = Old.buddyInitMemory (defaultMemGeom dl)
-  return (SBEPair sbe mem)
-
 -- | Create buddy backend and initial memory.
 createDagModel ::SBECreateFn
 createDagModel dl = do
   (ABC.SomeGraph g) <- ABC.newGraph abcNetwork
   (mm,mem) <- createDagMemModel dl g (defaultMemGeom dl)
   let sbe = sbeBitBlast g (cnfWriter g) dl mm
-  return (SBEPair sbe mem)
-
-createOldDagModel :: SBECreateFn
-createOldDagModel dl = do
-  be <- liftIO $ Verinf.createBitEngine
-  (mm,mem) <- Old.createDagMemModel dl be (defaultMemGeom dl)
-  let sbe = let ?be = be in Old.sbeBitBlast dl mm
   return (SBEPair sbe mem)
 
 createSAWModel :: SBECreateFn
@@ -131,9 +114,7 @@ forAllMemModels :: String -> FilePath -> (String -> Int -> SBECreateFn -> IO L.M
 forAllMemModels groupName bcFile mkTest =
   withVerbModel bcFile $ \v getmdl ->
      testGroup groupName
-        [ mkTest "old buddy model" v createOldBuddyModel getmdl
-        , mkTest "old dag model"   v createOldDagModel   getmdl
-        , mkTest "buddy model"     v createBuddyModel    getmdl
+        [ mkTest "buddy model"     v createBuddyModel    getmdl
         , mkTest "dag model"       v createDagModel      getmdl
         , mkTest "SAW model"       v createSAWModel      getmdl
         ]
