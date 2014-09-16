@@ -64,7 +64,7 @@ library
 
   exposed-modules:
     Verifier.LLVM.Backend
-    Verifier.LLVM.Backend.BitBlastNew
+    Verifier.LLVM.Backend.BitBlast
     Verifier.LLVM.Backend.SAW
 
     Verifier.LLVM.Codebase

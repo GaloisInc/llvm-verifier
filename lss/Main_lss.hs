@@ -29,7 +29,7 @@ import           Text.PrettyPrint.Leijen hiding ((<$>))
 import           LSSImpl
 
 import Verifier.LLVM.Backend (prettyTermD, SBEPair(..))
-import qualified Verifier.LLVM.Backend.BitBlastNew as BBNew
+import qualified Verifier.LLVM.Backend.BitBlast as BB
 
 
 import Verifier.LLVM.Backend.SAW (createSAWBackend)
@@ -87,10 +87,10 @@ main = do
     case backEnd of
       BitBlastDagBased -> do
         ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
-        BBNew.createDagAll g (cnfWriter g) dl (defaultMemGeom dl)
+        BB.createDagAll g (cnfWriter g) dl (defaultMemGeom dl)
       BitBlastBuddyAlloc -> do
         ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
-        return (BBNew.createBuddyAll g (cnfWriter g) dl (defaultMemGeom dl))
+        return (BB.createBuddyAll g (cnfWriter g) dl (defaultMemGeom dl))
       SAWBackendType -> do
         ABC.SomeGraph be <- ABC.newGraph ABC.giaNetwork
         uncurry SBEPair <$> createSAWBackend be dl

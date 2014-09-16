@@ -29,7 +29,7 @@ import qualified Data.ABC.GIA
 import           LSSImpl
 
 import Verifier.LLVM.Codebase
-import Verifier.LLVM.Backend.BitBlastNew
+import Verifier.LLVM.Backend.BitBlast
 import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Simulator hiding (run)
 
