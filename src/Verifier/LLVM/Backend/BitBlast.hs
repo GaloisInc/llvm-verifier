@@ -10,7 +10,7 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE ViewPatterns               #-}
 {-# LANGUAGE PatternGuards              #-}
 
-module Verifier.LLVM.Backend.BitBlastNew
+module Verifier.LLVM.Backend.BitBlast
   ( -- * Re-exports to create and interact with backend.
     module Verifier.LLVM.Backend
   , module Verifier.LLVM.MemModel.Geometry

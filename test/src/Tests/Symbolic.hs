@@ -16,7 +16,7 @@ import qualified Test.Tasty.HUnit as HU
 
 import Tests.Common
 
-import Verifier.LLVM.Backend.BitBlastNew
+import Verifier.LLVM.Backend.BitBlast
 import Verifier.LLVM.Codebase.AST
 import Verifier.LLVM.Simulator hiding (run)
 
