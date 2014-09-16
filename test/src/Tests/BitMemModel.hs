@@ -16,6 +16,7 @@ import Test.Tasty.HUnit as HU
 import Verifier.LLVM.Codebase.DataLayout
 
 mmTest :: String
+       -> Bool -- Diable buddy model?
        -> (forall mem g l s. (IsAIG l g, Eq (l s))
             => DataLayout
             -> g s
@@ -24,7 +25,7 @@ mmTest :: String
             -> mem
             -> IO ()) 
        -> TestTree
-mmTest testName fn =
+mmTest testName disableBuddy fn =
   let dl = defaultDataLayout
       mg = MemGeom { 
                    mgStack = (0x10,0x0)
@@ -32,13 +33,14 @@ mmTest testName fn =
                  , mgData = (0x0, 0x0)
                  , mgHeap = (0x0,0x0)
                  }
-   in testGroup testName
+   in testGroup testName $
       [ HU.testCase "dag model" $ do
            (AIG.SomeGraph g) <- AIG.newGraph ABC.giaNetwork
            (mm, mem) <- createDagMemModel dl g mg
            fn dl g (sbeBitBlast g (error "No CNF writer function defined!") dl mm) mm mem
-
-      , HU.testCase "buddy model" $ do
+      ] ++
+      if disableBuddy then [] else
+      [ HU.testCase "buddy model" $ do
            (AIG.SomeGraph g) <- AIG.newGraph ABC.giaNetwork
            let mem = buddyInitMemory mg
                mm  = buddyMemModel dl g
@@ -51,7 +53,7 @@ bfi w v = AIG.bvToList $ AIG.generate_lsb0 w (testBit v)
 
 bitMemModelTests :: [TestTree]
 bitMemModelTests =
-  [ mmTest "symbolicTests" $ \dl g sbe@SBE { .. } MemModel { .. } m0 -> do
+  [ mmTest "symbolicTests" True $ \dl g sbe@SBE { .. } MemModel { .. } m0 -> do
       let ptrWidth = ptrBitwidth dl
       let bytes = AIG.bvFromInteger g 8 7
       let tTrue = sbeTruePred
@@ -72,7 +74,7 @@ bitMemModelTests =
          rptr <- runSBE $ applyTypedExpr (PtrAdd ptr cntExt)
          (c2, _) <- mmLoad m2 rptr 1 0 
          HU.assertBool "failed to load" =<< runSBE (evalPred [False] c2)
-  , mmTest "mergeTest" $ \_lc g sbe@SBE { .. } MemModel { .. } m0 -> do
+  , mmTest "mergeTest" False $ \_lc g sbe@SBE { .. } MemModel { .. } m0 -> do
       let tTrue = sbeTruePred
       -- Allocate space on stack.
       cnt <- runSBE $ termInt sbe 8 1
