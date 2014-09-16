@@ -59,8 +59,6 @@ instance Default DbugLvl where def = DbugLvl 1
 data BackendType = BitBlastBuddyAlloc
                  | BitBlastDagBased
                  | SAWBackendType
-                 | BitBlastDagNew
-                 | BitBlastBuddyNew
   deriving (Show)
 
 data ExecRslt sbe crt

@@ -28,13 +28,8 @@ import           Text.PrettyPrint.Leijen hiding ((<$>))
 
 import           LSSImpl
 
-import           Verinf.Symbolic                 (createBitEngine)
 import Verifier.LLVM.Backend (prettyTermD, SBEPair(..))
-import Verifier.LLVM.Backend.BitBlast
-     ( createBuddyAll
-     , createDagAll
-     )
-import qualified Verifier.LLVM.Backend.BitBlastNew as BBNew
+import qualified Verifier.LLVM.Backend.BitBlast as BB
 
 
 import Verifier.LLVM.Backend.SAW (createSAWBackend)
@@ -71,8 +66,6 @@ main = do
   backEnd <- case eatWS <$> backend args of
     Just "bitblast" -> return BitBlastBuddyAlloc
     Just "dag"      -> return BitBlastDagBased
-    Just "dagnew"   -> return BitBlastDagNew
-    Just "bitblastnew" -> return BitBlastBuddyNew
     Just "saw"      -> return SAWBackendType
     Nothing         -> return BitBlastBuddyAlloc
     _               -> do
@@ -92,18 +85,12 @@ main = do
 
   SBEPair sbe mem <- 
     case backEnd of
-      BitBlastDagNew -> do
-        ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
-        BBNew.createDagAll g (cnfWriter g) dl (defaultMemGeom dl)
-      BitBlastBuddyNew -> do
-        ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
-        return (BBNew.createBuddyAll g (cnfWriter g) dl (defaultMemGeom dl))
       BitBlastDagBased -> do
-        be <- createBitEngine
-        createDagAll be dl (defaultMemGeom dl)
+        ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
+        BB.createDagAll g (cnfWriter g) dl (defaultMemGeom dl)
       BitBlastBuddyAlloc -> do
-        be <- createBitEngine
-        return $ createBuddyAll be dl (defaultMemGeom dl)
+        ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
+        return (BB.createBuddyAll g (cnfWriter g) dl (defaultMemGeom dl))
       SAWBackendType -> do
         ABC.SomeGraph be <- ABC.newGraph ABC.giaNetwork
         uncurry SBEPair <$> createSAWBackend be dl
