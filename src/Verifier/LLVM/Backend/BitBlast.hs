@@ -35,11 +35,11 @@ module Verifier.LLVM.Backend.BitBlast
   , bmDataAddr
   ) where
 
-import           Control.Applicative       ((<$>), (<*>), pure)
+import           Control.Applicative (Applicative(..), (<$>), (<*>), pure)
 import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
 import           Control.Lens hiding (ix, op)
-import           Control.Monad (ap, unless, when, join, (<=<), foldM, zipWithM)
+import           Control.Monad (zipWithM)
 import           Control.Monad.IO.Class
 import           Control.Monad.State hiding (zipWithM, replicateM, mapM, forM_)
 
@@ -1697,7 +1697,7 @@ evalAigerImpl g dl inps tp t = do
 --  SBE Definition {{{1
 
 newtype BitIO m l v = BitIO { liftSBEBitBlast :: IO v }
-   deriving (Monad, MonadIO, Functor)
+   deriving (Monad, MonadIO, Functor, Applicative)
 
 type instance SBETerm (BitIO m l)       = BitTerm l
 type instance SBEPred (BitIO m l)       = l

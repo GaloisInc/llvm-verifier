@@ -30,11 +30,11 @@ module Verifier.LLVM.Debugger
 
 import Control.Applicative hiding (empty)
 import Control.Monad
-import Control.Monad.Error
+import Control.Monad.Except
 import Control.Monad.Identity
 import qualified Control.Monad.State as MTL
 import Control.Monad.State.Class
-import Control.Lens hiding (createInstance)
+import Control.Lens
 import Data.Char
 import Data.IORef
 import Data.List
