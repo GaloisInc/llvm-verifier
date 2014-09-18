@@ -31,7 +31,7 @@ module Verifier.LLVM.Codebase.Translation
 
 import Control.Applicative
 import Control.Lens hiding (op)
-import Control.Monad.Except
+import Control.Monad.Error
 import Control.Monad.State.Strict
 import qualified Data.Foldable as F
 import qualified Data.LLVM.CFG              as CFG
@@ -152,11 +152,11 @@ blockPhiMap' blocks = execStateT (traverse go blocks) Map.empty
 
 -- | Computation that attempts to lift LLVM values to symbolic representation.
 -- This runs in IO, because symbolic backends may need to do IO.
-newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: ExceptT String IO a }
+newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: ErrorT String IO a }
   deriving (Functor, Applicative, Monad, MonadIO)
 
 runLiftAttempt :: (MonadIO m) => LiftAttempt a -> m (Either String a)
-runLiftAttempt = liftIO . runExceptT . unLiftAttempt
+runLiftAttempt = liftIO . runErrorT . unLiftAttempt
 
 liftMaybe :: Maybe a -> LiftAttempt a
 liftMaybe = maybe (fail "") return

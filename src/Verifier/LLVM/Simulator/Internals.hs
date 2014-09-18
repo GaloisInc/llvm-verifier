@@ -165,7 +165,7 @@ import Control.Applicative hiding (empty)
 import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens hiding (act)
-import Control.Monad.Except
+import Control.Monad.Error
 import Control.Monad.State.Class
 import Control.Monad.Trans.State.Strict (StateT, runStateT, execStateT)
 import qualified Data.Traversable as Trav
@@ -174,7 +174,7 @@ import Data.Maybe
 import qualified Data.Set  as S
 import qualified Data.Vector as V
 
-import System.Console.Haskeline.MonadException (MonadException(..), RunIO(..))
+import System.Console.Haskeline.MonadException (MonadException(..))
 
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
@@ -571,6 +571,10 @@ override f = Override (\_ _ a -> Just <$> f a)
 
 newtype FailRsn = FailRsn String deriving (Show)
 
+instance Error FailRsn where
+  noMsg  = FailRsn "(no reason given)"
+  strMsg = FailRsn
+
 -- | Action to perform when a simulation error is encountered.
 -- Parameters include simulator control stack prior to error, and
 -- a description of the error.
@@ -587,7 +591,7 @@ ppLocation (b, pc) = ppSymBlockID b <> colon <> int pc
 data ErrorPath sbe = EP { epRsn :: FailRsn, epPath :: Path sbe }
 
 newtype Simulator sbe m a =
-  SM { runSM :: ExceptT FailRsn (StateT (State sbe m) m) a }
+  SM { runSM :: ErrorT FailRsn (StateT (State sbe m) m) a }
   deriving
     ( Functor
     , Monad
@@ -597,12 +601,6 @@ newtype Simulator sbe m a =
     , MonadError FailRsn
     , MonadException
     )
-
--- NB: this will probably become unnecessary when Haskeline updates
-instance (MonadException m) => MonadException (ExceptT e m) where
-    controlIO f = ExceptT $ controlIO $ \(RunIO run) -> let
-                    run' = RunIO (fmap ExceptT . run . runExceptT)
-                    in fmap runExceptT $ f run'
 
 -- | Symbolic simulator state
 data State sbe m = State

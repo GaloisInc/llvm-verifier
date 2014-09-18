@@ -82,7 +82,7 @@ import Control.Exception ( AsyncException(..)
                          , assert
                          )
 import           Control.Lens hiding (act,from)
-import           Control.Monad.Except
+import           Control.Monad.Error
 import           Control.Monad.State.Class
 import qualified Control.Monad.State as MTL
 import           Control.Monad.Reader
@@ -161,7 +161,7 @@ runSimulator cb sbe mem mopts m = do
                     , _onSimError = killPathOnError
                     , _onUserInterrupt = throwIO UserInterrupt
                     }
-  ea <- flip evalStateT newSt $ runExceptT $ runSM $ do
+  ea <- flip evalStateT newSt $ runErrorT $ runSM $ do
     initGlobals
     registerLLVMIntrinsicOverrides
     registerLibcOverrides
@@ -475,7 +475,7 @@ evalExprInCC :: (Functor m, MonadIO m, Functor sbe)
          => String -> SymValue (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
 evalExprInCC nm sv = runEvaluator nm $ evalExpr sv
 
-type Evaluator sbe = ExceptT FailRsn (ReaderT (EvalContext sbe) IO)
+type Evaluator sbe = ErrorT FailRsn (ReaderT (EvalContext sbe) IO)
 
 mkIEqPred :: Monad m => SBETerm sbe -> BitWidth -> Integer -> Simulator sbe m (SBEPred sbe)
 mkIEqPred v w expected = do
@@ -511,7 +511,7 @@ runEvaluator ::
   -> Evaluator sbe a -> Simulator sbe m a
 runEvaluator nm m = do
   ec <- getCurrentEvalContext nm
-  mr <- liftIO $ runReaderT (runExceptT m) ec
+  mr <- liftIO $ runReaderT (runErrorT m) ec
   either throwError return mr
 
 evalExpr :: SymValue (SBETerm sbe)
