@@ -34,7 +34,7 @@ module Verifier.LLVM.Codebase.DebugInfo
 import Control.Applicative
 import Control.Lens hiding (Context)
 import Control.Monad
-import Control.Monad.Except
+import Control.Monad.Error
 import Control.Monad.State
 import Data.Bits (testBit)
 import Data.Int (Int32)
@@ -93,10 +93,10 @@ dsScopeCache :: Simple Lens DebugInfo (Map Int Scope)
 dsScopeCache = lens _dsScopeCache (\s v -> s { _dsScopeCache = v })
 
 
-type DebugReader = ExceptT String (State DebugInfo)
+type DebugReader = ErrorT String (State DebugInfo)
 
 runDebugReader :: DebugInfo -> DebugReader a -> (Either String a, DebugInfo)
-runDebugReader s r = runState (runExceptT r) s
+runDebugReader s r = runState (runErrorT r) s
 
 initialDebugInfo :: Module -> Either String DebugInfo
 initialDebugInfo mdl = fst $ runDebugReader s0 $ do
@@ -122,7 +122,7 @@ lookupMetadata i = do
 --------------------------------------------
 -- FieldReader
 
-type FieldReader = ExceptT String (StateT [Typed Value] (State DebugInfo))
+type FieldReader = ErrorT String (StateT [Typed Value] (State DebugInfo))
 
 readNext' :: FieldReader (Typed Value)
 readNext' = do
@@ -137,7 +137,7 @@ skipNext = void $ readNext'
 readField :: (Typed Value -> DebugReader a) -> FieldReader a
 readField f = do
   tpv <- readNext'
-  r <- lift $ lift $ runExceptT $ f tpv
+  r <- lift $ lift $ runErrorT $ f tpv
   either fail return r
 
 -- | @readCached lens nm r i@ reads node @i@ using the reader @r@.
@@ -168,7 +168,7 @@ runFieldReader' :: String
                 -> FieldReader r
                 -> DebugReader r
 runFieldReader' loc nm l fr = do
-  (mr,l') <- lift $ runStateT (runExceptT fr) l
+  (mr,l') <- lift $ runStateT (runErrorT fr) l
   case mr of
     Left msg -> do 
       let cnt = length l - length l'

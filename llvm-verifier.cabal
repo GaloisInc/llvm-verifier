@@ -51,7 +51,7 @@ library
     , mtl
     , saw-core
     , split >= 0.2
-    , transformers >= 0.4
+    , transformers
     , tuple >= 0.2
     , vector
     , wl-pprint
