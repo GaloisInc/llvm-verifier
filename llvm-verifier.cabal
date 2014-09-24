@@ -4,6 +4,10 @@ Author:        Galois Inc.
 Maintainer:    jhendrix@galois.com, atomb@galois.com
 Build-type:    Simple
 Cabal-version: >= 1.9
+Category:      Formal Methods
+Synopsis:      Symbolic simulator for LLVM bytecode
+License:       AllRightsReserved
+
 
 Flag abc-backend
   Description: Use the ABC backend for generating AIGs
@@ -36,7 +40,7 @@ library
     build-depends: Aiger
 
   build-depends:
-      base >= 4
+      base >= 4 && < 5
     , aig
     , bytestring
     , containers >= 0.4.0.0
@@ -121,7 +125,7 @@ executable lss
     ld-options: -static -pthread
 
   build-depends:
-      base >= 4
+      base >= 4 && < 5
     , abcBridge
     , cmdargs >= 0.8
     , lens >= 3.9
@@ -147,7 +151,7 @@ executable bcdump
 -- ,-dead_strip
 
   build-depends:
-      base >= 4
+      base >= 4 && < 5
     , abcBridge
     , bytestring
     , directory
@@ -174,7 +178,7 @@ test-suite test-llvm
 -- ,-dead_strip
 
   build-depends:
-      base >= 4
+      base >= 4 && < 5
     , cmdargs >= 0.8
     , llvm-verifier
     , QuickCheck >= 2.7
