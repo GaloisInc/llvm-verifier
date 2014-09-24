@@ -1097,6 +1097,9 @@ createSAWBackend' be dl imps = do
                 , "LLVM.llvmAppendInt"
                 ]
   let eqs = [ "Prelude.ite_not"
+            , "Prelude.ite_fold_not"
+            , "Prelude.ite_nest1"
+            , "Prelude.ite_nest2"
             , "Prelude.vTake0"
             , "Prelude.vDrop0"
             , "Prelude.bveq_sameL"
