@@ -102,9 +102,6 @@ library
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   GHC-prof-options: -auto-all -caf-all
 
-  if os(darwin)
-    GHC-options: -optl-Wl
-
 executable lss
   if !flag(build-lss)
     buildable: False
@@ -117,9 +114,6 @@ executable lss
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M
   GHC-prof-options: -auto-all -caf-all
-  if os(darwin)
-    GHC-options: -optl-Wl
--- ,-dead_strip
 
   if flag(static)
     ld-options: -static -pthread
@@ -146,9 +140,6 @@ executable bcdump
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   GHC-prof-options: -auto-all -caf-all
-  if os(darwin)
-    GHC-options: -optl-Wl
--- ,-dead_strip
 
   build-depends:
       base >= 4 && < 5
@@ -173,9 +164,6 @@ test-suite test-llvm
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count 
   GHC-prof-options: -auto-all -caf-all
-  if os(darwin)
-    GHC-options: -optl-Wl
--- ,-dead_strip
 
   build-depends:
       base >= 4 && < 5
