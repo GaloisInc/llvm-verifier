@@ -17,7 +17,7 @@ Description:
 
   Example usage: 
 
-  lss --memtype=dagbased --dbug=2 trivial.bc
+  lss --backend=dag --dbug=2 trivial.bc
 
   will simulate the function main() from the LLVM bitcode file
   'trivial.bc' in the current directory, using the DAG-based memory
@@ -47,13 +47,13 @@ Options:
       Specify the space-delimited list of arguments to pass as argv
       to the main() function.
 
-  -m MEMTYPE, --memtype=MEMTYPE
+  -b BACKEND, --backend=BACKEND
 
-      where MEMTYPE is one of 'bitblast' or 'dagbased'.  Selects the
-      memory model to use for the current run.  Each MEMTYPE has a
+      where BACKEND is one of 'bitblast', 'dag' or 'saw'.  Selects the
+      memory model to use for the current run.  Each BACKEND has a
       distinct feature profile and represents various implementation
       tradeoffs (e.g., 'bitblast' is in general more efficient, but
-      symbolic lengths are only supported by 'dagbased'.)
+      symbolic lengths are only supported by 'dag'.)
 
   -e, --errpaths
 
@@ -68,6 +68,16 @@ Options:
       useful when interpreting path location information provided in
       various debug modes; also when reasoning about the behavior of
       programs operating on symbolic inputs.
+
+  --startdebugger
+
+      Enter the LLVM debugger immediately upon entering 'main()'
+
+  --satbranches
+
+      Check the satisfiability of symbolic path assertions at branches.
+      This can sometimes prune infeasable exeuction paths in the
+      symbolic simulator.  Only supported by some backends.
 
   -?, --help
 

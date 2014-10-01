@@ -62,12 +62,12 @@ OPTIONS
     displayed about any paths on which errors occurred.  Potentially
     verbose.
 
--m *MEMTYPE*, \--memtype=*MEMTYPE*
-:   where *MEMTYPE* is one of `bitblast` or `dagbased`.  Selects the
-    memory model to use for the current run.  Each MEMTYPE has a
+-b *BACKEND*, --backend=*BACKEND*
+:   where *BACKEND* is one of `bitblast`, `dag` or `saw`.  Selects the
+    memory model to use for the current run.  Each BACKEND has a
     distinct feature profile and represents various implementation
     tradeoffs (e.g., `bitblast` is in general more efficient, but
-    symbolic lengths are only supported by `dagbased`.)
+    symbolic lengths are only supported by `dag`.)
 
 -x, \--xlate
 :   Displays to stdout the LLVM-Sym translation of the input LLVM
@@ -75,6 +75,14 @@ OPTIONS
     useful when interpreting path location information provided in
     various debug modes; also when reasoning about the behavior of
     programs operating on symbolic inputs.
+
+--startdebugger
+:   Enter the LLVM debugger immediately upon entering 'main()'
+
+--satbranches
+:   Check the satisfiability of symbolic path assertions at branches.
+    This can sometimes prune infeasable exeuction paths in the
+    symbolic simulator.  Only supported by some backends.
 
 -V, \--version
 :   Print out the version of the simulator.
