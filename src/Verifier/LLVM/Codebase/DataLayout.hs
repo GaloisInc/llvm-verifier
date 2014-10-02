@@ -286,6 +286,7 @@ addLayoutSpec ls =
       L.StackObjSize   sz a _ -> setAtBits stackInfo   ls sz a
       L.NativeIntSize _ -> return ()
       L.StackAlign a    -> setBits stackAlignment ls a
+      L.Mangling _m  -> return ()
 
 -- | Create parsed data layout from layout spec AST.
 parseDataLayout :: L.DataLayout -> DataLayout

@@ -50,8 +50,8 @@ library
     , fingertree
     , haskeline >= 0.7
     , lens >= 3.9
-    , llvm-pretty >= 0.1.0.0
-    , llvm-pretty-bc-parser >= 0.1.2.0
+    , llvm-pretty >= 0.2.0.0
+    , llvm-pretty-bc-parser >= 0.1.2.2
     , mtl
     , saw-core
     , split >= 0.2
@@ -123,8 +123,8 @@ executable lss
     , abcBridge
     , cmdargs >= 0.8
     , lens >= 3.9
-    , llvm-pretty >= 0.1.0.0
-    , llvm-pretty-bc-parser >= 0.1.2.0
+    , llvm-pretty >= 0.2.0.0
+    , llvm-pretty-bc-parser >= 0.1.2.2
     , llvm-verifier
     , mtl
     , parsec >= 2.1.0.1
@@ -147,8 +147,8 @@ executable bcdump
     , bytestring
     , directory
     , filepath
-    , llvm-pretty
-    , llvm-pretty-bc-parser
+    , llvm-pretty >= 0.2.0.0
+    , llvm-pretty-bc-parser >= 0.1.2.2
     , llvm-verifier
     , process
     , wl-pprint
@@ -185,8 +185,8 @@ test-suite test-llvm
     , random
     , haskeline >= 0.7
     , lens >= 3.9
-    , llvm-pretty >= 0.1.0.0
-    , llvm-pretty-bc-parser >= 0.1.2.0
+    , llvm-pretty >= 0.2.0.0
+    , llvm-pretty-bc-parser >= 0.1.2.2
     , tagged
 
 
