@@ -1,4 +1,0 @@
-type Cipher (KeySize, BlockSize)
-  = { encrypt : ([KeySize], [BlockSize]) -> [BlockSize];
-      decrypt : ([KeySize], [BlockSize]) -> [BlockSize];
-    };
