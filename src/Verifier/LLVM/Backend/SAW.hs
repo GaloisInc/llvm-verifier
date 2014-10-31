@@ -21,7 +21,7 @@ import Control.Applicative hiding (empty)
 import Control.Exception (assert)
 import Control.Lens hiding (op, iact)
 import Control.Monad
-import Control.Monad.Error
+import Control.Monad.Except
 import Control.Monad.State
 import qualified Data.AIG as AIG
 import Data.Bits (setBit, shiftL, testBit)
@@ -974,7 +974,7 @@ scWriteAiger :: AIG.IsAIG l g
              -> IO ()
 scWriteAiger sbs path terms = do
   let bc = sbsBCache sbs
-  mbits <- runErrorT $ mapM (ErrorT . bitBlastWith bc . snd) terms
+  mbits <- runExceptT $ mapM (ExceptT . bitBlastWith bc . snd) terms
   case mbits of
     Left msg -> fail $ "Could not write Aig as term could not be bitblasted: " ++ msg
     Right bits -> do
