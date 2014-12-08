@@ -989,15 +989,14 @@ scWriteCNF :: SAWBackendState t GIA.Lit GIA.GIA s
            -> IO [Maybe Int]
 scWriteCNF sbs path w t = do
   let bc = sbsBCache sbs
+      be = bcEngine bc
   mbits <- bitBlastWith bc t
   case mbits of
     Left msg ->
       fail $ "Could not write CNF as term could not be bitblasted: " ++ msg
     Right bits -> do
-      let outputs = AIG.bvToList $ flattenBValue bits
-      case outputs of
-        [l] -> map Just <$> GIA.writeCNF (bcEngine bc) l path
-        _ -> fail "Could not write CNF: non-boolean term"
+      l <- AIG.isZero be (flattenBValue bits)
+      map Just <$> GIA.writeCNF be l path
 
 intFromBV :: V.Vector Bool -> Integer
 intFromBV v = go 0 0
