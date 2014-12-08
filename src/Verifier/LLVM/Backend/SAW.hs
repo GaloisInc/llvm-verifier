@@ -23,6 +23,7 @@ import Control.Lens hiding (op, iact)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.State
+import qualified Data.ABC.GIA as GIA
 import qualified Data.AIG as AIG
 import Data.Bits (setBit, shiftL, testBit)
 import Data.IORef
@@ -976,10 +977,27 @@ scWriteAiger sbs path terms = do
   let bc = sbsBCache sbs
   mbits <- runExceptT $ mapM (ExceptT . bitBlastWith bc . snd) terms
   case mbits of
-    Left msg -> fail $ "Could not write Aig as term could not be bitblasted: " ++ msg
+    Left msg -> fail $ "Could not write AIG as term could not be bitblasted: " ++ msg
     Right bits -> do
       let outputs = AIG.bvToList $ AIG.concat $ flattenBValue <$> bits
       AIG.writeAiger path (AIG.Network (bcEngine bc) outputs)
+
+scWriteCNF :: SAWBackendState t GIA.Lit GIA.GIA s
+           -> FilePath
+           -> BitWidth
+           -> SharedTerm t
+           -> IO [Maybe Int]
+scWriteCNF sbs path w t = do
+  let bc = sbsBCache sbs
+  mbits <- bitBlastWith bc t
+  case mbits of
+    Left msg ->
+      fail $ "Could not write CNF as term could not be bitblasted: " ++ msg
+    Right bits -> do
+      let outputs = AIG.bvToList $ flattenBValue bits
+      case outputs of
+        [l] -> map Just <$> GIA.writeCNF (bcEngine bc) l path
+        _ -> fail "Could not write CNF: non-boolean term"
 
 intFromBV :: V.Vector Bool -> Integer
 intFromBV v = go 0 0
@@ -1030,17 +1048,15 @@ scTermMemPrettyPrinter = pp
 
 
 -- | Create a SAW backend.
-createSAWBackend :: AIG.IsAIG l g
-                 => g s
+createSAWBackend :: GIA.GIA s
                  -> DataLayout
                  -> IO (SBE (SAWBackend t), SAWMemory t)
 createSAWBackend be dl = do
   (sbe, mem, _) <- createSAWBackend' be dl []
   return (sbe, mem)
 
-createSAWBackend' :: forall t l g s
-                   . AIG.IsAIG l g
-                  => g s
+createSAWBackend' :: forall t s
+                  .  GIA.GIA s
                   -> DataLayout
                   -> [Module]
                   -> IO (SBE (SAWBackend t), SAWMemory t, SharedContext t)
@@ -1186,7 +1202,7 @@ createSAWBackend' be dl imps = do
                 -- TODO: SAT checking for SAW backend
                 , termSAT    = nyi "termSAT"
                 , writeAiger = lift2 (scWriteAiger sbs)
-                , writeCnf   = Nothing -- FIXME? implement
+                , writeCnf   = Just (lift3 (scWriteCNF sbs))
 
                 , writeSAWCore = Just $ \nm t -> SAWBackend $ do
                     writeFile nm (scWriteExternal t)
