@@ -310,13 +310,6 @@ llvmArrayElt :: (n :: Nat)
              -> value tp;
 llvmArrayElt n tp = bvAt n (value tp);
 
--- | Append the one bitvector to another.  The first vector is the most significant.
-llvmAppendInt :: (u v :: Nat)
-              -> bitvector u
-              -> bitvector v
-              -> bitvector (addNat v u);
-llvmAppendInt m n x y = append n m Bool y x;
-
 -- | @llvmIntSlice i n o v@ returns an @n@-bit bitvector equal to v / 2^i.
 llvmIntSlice :: (i n o :: Nat) -> bitvector (addNat (addNat i n) o) -> bitvector n;
 llvmIntSlice i n o a = vDrop Bool i n (vTake Bool (addNat i n) o a); 
