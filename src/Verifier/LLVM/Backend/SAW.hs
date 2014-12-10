@@ -22,29 +22,26 @@ import Control.Exception (assert)
 import Control.Lens hiding (op, iact)
 import Control.Monad
 import Control.Monad.Except
-import Control.Monad.State
 import qualified Data.ABC.GIA as GIA
 import qualified Data.AIG as AIG
-import Data.Bits (setBit, shiftL, testBit)
 import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe
+import Data.SBV
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.String (fromString)
 import qualified Data.Vector as V
 
 import Verifier.SAW as SAW
 import Verifier.SAW.Conversion
-import qualified Verifier.SAW.Export.SMT.Version1 as SMT1
-import qualified Verifier.SAW.Export.SMT.Version2 as SMT2
 import Verifier.SAW.ParserUtils as SAW
 import Verifier.SAW.Prelude
 import qualified Verifier.SAW.Prim as Prim
 import qualified Verifier.SAW.Recognizer as R
 import Verifier.SAW.Rewriter
 import qualified Verifier.SAW.Simulator.BitBlast as BB
+import qualified Verifier.SAW.Simulator.SBV as SBVSim
 
 import Verifier.LLVM.Backend as LLVM
 import Verifier.LLVM.Codebase.AST
@@ -57,7 +54,7 @@ import qualified Verifier.LLVM.MemModel as MM
 modifyIORef' :: IORef a -> (a -> a) -> IO ()
 modifyIORef' r f = do
   v <- readIORef r
-  writeIORef r $! f v 
+  writeIORef r $! f v
 #endif
 
 preludeBVNatTermF :: TermF t
@@ -81,7 +78,7 @@ asSignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
 asSignedBitvector w s2
     | w == 0 = error "Bad bitwidth"
     | otherwise = s2u <$> asUnsignedBitvector w s2
-  where s2u v | v `testBit` (w-1) = v - 2^w 
+  where s2u v | v `testBit` (w-1) = v - 2^w
               | otherwise = v
 
 scFloat :: SharedContext s -> Float -> IO (SharedTerm s)
@@ -140,7 +137,7 @@ scLLVMIntConst' :: SharedContext s
                 -> Integer -- ^ Value of bitvector.
                 -> IO (SharedTerm s)
 scLLVMIntConst' sc (w,wt) v = do
-  cfn <- scApplyLLVMLlvmIntConstant sc 
+  cfn <- scApplyLLVMLlvmIntConstant sc
   cfn wt =<< scNat sc (fromInteger (v `mod` 2^(toInteger w)))
 
 {-
@@ -164,7 +161,7 @@ scFreshPtr :: SharedContext s -> DataLayout -> IO (SharedTerm s)
 scFreshPtr sc dl = do
   valueFn <- scApplyLLVMValue sc
   let w = ptrBitwidth dl
-  scFreshGlobal sc "_" =<< valueFn =<< scIntType sc w 
+  scFreshGlobal sc "_" =<< valueFn =<< scIntType sc w
 
 -- | Set of shared term variables that refer to allocations.
 type SharedTermSetRef s = IORef (Set (SharedTerm s))
@@ -229,8 +226,8 @@ mkBackendState dl be sc = do
   ptrType <- join $ scApplyLLVMPtrType sc <*> scNat sc (fromIntegral (dl^.ptrSize))
   llvmFloatType  <- scApplyLLVMFloatType sc
   llvmDoubleType <- scApplyLLVMDoubleType sc
-  arrayTypeFn  <- scApplyLLVMArrayType sc 
-  vecTypeFn    <- scApplyLLVMVectorType sc 
+  arrayTypeFn  <- scApplyLLVMArrayType sc
+  vecTypeFn    <- scApplyLLVMVectorType sc
   structTypeFn <- scApplyLLVMStructType sc
   fieldType <- scApplyLLVMFieldType sc
 
@@ -305,7 +302,7 @@ mkBackendState dl be sc = do
   let appendInt m n x y = appendFn n m boolTy y x
   sliceFn   <- scApplyLLVMLlvmIntSlice sc
   valueFn   <- scApplyLLVMValue sc
-  let tg = MM.TG 
+  let tg = MM.TG
               { MM.tgPtrWidth = dl^.ptrSize
               , MM.tgPtrDecompose = \ptr -> do
                   mr <- decomposePtr ptr
@@ -341,8 +338,8 @@ mkBackendState dl be sc = do
                      ywt <- scNat sc $ fromIntegral yw `shiftL` 3
                      case dl^.intLayout of
                        BigEndian    -> appendInt xwt ywt x y
-                       LittleEndian -> appendInt ywt xwt y x         
-                   MM.BVToFloat x -> intToFloat x 
+                       LittleEndian -> appendInt ywt xwt y x
+                   MM.BVToFloat x -> intToFloat x
                    MM.BVToDouble x -> intToDouble x
                    MM.ConsArray tp x n y -> do
                      consFn <- scApplyPreludeConsVec sc
@@ -356,7 +353,7 @@ mkBackendState dl be sc = do
                                      ?? x
                                      ?? y
                    MM.MkArray tp v ->
-                     join $ scVecLit sc <$> (valueFn =<< mkTypeTerm tp) ?? v 
+                     join $ scVecLit sc <$> (valueFn =<< mkTypeTerm tp) ?? v
                    MM.MkStruct v -> do
                      ExprEvalFn eval <- createStructValue sc =<< (traverse . _1) fieldFn v
                      eval return
@@ -465,7 +462,7 @@ smAddDefine dl sc m sym lbls = do
 
 -- | Return symbol associated with address if any.
 smLookupSymbol :: SAWMemory s -> SharedTerm s -> LookupSymbolResult
-smLookupSymbol m t = 
+smLookupSymbol m t =
   case m^.memSymbols^.at t of
     Just r -> Right r
     Nothing -> Left Indeterminate
@@ -492,7 +489,7 @@ smAlloc sbs atp m mtp w cnt _ = do
   mulOp <- mulFn pwt
   totalSize <- scApplyAll sc mulOp [cnt', tpSize]
   -- Get true predicate.
-  t <- scApplyPreludeTrue sc  
+  t <- scApplyPreludeTrue sc
   -- Return allocation.
   -- Create new variable for base address.
   base <- allocPtr sbs
@@ -519,7 +516,7 @@ smMerge :: SharedTerm s -> SAWMemory s -> SAWMemory s -> SAWMemory s
 smMerge c x y =
   SAWMemory { _memSymbols = mergeEq (x^.memSymbols) (y^.memSymbols)
             , _memState = MM.mergeMem c (x^.memState) (y^.memState)
-            } 
+            }
 
 -- | Return term value, length of fields, and vector with the types of the fields.
 sbsStructValue :: SAWBackendState t g
@@ -531,7 +528,7 @@ sbsStructValue sbs flds = do
   createStructValue (sbsContext sbs) =<< (traverse . _1) fn flds
 
 -- | Return term value, length of fields, and vector with the types of the fields.
-createStructValue :: forall s v 
+createStructValue :: forall s v
                    . SharedContext s
                      -- For each field, provide type, number of padding bytes, and value.
                   -> V.Vector ((SharedTerm s, Nat), v)
@@ -549,7 +546,7 @@ createStructValue sc flds = do
         let reval' = ExprEvalFn $ \eval ->
                       join $ ((liftIO .) . cfn) <$> eval expr <*> reval eval
         consVecFn <- scApplyPreludeConsVec sc
-        entry <- scTuple sc [mtp,padding] 
+        entry <- scTuple sc [mtp,padding]
         (n+1,reval',) <$> consVecFn fieldType entry nt rvtp
   -- Get initial value and type.
   emptyStruct <- scApplyLLVMEmptyStruct sc
@@ -564,7 +561,7 @@ scApply2 :: SharedContext s
          -> SharedTerm s
          -> IO (SharedTerm s)
 scApply2 sc f x y = do
-  g <- scApply sc f x 
+  g <- scApply sc f x
   scApply sc g y
 
 scApply3 :: SharedContext s
@@ -574,7 +571,7 @@ scApply3 :: SharedContext s
          -> SharedTerm s
          -> IO (SharedTerm s)
 scApply3 sc f x y z = do
-  g <- scApply2 sc f x y 
+  g <- scApply2 sc f x y
   scApply sc g z
 
 scApply4 :: SharedContext s
@@ -585,7 +582,7 @@ scApply4 :: SharedContext s
          -> SharedTerm s
          -> IO (SharedTerm s)
 scApply4 sc f w x y z = do
-  g <- scApply3 sc f w x y 
+  g <- scApply3 sc f w x y
   scApply sc g z
 
 convertMemType :: DataLayout -> MemType -> Maybe MM.Type
@@ -606,7 +603,7 @@ convertMemType dl tp0 =
 -- | Apply an operation to leaves of a mux.
 applyMuxToLeaves :: (Applicative m, Monad m, Termlike t)
                  => (t -> a -> a -> m a) -- ^ Mux operation on result
-                 -> (t -> m a) -- ^ Action on leaves.   
+                 -> (t -> m a) -- ^ Action on leaves.
                  -> t -- ^ Term to act on
                  -> m a
 applyMuxToLeaves mux action = go
@@ -631,7 +628,7 @@ smLoad sbs m tp0 ptr0 _a0 =
 
 smStore :: SAWBackendState t g
         -> SAWMemory t
-        -> SharedTerm t -- ^ Address to store value at. 
+        -> SharedTerm t -- ^ Address to store value at.
         -> MemType      -- ^ Type of value
         -> SharedTerm t -- ^ Value to store
         -> Alignment
@@ -663,7 +660,7 @@ smCopy :: SAWBackendState t g
        -> IO (SharedTerm t, SAWMemory t)
 smCopy sbs m dst src w sz0 _ = do
   sz <- scResizeTerm (sbsContext sbs) w
-           (ptrBitwidth (sbsDataLayout sbs), sbsPtrWidth sbs) sz0 
+           (ptrBitwidth (sbsDataLayout sbs), sbsPtrWidth sbs) sz0
   (c,ms) <- MM.copyMem (smGenerator sbs) dst src sz (m^.memState)
   return (c, m & memState .~ ms)
 
@@ -706,18 +703,18 @@ sbsMemType sbs btp = do
     FloatType  -> pure (sbsFloatType sbs)
     DoubleType -> pure (sbsDoubleType sbs)
     PtrType _  -> pure (sbsPtrType sbs)
-    ArrayType n tp -> 
+    ArrayType n tp ->
       join $ sbsArrayTypeFn sbs <$> scNat sc (fromIntegral n)
                                 <*> sbsMemType sbs tp
     VecType n tp ->
       join $ sbsVecTypeFn sbs <$> scNat sc (fromIntegral n)
                               <*> sbsMemType sbs tp
     StructType si ->
-      join $ sbsStructTypeFn sbs 
+      join $ sbsStructTypeFn sbs
                <$> scNat sc (fromIntegral (siFieldCount si))
                <*> sbsFieldInfo sbs (siFields si)
 
--- | Returns term (tp,padding) for the given field info. 
+-- | Returns term (tp,padding) for the given field info.
 sbsFieldInfo :: SAWBackendState t g
              -> V.Vector FieldInfo
              -> IO (SharedTerm t)
@@ -726,7 +723,7 @@ sbsFieldInfo sbs flds = do
     scFieldInfo (sbsContext sbs) (sbsFieldType sbs) flds'
   where go fi = do (,fromIntegral (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
 
--- | Returns term (tp,padding) for the given field info. 
+-- | Returns term (tp,padding) for the given field info.
 scFieldInfo :: SharedContext s
               -> SharedTerm s -- ^ Field type function
               -> V.Vector (SharedTerm s, Nat)
@@ -749,7 +746,7 @@ typedExprEvalFn sbs expr0 = do
   let eval1 :: v
             -> (SharedTerm t -> IO (SharedTerm t))
             -> ExprEvalFn v (SharedTerm t)
-      eval1 v fn = ExprEvalFn $ \eval -> liftIO . fn =<< eval v       
+      eval1 v fn = ExprEvalFn $ \eval -> liftIO . fn =<< eval v
   let evalBin x y op = evalBin' x y (scApply2 sc op)
       evalBin' x y f = ExprEvalFn $ \eval ->
          liftIO . uncurry f =<< both eval (x,y)
@@ -757,7 +754,7 @@ typedExprEvalFn sbs expr0 = do
         tp <- join $ scApplyLLVMValue sc <*> sbsMemType sbs mtp
         return $ ExprEvalFn $ \eval -> liftIO . scVecLit sc tp =<< traverse eval v
   let constEvalFn v = ExprEvalFn $ \_ -> return v
-      -- | Apply truncation or extension ops to term. 
+      -- | Apply truncation or extension ops to term.
   let extOp :: (SharedContext t
                     -> IO (SharedTerm t -> SharedTerm t
                                         -> SharedTerm t
@@ -866,8 +863,8 @@ typedExprEvalFn sbs expr0 = do
               Ieq  -> defOp scApplyLLVMLlvmIeq  w
               Ine  -> defOp scApplyLLVMLlvmIne w
               Iugt -> defOp scApplyLLVMLlvmIugt w
-              Iuge -> defOp scApplyLLVMLlvmIuge w 
-              Iult -> defOp scApplyLLVMLlvmIult w 
+              Iuge -> defOp scApplyLLVMLlvmIuge w
+              Iult -> defOp scApplyLLVMLlvmIult w
               Iule -> defOp scApplyLLVMLlvmIule w
               Isgt | w > 0 -> defOp scApplyLLVMLlvmIsgt (w-1)
               Isge | w > 0 -> defOp scApplyLLVMLlvmIsge (w-1)
@@ -898,15 +895,15 @@ typedExprEvalFn sbs expr0 = do
       extOp scApplyLLVMLlvmSExt scApplyLLVMLlvmSExtV mn (rw - iw) (iw - 1) v
     PtrToInt mn _ v rw -> resizeOp mn (ptrBitwidth dl) rw v
     IntToPtr mn iw v _ -> resizeOp mn iw (ptrBitwidth dl) v
-    Select mn c tp x y -> do 
-      fn <- case mn of 
+    Select mn c tp x y -> do
+      fn <- case mn of
               Nothing -> scApplyLLVMLlvmSelect sc
               Just n -> do
                 fn <- scApplyLLVMLlvmSelectV sc
                 fn <$> scNat sc (fromIntegral n)
-      mtp <- sbsMemType sbs tp       
+      mtp <- sbsMemType sbs tp
       return $ ExprEvalFn $ \eval -> do
-         join $ (\cv xv yv -> liftIO $ fn mtp cv xv yv) <$> eval c <*> eval x <*> eval y 
+         join $ (\cv xv yv -> liftIO $ fn mtp cv xv yv) <$> eval c <*> eval x <*> eval y
     GetStructField si v i -> assert (i < siFieldCount si) $ do
       let n = fromIntegral (siFieldCount si)
       nt <- scNat sc n
@@ -934,14 +931,14 @@ structElt t i = assert (i > 0) $ do
   structElt r (i-1)
 
 getStructElt :: Conversion (SharedTerm s)
-getStructElt = Conversion $ 
-    thenMatcher (asGlobalDef "LLVM.llvmStructElt" 
+getStructElt = Conversion $
+    thenMatcher (asGlobalDef "LLVM.llvmStructElt"
                    <:> asAny
                    <:> asAny       -- Types
-                   <:> asAny   -- Struct 
+                   <:> asAny   -- Struct
                    <:> asFinValLit -- Index
                   )
-                (\(_ :*: s :*: i) -> 
+                (\(_ :*: s :*: i) ->
                    return <$> structElt s (Prim.finVal i))
 
 
@@ -978,6 +975,21 @@ scWriteCNF sc sbs path _w t = do
   l <- AIG.isZero be bits
   map Just <$> GIA.writeCNF be l path
 
+scWriteSmtLib :: SharedContext t
+              -> Bool
+              -> FilePath
+              -> BitWidth
+              -> SharedTerm t
+              -> IO ()
+scWriteSmtLib sc isSmtLib2 path w t = do
+  let wn = fromIntegral w
+  zero <- scBvConst sc wn 0
+  wt <- scNat sc wn
+  t' <- scBvEq sc wt t zero
+  (_, lit) <- SBVSim.sbvSolve sc t'
+  writeFile path =<< compileToSMTLib isSmtLib2 True lit
+
+
 intFromBV :: V.Vector Bool -> Integer
 intFromBV v = go 0 0
   where n = V.length v
@@ -1006,20 +1018,9 @@ scEvalTerm sbs inputs t = do
       -- Return instantiated t.
       scInstantiateExt sc m t
 
-runStateFromRef :: IORef t -> StateT t IO a -> IO a
-runStateFromRef r a = do
-  s <- readIORef r
-  (v,s') <- runStateT a s
-  writeIORef r $! s'
-  return v
-
--- | Gets elements in list from lens, and clears list.
-getWarnings :: (Applicative m, MonadState s m) => Simple Lens s [w] -> m [w]
-getWarnings l = use l <* assign l []
-
 scTermMemPrettyPrinter :: MM.MemPrettyPrinter (SharedTerm s) (SharedTerm s) (SharedTerm s)
 scTermMemPrettyPrinter = pp
-  where ppt _ = scPrettyTermDoc 
+  where ppt _ = scPrettyTermDoc
         pp = MM.PP { MM.ppPtr = ppt
                    , MM.ppCond = ppt
                    , MM.ppTerm = ppt
@@ -1100,13 +1101,13 @@ createSAWBackend' be dl imps = do
         ++ [ remove_ident_coerce
            , remove_ident_unsafeCoerce]
         ++ [ getStructElt
-           ] 
+           ]
   simpSet <- scSimpset sc0 activeDefs eqs conversions
   let sc = rewritingSharedContext sc0 simpSet
   sbs <- mkBackendState dl be sc
 
   boolType <- scPreludeBool sc
-  true <- scApplyPreludeTrue sc
+  trueTerm <- scApplyPreludeTrue sc
   pNot <- scApplyPreludeNot sc
   pAnd <- scApplyPreludeAnd sc
   iteFn <- scApplyPreludeIte sc
@@ -1115,8 +1116,8 @@ createSAWBackend' be dl imps = do
 
   valueFn   <- scApplyLLVMValue sc
   intTypeFn <- scApplyLLVMIntType sc
-  
-  let sbe = SBE { sbeTruePred = true
+
+  let sbe = SBE { sbeTruePred = trueTerm
                 , applyIEq = \w x y -> SAWBackend $ do
                    join $ apply_bvEq <$> scBitwidth sc w ?? x ?? y
                 , applyAnd  = lift2 pAnd
@@ -1153,7 +1154,7 @@ createSAWBackend' be dl imps = do
                 , memLoad      = lift4 (smLoad sbs)
                 , memStore     = lift5 (smStore sbs)
                 , memCopy      = lift6 (smCopy sbs)
-                , memAddDefine = lift3 (smAddDefine dl sc) 
+                , memAddDefine = lift3 (smAddDefine dl sc)
                 , memInitGlobal =  \m mtp v -> SAWBackend $ do
                    case convertMemType (sbsDataLayout sbs) mtp of
                      Nothing -> fail "memtype given to smStore must be an even byte size."
@@ -1166,7 +1167,7 @@ createSAWBackend' be dl imps = do
                 , stackAlloc     = lift5 (smAlloc sbs MM.StackAlloc)
                 , heapAlloc      = lift5 (smAlloc sbs MM.HeapAlloc)
 
-                , stackPushFrame = SAWBackend . return . (true,) 
+                , stackPushFrame = SAWBackend . return . (trueTerm,)
                                    . over memState MM.pushStackFrameMem
                 , stackPopFrame  = SAWBackend . return . (memState %~ MM.popStackFrameMem)
                 , memBranch      = SAWBackend . return . (memState %~ MM.branchMem)
@@ -1180,38 +1181,8 @@ createSAWBackend' be dl imps = do
 
                 , writeSAWCore = Just $ \nm t -> SAWBackend $ do
                     writeFile nm (scWriteExternal t)
-                , createSMTLIB1Script = Just $ \nm -> SAWBackend $ do
-                    ref <- newIORef $ SMT1.qf_aufbv_WriterState sc (fromString nm)
-                    let runSMTLIB1 a = SAWBackend $ do
-                          wl <- runStateFromRef ref $ a >> getWarnings SMT1.warnings
-                          unless (null wl) $ do
-                            putStrLn "Errors occurred during SMTLIB generation:"
-                            forM_ wl $ \w -> do
-                              let wd = SMT1.ppWarning (scPrettyTermDoc <$> w)
-                              putStrLn $ "  " ++ show wd
-                    return SMTLIB1Script {
-                              addSMTLIB1Assumption =
-                                runSMTLIB1 . SMT1.writeAssumption
-                            , addSMTLIB1Formula  =
-                                runSMTLIB1 . SMT1.writeFormula
-                            , writeSMTLIB1ToFile = \p -> do
-                                writeFile p . SMT1.render =<< readIORef ref 
-                            }
-                , createSMTLIB2Script = Just $ SAWBackend $ do
-                    ref <- newIORef $ SMT2.qf_aufbv_WriterState sc
-                    let runSMTLIB2 a = SAWBackend $ do
-                          wl <- runStateFromRef ref $ a >> getWarnings SMT2.warnings
-                          unless (null wl) $ do
-                            putStrLn "Errors occurred during SMTLIB generation:"
-                            forM_ wl $ \w -> do
-                              let wd = SMT2.ppWarning (scPrettyTermDoc <$> w)
-                              putStrLn $ "  " ++ show wd
-                    return SMTLIB2Script {
-                              addSMTLIB2Assert   = runSMTLIB2 . SMT2.assert
-                            , addSMTLIB2CheckSat = runSMTLIB2 SMT2.checkSat
-                            , writeSMTLIB2ToFile = \p -> do
-                                writeFile p . SMT2.render =<< readIORef ref 
-                            }
+                , writeSmtLib = Just (lift4 (scWriteSmtLib sc))
+
                 , evalAiger  = \inputs _ t -> SAWBackend $ scEvalTerm sbs inputs t
                 , sbeRunIO   = runSAWBackend
                 }

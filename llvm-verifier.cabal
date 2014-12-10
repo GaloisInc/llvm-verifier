@@ -44,6 +44,7 @@ library
     , aig
     , bytestring
     , containers >= 0.4.0.0
+    , cryptol
     , data-binary-ieee754 >= 0.4.2
     , directory
     , filepath

@@ -28,8 +28,6 @@ module Verifier.LLVM.Backend
   , termZExt
   , termTruncScalar
   , AIG.SatResult(..)
-  , SMTLIB1Script(..)
-  , SMTLIB2Script(..)
   ) where
 
 import qualified Data.Vector as V
@@ -247,22 +245,19 @@ data SBE m = SBE
     -- file @f@ in the Aiger format.
   , writeAiger :: FilePath -> [(MemType,SBETerm m)] -> m ()
 
-    -- | @writeCnf f t@ writes a CNF representation of @t /= 0@ into
-    -- file @f@.
+    -- | @writeCnf f t@ writes a CNF representation of @t == 0@ into
+    -- file @f@. If this is UNSAT, the expression is valid.
   , writeCnf :: Maybe (FilePath -> BitWidth -> SBETerm m -> m [Maybe Int])
+
+    -- | @writeSmtLib isSmtLib2 f t@ writes an SMT-Lib representation
+    -- of @t == 0@ into file @f@. If this is UNSAT, the expression is
+    -- valid.
+  , writeSmtLib :: Maybe (Bool -> FilePath -> BitWidth -> SBETerm m -> m ())
 
     -- | @writeSAWCore f t@ writes a SAWCore representation of @t@ into
     -- file @f@, if this backend supports SAWCore output.
   , writeSAWCore :: Maybe (FilePath -> SBETerm m -> m ())
 
-    -- | Returns allocator to make new SMTLib1 script if this backend
-    -- supports SMTLIB1 output.
-  , createSMTLIB1Script :: Maybe (String -> m (SMTLIB1Script m))
-
-    -- | Returns allocator to make new SMTLib2 script if this backend
-    -- supports SMTLIB2 output.
-  , createSMTLIB2Script :: Maybe (m (SMTLIB2Script m))
- 
     -- | @evalAiger inps tp t@ evaluates an AIG with the given concrete inputs;
     -- result is always a concrete term.  The term @t@ has type @tp@.
   , evalAiger :: [Bool] -> MemType -> SBETerm m -> m (SBETerm m)
@@ -270,20 +265,6 @@ data SBE m = SBE
     -- | Run sbe computation in IO.
   , sbeRunIO :: forall v . m v -> IO v 
   }
-
-data SMTLIB1Script sbe = SMTLIB1Script {
-         addSMTLIB1Assumption :: SBEPred sbe -> sbe ()
-       , addSMTLIB1Formula :: SBEPred sbe -> sbe ()
-         -- | Write SMTLIB1Script to file.
-       , writeSMTLIB1ToFile :: FilePath -> IO () 
-       }
-
-data SMTLIB2Script sbe = SMTLIB2Script {
-         addSMTLIB2Assert :: SBEPred sbe -> sbe ()
-       , addSMTLIB2CheckSat :: sbe ()
-         -- | Write SMTLIB2Script to file.
-       , writeSMTLIB2ToFile :: FilePath -> IO () 
-       }
 
 -- | @termInt w n@ creates a term representing the constant @w@-bit
 -- value @n@

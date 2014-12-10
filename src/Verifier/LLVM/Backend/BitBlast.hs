@@ -1870,8 +1870,7 @@ sbeBitBlast g cnfFunc dl mm =
            , evalAiger        = \ins mt tm -> BitIO $ evalAigerImpl g dl (reverse ins) mt tm
            , writeCnf         = Just $ \f _ t -> BitIO $ BV.isZero g (flattenTerm g t) >>= cnfFunc f
            , writeSAWCore = Nothing
-           , createSMTLIB1Script = Nothing
-           , createSMTLIB2Script = Nothing
+           , writeSmtLib = Nothing
            , sbeRunIO = liftSBEBitBlast
            }
 

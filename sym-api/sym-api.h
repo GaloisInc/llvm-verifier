@@ -48,94 +48,6 @@ void lss_aiger_add_output_array_uint64(uint64_t *sym, uint32_t size) NO_INL;
    function, the list of collected outputs is cleared. */
 void lss_write_aiger(char *filename) NO_INL;
 
-typedef struct SMTLIB1_script SMTLIB1_script;
-
-/**
- * Create a new SMTLIB1 script.
- */
-SMTLIB1_script* lss_SMTLIB1_create(const char* name) NO_INL;
-
-/**
- * Add assumption that @v@ is non-zero.
- *
- * @param s Script to add to.
- * @param v Value to check.
- */
-void lss_SMTLIB1_assumption_nonzero_uint8(SMTLIB1_script* s,  uint8_t v) NO_INL;
-
-/**
- * Add formula that @v@ is non-zero.
- *
- * @param s Script to add to.
- * @param v Value to check.
- */
-void lss_SMTLIB1_formula_nonzero_uint8(SMTLIB1_script* s,  uint8_t v) NO_INL;
-
-/**
- * Write SMTLIB1 Script to file.
- * 
- * @param s Script to write.
- * @param path Path to write to.
- */
-void lss_SMTLIB1_write(SMTLIB1_script* s, const char* path) NO_INL;
-
-/**
- * Free the SMTLIB1 Script.
- */ 
-void lss_SMTLIB1_free(SMTLIB1_script* s) NO_INL;
-
-inline
-void lss_SMTLIB1_write_nonzero_uint8(const char* name, const char* path, uint8_t v) {
-  SMTLIB1_script* s;
-  s = lss_SMTLIB1_create(name);
-  lss_SMTLIB1_formula_nonzero_uint8(s, v);
-  lss_SMTLIB1_write(s, path);
-  lss_SMTLIB1_free(s);
-}
-
-typedef struct SMTLIB2_script SMTLIB2_script;
-
-/**
- * Create a new SMTLIB2 script.
- */
-SMTLIB2_script* lss_SMTLIB2_create(void) NO_INL;
-
-/**
- * Add assertion that @v@ is non-zero.
- *
- * @param s Script to add assertion to.
- * @param v Value to check.
- */
-void lss_SMTLIB2_assert_nonzero_uint8(SMTLIB2_script* s,  uint8_t v) NO_INL;
-
-/**
- * Add a check-sat command to SMTLIB file.
- */
-void lss_SMTLIB2_check_sat(SMTLIB2_script* s) NO_INL;
-
-/**
- * Write SMTLIB2 Script to file.
- * 
- * @param s Script to write.
- * @param path Path to write to.
- */
-void lss_SMTLIB2_write(SMTLIB2_script* s, const char* path) NO_INL;
-
-/**
- * Free the SMTLIB2 Script.
- */ 
-void lss_SMTLIB2_free(SMTLIB2_script* s) NO_INL;
-
-inline
-void lss_SMTLIB2_write_nonzero_uint8(const char* path, uint8_t v) {
-  SMTLIB2_script* s;
-  s = lss_SMTLIB2_create();
-  lss_SMTLIB2_assert_nonzero_uint8(s, v);
-  lss_SMTLIB2_check_sat(s);
-  lss_SMTLIB2_write(s, path);
-  lss_SMTLIB2_free(s);
-}
-
 void lss_write_aiger_uint8  (uint8_t  sym, char *filename) NO_INL;
 void lss_write_aiger_uint16 (uint16_t sym, char *filename) NO_INL;
 void lss_write_aiger_uint32 (uint32_t sym, char *filename) NO_INL;
@@ -173,6 +85,8 @@ void lss_eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
     NO_INL;
 
 
+void lss_write_smtlib1(uint32_t sym, const char *filename) NO_INL;
+void lss_write_smtlib2(uint32_t sym, const char *filename) NO_INL;
 void lss_write_cnf(uint32_t sym, const char *filename) NO_INL;
 void lss_write_sawcore_uint32(uint32_t sym, const char *filename) NO_INL;
 
