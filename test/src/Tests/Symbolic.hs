@@ -47,8 +47,9 @@ symTests =
   , lssTestAll "ctests/test-const-false-path" [] (Just 0) (RV 1)
   , lssTestAll "ctests/test-divergent-unreachables" [] (Just 1) (RV 1)
   , lssTestAll "ctests/test-missing-define" [] (Just 1) (RV 1)
-  , lssTestAll "ctests/test-fresh-incremental" [] (Just 0) (RV 0)
-  , lssTestAll "ctests/test-fresh-array-incremental" [] (Just 0) (RV 0)
+  -- NB: we may not continue to support incremental formula construction
+  --, lssTestAll "ctests/test-fresh-incremental" [] (Just 0) (RV 0)
+  --, lssTestAll "ctests/test-fresh-array-incremental" [] (Just 0) (RV 0)
   , lssTestAll "ctests/test-write-cnf" [] (Just 0) (RV 0)
   ]
 
