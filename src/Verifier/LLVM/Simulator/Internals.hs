@@ -165,7 +165,7 @@ module Verifier.LLVM.Simulator.Internals
 import Control.Applicative hiding (empty)
 import qualified Control.Arrow as A
 import Control.Exception (assert)
-import Control.Lens hiding (act)
+import Control.Lens
 import Control.Monad.Except
 import Control.Monad.State.Class
 import Control.Monad.Trans.State.Strict (StateT, runStateT, execStateT)

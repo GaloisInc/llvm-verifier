@@ -81,7 +81,7 @@ import Control.Exception ( AsyncException(..)
                          , AssertionFailed(..)
                          , assert
                          )
-import           Control.Lens hiding (act,from)
+import           Control.Lens hiding (from)
 import           Control.Monad.Except
 import           Control.Monad.State.Class
 import qualified Control.Monad.State as MTL

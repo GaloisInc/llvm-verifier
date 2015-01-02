@@ -5,7 +5,7 @@ module Verifier.LLVM.Overrides.Intrinsics
   ) where
 
 import Control.Applicative
-import Control.Lens hiding (act,from)
+import Control.Lens hiding (from)
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Data.String

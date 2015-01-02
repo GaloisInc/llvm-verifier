@@ -19,7 +19,7 @@ module Verifier.LLVM.Backend.SAW
 
 import Control.Applicative hiding (empty)
 import Control.Exception (assert)
-import Control.Lens hiding (op, iact)
+import Control.Lens hiding (op)
 import Control.Monad
 import Control.Monad.Except
 import qualified Data.ABC.GIA as GIA
