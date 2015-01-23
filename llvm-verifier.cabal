@@ -44,7 +44,6 @@ library
     , aig
     , bytestring
     , containers >= 0.4.0.0
-    , cryptol
     , data-binary-ieee754 >= 0.4.2
     , directory
     , filepath
@@ -55,6 +54,7 @@ library
     , llvm-pretty-bc-parser >= 0.1.3.1
     , mtl
     , saw-core
+    , sbv >= 4.0
     , split >= 0.2
     , transformers
     , tuple >= 0.2
