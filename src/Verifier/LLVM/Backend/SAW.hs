@@ -941,7 +941,6 @@ getStructElt = Conversion $
                 (\(_ :*: s :*: i) ->
                    return <$> structElt s (Prim.finVal i))
 
-
 bitblast :: AIG.IsAIG l g =>
             SharedContext t
          -> SAWBackendState t (g s)
@@ -1032,16 +1031,16 @@ createSAWBackend :: GIA.GIA l
                  -> DataLayout
                  -> IO (SBE (SAWBackend t), SAWMemory t)
 createSAWBackend be dl = do
-  (sbe, mem, _) <- createSAWBackend' be dl []
+  sc0 <- mkSharedContext llvmModule
+  (sbe, mem, _) <- createSAWBackend' be dl sc0
   return (sbe, mem)
 
 createSAWBackend' :: forall t s
                   .  GIA.GIA s
                   -> DataLayout
-                  -> [Module]
+                  -> SharedContext t
                   -> IO (SBE (SAWBackend t), SAWMemory t, SharedContext t)
-createSAWBackend' be dl imps = do
-  sc0 <- mkSharedContext (foldr insImport llvmModule imps)
+createSAWBackend' be dl sc0 = do
   let activeDefs = filter defPred $ allModuleDefs llvmModule
         where defPred d = defIdent d `Set.notMember` excludedDefs
               excludedDefs = Set.fromList
