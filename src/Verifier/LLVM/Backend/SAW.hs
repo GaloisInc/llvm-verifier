@@ -1216,4 +1216,3 @@ _unused = undefined
   scApplyLLVM_mkFloatType
   scApplyLLVM_mkIntType
   scApplyLLVM_mkPtrType
-  scApplyLLVM_mkValue
