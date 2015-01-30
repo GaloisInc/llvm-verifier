@@ -33,8 +33,6 @@ mkPtrType n = PtrType n;
 mkArrayType :: Nat -> LLVMType -> LLVMType;
 mkArrayType n t = ArrayType n t;
 
-mkValue :: (a :: sort 0) -> String -> a;
-
 trunc31 :: bitvector 32 -> bitvector 31;
 trunc31 x = bvTrunc 1 31 x;
 
