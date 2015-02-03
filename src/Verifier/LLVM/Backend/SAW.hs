@@ -21,7 +21,7 @@ import Control.Applicative hiding (empty)
 import Control.Exception (assert)
 import Control.Lens hiding (op)
 import Control.Monad
-import Control.Monad.Except
+import Control.Monad.IO.Class (liftIO)
 import qualified Data.ABC.GIA as GIA
 import qualified Data.AIG as AIG
 import Data.IORef

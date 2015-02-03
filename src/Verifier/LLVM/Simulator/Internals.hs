@@ -8,6 +8,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE RankNTypes #-}
@@ -17,6 +18,7 @@ Point-of-contact : jhendrix
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Verifier.LLVM.Simulator.Internals
   ( Simulator(SM, runSM)
+  , throwSM, catchSM
   , getVerbosity
   , setVerbosity
   , whenVerbosity
@@ -166,9 +168,13 @@ import Control.Applicative hiding (empty)
 import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens
-import Control.Monad.Except
+import Control.Monad
+import Control.Monad.IO.Class
 import Control.Monad.State.Class
+import Control.Monad.Trans
+import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Strict (StateT, runStateT, execStateT)
+import qualified Control.Monad.Trans.State.Strict as Strict
 import qualified Data.Traversable as Trav
 import qualified Data.Map  as M
 import Data.Maybe
@@ -599,10 +605,21 @@ newtype Simulator sbe m a =
     , Monad
     , Applicative
     , MonadIO
-    , MonadState (State sbe m)
-    , MonadError FailRsn
     , MonadException
     )
+
+throwSM :: Monad m => FailRsn -> Simulator sbe m a
+throwSM = SM . throwE
+
+catchSM :: Monad m
+        => Simulator sbe m a
+        -> (FailRsn -> Simulator sbe m a)
+        -> Simulator sbe m a
+catchSM (SM m) h = SM (catchE m (runSM . h))
+
+instance Monad m => MonadState (State sbe m) (Simulator sbe m) where
+  get = SM (lift Strict.get)
+  put = SM . lift . Strict.put
 
 -- | Symbolic simulator state
 data State sbe m = State
@@ -1012,7 +1029,7 @@ dumpCtrlStk = do
   banners $ show $ ppCtrlStk sbe cs
 
 unlessQuiet :: MonadIO m => Simulator sbe m () -> Simulator sbe m ()
-unlessQuiet act = getVerbosity >>= \v -> unless (v == 0) act
+unlessQuiet m = getVerbosity >>= \v -> unless (v == 0) m
 
 -- For user feedback that gets silenced when verbosity = 0.
 tellUser :: (MonadIO m) => String -> Simulator sbe m ()
@@ -1021,8 +1038,8 @@ tellUser msg = unlessQuiet $ dbugM msg
 --------------------------------------------------------------------------------
 -- Error handling
 
-errorPath :: MonadError FailRsn m => String -> m a
-errorPath = throwError . FailRsn
+errorPath :: Monad m => String -> Simulator sbe m a
+errorPath = SM . throwE . FailRsn
 
 wrongArguments :: Monad m => String -> Simulator sbe m a
 wrongArguments nm = errorPath $ nm ++ ": wrong number of arguments"
@@ -1239,12 +1256,12 @@ tryFindFunDecl :: MonadIO m
                => Symbol
                -> (FunDecl -> Simulator sbe m ())
                -> Simulator sbe m ()
-tryFindFunDecl nm act = do
+tryFindFunDecl nm f = do
   cb <- gets codebase
   -- Lookup function
   case cb^.cbFunctionType nm of
     Nothing -> return ()
-    Just d -> act d
+    Just d -> f d
 
 -- | Registers an override if a function with the given name has the
 -- right type.
@@ -1252,9 +1269,9 @@ tryRegisterOverride :: MonadIO m
                     => Symbol
                     -> (FunDecl -> Maybe (Override sbe m)) -- ^ Checks for override.
                     -> Simulator sbe m ()
-tryRegisterOverride nm act = do
+tryRegisterOverride nm f = do
   tryFindFunDecl nm $ \d -> do
-    case act d of -- Try getting override
+    case f d of -- Try getting override
       Just ovd -> registerOverride nm d ovd
       Nothing -> tellUser $ "Warning: " ++ show nm ++ " has an unexpected type."
 

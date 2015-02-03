@@ -31,8 +31,8 @@ module Verifier.LLVM.Codebase.Translation
 
 import Control.Applicative
 import Control.Lens hiding (op)
-import Control.Monad.Except
 import Control.Monad.State.Strict
+import Control.Monad.Trans.Except
 import qualified Data.Foldable as F
 import qualified Data.LLVM.CFG              as CFG
 import Data.Map                   (Map)
