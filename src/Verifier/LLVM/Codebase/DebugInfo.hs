@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE Rank2Types #-}
 {-# OPTIONS_GHC -O0 #-}
 module Verifier.LLVM.Codebase.DebugInfo 
@@ -34,7 +36,7 @@ module Verifier.LLVM.Codebase.DebugInfo
 import Control.Applicative
 import Control.Lens hiding (Context)
 import Control.Monad
-import Control.Monad.Except
+import Control.Monad.Trans.Except
 import Control.Monad.State
 import Data.Bits (testBit)
 import Data.Int (Int32)
@@ -95,6 +97,10 @@ dsScopeCache = lens _dsScopeCache (\s v -> s { _dsScopeCache = v })
 
 type DebugReader = ExceptT String (State DebugInfo)
 
+instance MonadState DebugInfo DebugReader where
+  get = lift get
+  put = lift . put
+
 runDebugReader :: DebugInfo -> DebugReader a -> (Either String a, DebugInfo)
 runDebugReader s r = runState (runExceptT r) s
 
@@ -123,6 +129,10 @@ lookupMetadata i = do
 -- FieldReader
 
 type FieldReader = ExceptT String (StateT [Typed Value] (State DebugInfo))
+
+instance MonadState [Typed Value] FieldReader where
+  get = lift get
+  put = lift . put
 
 readNext' :: FieldReader (Typed Value)
 readNext' = do

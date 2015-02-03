@@ -82,10 +82,10 @@ import Control.Exception ( AsyncException(..)
                          , assert
                          )
 import           Control.Lens hiding (from)
-import           Control.Monad.Except
 import           Control.Monad.State.Class
 import qualified Control.Monad.State as MTL
 import           Control.Monad.Reader
+import           Control.Monad.Trans.Except
 import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Graph as G
@@ -389,7 +389,7 @@ run = do
                   run
                 userIntHandler e = throwIO e
             handle userIntHandler $ do
-              flip catchError onError $ do
+              flip catchSM onError $ do
                let cf =  stk^.topCallFrame 
                -- Get statement to execute next.
                let stmt = cfStmt cf
@@ -512,19 +512,19 @@ runEvaluator ::
 runEvaluator nm m = do
   ec <- getCurrentEvalContext nm
   mr <- liftIO $ runReaderT (runExceptT m) ec
-  either throwError return mr
+  either throwSM return mr
 
 evalExpr :: SymValue (SBETerm sbe)
          -> Evaluator sbe (SBETerm sbe)
 evalExpr sv = do
-  ec <- ask
+  ec <- lift ask
   case sv of
     SValIdent i -> 
       case evalRegs ec of
         Just regs ->
           case regs^.at i of
             Just (x,_)  -> return x
-            Nothing -> throwError $ FailRsn $
+            Nothing -> throwE $ FailRsn $
                "Could not find register: "
                 ++ show (ppIdent i) ++ " in " 
                 ++ show (M.keys regs)
@@ -567,9 +567,9 @@ insertGlobalTerm ::
   -> SymType
   -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
   -> Simulator sbe m ()
-insertGlobalTerm errMsg sym _ act = do
+insertGlobalTerm errMsg sym _ f = do
   Just m <- preuse currentPathMem
-  mr <- withSBE $ \s -> act s m
+  mr <- withSBE $ \s -> f s m
   case mr of
     Nothing -> errorPath errMsg
     Just (r,m')  -> do
@@ -617,11 +617,11 @@ step (Call callee args mres) = do
         SValSymbol sym -> return sym
         _ -> do
           fp <- evalExpr callee
-          Just m <- asks evalMemory
+          Just m <- lift $ asks evalMemory
           r <- liftIO $ sbeRunIO sbe $ codeLookupSymbol sbe m fp
           case r of
             Left e -> do
-              throwError $ FailRsn $
+              throwE $ FailRsn $
                 "PushCallFrame: Failed to resolve callee function pointer: "
                 ++ show (ppSymValue callee) ++ "\n"
                 ++ show e ++ "\n"
