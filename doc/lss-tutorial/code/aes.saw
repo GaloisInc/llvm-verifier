@@ -1,7 +1,7 @@
 import "AES.cry";
 
-main = do {
+let main = do {
   f <- read_aig "aes.aig";
-  prove_print abc {{ \k msg -> f (k#msg) == aesEncrypt (msg,k) }};
+  prove_print abc {{ \k msg -> f (msg#k) == aesEncrypt (msg,k) }};
 };
 
