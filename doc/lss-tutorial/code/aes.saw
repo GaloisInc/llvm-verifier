@@ -2,6 +2,7 @@ import "AES.cry";
 
 let main = do {
   f <- read_aig "aes.aig";
-  prove_print abc {{ \k msg -> f (msg#k) == aesEncrypt (msg,k) }};
+  let {{ f' (msg,k) = join (reverse (groupBy`{32} (f (msg#k)))) }};
+  prove_print abc {{ \k msg -> f' (msg,k) == aesEncrypt (msg,k) }};
 };
 
