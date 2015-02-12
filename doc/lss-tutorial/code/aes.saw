@@ -1,8 +1,17 @@
 import "AES.cry";
 
-let main = do {
-  f <- read_aig "aes.aig";
-  let {{ f' (msg,k) = join (reverse (groupBy`{32} (f (msg#k)))) }};
-  prove_print abc {{ \k msg -> f' (msg,k) == aesEncrypt (msg,k) }};
-};
+let {{ aesExtract x = join (reverse (groupBy`{32} (aesEncrypt (ct,key))))
+             where [ct,key] = split x
+    }};
 
+let main = do {
+  print "Loading LLVM implementation";
+  f <- load_aig "aes.aig";
+
+  print "Bitblasting Cryptol implementation";
+  g <- bitblast {{ aesExtract }};
+
+  print "Checking equivalence";
+  res <- cec f g;
+  print res;
+};
