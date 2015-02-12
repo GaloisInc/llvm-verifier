@@ -496,10 +496,10 @@ andAll (h:l) = do
 
 checkPathUnsat :: Monad m => SBEPred sbe -> Simulator sbe m Bool
 checkPathUnsat c = do
-  Just p <- preuse currentPathOfState
+  cparents <- assumptionsForActivePath
   sbe <- gets symBE
-  a' <- liftSBE $ applyAnd sbe c (p^.pathAssertions)
-  fsat <- liftSBE $ termSAT sbe a'
+  a <- liftSBE $ applyAnd sbe c cparents
+  fsat <- liftSBE $ termSAT sbe a
   return (fsat == Unsat)
 
 runEvaluator ::
