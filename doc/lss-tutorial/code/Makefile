@@ -2,7 +2,8 @@ TOP=../../..
 SYMAPI=${TOP}/sym-api
 CC=gcc
 CCFLAGS?=-Wall -O3 -DNDEBUG -fomit-frame-pointer -I${SYMAPI}
-LSS?=../../bin/lss
+LSS?=../../../../SAWScript/.cabal-sandbox/bin/lss
+SAW?=../../../../SAWScript/.cabal-sandbox/bin/saw
 
 all: aes.bc
 
@@ -24,7 +25,7 @@ aes128BlockEncrypt_driver_llvm: aes128BlockEncrypt.bc aes128BlockEncrypt_driver.
 	llvm-ld -disable-opt -native $^ -o $@
 
 check: aes.aig
-	cryptol -b ref/equivAES.scr
+	${SAW} aes.saw
 
 clean:
 	rm -f *.o *.bc *.ll *.s aes128BlockEncrypt_driver_llvm *.aig *.cnf
