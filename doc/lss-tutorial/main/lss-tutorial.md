@@ -392,10 +392,10 @@ The AES driver in `aes128BlockEncrypt_driver.c` contains the following
 line:
 
 ```
-lss_write_cnf(pt[0] != ct[0] &&
-              pt[1] != ct[1] &&
-              pt[2] != ct[2] &&
-              pt[3] != ct[3], "noleaks.cnf");
+lss_write_cnf(!(pt[0] != ct[0] &&
+                pt[1] != ct[1] &&
+                pt[2] != ct[2] &&
+                pt[3] != ct[3]), "noleaks.cnf");
 ```
 
 This call instructs LSS to write CNF clauses built from the expression
