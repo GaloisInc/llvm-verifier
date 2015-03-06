@@ -1,7 +1,7 @@
 import "AES.cry";
 
-let {{ aesExtract x = join (reverse (groupBy`{32} (aesEncrypt (ct,key))))
-             where [ct,key] = split x
+let {{ aesExtract x = join (reverse (groupBy`{32} (aesEncrypt (pt,key))))
+             where [pt,key] = split x
     }};
 
 let main = do {
