@@ -1868,7 +1868,7 @@ sbeBitBlast g cnfFunc dl mm =
                AIG.writeAiger f (AIG.Network g (BV.bvToList outputs))
 
            , evalAiger        = \ins mt tm -> BitIO $ evalAigerImpl g dl (reverse ins) mt tm
-           , writeCnf         = Just $ \f _ t -> BitIO $ BV.isZero g (flattenTerm g t) >>= cnfFunc f
+           , writeCnf         = Just $ \f p -> BitIO $ cnfFunc f p
            , writeSAWCore = Nothing
            , writeSmtLib = Nothing
            , sbeRunIO = liftSBEBitBlast

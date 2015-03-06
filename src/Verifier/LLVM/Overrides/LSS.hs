@@ -338,7 +338,15 @@ lss_write_cnf =
         file <- loadString "lss_write_cnf" fptr
         sbe <- gets symBE
         case writeCnf sbe of
-           Just writeCnfFunc -> void $ liftSBE $ writeCnfFunc file 32 t
+           Just writeCnfFunc -> do
+             -- Convert term to bool, assuming a c-style "all non-zero
+             -- values are true" representation of bools. See the
+             -- 'writeCnf' JSS override in the JSS 'Overrides' module
+             -- for similar code.
+             zero <- liftSBE $ termInt sbe w 0
+             cEq <- liftSBE $ applyIEq sbe w t zero
+             cNeq <- liftSBE $ applyBNot sbe cEq
+             void $ liftSBE $ writeCnfFunc file cNeq
            Nothing -> error "lss_write_cnf: backend does not support writing CNF files"
       _ -> wrongArguments "lss_write_cnf"
 
