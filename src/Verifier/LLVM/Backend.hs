@@ -247,7 +247,7 @@ data SBE m = SBE
 
     -- | @writeCnf f p@ writes a CNF representation of predicate @p@
     -- into file @f@.
-  , writeCnf :: Maybe (FilePath -> SBEPred m -> m [Maybe Int])
+  , writeCnf :: Maybe (FilePath -> SBEPred m -> m [Int])
 
     -- | @writeSmtLib isSmtLib2 f t@ writes an SMT-Lib representation
     -- of @t == 0@ into file @f@. If this is UNSAT, the expression is

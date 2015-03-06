@@ -37,14 +37,14 @@ mmTest testName disableBuddy fn =
       [ HU.testCase "dag model" $ do
            (AIG.SomeGraph g) <- AIG.newGraph ABC.giaNetwork
            (mm, mem) <- createDagMemModel dl g mg
-           fn dl g (sbeBitBlast g (error "No CNF writer function defined!") dl mm) mm mem
+           fn dl g (sbeBitBlast g dl mm) mm mem
       ] ++
       if disableBuddy then [] else
       [ HU.testCase "buddy model" $ do
            (AIG.SomeGraph g) <- AIG.newGraph ABC.giaNetwork
            let mem = buddyInitMemory mg
                mm  = buddyMemModel dl g
-           fn dl g (sbeBitBlast g (error "No CNF writer function defined!") dl mm) mm mem
+           fn dl g (sbeBitBlast g dl mm) mm mem
       ]
 
 -- | Generate bit vector from integer.

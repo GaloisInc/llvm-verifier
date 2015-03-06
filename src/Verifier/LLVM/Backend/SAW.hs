@@ -22,7 +22,6 @@ import Control.Exception (assert)
 import Control.Lens hiding (op)
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
-import qualified Data.ABC.GIA as GIA
 import qualified Data.AIG as AIG
 import Data.IORef
 import Data.Map (Map)
@@ -962,16 +961,17 @@ scWriteAiger sc sbs path terms = do
   let bits = concatMap AIG.bvToList bvs
   AIG.writeAiger path (AIG.Network (sbsBEngine sbs) bits)
 
-scWriteCNF :: SharedContext t
-           -> SAWBackendState t (GIA.GIA l)
+scWriteCNF :: AIG.IsAIG l g
+           => SharedContext t
+           -> SAWBackendState t (g s)
            -> FilePath
            -> SharedTerm t
-           -> IO [Maybe Int]
+           -> IO [Int]
 scWriteCNF sc sbs path t = do
   let be = sbsBEngine sbs
   bits <- bitblast sc sbs t
   case AIG.bvToList bits of
-    [b] -> map Just <$> GIA.writeCNF be b path
+    [b] -> AIG.writeCNF be b path
     _ -> fail "scWriteCNF: attempting to write CNF for non-boolean term."
 
 scWriteSmtLib :: SharedContext t
@@ -1027,7 +1027,8 @@ scTermMemPrettyPrinter = pp
 
 
 -- | Create a SAW backend.
-createSAWBackend :: GIA.GIA l
+createSAWBackend :: AIG.IsAIG l g
+                 => g s
                  -> DataLayout
                  -> IO (SBE (SAWBackend t), SAWMemory t)
 createSAWBackend be dl = do
@@ -1035,8 +1036,9 @@ createSAWBackend be dl = do
   (sbe, mem, _) <- createSAWBackend' be dl sc0
   return (sbe, mem)
 
-createSAWBackend' :: forall t s
-                  .  GIA.GIA s
+createSAWBackend' :: forall t l g s
+                  .  AIG.IsAIG l g
+                  => g s
                   -> DataLayout
                   -> SharedContext t
                   -> IO (SBE (SAWBackend t), SAWMemory t, SharedContext t)

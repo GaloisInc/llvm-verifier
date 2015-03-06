@@ -81,16 +81,14 @@ main = do
 
   let dl = parseDataLayout $ L.modDataLayout mdl
 
-  let cnfWriter g fp l = fmap (map Just) $ Data.ABC.GIA.writeCNF g l fp
-
   SBEPair sbe mem <- 
     case backEnd of
       BitBlastDagBased -> do
         ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
-        BB.createDagAll g (cnfWriter g) dl (defaultMemGeom dl)
+        BB.createDagAll g dl (defaultMemGeom dl)
       BitBlastBuddyAlloc -> do
         ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
-        return (BB.createBuddyAll g (cnfWriter g) dl (defaultMemGeom dl))
+        return (BB.createBuddyAll g dl (defaultMemGeom dl))
       SAWBackendType -> do
         ABC.SomeGraph be <- ABC.newGraph ABC.giaNetwork
         uncurry SBEPair <$> createSAWBackend be dl

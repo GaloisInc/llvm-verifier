@@ -1001,12 +1001,11 @@ buddyInitMemory mg =
 
 createBuddyAll :: (IsAIG l g, Ord (l s))
                => g s
-               -> (FilePath -> l s -> IO [Maybe Int])
                -> DataLayout
                -> MemGeom
                -> SBEPair
-createBuddyAll g cnfFunc dl mg = SBEPair sbe mem0
-  where sbe = sbeBitBlast g cnfFunc dl (buddyMemModel dl g)
+createBuddyAll g dl mg = SBEPair sbe mem0
+  where sbe = sbeBitBlast g dl (buddyMemModel dl g)
         mem0 = buddyInitMemory mg
 
 createBuddyMemModel :: (IsAIG l g, Eq (l s))
@@ -1679,12 +1678,11 @@ createDagMemModel dl g mg = do
 
 createDagAll :: (IsAIG l g, Ord (l s))
              => g s
-             -> (FilePath -> l s -> IO [Maybe Int])
              -> DataLayout
              -> MemGeom
              -> IO SBEPair
-createDagAll g cnfFunc dl mg = do
-    uncurry SBEPair . Arrow.first (sbeBitBlast g cnfFunc dl) <$> createDagMemModel dl g mg
+createDagAll g dl mg = do
+    uncurry SBEPair . Arrow.first (sbeBitBlast g dl) <$> createDagMemModel dl g mg
 
 -- -- Aiger operations {{{1
 
@@ -1819,11 +1817,10 @@ applyExpr g dl texpr = do
 sbeBitBlast :: forall m g l s
              . (IsAIG l g, Eq (l s))
             => g s
-            -> (FilePath -> l s -> IO [Maybe Int])
             -> DataLayout
             -> BitBlastMemModel m (l s)
             -> SBE (BitIO m (l s))
-sbeBitBlast g cnfFunc dl mm =
+sbeBitBlast g dl mm =
            SBE
            { sbeTruePred      = AIG.trueLit g
            , applyIEq         = \_ (IntTerm x) (IntTerm y) -> do
@@ -1868,7 +1865,7 @@ sbeBitBlast g cnfFunc dl mm =
                AIG.writeAiger f (AIG.Network g (BV.bvToList outputs))
 
            , evalAiger        = \ins mt tm -> BitIO $ evalAigerImpl g dl (reverse ins) mt tm
-           , writeCnf         = Just $ \f p -> BitIO $ cnfFunc f p
+           , writeCnf         = Just $ \f p -> BitIO $ AIG.writeCNF g p f
            , writeSAWCore = Nothing
            , writeSmtLib = Nothing
            , sbeRunIO = liftSBEBitBlast
