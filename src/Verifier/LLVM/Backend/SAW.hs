@@ -965,14 +965,14 @@ scWriteAiger sc sbs path terms = do
 scWriteCNF :: SharedContext t
            -> SAWBackendState t (GIA.GIA l)
            -> FilePath
-           -> BitWidth
            -> SharedTerm t
            -> IO [Maybe Int]
-scWriteCNF sc sbs path _w t = do
+scWriteCNF sc sbs path t = do
   let be = sbsBEngine sbs
   bits <- bitblast sc sbs t
-  l <- AIG.isZero be bits
-  map Just <$> GIA.writeCNF be l path
+  case AIG.bvToList bits of
+    [b] -> map Just <$> GIA.writeCNF be b path
+    _ -> fail "scWriteCNF: attempting to write CNF for non-boolean term."
 
 scWriteSmtLib :: SharedContext t
               -> Bool
@@ -1176,7 +1176,7 @@ createSAWBackend' be dl sc0 = do
                 -- TODO: SAT checking for SAW backend
                 , termSAT    = nyi "termSAT"
                 , writeAiger = lift2 (scWriteAiger sc sbs)
-                , writeCnf   = Just (lift3 (scWriteCNF sc sbs))
+                , writeCnf   = Just (lift2 (scWriteCNF sc sbs))
 
                 , writeSAWCore = Just $ \nm t -> SAWBackend $ do
                     writeFile nm (scWriteExternal t)

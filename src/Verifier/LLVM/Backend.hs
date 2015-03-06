@@ -245,9 +245,9 @@ data SBE m = SBE
     -- file @f@ in the Aiger format.
   , writeAiger :: FilePath -> [(MemType,SBETerm m)] -> m ()
 
-    -- | @writeCnf f t@ writes a CNF representation of @t == 0@ into
-    -- file @f@. If this is UNSAT, the expression is valid.
-  , writeCnf :: Maybe (FilePath -> BitWidth -> SBETerm m -> m [Maybe Int])
+    -- | @writeCnf f p@ writes a CNF representation of predicate @p@
+    -- into file @f@.
+  , writeCnf :: Maybe (FilePath -> SBEPred m -> m [Maybe Int])
 
     -- | @writeSmtLib isSmtLib2 f t@ writes an SMT-Lib representation
     -- of @t == 0@ into file @f@. If this is UNSAT, the expression is
