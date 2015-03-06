@@ -133,7 +133,7 @@ chkArithBitEngineFn :: (Integral a, QC.Arbitrary a, Show a)
 chkArithBitEngineFn w s op fn = do
   (ABC.SomeGraph g) <- QC.run $ ABC.newGraph ABC.giaNetwork
   let dl = defaultDataLayout
-  let sbe = sbeBitBlast g (error "no CNF writer!") dl (buddyMemModel dl g)
+  let sbe = sbeBitBlast g dl (buddyMemModel dl g)
   QC.forAllM QC.arbitrary $ \(QC.NonZero x, QC.NonZero y) -> do
     let r = fn x y
         proj = if s then asSignedInteger else asUnsignedInteger

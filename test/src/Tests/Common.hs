@@ -49,23 +49,12 @@ type SBEPropM m = forall sbe. (Functor sbe, Ord (SBETerm sbe)) => Simulator sbe 
 type SBECreateFn = DataLayout -> IO SBEPair
 
 abcNetwork = ABC.giaNetwork
-cnfWriter = giaCnfWriter
-
---abcNetwork = ABC.aigNetwork
---cnfWriter = aigCnfWriter
-
-giaCnfWriter :: Data.ABC.GIA.GIA s -> FilePath -> Data.ABC.GIA.Lit s -> IO [Maybe Int]
-giaCnfWriter g fp l = fmap (map Just) $ Data.ABC.GIA.writeCNF g l fp
-
-aigCnfWriter :: Data.ABC.AIG.AIG s -> FilePath -> Data.ABC.AIG.Lit s -> IO [Maybe Int]
-aigCnfWriter g fp l = fmap (map Just) $ Data.ABC.AIG.writeToCNF g l fp
-
 
 -- | Create buddy backend and initial memory.
 createBuddyModel :: SBECreateFn
 createBuddyModel dl = do
   (ABC.SomeGraph g) <- (ABC.newGraph abcNetwork)
-  let sbe = sbeBitBlast g (cnfWriter g) dl (buddyMemModel dl g)
+  let sbe = sbeBitBlast g dl (buddyMemModel dl g)
       mem = buddyInitMemory (defaultMemGeom dl)
   return (SBEPair sbe mem)
 
@@ -74,7 +63,7 @@ createDagModel ::SBECreateFn
 createDagModel dl = do
   (ABC.SomeGraph g) <- ABC.newGraph abcNetwork
   (mm,mem) <- createDagMemModel dl g (defaultMemGeom dl)
-  let sbe = sbeBitBlast g (cnfWriter g) dl mm
+  let sbe = sbeBitBlast g dl mm
   return (SBEPair sbe mem)
 
 createSAWModel :: SBECreateFn
