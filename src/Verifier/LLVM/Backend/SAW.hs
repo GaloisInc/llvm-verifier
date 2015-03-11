@@ -59,9 +59,6 @@ modifyIORef' r f = do
 preludeBVNatTermF :: TermF t
 preludeBVNatTermF = FTermF $ GlobalDef (mkIdent preludeModuleName "bvNat")
 
-nyi :: String -> a
-nyi nm = error $ "(SAW backend) Not yet implemented: " ++ show nm
-
 scBitwidth :: SharedContext s -> BitWidth -> IO (SharedTerm s)
 scBitwidth sc w = scNat sc (fromIntegral w)
 
@@ -940,6 +937,13 @@ abstract sbs t = do
   ecs <- map (\(_, _, ec) -> ec) <$> readIORef (sbsVars sbs)
   scAbstractExts (sbsContext sbs) ecs t
 
+scTermSAT :: AIG.IsAIG l g =>
+  AIG.Proxy l g -> SAWBackendState t -> SharedTerm t -> IO (AIG.SatResult)
+scTermSAT proxy sbs t = do
+  t' <- abstract sbs t
+  BB.withBitBlastedPred proxy (sbsContext sbs) t' $ \be l _domTys -> do
+  AIG.checkSat be l
+
 scWriteAiger :: AIG.IsAIG l g
              => AIG.Proxy l g
              -> SAWBackendState t
@@ -1165,8 +1169,7 @@ createSAWBackend' proxy dl sc0 = do
                 , memBranchAbort = SAWBackend . return . (memState %~ MM.branchAbortMem)
                 , memMerge = \c x y -> SAWBackend $ return $ smMerge c x y
 
-                -- TODO: SAT checking for SAW backend
-                , termSAT    = nyi "termSAT"
+                , termSAT    = lift1 (scTermSAT proxy sbs)
                 , writeAiger = lift2 (scWriteAiger proxy sbs)
                 , writeCnf   = Just (lift2 (scWriteCNF proxy sbs))
 
