@@ -41,8 +41,7 @@ main = do
 
   mdl <- loadModule bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
   let dl = parseDataLayout $ LLVM.modDataLayout mdl
-  ABC.SomeGraph be <- ABC.newGraph ABC.giaNetwork
-  (sbe, _) <- createSAWBackend be dl
+  (sbe, _) <- createSAWBackend ABC.giaNetwork dl
   (cbWarnings, cb) <- mkCodebase sbe dl mdl
   mapM_ (\m -> print $ text "Warning:" <+> m) cbWarnings
 

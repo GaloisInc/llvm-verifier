@@ -171,11 +171,9 @@ asApp2 t = do
   (t0,a1) <- R.asApp t1
   return (t0,a1,a2)
 
-data SAWBackendState t g
+data SAWBackendState t
    = SBS { sbsDataLayout :: DataLayout
          , sbsContext :: SharedContext t
-           -- | Bit engine
-         , sbsBEngine :: g
            -- | Stores list of fresh variables and their associated terms with
            -- most recently allocated variables first.
          , sbsVars :: IORef [(BitWidth,VarIndex,ExtCns (SharedTerm t))]
@@ -207,13 +205,11 @@ data DecomposeResult s
    | OffsetPtr !(SharedTerm s) !(SharedTerm s)
    | SymbolicPtr
 
-mkBackendState :: forall t l g s
-               .  AIG.IsAIG l g
-               => DataLayout
-               -> g s
+mkBackendState :: forall t
+               .  DataLayout
                -> SharedContext t
-               -> IO (SAWBackendState t (g s))
-mkBackendState dl be sc = do
+               -> IO (SAWBackendState t)
+mkBackendState dl sc = do
   vars <- newIORef []
   allocs <- newIORef Set.empty
   ptrWidth <- scBitwidth sc (ptrBitwidth dl)
@@ -397,7 +393,6 @@ mkBackendState dl be sc = do
 
   return SBS { sbsDataLayout = dl
              , sbsContext = sc
-             , sbsBEngine = be
              , sbsVars    = vars
              , sbsAllocations  = allocs
              , sbsPtrWidth     = ptrWidth
@@ -466,7 +461,7 @@ smLookupSymbol m t =
     Just r -> Right r
     Nothing -> Left Indeterminate
 
-smAlloc :: SAWBackendState t g
+smAlloc :: SAWBackendState t
         -> MM.AllocType
         -> SAWMemory t
         -> MemType
@@ -496,7 +491,7 @@ smAlloc sbs atp m mtp w cnt _ = do
   let m' = m & memState %~ MM.allocMem atp base totalSize
   return (AResult t base m')
 
-allocPtr :: SAWBackendState t g -> IO (SharedTerm t)
+allocPtr :: SAWBackendState t -> IO (SharedTerm t)
 allocPtr sbs = do
   -- Create new variable for base address.
   s <- readIORef (sbsAllocations sbs)
@@ -518,7 +513,7 @@ smMerge c x y =
             }
 
 -- | Return term value, length of fields, and vector with the types of the fields.
-sbsStructValue :: SAWBackendState t g
+sbsStructValue :: SAWBackendState t
                -> V.Vector (FieldInfo, v)
                -> IO (ExprEvalFn v (SharedTerm t))
 sbsStructValue sbs flds = do
@@ -611,8 +606,7 @@ applyMuxToLeaves mux action = go
             Nothing -> action t
             Just (_ :*: b :*: x :*: y) -> join $ mux b <$> go x <*> go y
 
-smLoad :: forall t g
-        . SAWBackendState t g
+smLoad :: SAWBackendState t
        -> SAWMemory t
        -> MemType
        -> SharedTerm t
@@ -625,7 +619,7 @@ smLoad sbs m tp0 ptr0 _a0 =
             action ptr = MM.readMem (smGenerator sbs) ptr tp (m^.memState)
     Nothing -> fail "smLoad must be given types that are even byte size."
 
-smStore :: SAWBackendState t g
+smStore :: SAWBackendState t
         -> SAWMemory t
         -> SharedTerm t -- ^ Address to store value at.
         -> MemType      -- ^ Type of value
@@ -649,7 +643,7 @@ smStore sbs m p mtp v _ = do
 -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
 -- both of which must be aligned according to @align@ and must refer to
 -- non-overlapping regions.
-smCopy :: SAWBackendState t g
+smCopy :: SAWBackendState t
        -> SAWMemory t
        -> SharedTerm t -- ^ Destination pointer
        -> SharedTerm t -- ^ Source pointer
@@ -694,7 +688,7 @@ lift6 :: (u -> v -> w -> x -> y -> z -> IO r)
 lift6 = (lift5 .)
 
 -- | Returns share term representing given state.
-sbsMemType :: SAWBackendState t g -> MemType -> IO (SharedTerm t)
+sbsMemType :: SAWBackendState t -> MemType -> IO (SharedTerm t)
 sbsMemType sbs btp = do
   let sc = sbsContext sbs
   case btp of
@@ -714,7 +708,7 @@ sbsMemType sbs btp = do
                <*> sbsFieldInfo sbs (siFields si)
 
 -- | Returns term (tp,padding) for the given field info.
-sbsFieldInfo :: SAWBackendState t g
+sbsFieldInfo :: SAWBackendState t
              -> V.Vector FieldInfo
              -> IO (SharedTerm t)
 sbsFieldInfo sbs flds = do
@@ -735,8 +729,8 @@ scFieldInfo sc ftp flds = scVecLit sc ftp =<< traverse go flds
 scIntType :: SharedContext s -> BitWidth -> IO (SharedTerm s)
 scIntType sc w = join $ scApplyLLVM_IntType sc <*> scBitwidth sc w
 
-typedExprEvalFn :: forall t g v
-                 . SAWBackendState t g
+typedExprEvalFn :: forall t v
+                 . SAWBackendState t
                 -> TypedExpr v
                 -> IO (ExprEvalFn v (SharedTerm t))
 typedExprEvalFn sbs expr0 = do
@@ -940,39 +934,36 @@ getStructElt = Conversion $
                 (\(_ :*: s :*: i) ->
                    return <$> structElt s (Prim.finVal i))
 
-bitblast :: AIG.IsAIG l g =>
-            SharedContext t
-         -> SAWBackendState t (g s)
-         -> SharedTerm t
-         -> IO (BB.LitVector (l s))
-bitblast sc sbs t = do
+-- | Lambda abstract term @t@ over all symbolic variables.
+abstract :: SAWBackendState t -> SharedTerm t -> IO (SharedTerm t)
+abstract sbs t = do
   ecs <- map (\(_, _, ec) -> ec) <$> readIORef (sbsVars sbs)
-  t' <- scAbstractExts sc ecs t
-  BB.bitBlastTerm (sbsBEngine sbs) sc t'
+  scAbstractExts (sbsContext sbs) ecs t
 
 scWriteAiger :: AIG.IsAIG l g
-             => SharedContext t
-             -> SAWBackendState t (g s)
+             => AIG.Proxy l g
+             -> SAWBackendState t
              -> FilePath
              -> [(MemType,SharedTerm t)]
              -> IO ()
-scWriteAiger sc sbs path terms = do
-  bvs <- mapM (bitblast sc sbs . snd) terms
-  let bits = concatMap AIG.bvToList bvs
-  AIG.writeAiger path (AIG.Network (sbsBEngine sbs) bits)
+scWriteAiger proxy sbs path terms = do
+  let sc = sbsContext sbs
+  let ts = map snd terms
+  t <- scTuple sc ts
+  t' <- abstract sbs t
+  BB.withBitBlastedTerm proxy sc t' $ \be ls -> do
+  AIG.writeAiger path (AIG.Network be (AIG.bvToList ls))
 
 scWriteCNF :: AIG.IsAIG l g
-           => SharedContext t
-           -> SAWBackendState t (g s)
+           => AIG.Proxy l g
+           -> SAWBackendState t
            -> FilePath
            -> SharedTerm t
            -> IO [Int]
-scWriteCNF sc sbs path t = do
-  let be = sbsBEngine sbs
-  bits <- bitblast sc sbs t
-  case AIG.bvToList bits of
-    [b] -> AIG.writeCNF be b path
-    _ -> fail "scWriteCNF: attempting to write CNF for non-boolean term."
+scWriteCNF proxy sbs path t = do
+  t' <- abstract sbs t
+  BB.withBitBlastedPred proxy (sbsContext sbs) t' $ \be l _domTys -> do
+  AIG.writeCNF be l path
 
 scWriteSmtLib :: SharedContext t
               -> Bool
@@ -1003,7 +994,7 @@ splitByWidths v (w:wl) = (i:) <$> splitByWidths v' wl
   where (i,v') = V.splitAt (fromIntegral w) v
 
 
-scEvalTerm :: SAWBackendState t g -> [Bool] -> SharedTerm t -> IO (SharedTerm t)
+scEvalTerm :: SAWBackendState t -> [Bool] -> SharedTerm t -> IO (SharedTerm t)
 scEvalTerm sbs inputs t = do
   (widths,varIndices,_) <- unzip3 <$> readIORef (sbsVars sbs)
   case splitByWidths (V.fromList inputs) widths of
@@ -1028,21 +1019,20 @@ scTermMemPrettyPrinter = pp
 
 -- | Create a SAW backend.
 createSAWBackend :: AIG.IsAIG l g
-                 => g s
+                 => AIG.Proxy l g
                  -> DataLayout
                  -> IO (SBE (SAWBackend t), SAWMemory t)
-createSAWBackend be dl = do
+createSAWBackend proxy dl = do
   sc0 <- mkSharedContext llvmModule
-  (sbe, mem, _) <- createSAWBackend' be dl sc0
+  (sbe, mem, _) <- createSAWBackend' proxy dl sc0
   return (sbe, mem)
 
-createSAWBackend' :: forall t l g s
-                  .  AIG.IsAIG l g
-                  => g s
+createSAWBackend' :: AIG.IsAIG l g
+                  => AIG.Proxy l g
                   -> DataLayout
                   -> SharedContext t
                   -> IO (SBE (SAWBackend t), SAWMemory t, SharedContext t)
-createSAWBackend' be dl sc0 = do
+createSAWBackend' proxy dl sc0 = do
   let activeDefs = filter defPred $ allModuleDefs llvmModule
         where defPred d = defIdent d `Set.notMember` excludedDefs
               excludedDefs = Set.fromList
@@ -1105,7 +1095,7 @@ createSAWBackend' be dl sc0 = do
            ]
   simpSet <- scSimpset sc0 activeDefs eqs conversions
   let sc = rewritingSharedContext sc0 simpSet
-  sbs <- mkBackendState dl be sc
+  sbs <- mkBackendState dl sc
 
   boolType <- scPrelude_Bool sc
   trueTerm <- scApplyPrelude_True sc
@@ -1177,8 +1167,8 @@ createSAWBackend' be dl sc0 = do
 
                 -- TODO: SAT checking for SAW backend
                 , termSAT    = nyi "termSAT"
-                , writeAiger = lift2 (scWriteAiger sc sbs)
-                , writeCnf   = Just (lift2 (scWriteCNF sc sbs))
+                , writeAiger = lift2 (scWriteAiger proxy sbs)
+                , writeCnf   = Just (lift2 (scWriteCNF proxy sbs))
 
                 , writeSAWCore = Just $ \nm t -> SAWBackend $ do
                     writeFile nm (scWriteExternal t)

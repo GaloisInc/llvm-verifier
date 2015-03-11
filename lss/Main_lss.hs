@@ -15,7 +15,6 @@ module Main where
 import           Control.Applicative             hiding (many)
 import           Control.Monad
 import qualified Data.ABC as ABC
-import qualified Data.ABC.GIA
 
 import           Data.Char
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
@@ -90,8 +89,7 @@ main = do
         ABC.SomeGraph g <- ABC.newGraph ABC.giaNetwork
         return (BB.createBuddyAll g dl (defaultMemGeom dl))
       SAWBackendType -> do
-        ABC.SomeGraph be <- ABC.newGraph ABC.giaNetwork
-        uncurry SBEPair <$> createSAWBackend be dl
+        uncurry SBEPair <$> createSAWBackend ABC.giaNetwork dl
   (cbWarnings,cb) <- mkCodebase sbe dl mdl
   mapM_ (\m -> print $ text "Warning:" <+> m) cbWarnings
   -- Print out translation when just asked to translate.
