@@ -68,8 +68,7 @@ createDagModel dl = do
 
 createSAWModel :: SBECreateFn
 createSAWModel dl = do
-  ABC.SomeGraph g <- ABC.newGraph abcNetwork
-  (sbe,mem) <- liftIO $ createSAWBackend g dl
+  (sbe,mem) <- liftIO $ createSAWBackend abcNetwork dl
   return (SBEPair sbe mem)
 
 supportDir :: FilePath
