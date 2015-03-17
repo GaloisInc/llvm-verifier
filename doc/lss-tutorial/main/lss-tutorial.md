@@ -137,15 +137,15 @@ model to a reference specification.
 Supplying Symbolic Input to AES128
 ==================================
 
-In the code subdirectory of the directory containing this tutorial,
+In the `code` subdirectory of this tutorial,
 there are some files and directories of note. The file
 `aes128BlockEncrypt_driver.c` contains the driver code that sets up
 the symbolic inputs to the AES128 block encrypt function;
 `aes128BlockEncrypt.[ch]` contains the block encrypt function
-implementation; the `sym-api` subdirectory contains copies of the
-header and implementation files for the API used to interact with the
-symbolic simulator; finally, the `ref` subdirectory includes the
-cryptol reference specification and equivalence checking script.
+implementation; the `AES.cry` file contains the reference
+implementation of AES in Cryptol; the `aes.saw` file contains the
+equivalence checking SAWScript code; finally, the `Makefile` includes
+rules for running LLVM, LSS, and finally SAWScript (the `check` target).
 
 Let's start with `aes128BlockEncrypt_driver.c`. This code creates a
 simple wrapper around the `aes128BlockEncrypt` function. We will use
@@ -154,6 +154,8 @@ means in the context of symbolic simulation.
 
 Note that the driver includes `sym-api.h` to get access to the special
 functions used to interact with the symbolic simulator.
+See the `Makefile` for the location of the `sym-api` directory with the
+header and implementation files for this API.
 
 The first two variable declarations in the `main` function are those
 with the most relevance to symbolic simulation.
@@ -225,11 +227,11 @@ simulator API header file.
 
 The following command will then run `lss` to create a formal model:
 
-    # lss aes.bc
+    # lss --backend=saw aes.bc
 
 This will result in a file called `aes.aig` that can be further
-analyzed using a variety of tools, including the Galois Cryptol tool
-set and the ABC logic synthesis system from UC Berkeley.
+analyzed using a variety of tools, including SAWScript
+and the ABC logic synthesis system from UC Berkeley.
 
 Viewing the Intermediate Representations
 ========================================
@@ -243,7 +245,7 @@ driver code by hand:
     clang -emit-llvm -I<INC> -c aes128BlockEncrypt_driver.c \
       -o aes128BlockEncrypt_driver.bc
 
-To see the LLVM assembly langugage representation of this program, one
+To see the LLVM assembly language representation of this program, one
 can use `llvm-dis`, which produces a `.ll` file containing the
 disassembled bitcode:
 
@@ -254,30 +256,31 @@ the LLVM-Sym representation, the `--xlate` option may be supplied to
 `lss`. This option causes the LLVM-Sym representation to be displayed
 to stdout; the user may redirect output when convenient:
 
-    lss --xlate aes128BlockEncrypt_driver.bc > aes128BlockEncrypt_driver.sym
+    lss --backend=saw --xlate aes128BlockEncrypt_driver.bc \
+      > aes128BlockEncrypt_driver.sym
 
 When viewing debugging output from `lss`, program locations are
 currently shown in reference to the LLVM-Sym representation, so it is
 sometimes useful to view that representation alongside `lss` feedback.
 
-Verifying the Formal Model Using Cryptol
-========================================
+Verifying the Formal Model Using SAWScript
+==========================================
 
 One easy way to verify an LLVM implementation against a reference
-specification is via the Cryptol tool set. Cryptol is a
+specification is via SAWScript and Cryptol. Cryptol is a
 domain-specific language created by Galois for the purpose of writing
 high-level but precise specifications of cryptographic algorithms. The
-Cryptol tool set has built-in support for checking the equivalence of
+SAWScript language has support for checking the equivalence of
 different Cryptol implementations, as well as comparing Cryptol
-implementations to external formal models.
+implementations to external formal models, such as the AIGs
+we generated above.
 
-This tutorial comes with a handful of Cryptol files, most notably
-`Rijndael.cry` and `equivAES.cry`. The former is a Cryptol
+This tutorial comes with a file, `AES.cry`, containing a Cryptol
 specification of the AES (a.k.a. Rijndael) cipher. In particular, it
 contains the function `blockEncrypt` which should have equivalent
 functionality to the `aes128BlockEncrypt` function in our C source.
 Well, nearly equivalent: we write a small wrapper around this
-function, as can be seen in `equivAES.cry` that reorders the bytes of
+function, as can be seen in `AES.cry` that reorders the bytes of
 the inputs and outputs as needed to the form expected by the
 `blockEncrypt` function. This essentially makes the calling convention
 and data layout assumptions of both functions identical before
@@ -287,78 +290,56 @@ To compare the functionality of the two implementations, we have
 several options. As mentioned earlier, formal models can be evaluated
 on concrete inputs, or compared to other formal models using proof
 techniques to show equivalence for all possible inputs. The contents
-of `equivAES.cry` show how to compare the formal model of the C
+of `aes.saw` show how to compare the formal model of the C
 implementation against the Cryptol reference specification.
 
 ```
 ...
-extern AIG llvm_aes("../aes.aig") : ([4][32], [4][32]) -> [4][32];
-theorem MatchesRef : {pt key}. llvm_aes (pt, key) == blockEncryptref_c (pt, key);
-blockEncryptref_c : ([4][32], [4][32]) -> [4][32];
-blockEncryptref_c (x, y) = ...
+print "Loading LLVM implementation";
+f <- load_aig "aes.aig";
+print "Bitblasting Cryptol implementation";
+g <- bitblast {{ aesExtract }};
+print "Checking equivalence";
+res <- cec f g;
+print res;
 ...
 ```
 
-The `extern AIG` line makes the contents of `aes.aig` available as a
-function called `llvm_aes` that takes two 4x32-bit values as input and
-produces one 4x32-bit value as output. Finally, the second line states
-a theorem: that the functions `llvm_aes` and `blockEncryptref_c`
-should produce the same ciphertext for all possible key and plaintext
-inputs.
+The `load_aig` line makes the contents of `aes.aig` available as a
+an AIG called `f` that takes a 256-bit value as input and
+produces 128-bit value as output. The `bitblast` line computes
+an AIG representation of the Crypol AES specification and makes it
+available as `g`.
+Finally, the `cec` line checks that that the functions `f` and `g`
+produce the same ciphertext for all possible inputs.
 
-We can load `equivAES.cry` into the Cryptol tool set, yielding the
+We can load `aes.saw` into the SAWScript interpreter, yielding the
 following output:
 
 ```
-# cryptol equivAES.cry
-Cryptol version 1.8.22, Copyright (C) 2004-2011 Galois, Inc.
-                                            www.cryptol.net
-Type :? for help
-Loading "equivAES.cry"..
-  Including "Rijndael.cry"..
-  Including "Cipher.cry"..
-  Including "AES.cry".. Checking types..
-  Loading extern aig from "../aes.aig".. Processing.. Done!
-*** Auto quickchecking 1 theorem.
-*** Checking "MatchesRef" ["equivAES.cry", line 5, col 1]
-Checking case 100 of 100 (100.00%)
-100 tests passed OK
-[Coverage: 0.00%. (100/11579208923731619542357098500868790785326998466564056...)]
+# saw aes.saw
+...
+Loading LLVM implementation
+Bitblasting Cryptol implementation
+Checking equivalence
+Valid
 ```
-
-By default, the Cryptol interpreter processes every `theorem`
-declaration by automatically evaluating the associated expression on a
-series of random values, and ensuring that it always yields `True`. In
-this case, it tried 100 random key and plaintext values, and the two
-functions yielded the same output in each case. However, the number of
-possible inputs is immense, so 100 test cases barely scratches the
-surface.
-
-To gain a higher degree of confidence that the functions do have the
-same functionality for all possible inputs, we can attempt to prove
-their equivalence deductively. From Cryptol's command line:
-
-```
-equivAES> :set symbolic
-equivAES> :prove MatchesRef
-Q.E.D.
-equivAES> :fm blockEncryptref_c "aes-ref.aig"
-```
-
-This tells the Cryptol interpreter to switch to symbolic simulation
-mode (which is one way it can generate formal models from Cryptol
-functions) and then attempt to prove the theorem named `MatchesRef`.
-On a reasonably modern machine (as of August 2012), the proof should
-complete in less than 30 minutes. The output `Q.E.D.` means that the
-proof was successful.
-
-Finally, the `:fm` command tells the interpreter to generate a formal
-model of the function `blockEncryptref_c` and store it in
-`aes-ref.aig`. We can then use this formal model to perform the same
-proof using an external tool such as ABC, as described next.
 
 Note that the above actions can be performed by running the `check`
-target of the Makefile in the code subdirectory.
+target of the Makefile in the code subdirectory; the proof takes about
+15 minutes on the author's laptop.
+
+Alternatively, we could read the LSS produced AIG in as a SAWScript
+function, and prove it equal to our Cryptol specification as follows:
+
+```
+f <- read_aig "aes.aig";
+res <- prove abc {{ \x -> f x == aesExtract x }};
+print res
+```
+
+In both cases SAWScript uses the ABC tool internally to carry out
+the equivalence proof.
 
 Verifying the Formal Model Using ABC
 ====================================
@@ -370,16 +351,27 @@ AIG form discussed earlier.
 
 As an alternative approach to the equivalence check from the previous
 section, we can use the `cec` command in ABC to attempt to prove the
-model generated by the symbolic simulator equivalent to the model
+model generated by the symbolic simulator equivalent to a model
 generated from the Cryptol specification.
 
-````
+To generate an AIG model of our Cryptol specification, we use the
+`write_aig` command in SAWScript:
+
+```
+...
+write_aig "aes_ref.aig" {{ aesExtract }};
+...
+```
+
+Then we can check equivalence in ABC as follows:
+
+```
 # abc
-UC Berkeley, ABC 1.01 (compiled Oct 26 2010 13:07:15)
+UC Berkeley, ABC 1.01 (compiled Feb 13 2015 14:26:08)
 abc 01> cec ./aes.aig ./aes-ref.aig
 Networks are equivalent.
 abc 01>
-````
+```
 
 Generating DIMACS CNF Models
 ============================
