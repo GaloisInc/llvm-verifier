@@ -1,8 +1,15 @@
 import "AES.cry";
 
-let {{ aesExtract x = join (reverse (groupBy`{32} (aesEncrypt (pt,key))))
-             where [pt,key] = split x
-    }};
+let {{
+  aesExtract x = aesEncrypt (pt,key)
+    // Split into 32-bit blocks, reverse the blocks,
+    // and finally join into two 128-bit blocks.
+    //
+    // This input transform is specific to the SAW backend.
+    // See ':/intTests/test0017_lss_aig' for discussion of
+    // the IO encodings for different backends.
+    where [pt,key] = split (join (reverse (groupBy`{32} x)))
+}};
 
 let main = do {
   print "Loading LLVM implementation";
@@ -14,4 +21,6 @@ let main = do {
   print "Checking equivalence";
   res <- cec f g;
   print res;
+
+  write_aig "aes-ref.aig" {{ aesExtract }};
 };
