@@ -131,19 +131,20 @@ llvmSRemV = sbvVecZipWith bvSRem;
 
 
 llvmShl  :: (w :: Nat) -> binFn (bitvector w);
-llvmShl w x y = bvShl w x (bvToNat w y);
+llvmShl w x y = bvShiftL w Bool w False x y;
 
 llvmShlV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
 llvmShlV = bvVecZipWith llvmShl;
 
 llvmLShr  :: (w :: Nat)   -> binFn (bitvector w);
-llvmLShr w x y = bvShr w x (bvToNat w y);
+llvmLShr w x y = bvShiftR w Bool w False x y;
 
 llvmLShrV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
 llvmLShrV = bvVecZipWith llvmLShr;
 
 llvmAShr  :: (w :: Nat) -> binFn (bitvector (Succ w));
-llvmAShr w x y = bvSShr w x (bvToNat (Succ w) y);
+llvmAShr w x y =
+  bvShiftR (Succ w) Bool (Succ w) (bvAt (Succ w) Bool (Succ w) x (bvNat (Succ w) 0)) x y;
 
 llvmAShrV :: (n w :: Nat) -> binFn (Vec n (bitvector (Succ w)));
 llvmAShrV = sbvVecZipWith llvmAShr;
