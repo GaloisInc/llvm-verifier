@@ -23,11 +23,12 @@ import Control.Lens hiding (op)
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.AIG as AIG
+import Data.Bits
 import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe
-import Data.SBV
+import Data.SBV.Dynamic
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
@@ -981,7 +982,7 @@ scWriteSmtLib sc isSmtLib2 path w t = do
   wt <- scNat sc wn
   t' <- scBvEq sc wt t zero
   (_, lit) <- SBVSim.sbvSolve sc t'
-  writeFile path =<< compileToSMTLib isSmtLib2 True lit
+  writeFile path =<< svCompileToSMTLib isSmtLib2 True lit
 
 
 intFromBV :: V.Vector Bool -> Integer
