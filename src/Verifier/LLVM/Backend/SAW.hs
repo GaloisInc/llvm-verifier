@@ -982,7 +982,7 @@ scWriteSmtLib sc isSmtLib2 path w t = do
   wt <- scNat sc wn
   t' <- scBvEq sc wt t zero
   (_, lit) <- SBVSim.sbvSolve sc t'
-  writeFile path =<< svCompileToSMTLib isSmtLib2 True lit
+  writeFile path =<< compileToSMTLib isSmtLib2 True lit
 
 
 intFromBV :: V.Vector Bool -> Integer
