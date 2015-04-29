@@ -8,7 +8,7 @@ module Verifier.LLVM.Utils.PrettyPrint
   , ppIntVector
   ) where
 
-import Text.PrettyPrint.Leijen
+import Text.PrettyPrint.ANSI.Leijen
 
 -- | Print list of documents separated by commas and spaces.
 commaSepList :: [Doc] -> Doc

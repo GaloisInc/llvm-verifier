@@ -70,7 +70,7 @@ import Data.Vector (Vector)
 import qualified Data.Vector as V
 import Data.Word (Word32, Word64)
 import qualified Text.LLVM as L
-import Text.PrettyPrint.Leijen hiding ((<$>))
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Verifier.LLVM.Utils.Arithmetic
 import Verifier.LLVM.Utils.PrettyPrint
 

@@ -55,7 +55,7 @@ import qualified Data.Vector               as V
 -- import qualified Data.Vector.Storable      as LV
 import           Numeric                   (showHex)
 import qualified Text.LLVM.AST             as L
-import           Text.PrettyPrint.Leijen hiding ((<$>), align)
+import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align)
 
 import qualified Data.AIG as AIG
 import           Data.AIG ( IsAIG, BV )

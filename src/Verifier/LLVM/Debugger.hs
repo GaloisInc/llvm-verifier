@@ -48,8 +48,8 @@ import System.Exit
 import System.FilePath
 import System.IO
 import System.IO.Error
-import Text.PrettyPrint.Leijen hiding ((<$>), (</>))
-import qualified Text.PrettyPrint.Leijen as PP
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), (</>))
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 -- GHC.IO.Exception is imported so that we can catch
 -- the UnsupportedOperation error that may be thrown

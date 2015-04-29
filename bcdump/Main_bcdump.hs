@@ -12,7 +12,7 @@ import           System.Environment
 import           System.Process
 import           System.Directory
 import           System.FilePath
-import           Text.PrettyPrint.Leijen hiding ((<$>))
+import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import qualified Text.LLVM                      as LLVM
 
 import Verifier.LLVM.Backend.SAW

@@ -42,7 +42,7 @@ import qualified Data.Sequence as Seq
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as L
 import Text.LLVM.AST              (Stmt'(..), Typed (..))
-import Text.PrettyPrint.Leijen hiding ((<$>))
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.AST
