@@ -48,7 +48,7 @@ import Control.Monad
 import Data.Maybe
 import Data.Monoid hiding ((<>))
 import qualified Data.Vector as V
-import Text.PrettyPrint.Leijen hiding ((<$>))
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 import Verifier.LLVM.MemModel.Common
 

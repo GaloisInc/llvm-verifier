@@ -47,7 +47,7 @@ import Control.Applicative
 import Control.Lens
 import Control.Monad
 import Control.Monad.State
-import Text.PrettyPrint.Leijen hiding ((<$>))
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 import qualified Control.Exception              as CE
 import qualified Data.ByteString                as BS

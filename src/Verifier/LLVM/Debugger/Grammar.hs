@@ -35,8 +35,8 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.String
 import System.Console.Haskeline (Completion(..))
-import Text.PrettyPrint.Leijen hiding ((<$>), (</>))
-import qualified Text.PrettyPrint.Leijen as PP
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), (</>))
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 import Verifier.LLVM.Debugger.FreeApp
 import Verifier.LLVM.Utils.PrettyPrint

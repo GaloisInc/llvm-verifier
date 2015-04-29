@@ -183,7 +183,7 @@ import qualified Data.Vector as V
 
 import System.Console.Haskeline.MonadException (MonadException(..), RunIO(..))
 
-import Text.PrettyPrint.Leijen hiding ((<$>))
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase

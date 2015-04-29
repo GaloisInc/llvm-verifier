@@ -18,7 +18,7 @@ import qualified Data.Map                  as Map
 import Data.String
 import qualified Data.Vector as V
 import System.IO
-import Text.PrettyPrint.Leijen (nest)
+import Text.PrettyPrint.ANSI.Leijen (nest)
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase

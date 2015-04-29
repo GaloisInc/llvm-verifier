@@ -9,7 +9,7 @@ import Control.Lens hiding (from)
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Data.String
-import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.DataLayout

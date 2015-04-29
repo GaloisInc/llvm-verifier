@@ -92,7 +92,7 @@ import qualified Data.Graph as G
 import qualified Data.Map as M
 import           Data.Maybe
 import System.Console.Haskeline.MonadException (MonadException, handle, throwIO)
-import Text.PrettyPrint.Leijen hiding ((<$>), align, line)
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase

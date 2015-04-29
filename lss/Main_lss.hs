@@ -23,7 +23,7 @@ import           System.Exit
 import           Text.ParserCombinators.Parsec
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
-import           Text.PrettyPrint.Leijen hiding ((<$>))
+import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 import           LSSImpl
 

@@ -58,7 +58,7 @@ import qualified Data.Map as Map
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import qualified Text.LLVM.AST as L
-import Text.PrettyPrint.Leijen hiding ((<$>))
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 import Verifier.LLVM.Codebase.DataLayout
 import Verifier.LLVM.Utils.PrettyPrint

@@ -42,6 +42,7 @@ library
   build-depends:
       base >= 4 && < 5
     , aig
+    , ansi-wl-pprint
     , bytestring
     , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
@@ -60,7 +61,6 @@ library
     , transformers-compat
     , tuple >= 0.2
     , vector
-    , wl-pprint
     , MaybeT
 
   if !os(windows)
@@ -123,6 +123,7 @@ executable lss
   build-depends:
       base >= 4 && < 5
     , abcBridge
+    , ansi-wl-pprint
     , cmdargs >= 0.8
     , lens >= 3.9
     , llvm-pretty >= 0.2.0.0
@@ -130,7 +131,6 @@ executable lss
     , llvm-verifier
     , mtl
     , parsec >= 2.1.0.1
-    , wl-pprint
     , vector
 
 executable bcdump
@@ -146,6 +146,7 @@ executable bcdump
   build-depends:
       base >= 4 && < 5
     , abcBridge
+    , ansi-wl-pprint
     , bytestring
     , directory
     , filepath
@@ -153,7 +154,6 @@ executable bcdump
     , llvm-pretty-bc-parser >= 0.1.2.2
     , llvm-verifier
     , process
-    , wl-pprint
 
 test-suite test-llvm
   type:       exitcode-stdio-1.0
