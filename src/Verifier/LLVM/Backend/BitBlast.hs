@@ -108,10 +108,9 @@ byteSize :: BV l -> Int
 byteSize v = BV.length v `shiftR` 3
 
 -- | Slice a vector into a list of vectors, one for each byte.
-sliceIntoBytes :: BV l -> V.Vector (BV l)
-sliceIntoBytes v = V.generate (byteSize v) $ \i -> BV.sliceRev v (i `shiftL` 3) 8
-
---sliceIntoBytes v = V.reverse $ V.generate (byteSize v) $ \i -> BV.slice v (i `shiftL` 3) 8
+sliceIntoBytes :: EndianForm -> BV l -> V.Vector (BV l)
+sliceIntoBytes LittleEndian v = V.generate (byteSize v) $ \i -> BV.sliceRev v (i `shiftL` 3) 8
+sliceIntoBytes BigEndian    v = V.generate (byteSize v) $ \i -> BV.slice v (i `shiftL` 3) 8
 
 -- | Slice a single vector into a vector of lit vectors with n elements.
 sliceN :: Int -> BV l -> V.Vector (BV l)
@@ -558,18 +557,22 @@ mergeStorage g c x y = impl x y
 loadBytes :: (IsAIG l g, Eq (l s))
           => (BV (l s) -> IO (l s, BV (l s)))
           -> g s
+          -> EndianForm
           -> BitTerm (l s)
           -> Size
           -> Alignment
           -> IO (l s, BV (l s))
-loadBytes byteLoader g (PtrTerm ptr) sz _ =
+loadBytes byteLoader g endian (PtrTerm ptr) sz _ =
     impl [] (AIG.trueLit g) (toInteger sz)
-  where impl l c 0 = return (c, BV.concat (reverse l))
+  where impl l c 0 =
+          case endian of
+             LittleEndian -> return (c, BV.concat (reverse l))
+             BigEndian    -> return (c, BV.concat l)
         impl l c i = do
           (bc, bv) <- byteLoader =<< BV.addConst g ptr (i-1)
           c' <- AIG.lAnd' g c bc
           impl (bv:l) c' (i-1)
-loadBytes _ _ _ _ _ = illegalArgs "loadBytes"
+loadBytes _ _ _ _ _ _ = illegalArgs "loadBytes"
 
 -- | Returns condition under which store is permitted.
 storeByteCond :: (IsAIG l g, Eq (l s)) => g s -> Storage (l s) -> BV (l s) -> IO (l s)
@@ -604,13 +607,14 @@ storeByte g mem new ptr = impl mem (BV.length ptr) (AIG.trueLit g)
 
 storeBytes :: (IsAIG l g, Eq (l s))
            => g s
+           -> EndianForm
            -> Storage (l s)      -- ^ Base storage
            -> BV (l s)    -- ^ Address to store value in
            -> BV (l s)    -- ^ Value to store
            -> Alignment
            -> IO (l s, Storage (l s)) -- ^ Condition for address to be valid, and updated storage.
-storeBytes g mem ptr value _ = impl 0 (AIG.trueLit g) mem
-  where bv = sliceIntoBytes value
+storeBytes g endian mem ptr value _ = impl 0 (AIG.trueLit g) mem
+  where bv = sliceIntoBytes endian value
         impl i c m
           | i == byteSize value = return (c,m)
           | otherwise = do
@@ -780,16 +784,17 @@ bmMux g c m m' = do
 
 bmInitGlobalBytes :: (IsAIG l g, Eq (l s))
                   => g s
+                  -> EndianForm
                   -> Int         -- ^ Width of pointers in bits.
                   -> BitMemory (l s)
                   -> BV (l s)
                   -> IO (Maybe (BitTerm (l s), BitMemory (l s)))
-bmInitGlobalBytes g ptrWidth m bytes
+bmInitGlobalBytes g endian ptrWidth m bytes
   | newDataAddr > bmDataEnd m = return Nothing
   | otherwise = do
       let ptrv = BV.bvFromInteger g ptrWidth dataAddr
           mem  = uninitRegion g ptrWidth dataAddr newDataAddr (bmStorage m)
-      (c,newStorage) <- storeBytes g mem ptrv bytes 0
+      (c,newStorage) <- storeBytes g endian mem ptrv bytes 0
       assert (c AIG.=== AIG.trueLit g) $
         return $ Just ( PtrTerm ptrv
                       , m { bmStorage = newStorage, bmDataAddr = newDataAddr })
@@ -931,6 +936,7 @@ bmHeapAlloc _ _ _ _ _ _ = illegalArgs "bmHeapAlloc"
 
 bmMemCopy :: (IsAIG l g, Eq (l s))
           => g s
+          -> EndianForm
           -> BitMemory (l s)
           -> BitTerm (l s)   -- ^ Destination pointer
           -> BitTerm (l s)   -- ^ Source pointer
@@ -938,10 +944,10 @@ bmMemCopy :: (IsAIG l g, Eq (l s))
           -> BitTerm (l s)   -- ^ Length value
           -> BitTerm (l s)   -- ^ Alignment in bytes
           -> IO (l s, BitMemory (l s))
-bmMemCopy g m (PtrTerm dst) src _ (IntTerm len0) (IntTerm _align0) = do
+bmMemCopy g endian m (PtrTerm dst) src _ (IntTerm len0) (IntTerm _align0) = do
   -- TODO: Alignment and overlap checks?
-  (cr, bytes) <- loadBytes (bmLoadByte g m) g src len 0
-  (cw, newStorage) <- storeBytes g (bmStorage m) dst bytes 0
+  (cr, bytes) <- loadBytes (bmLoadByte g m) g endian src len 0
+  (cw, newStorage) <- storeBytes g endian (bmStorage m) dst bytes 0
   c <- AIG.lAnd' g cr cw
   return (c, m { bmStorage = newStorage })
   where
@@ -949,7 +955,7 @@ bmMemCopy g m (PtrTerm dst) src _ (IntTerm len0) (IntTerm _align0) = do
             Nothing    -> bmError $ "Symbolic memcpy len not supported"
             Just (_,x) -> fromInteger x
 
-bmMemCopy _ _ _ _ _ _ _ = illegalArgs "bmMemCopy"
+bmMemCopy _ _ _ _ _ _ _ _ = illegalArgs "bmMemCopy"
 
 
 -- | Memory model for explicit buddy allocation scheme.
@@ -959,20 +965,21 @@ buddyMemModel :: (IsAIG l g, Eq (l s))
               -> BitBlastMemModel (BitMemory (l s)) (l s)
 buddyMemModel dl g = mm
   where ptrWidth = ptrBitwidth dl
+        endian   = dl^.intLayout
         mm = MemModel
               { mmDump = bmDump g
-              , mmLoad = \m -> loadBytes (bmLoadByte g m) g
+              , mmLoad = \m -> loadBytes (bmLoadByte g m) g endian
               , mmStore = \m (PtrTerm ptr) bytes a -> do
                   Arrow.second (\s -> m { bmStorage = s }) <$>
-                   storeBytes g (bmStorage m) ptr bytes a
-              , mmInitGlobal = bmInitGlobalBytes g ptrWidth
+                   storeBytes g endian (bmStorage m) ptr bytes a
+              , mmInitGlobal = bmInitGlobalBytes g endian ptrWidth
               , mmAddDefine = return `c3` bmAddDefine g ptrWidth
               , mmLookupSymbol = bmLookupSymbol g
               , mmStackAlloc = return `c4` bmStackAlloc g ptrWidth
               , mmStackPush = \mem -> return (AIG.trueLit g, bmStackPush mem)
               , mmStackPop = return . bmStackPop ptrWidth
               , mmHeapAlloc = return `c4` bmHeapAlloc g ptrWidth
-              , mmMemCopy = bmMemCopy g
+              , mmMemCopy = bmMemCopy g endian
               , mmRecordBranch = return -- do nothing
               , mmBranchAbort = return -- do nothing
               , mmMux = bmMux g
@@ -1284,13 +1291,14 @@ dmMod g ref (DMMemCopy s e src) m = dmMemCopyImpl g ref s e src m
 -- | Store bytes in memory
 dmStoreBytes :: (IsAIG l g, Ord (l s))
              => g s
+             -> EndianForm
              -> RefIdx
              -> DagMemory (l s)
              -> BitTerm (l s)
              -> BV (l s)
              -> Alignment
              -> IO (l s, DagMemory (l s))
-dmStoreBytes g ref mem (PtrTerm ptr) flatBytes _
+dmStoreBytes g endian ref mem (PtrTerm ptr) flatBytes _
   | byteCount == 0 = return (AIG.trueLit g, mem)
   | otherwise = do
 
@@ -1300,18 +1308,19 @@ dmStoreBytes g ref mem (PtrTerm ptr) flatBytes _
     m <- dmStore g ref ptr ptrEnd newBytes mem
     isalloc <- dmIsAllocated mem (ptr,ptrEnd)
     return (isalloc, m)
- where newBytes = sliceIntoBytes flatBytes
+ where newBytes = sliceIntoBytes endian flatBytes
        byteCount = V.length newBytes
-dmStoreBytes _ _ _ _ _ _ = illegalArgs "dmStoreBytes"
+dmStoreBytes _ _ _ _ _ _ _ = illegalArgs "dmStoreBytes"
 
 -- | Initialize global data memory.
 dmInitGlobal :: (IsAIG l g, Ord (l s))
              => g s
+             -> EndianForm
              -> Int  -- ^ Width of pointer
              -> Addr -- ^ End of data region
              -> RefIdx
              -> DagMemory (l s) -> BV (l s) -> IO (Maybe (BitTerm (l s), DagMemory (l s)))
-dmInitGlobal g ptrWidth dataEnd ref mem flatBytes
+dmInitGlobal g endian ptrWidth dataEnd ref mem flatBytes
   | byteCount == 0 = return $ Just (PtrTerm ptr, mem)
   | dataEnd - dmsData (dmState mem) < byteCount = return Nothing
   | otherwise = do
@@ -1319,7 +1328,7 @@ dmInitGlobal g ptrWidth dataEnd ref mem flatBytes
       mem2 <- dmStore g ref ptr ptrEnd bytes mem1
       -- Return result
       return $ Just (PtrTerm ptr, mem2)
-  where bytes = sliceIntoBytes flatBytes
+  where bytes = sliceIntoBytes endian flatBytes
         byteCount = toInteger (V.length bytes)
         nextData = dmsData (dmState mem) + byteCount
         ptr = BV.bvFromInteger g ptrWidth (dmsData (dmState mem))
@@ -1644,10 +1653,11 @@ createDagMemModel dl g mg = do
   ref <- newIORef 1
   let ptrStart range = BV.bvFromInteger g ptrWidth (start range)
   let ptrEnd range = BV.bvFromInteger g ptrWidth (end range)
+  let endian = dl^.intLayout
   let mm = MemModel
               { mmLoad = dmLoadBytes g
-              , mmStore = dmStoreBytes g ref
-              , mmInitGlobal = dmInitGlobal g ptrWidth (end (mgData mg)) ref
+              , mmStore = dmStoreBytes g endian ref
+              , mmInitGlobal = dmInitGlobal g endian ptrWidth (end (mgData mg)) ref
               , mmDump = dmDump g
               , mmAddDefine = dmAddDefine g ptrWidth (end (mgCode mg)) ref
               , mmLookupSymbol = dmLookupSymbol g
