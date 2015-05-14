@@ -93,7 +93,7 @@ lfp fn initSet = impl initSet (Set.toList initSet)
         impl s (h:r) = impl (foldl' (flip Set.insert) s new) (new ++ r)
           where new = filter (flip Set.notMember s) (fn h)
 
--- -- | Memoizes a function using a map.
+-- | Memoizes a function using a map.
 memo :: Ord s => (s -> IO t) -> IO (s -> IO t)
 memo fn = do
    ref <- newIORef Map.empty
@@ -103,24 +103,30 @@ memo fn = do
        Just v -> return v
        Nothing -> fn key >>= \v -> modifyIORef ref (Map.insert key v) >> return v
 
--- | Returns number of bytes.
-byteSize :: BV l -> Int
-byteSize v = BV.length v `shiftR` 3
+-- | Slice a vector into `n` equal-sized subvectors.
+sliceVectorN :: Int -- ^ n
+             -> V.Vector a -- ^ vector to slice
+             -> V.Vector (V.Vector a)
+sliceVectorN n v = assert (n > 0 && r == 0) $
+    V.generate n $ \i -> V.slice (l*i) l v
+  where (l,r) = V.length v `divMod` n
 
--- | Slice a vector into a list of vectors, one for each byte.
-sliceIntoBytes :: EndianForm -> BV l -> V.Vector (BV l)
-sliceIntoBytes LittleEndian v = V.generate (byteSize v) $ \i -> BV.sliceRev v (i `shiftL` 3) 8
-sliceIntoBytes BigEndian    v = V.generate (byteSize v) $ \i -> BV.slice v (i `shiftL` 3) 8
-
--- | Slice a single vector into a vector of lit vectors with n elements.
-sliceN :: Int -> BV l -> V.Vector (BV l)
-sliceN n v = assert (n > 0 && r == 0) $
-    V.generate n $ \i -> BV.sliceRev v (l*i) l
+-- | Slice a single bitvector into a vector of bitvectors, each of length `n`.
+sliceBy :: Int -- ^ n
+        -> BV l -- ^ bitvector to split.
+        -> V.Vector (BV l)
+sliceBy n v = assert (n > 0 && r == 0) $
+    V.generate l $ \i -> BV.slice v (n*i) n
   where (l,r) = BV.length v `divMod` n
 
--- | Slice a single vector into a vector of lit vectors each with the given number of elements.
+-- | Concatenate a vector of vectors
+joinVector :: V.Vector (V.Vector a) -> V.Vector a
+joinVector = V.concat . V.toList
+
+-- | Concatenate a vector of bitvectors, with more significant
+--   bits at lower indices in the outer vector.
 joinN :: V.Vector (BV l) -> BV l
-joinN = BV.concat . V.toList . V.reverse
+joinN = BV.concat . V.toList
 
 -- | @alignUp addr i@ returns the smallest multiple of @2^i@ that it
 -- at least @addr@.
@@ -140,12 +146,12 @@ bvSetBits g n pr = BV.generate_lsb0 n (AIG.constant g . pr)
 -- | @lAlignUp addr i@ returns pair @(c,v)@ where @v@ is the smallest multiple of @2^i@
 -- not smaller than @addr@, and @c@ is set if computation overflowed.
 bvAlignUp :: (IsAIG l g) => g s -> BV (l s) -> Alignment -> IO (l s, BV (l s))
-bvAlignUp g addr i = do 
+bvAlignUp g addr i = do
    let n = BV.length addr
    (s,c) <- BV.addC g addr (bvSetBits g n (< fromIntegral i))
    s' <- BV.zipWithM (AIG.lAnd' g) s (bvSetBits g n (>= fromIntegral i))
    return (c, s')
-        
+
 -- | @lAlignDown addr i@ returns pair @(c,v)@ where @v@ is the largest multiple of @2^i@
 -- not larger than @addr@, and @c@ is set if computation overflowed.
 bvAlignDn :: (IsAIG l g) => g s -> BV (l s) -> Alignment -> IO (BV (l s))
@@ -294,30 +300,39 @@ bytesToTerm :: (IsAIG l g)
             => g s
             -> DataLayout
             -> MemType
-            -> BV (l s)
+            -> V.Vector (BV (l s))
             -> Maybe (BitTerm (l s))
-bytesToTerm g dl tp0 v = 
+bytesToTerm g dl tp0 bytes =
+  let endianBits =
+       case dl^.intLayout of
+           BigEndian    -> BV.concat $ V.toList $ bytes
+           LittleEndian -> BV.concat $ V.toList $ V.reverse bytes
+  in
   case tp0 of
     IntType w
-      | w <= BV.length v -> return $ IntTerm (BV.trunc w v)
+      | w <= 8 * V.length bytes -> return $ IntTerm $ BV.trunc w $ endianBits
       | otherwise -> badVec $ "integer.\nExpected at least " ++ show w
-                              ++ "; Found " ++ show (BV.length v)
+                              ++ "; Found " ++ show (8 * V.length bytes)
     FloatType
-      | BV.length v == 32 ->
-          FloatTerm  . wordToFloat  . fromIntegral <$> BV.asUnsigned g v
+      | V.length bytes == 4 ->
+          FloatTerm  . wordToFloat . fromIntegral <$> BV.asUnsigned g endianBits
       | otherwise -> badVec "float."
     DoubleType
-      | BV.length v == 64 ->
-          DoubleTerm . wordToDouble . fromIntegral <$> BV.asUnsigned g v
+      | V.length bytes == 8 ->
+          DoubleTerm  . wordToDouble . fromIntegral <$> BV.asUnsigned g endianBits
       | otherwise -> badVec "double."
-    PtrType{} | ptrBitwidth dl == fromIntegral (BV.length v) -> return $ PtrTerm v
-    ArrayType n etp -> ArrayTerm <$> traverse (bytesToTerm g dl etp) (sliceN n v)
-    VecType n etp   -> VecTerm <$> traverse (bytesToTerm g dl etp) (sliceN n v)
+    PtrType{} | ptrBitwidth dl == fromIntegral (8 * V.length bytes) ->
+          return $ PtrTerm $ endianBits
+    ArrayType n etp -> ArrayTerm <$> traverse (bytesToTerm g dl etp) (sliceVectorN n bytes)
+    VecType n etp   -> VecTerm <$> traverse (bytesToTerm g dl etp) (sliceVectorN n bytes)
     StructType si   -> StructTerm <$> traverse go (siFields si)
-      where go fi = bytesToTerm g dl (fiType fi) (BV.sliceRev v o sz)
-              where o = 8 * fromIntegral (fiOffset fi)
-                    sz = 8 * fromIntegral (memTypeSize dl (fiType fi))
-    _ -> error $ unwords ["internalError: bytes to term given mismatched arguments",show (ppMemType tp0),BV.bvShow g v]
+      where go fi = bytesToTerm g dl (fiType fi) (V.slice o sz bytes)
+              where o = fromIntegral (fiOffset fi)
+                    sz = fromIntegral (memTypeSize dl (fiType fi))
+    _ -> error $ unwords ["internalError: bytes to term given mismatched arguments"
+                         , show (ppMemType tp0)
+                         , BV.bvShow g endianBits
+                         ]
  where badVec nm = error $
         "internalError: bytesToTerm given incorrect number of bits for " ++ nm
 
@@ -334,33 +349,27 @@ termToBytes :: (IsAIG l g)
             -> DataLayout
             -> MemType
             -> BitTerm (l s)
-            -> BV (l s)
-termToBytes g dl tp0 t0 = do
+            -> V.Vector (BV (l s))
+termToBytes g dl tp0 t0 =
+  let toBytes bits = case dl^.intLayout of
+                        BigEndian    -> sliceBy 8 bits
+                        LittleEndian -> V.reverse $ sliceBy 8 bits
+  in
   case (tp0, t0) of
-    (IntType w, IntTerm v) -> v BV.++ ext
-      where newBits = (8 - (w .&. 0x7)) .&. 0x7
+    (IntType w, IntTerm v) -> toBytes bits
+      where bits = ext BV.++ v
+            newBits = (8 - (w .&. 0x7)) .&. 0x7
             ext = BV.replicate (fromIntegral newBits) (dontCareLit g)
-    (FloatType,      FloatTerm v)  -> lVectorFromFloat g v
-    (DoubleType,     DoubleTerm v) -> lVectorFromDouble g v
+    (FloatType,      FloatTerm v)  -> toBytes $ lVectorFromFloat g v
+    (DoubleType,     DoubleTerm v) -> toBytes $ lVectorFromDouble g v
     (PtrType{},      PtrTerm v)
-      | ptrBitwidth dl == BV.length v -> v
-    (ArrayType _ tp, ArrayTerm v)  -> joinN (termToBytes g dl tp <$> v)
-    (VecType _ tp,   VecTerm v)    -> joinN (termToBytes g dl tp <$> v)
-    (StructType si,  StructTerm v) -> joinN $ V.zipWith (termToBytes g dl) (siFieldTypes si) v
+      | ptrBitwidth dl == BV.length v -> toBytes v
+    (ArrayType _ tp, ArrayTerm v)  -> joinVector (termToBytes g dl tp <$> v)
+    (VecType _ tp,   VecTerm v)    -> joinVector (termToBytes g dl tp <$> v)
+    (StructType si,  StructTerm v) -> joinVector $ V.zipWith (termToBytes g dl) (siFieldTypes si) v
     _ -> error $ show $ text "internalError: termToBytes given mismatched arguments:" <$$>
            nest 2 (text "Type:" <+> ppMemType tp0 <$$>
                    text "Term:" <+> ppBitTerm g t0)
-           
--- {-
--- termToBytes lc be tp (BitTerm val) =
---   case resolveType lc tp of
---     -- Extend integer types to full width.
---     L.PrimType (L.Integer w) -> val LV.++ ext
---       where newBits = (8 - (w .&. 0x7)) .&. 0x7
---             ext = LV.replicate (fromIntegral newBits) (beDontCare be)
---     -- Treat other types as same.
---     _ -> val
--- -}
 
 -- MemModel {{{1
 
@@ -402,7 +411,7 @@ data MemModel sbe bytes = MemModel {
               -> SBETerm sbe            -- Destination pointer
               -> SBETerm sbe            -- Source pointer
               -> BitWidth               -- Width of length value.
-              -> SBETerm sbe            -- Length value 
+              -> SBETerm sbe            -- Length value
               -> SBETerm sbe            -- Alignment in bytes (32-bit value)
               -> IO (SBEPred sbe, SBEMemory sbe) -- Condition and new value.
     -- | Push a merge frame.
@@ -410,19 +419,19 @@ data MemModel sbe bytes = MemModel {
     -- | Pop a merge frame without merging.
   , mmBranchAbort :: SBEMemory sbe -> IO (SBEMemory sbe)
     -- | @mmMux c t f@ returns a memory equivalent to @t@ when @c@ holds,
-    -- and @f@ otherwise.  The number of merge frames 
+    -- and @f@ otherwise.  The number of merge frames
   , mmMux :: SBEPred sbe -> SBEMemory sbe -> SBEMemory sbe -> IO (SBEMemory sbe)
   }
 
 -- | A memory model over terms that are bits.
 type BitBlastMemModel m l =
-  MemModel (BitIO m l) (BV l)
+  MemModel (BitIO m l) (V.Vector (BV l))
 
 -- | Load memory using
 loadTerm :: (IsAIG l g, Eq (l s))
          => g s
          -> DataLayout
-         -> MemModel (BitIO m (l s)) (BV (l s))
+         -> BitBlastMemModel m (l s)
          -> m
          -> MemType -- ^ Type to read
          -> BitTerm (l s) -- ^ Pointer to load
@@ -438,7 +447,7 @@ loadTerm g dl mm bm tp ptr a = do
 storeTerm :: (IsAIG l g, Eq (l s))
           => g s
           -> DataLayout
-          -> MemModel (BitIO m (l s)) (BV (l s))
+          -> BitBlastMemModel m (l s)
           -> SBEMemory (BitIO m (l s))
           -> BitTerm (l s)
           -> MemType
@@ -446,7 +455,7 @@ storeTerm :: (IsAIG l g, Eq (l s))
           -> Alignment
           -> IO (SBEPred (BitIO m (l s)), SBEMemory (BitIO m (l s)))
 storeTerm g dl mm m ptr tp v a
-  | BV.length bytes == 0 = return (AIG.trueLit g, m)
+  | V.length bytes == 0 = return (AIG.trueLit g, m)
   | otherwise = mmStore mm m ptr bytes a
   where bytes = termToBytes g dl tp v
 
@@ -502,13 +511,13 @@ ppStorage mranges g = impl 0 Nothing
       | il AIG.=== AIG.falseLit g = whenInRange a $ item doc a (text "uninitialized")
       | otherwise = whenInRange a
                   $ item doc a
-                  $ (lPrettyLV g v) 
+                  $ (lPrettyLV g v)
                      <+> parens (text "allocated:" <+> pl al <> comma
                                  <+> text "initialized:" <+> pl il)
     impl a (Just doc) (SDefine sym)  =
       whenInRange a $ item doc a $ ppSymbol sym
     impl a (Just doc) (SBlock s l)
-      = whenInRange a $ item doc a 
+      = whenInRange a $ item doc a
       $ ppSymbol s <> char '/' <> text (show (L.ppLabel l))
     impl _ (Just doc) SUnallocated   = doc
     item doc addr desc               = doc <$$> text (showHex addr "") <> colon <+> desc
@@ -521,7 +530,7 @@ mergeStorage :: (IsAIG l g, Eq (l s))
              => g s
              -> l s
              -> Storage (l s)
-             -> Storage (l s) 
+             -> Storage (l s)
              -> IO (Storage (l s))
 mergeStorage g c x y = impl x y
   where impl (SBranch fx tx) (SBranch fy ty) = do
@@ -557,22 +566,18 @@ mergeStorage g c x y = impl x y
 loadBytes :: (IsAIG l g, Eq (l s))
           => (BV (l s) -> IO (l s, BV (l s)))
           -> g s
-          -> EndianForm
           -> BitTerm (l s)
           -> Size
           -> Alignment
-          -> IO (l s, BV (l s))
-loadBytes byteLoader g endian (PtrTerm ptr) sz _ =
+          -> IO (l s, V.Vector (BV (l s)))
+loadBytes byteLoader g (PtrTerm ptr) sz _ =
     impl [] (AIG.trueLit g) (toInteger sz)
-  where impl l c 0 =
-          case endian of
-             LittleEndian -> return (c, BV.concat (reverse l))
-             BigEndian    -> return (c, BV.concat l)
+  where impl l c 0 = return (c, V.fromList l)
         impl l c i = do
           (bc, bv) <- byteLoader =<< BV.addConst g ptr (i-1)
           c' <- AIG.lAnd' g c bc
           impl (bv:l) c' (i-1)
-loadBytes _ _ _ _ _ _ = illegalArgs "loadBytes"
+loadBytes _ _ _ _ _ = illegalArgs "loadBytes"
 
 -- | Returns condition under which store is permitted.
 storeByteCond :: (IsAIG l g, Eq (l s)) => g s -> Storage (l s) -> BV (l s) -> IO (l s)
@@ -607,16 +612,14 @@ storeByte g mem new ptr = impl mem (BV.length ptr) (AIG.trueLit g)
 
 storeBytes :: (IsAIG l g, Eq (l s))
            => g s
-           -> EndianForm
            -> Storage (l s)      -- ^ Base storage
            -> BV (l s)    -- ^ Address to store value in
-           -> BV (l s)    -- ^ Value to store
+           -> V.Vector (BV (l s))    -- ^ Values to store
            -> Alignment
            -> IO (l s, Storage (l s)) -- ^ Condition for address to be valid, and updated storage.
-storeBytes g endian mem ptr value _ = impl 0 (AIG.trueLit g) mem
-  where bv = sliceIntoBytes endian value
-        impl i c m
-          | i == byteSize value = return (c,m)
+storeBytes g mem ptr bv _ = impl 0 (AIG.trueLit g) mem
+  where impl i c m
+          | i == V.length bv = return (c, m)
           | otherwise = do
             p <- BV.addConst g ptr (toInteger i)
             c' <- AIG.lAnd' g c =<< storeByteCond g m p
@@ -740,7 +743,7 @@ bmDump g sparse bm mranges = do
     text "Data Range:"  <+> text (h $ bmDataAddr bm) <> comma <+> text (h $ bmDataEnd bm) <$$>
     text "Heap Range:"  <+> text (h $ bmHeapAddr bm) <> comma <+> text (h $ bmHeapEnd bm) <$$>
     text "Frame pointers:" <+> hcat (punctuate comma (map text $ map hx $ bmStackFrames bm)) <$$>
-    text "Storage:" <$$> 
+    text "Storage:" <$$>
     (if sparse then ppStorage mranges else ppStorageShow) g (bmStorage bm)
   where
     h s  = showHex s ""
@@ -784,23 +787,22 @@ bmMux g c m m' = do
 
 bmInitGlobalBytes :: (IsAIG l g, Eq (l s))
                   => g s
-                  -> EndianForm
                   -> Int         -- ^ Width of pointers in bits.
                   -> BitMemory (l s)
-                  -> BV (l s)
+                  -> V.Vector (BV (l s))
                   -> IO (Maybe (BitTerm (l s), BitMemory (l s)))
-bmInitGlobalBytes g endian ptrWidth m bytes
+bmInitGlobalBytes g ptrWidth m bytes
   | newDataAddr > bmDataEnd m = return Nothing
   | otherwise = do
       let ptrv = BV.bvFromInteger g ptrWidth dataAddr
           mem  = uninitRegion g ptrWidth dataAddr newDataAddr (bmStorage m)
-      (c,newStorage) <- storeBytes g endian mem ptrv bytes 0
+      (c,newStorage) <- storeBytes g mem ptrv bytes 0
       assert (c AIG.=== AIG.trueLit g) $
         return $ Just ( PtrTerm ptrv
                       , m { bmStorage = newStorage, bmDataAddr = newDataAddr })
   where
     dataAddr    = bmDataAddr m
-    newDataAddr = dataAddr + toInteger (byteSize bytes)
+    newDataAddr = dataAddr + toInteger (V.length bytes)
 
 bmAddDefine :: (IsAIG l g, Eq (l s))
             => g s
@@ -865,7 +867,7 @@ bmStackAlloc g ptrWidth bm eltSize (IntTerm cntVector) a =
                     ptr = PtrTerm (BV.bvFromInteger g ptrWidth res)
                     bm' = bm { bmStorage = newStorage, bmStackAddr = newAddr }
             -- Get new bit memory.
-            r | bmStackGrowsUp bm = 
+            r | bmStackGrowsUp bm =
                   let a' = alignUp (bmStackAddr bm) a
                       sa = a' + toInteger eltSize * cnt
                    in mkRes (sa <= bmStackEnd bm) a' sa sa
@@ -936,7 +938,6 @@ bmHeapAlloc _ _ _ _ _ _ = illegalArgs "bmHeapAlloc"
 
 bmMemCopy :: (IsAIG l g, Eq (l s))
           => g s
-          -> EndianForm
           -> BitMemory (l s)
           -> BitTerm (l s)   -- ^ Destination pointer
           -> BitTerm (l s)   -- ^ Source pointer
@@ -944,10 +945,10 @@ bmMemCopy :: (IsAIG l g, Eq (l s))
           -> BitTerm (l s)   -- ^ Length value
           -> BitTerm (l s)   -- ^ Alignment in bytes
           -> IO (l s, BitMemory (l s))
-bmMemCopy g endian m (PtrTerm dst) src _ (IntTerm len0) (IntTerm _align0) = do
+bmMemCopy g m (PtrTerm dst) src _ (IntTerm len0) (IntTerm _align0) = do
   -- TODO: Alignment and overlap checks?
-  (cr, bytes) <- loadBytes (bmLoadByte g m) g endian src len 0
-  (cw, newStorage) <- storeBytes g endian (bmStorage m) dst bytes 0
+  (cr, bytes) <- loadBytes (bmLoadByte g m) g src len 0
+  (cw, newStorage) <- storeBytes g (bmStorage m) dst bytes 0
   c <- AIG.lAnd' g cr cw
   return (c, m { bmStorage = newStorage })
   where
@@ -955,7 +956,7 @@ bmMemCopy g endian m (PtrTerm dst) src _ (IntTerm len0) (IntTerm _align0) = do
             Nothing    -> bmError $ "Symbolic memcpy len not supported"
             Just (_,x) -> fromInteger x
 
-bmMemCopy _ _ _ _ _ _ _ _ = illegalArgs "bmMemCopy"
+bmMemCopy _ _ _ _ _ _ _ = illegalArgs "bmMemCopy"
 
 
 -- | Memory model for explicit buddy allocation scheme.
@@ -965,21 +966,20 @@ buddyMemModel :: (IsAIG l g, Eq (l s))
               -> BitBlastMemModel (BitMemory (l s)) (l s)
 buddyMemModel dl g = mm
   where ptrWidth = ptrBitwidth dl
-        endian   = dl^.intLayout
         mm = MemModel
               { mmDump = bmDump g
-              , mmLoad = \m -> loadBytes (bmLoadByte g m) g endian
+              , mmLoad = \m -> loadBytes (bmLoadByte g m) g
               , mmStore = \m (PtrTerm ptr) bytes a -> do
                   Arrow.second (\s -> m { bmStorage = s }) <$>
-                   storeBytes g endian (bmStorage m) ptr bytes a
-              , mmInitGlobal = bmInitGlobalBytes g endian ptrWidth
+                   storeBytes g (bmStorage m) ptr bytes a
+              , mmInitGlobal = bmInitGlobalBytes g ptrWidth
               , mmAddDefine = return `c3` bmAddDefine g ptrWidth
               , mmLookupSymbol = bmLookupSymbol g
               , mmStackAlloc = return `c4` bmStackAlloc g ptrWidth
               , mmStackPush = \mem -> return (AIG.trueLit g, bmStackPush mem)
               , mmStackPop = return . bmStackPop ptrWidth
               , mmHeapAlloc = return `c4` bmHeapAlloc g ptrWidth
-              , mmMemCopy = bmMemCopy g endian
+              , mmMemCopy = bmMemCopy g
               , mmRecordBranch = return -- do nothing
               , mmBranchAbort = return -- do nothing
               , mmMux = bmMux g
@@ -1098,7 +1098,7 @@ data DMApp l
      -- be empty.
    | DMStackPop (SymAddr l) (SymAddr l) (DagMemory l)
    | DMMod (DMMod (BV l)) (DagMemory l)
-   | DMMergeFramePush (DagMemory l) 
+   | DMMergeFramePush (DagMemory l)
    | DMMergeFramePop (DagMemory l)
    | DMMux l (DagMemory l) (DagMemory l)
 
@@ -1119,7 +1119,7 @@ dmPrintApp g app =
     DMMod (DMStore s e bytes) mem -> text "store"     <+> pr (s,e) <+> text ":=" <+> pbytes bytes <+> pm mem
     DMMod (DMMemCopy s e src) mem -> text "memCopy"   <+> pr (s,e) <+> text ":= *" <> paddr src <+> pm mem
     DMMergeFramePush mem  -> text "mergePush" <+> pm mem
-    DMMergeFramePop  mem  -> text "mergePop" <+> pm mem 
+    DMMergeFramePop  mem  -> text "mergePop" <+> pm mem
     DMMux c t f           -> text "mux"     <+> pl c <+> char '?' <+> pm t <+> char ':' <> pm f
  where pr = lPrettyRange g
        pl = lPrettyLit g
@@ -1155,14 +1155,14 @@ dmLoadBytes :: (IsAIG l g, Ord (l s))
             -> BitTerm (l s)
             -> Size
             -> Alignment
-            -> IO (l s, BV (l s))
-dmLoadBytes g _ (PtrTerm _) 0 _ = return (AIG.trueLit g, BV.empty)
+            -> IO (l s, V.Vector (BV (l s)))
+dmLoadBytes g _ (PtrTerm _) 0 _ = return (AIG.trueLit g, V.empty)
 dmLoadBytes g mem (PtrTerm ptr) sz _ = do
   let ptrOffset i = BV.addConst g ptr (toInteger i)
   szl <- ptrOffset sz
-  bs  <- mapM (dmLoadByte mem <=< ptrOffset) $ reverse [0 .. sz-1]
+  bs  <- mapM (dmLoadByte mem <=< ptrOffset) $ [0 .. sz-1]
   isInit <- dmIsInitialized mem (ptr,szl)
-  return ( isInit, BV.concat bs )
+  return ( isInit, V.fromList bs )
 dmLoadBytes _ _ _ _ _ = illegalArgs "dmLoadBytes"
 
 -- | Returns node with given app, creating it if necessary.  The function passed
@@ -1182,7 +1182,7 @@ dmLoadByteFromStore :: (IsAIG l g, Ord (l s))
                     -> (BV (l s) -> IO (BV (l s)))
 dmLoadByteFromStore g (s,e) bytes mem p = do
   c <- bvInRange g p (s, e)
-  BV.iteM g c 
+  BV.iteM g c
             (do diff <- BV.sub g p s
                 BV.muxInteger (BV.iteM g)
                           (toInteger (V.length bytes - 1))
@@ -1191,7 +1191,7 @@ dmLoadByteFromStore g (s,e) bytes mem p = do
             (dmLoadByte mem p)
 
 dmRawStore :: (IsAIG l g, Ord (l s))
-           => g s 
+           => g s
            -> RefIdx
            -> BV (l s)
            -> BV (l s)
@@ -1229,10 +1229,10 @@ concreteSubC g x y = do
 dmStore :: (IsAIG l g, Ord (l s))
            => g s
            -> RefIdx
-           -> BV (l s) 
            -> BV (l s)
-           -> V.Vector (Byte (l s)) 
-           -> DagMemory (l s) 
+           -> BV (l s)
+           -> V.Vector (Byte (l s))
+           -> DagMemory (l s)
            -> IO (DagMemory (l s))
 dmStore g ref = simp
   where simp nb ne nvals mem0@DagMemory{ dmNodeApp = DMMod m@(DMStore ob oe ovals) mem } = do
@@ -1249,7 +1249,7 @@ dmStore g ref = simp
 
                | bo AIG.=== AIG.falseLit g
                , Just off <- BV.asUnsigned g diffo
-               , off <= toInteger (V.length nvals) 
+               , off <= toInteger (V.length nvals)
                   -> simp ob ne (dropEnd (fromInteger off) ovals V.++ nvals) mem
 
                | otherwise -> dmRawStore g ref nb ne nvals mem0
@@ -1271,7 +1271,7 @@ dmStore g ref = simp
                | Just (diffo, bo) <- concreteSubC g oe nb
                , bo == False
                , Just off <- BV.asUnsigned g diffo
-               , off <= toInteger (V.length nvals) 
+               , off <= toInteger (V.length nvals)
                     = simp ob ne (dropEnd (fromInteger off) ovals V.++ nvals) mem
 
                | otherwise = dmRawStore g ref nb ne nvals mem0
@@ -1291,36 +1291,36 @@ dmMod g ref (DMMemCopy s e src) m = dmMemCopyImpl g ref s e src m
 -- | Store bytes in memory
 dmStoreBytes :: (IsAIG l g, Ord (l s))
              => g s
-             -> EndianForm
              -> RefIdx
              -> DagMemory (l s)
              -> BitTerm (l s)
-             -> BV (l s)
+             -> V.Vector (BV (l s))
              -> Alignment
              -> IO (l s, DagMemory (l s))
-dmStoreBytes g endian ref mem (PtrTerm ptr) flatBytes _
+dmStoreBytes g ref mem (PtrTerm ptr) bytes _
   | byteCount == 0 = return (AIG.trueLit g, mem)
   | otherwise = do
 
     --TODO: Figure out how to handle possibility that ptrEnd addition overflows.
     --(ptrEnd,_of) <- BV.addC g ptr (BV.bvFromInteger g (BV.length ptr) (toInteger byteCount))
     ptrEnd <- BV.addConst g ptr (toInteger byteCount)
-    m <- dmStore g ref ptr ptrEnd newBytes mem
+    m <- dmStore g ref ptr ptrEnd bytes mem
     isalloc <- dmIsAllocated mem (ptr,ptrEnd)
     return (isalloc, m)
- where newBytes = sliceIntoBytes endian flatBytes
-       byteCount = V.length newBytes
-dmStoreBytes _ _ _ _ _ _ _ = illegalArgs "dmStoreBytes"
+ where byteCount = V.length bytes
+
+dmStoreBytes _ _ _ _ _ _ = illegalArgs "dmStoreBytes"
 
 -- | Initialize global data memory.
 dmInitGlobal :: (IsAIG l g, Ord (l s))
              => g s
-             -> EndianForm
              -> Int  -- ^ Width of pointer
              -> Addr -- ^ End of data region
              -> RefIdx
-             -> DagMemory (l s) -> BV (l s) -> IO (Maybe (BitTerm (l s), DagMemory (l s)))
-dmInitGlobal g endian ptrWidth dataEnd ref mem flatBytes
+             -> DagMemory (l s)
+             -> V.Vector (BV (l s))
+             -> IO (Maybe (BitTerm (l s), DagMemory (l s)))
+dmInitGlobal g ptrWidth dataEnd ref mem bytes
   | byteCount == 0 = return $ Just (PtrTerm ptr, mem)
   | dataEnd - dmsData (dmState mem) < byteCount = return Nothing
   | otherwise = do
@@ -1328,8 +1328,7 @@ dmInitGlobal g endian ptrWidth dataEnd ref mem flatBytes
       mem2 <- dmStore g ref ptr ptrEnd bytes mem1
       -- Return result
       return $ Just (PtrTerm ptr, mem2)
-  where bytes = sliceIntoBytes endian flatBytes
-        byteCount = toInteger (V.length bytes)
+  where byteCount = toInteger (V.length bytes)
         nextData = dmsData (dmState mem) + byteCount
         ptr = BV.bvFromInteger g ptrWidth (dmsData (dmState mem))
         ptrEnd = BV.bvFromInteger g ptrWidth nextData
@@ -1529,7 +1528,7 @@ dmHeapAlloc _ _ _ _ _ _ _ _ = illegalArgs "dmHeapAlloc"
 
 dmMemCopyImpl :: (IsAIG l g, Ord (l s))
               => g s
-              -> RefIdx 
+              -> RefIdx
               -> BV (l s) -- ^ Destination start
               -> BV (l s) -- ^ Destination end
               -> BV (l s) -- ^ Source start
@@ -1547,7 +1546,7 @@ dmMemCopyImpl g ref dest destEnd src mem = do
      mem { dmIsInitialized = initFn
          , dmLoadByte = loadFn
          }
-  
+
 
 -- | Store bytes in memory
 dmMemCopy :: (IsAIG l g, Ord (l s))
@@ -1557,7 +1556,7 @@ dmMemCopy :: (IsAIG l g, Ord (l s))
           -> DagMemory (l s)
           -> BitTerm (l s)   -- ^ Destination pointer
           -> BitTerm (l s)   -- ^ Source pointer
-          -> BitWidth    -- ^ Width of length value. 
+          -> BitWidth    -- ^ Width of length value.
           -> BitTerm (l s)   -- ^ Length value
           -> BitTerm (l s)  -- ^ Alignment in bytes
           -> IO (l s, DagMemory (l s))
@@ -1589,16 +1588,16 @@ dmRecordBranch ref mem =
   dmGetMem ref (DMMergeFramePush mem) mem { dmMergeDepth = dmMergeDepth mem + 1 }
 
 dmBranchAbort :: RefIdx -> DagMemory l -> IO (DagMemory l)
-dmBranchAbort ref mem 
+dmBranchAbort ref mem
   | d <= 0 = error "internal: dmBranchAbort called on negative merge depth"
   | otherwise = do
       dmGetMem ref (DMMergeFramePop mem) mem { dmMergeDepth = d - 1 }
  where d = dmMergeDepth mem
 
 dmMux :: (IsAIG l g, Ord (l s))
-      => g s 
+      => g s
       ->RefIdx
-      -> l s 
+      -> l s
       -> DagMemory (l s)
       -> DagMemory (l s)
       -> IO (DagMemory (l s))
@@ -1637,7 +1636,7 @@ dmMux g ref c t f = do
       , dmStackFrames   = dmsf
       , dmMergeDepth = dmMergeDepth t - 1
       , dmIsAllocated   = allocFn
-      , dmIsInitialized = initFn 
+      , dmIsInitialized = initFn
       , dmLoadByte      = loadFn
       }
 
@@ -1653,11 +1652,10 @@ createDagMemModel dl g mg = do
   ref <- newIORef 1
   let ptrStart range = BV.bvFromInteger g ptrWidth (start range)
   let ptrEnd range = BV.bvFromInteger g ptrWidth (end range)
-  let endian = dl^.intLayout
   let mm = MemModel
               { mmLoad = dmLoadBytes g
-              , mmStore = dmStoreBytes g endian ref
-              , mmInitGlobal = dmInitGlobal g endian ptrWidth (end (mgData mg)) ref
+              , mmStore = dmStoreBytes g ref
+              , mmInitGlobal = dmInitGlobal g ptrWidth (end (mgData mg)) ref
               , mmDump = dmDump g
               , mmAddDefine = dmAddDefine g ptrWidth (end (mgCode mg)) ref
               , mmLookupSymbol = dmLookupSymbol g
@@ -1699,8 +1697,8 @@ createDagAll g dl mg = do
 evalAigerImpl :: (IsAIG l g, Eq (l s))
               => g s -> DataLayout -> [Bool] -> MemType -> BitTerm (l s) -> IO (BitTerm (l s))
 evalAigerImpl g dl inps tp t = do
-      eval <- AIG.evaluator g inps
-      return $ unflattenTerm g dl tp $ fmap eval $ flattenTerm g t
+      eval <- AIG.evaluator g (reverse inps)
+      return $ unflattenTerm g dl tp $ fmap eval $ flattenTerm g dl tp t
 
 --  SBE Definition {{{1
 
@@ -1748,7 +1746,7 @@ applyIntArithOp g op = vf
 
 applyExpr :: forall l g s
           .  (IsAIG l g, Eq (l s))
-          => g s 
+          => g s
           -> DataLayout
           -> TypedExpr (BitTerm (l s))
           -> IO (BitTerm (l s))
@@ -1810,7 +1808,7 @@ applyExpr g dl texpr = do
     Select (Just n) (VecTerm cv) _ (VecTerm tv) (VecTerm fv)
       | V.length cv == n -> either fail (return . VecTerm) =<< (fmap V.sequence rv)
           where rv = sequenceOf traverse $ V.zipWith3 (muxTerm g) (asInt1 <$> cv) tv fv
-    Select{} -> illegalArgs "Select"                                       
+    Select{} -> illegalArgs "Select"
     GetStructField _ (StructTerm t) i -> return $ t V.! i
     GetStructField{} -> illegalArgs "GetStructField"
     GetConstArrayElt _ _ (ArrayTerm t) i -> return $ t V.! i
@@ -1871,10 +1869,10 @@ sbeBitBlast g dl mm =
 
            , termSAT          = BitIO . AIG.checkSat g
            , writeAiger       = \f ts -> BitIO $ do
-               let outputs = BV.concat (flattenTerm g . snd <$> ts)
+               let outputs = BV.concat (uncurry (flattenTerm g dl) <$> ts)
                AIG.writeAiger f (AIG.Network g (BV.bvToList outputs))
 
-           , evalAiger        = \ins mt tm -> BitIO $ evalAigerImpl g dl (reverse ins) mt tm
+           , evalAiger        = \ins mt tm -> BitIO $ evalAigerImpl g dl ins mt tm
            , writeCnf         = Just $ \f p -> BitIO $ AIG.writeCNF g p f
            , writeSAWCore = Nothing
            , writeSmtLib = Nothing
@@ -1909,12 +1907,12 @@ asPtrTerm (PtrTerm x) = x
 asPtrTerm _ = illegalArgs "asIntTerm"
 
 -- | Return if then else of terms.
-muxTerm :: (Eq (l s), IsAIG l g) 
+muxTerm :: (Eq (l s), IsAIG l g)
         => g s -> l s -> BitTerm (l s) -> BitTerm (l s) -> IO (Either String (BitTerm (l s)))
-muxTerm g c x0 y0 
+muxTerm g c x0 y0
   | c AIG.=== AIG.trueLit g  = return $ Right x0
   | c AIG.=== AIG.falseLit g = return $ Right y0
-  | otherwise = 
+  | otherwise =
      case (x0, y0) of
        (IntTerm x, IntTerm y) -> fmap (Right . IntTerm) $ BV.ite g c x y
        (FloatTerm x, FloatTerm y)
@@ -1927,67 +1925,24 @@ muxTerm g c x0 y0
        (ArrayTerm x, ArrayTerm y) -> fmap (fmap ArrayTerm . V.sequence) $ V.zipWithM (muxTerm g c) x y
        (VecTerm x, VecTerm y) -> fmap (fmap VecTerm . V.sequence) $ V.zipWithM (muxTerm g c) x y
        (StructTerm x, StructTerm y) -> fmap (fmap VecTerm . V.sequence) $ V.zipWithM (muxTerm g c) x y
-       _ -> return $ Left "Internal error: Backend given incompatible terms" 
+       _ -> return $ Left "Internal error: Backend given incompatible terms"
 
--- | Converts a bit term into a single lit vector.
-flattenTerm :: (IsAIG l g) => g s -> BitTerm (l s) -> BV (l s)
-flattenTerm g t0 =
-  case t0 of
-    IntTerm v -> v
-    FloatTerm v -> lVectorFromFloat g v
-    DoubleTerm v -> lVectorFromDouble g v
-    PtrTerm v -> v
-    ArrayTerm v  -> joinN (flattenTerm g <$> v)
-    VecTerm v    -> joinN (flattenTerm g <$> v)
-    StructTerm v -> joinN (flattenTerm g <$> v)
+-- | Converts a bit term into a single lit vector.  The bitterm is first
+--   converted into a sequence of bytes (respecting the byte order given in the
+--   data layout) which are then concatenated into a single bitvector.
+flattenTerm :: (IsAIG l g)
+            => g s
+            -> DataLayout
+            -> MemType
+            -> BitTerm (l s)
+            -> BV (l s)
+flattenTerm g dl ty t = joinN $ termToBytes g dl ty t
 
--- | Returns minimum number of bits to encode type.
-memTypeBitsize :: DataLayout -> MemType -> Int
-memTypeBitsize dl tp0 =
-  case tp0 of
-    IntType w  -> w
-    FloatType  -> 32
-    DoubleType -> 64
-    PtrType{}  -> ptrBitwidth dl
-    ArrayType n etp -> n * memTypeBitsize dl etp
-    VecType n etp   -> n * memTypeBitsize dl etp
-    StructType si   -> V.sum $ memTypeBitsize dl <$> siFieldTypes si
-
-
-vecToBits :: (Bits a, Num a) => BV Bool -> a
-vecToBits v = impl 0 0 
-  where impl i r 
-          | i == BV.length v = r
-          | v BV.! i  = impl (i+1) (r `setBit` i)
-          | otherwise = impl (i+1) r
-
--- | Converts from flat lit vector to bitterm based on type.
+-- | Converts from flat lit vector to bitterm based on type.  The vector of
+--   booleans is first sliced into bytes, which are then interpreted as
+--   a bitterm according to the byte order given in the data layout.
 unflattenTerm :: (IsAIG l g) => g s -> DataLayout -> MemType -> BV Bool -> BitTerm (l s)
-unflattenTerm g dl tp0 v =
-  case tp0 of
-    IntType w
-      | BV.length v == w ->
-          IntTerm (fmap (AIG.constant g) v)
-      | otherwise -> badVec $ "integer"
-    FloatType
-      | BV.length v == 32 ->
-          FloatTerm  $ wordToFloat $ vecToBits v
-      | otherwise -> badVec "float"
-    DoubleType
-      | BV.length v == 64 ->
-          DoubleTerm $ wordToDouble $ vecToBits v
-      | otherwise -> badVec "double"
-    PtrType{}
-      | ptrBitwidth dl == fromIntegral (BV.length v) ->
-        PtrTerm (fmap (AIG.constant g) v)
-      | otherwise -> badVec "ptr"
-    ArrayType n etp -> ArrayTerm  $ unflattenTerm g dl etp <$> sliceN n v
-    VecType n etp   -> VecTerm    $ unflattenTerm g dl etp <$> sliceN n v
-    StructType si   -> StructTerm $ V.zipWith (unflattenTerm g dl) flv vv
-      where flv = siFieldTypes si
-            szv = memTypeBitsize dl <$> flv
-            ofv = V.prescanl (+) 0 szv
-            vv = V.zipWith (\i o-> BV.sliceRev v i o) ofv szv
- where badVec nm = error $
-        "internalError: unflattern given incorrect number of bits for "
-        ++ nm ++ "."
+unflattenTerm g dl tp v =
+   case bytesToTerm g dl tp $ fmap (fmap (AIG.constant g)) $ sliceBy 8 v of
+      Just x  -> x
+      Nothing -> error "impossible: failure in unflattenTerm"
