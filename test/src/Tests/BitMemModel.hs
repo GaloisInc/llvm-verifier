@@ -5,6 +5,8 @@ module Tests.BitMemModel (bitMemModelTests) where
 
 import Data.Bits
 
+import qualified Data.Vector as V
+
 import qualified Data.AIG as AIG
 import           Data.AIG (IsAIG)
 import qualified Data.ABC as ABC
@@ -23,11 +25,11 @@ mmTest :: String
             -> SBE (BitIO mem (l s))
             -> BitBlastMemModel mem (l s)
             -> mem
-            -> IO ()) 
+            -> IO ())
        -> TestTree
 mmTest testName disableBuddy fn =
   let dl = defaultDataLayout
-      mg = MemGeom { 
+      mg = MemGeom {
                    mgStack = (0x10,0x0)
                  , mgCode = (0x0,0x0)
                  , mgData = (0x0, 0x0)
@@ -55,7 +57,7 @@ bitMemModelTests :: [TestTree]
 bitMemModelTests =
   [ mmTest "symbolicTests" True $ \dl g sbe@SBE { .. } MemModel { .. } m0 -> do
       let ptrWidth = ptrBitwidth dl
-      let bytes = AIG.bvFromInteger g 8 7
+      let bytes = V.fromList [AIG.bvFromInteger g 8 7]
       let tTrue = sbeTruePred
       cnt <- runSBE $ freshInt 1
       -- Try allocating symbolic ammount.
@@ -72,7 +74,7 @@ bitMemModelTests =
       -- Test symbolic load succeeds under appropiate conditions.
       do cntExt <- runSBE $ applyTypedExpr (SExt Nothing 1 cnt ptrWidth)
          rptr <- runSBE $ applyTypedExpr (PtrAdd ptr cntExt)
-         (c2, _) <- mmLoad m2 rptr 1 0 
+         (c2, _) <- mmLoad m2 rptr 1 0
          HU.assertBool "failed to load" =<< runSBE (evalPred [False] c2)
   , mmTest "mergeTest" False $ \_lc g sbe@SBE { .. } MemModel { .. } m0 -> do
       let tTrue = sbeTruePred
@@ -82,7 +84,7 @@ bitMemModelTests =
       AResult c0 ptr m1 <- mmStackAlloc m0' 1 cnt 0
       HU.assertBool "failed to stack allocate" (c0 == tTrue)
       -- Store bytes
-      let lvi = AIG.bvFromInteger g
+      let lvi w x = V.fromList $ [AIG.bvFromInteger g w x]
       (ct, mt) <- mmStore m1 ptr (lvi 8 1) 0
       HU.assertBool "failed to store" =<< runSBE (evalPred [] ct)
       (cf, mf) <- mmStore m1 ptr (lvi 8 0) 0
@@ -92,11 +94,13 @@ bitMemModelTests =
       cond <- runSBE $ applyIEq 1 cond0 =<< termInt sbe 1 1
       m2 <- mmMux cond mt mf
       -- Check result of merge
-      (c2, v) <- mmLoad m2 ptr 1 0 
+      (c2, bytes) <- mmLoad m2 ptr 1 0
+      HU.assertEqual "bytes loaded" (V.length bytes) 1
+      let v = bytes V.! 0
       HU.assertBool "failed to load" (c2 == tTrue)
       v1 <- AIG.evaluate (AIG.Network g (AIG.bvToList v)) [False]
       v2 <- AIG.evaluate (AIG.Network g (AIG.bvToList v)) [True]
       HU.assertEqual "unexpected value for v1" (bfi 8 0) v1
       HU.assertEqual "unexpected value for v2" (bfi 8 1) v2
-  ] 
+  ]
  where runSBE = liftSBEBitBlast
