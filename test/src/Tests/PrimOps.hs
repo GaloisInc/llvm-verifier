@@ -72,6 +72,8 @@ primOpTests =
 
   , testMainBasic "test-call-exit" AllPathsErr
 
+  , lssTestAll "test-union-le" [] Nothing (RV 4)
+  , lssTestAll "test-union-be" [] Nothing (RV 1)
   , lssTestAll "test-call-simple" [] Nothing (RV 1)
   , lssTestAll "test-call-simple" [] Nothing (RV 1)
   , lssTestAll "ctests/test-call-alloca" [] Nothing (RV 34289)
@@ -84,6 +86,7 @@ primOpTests =
   , lssTestAll "ctests/test-user-override-reset" [] Nothing (RV 1)
   , lssTestAll "ctests/test-user-override-intrinsic" [] Nothing (RV 1)
   , lssTestAll "ctests/test-merge-mem-problem" [] Nothing (RV 1)
+
   ]
   where
     dirInt32add      = chkArithBitEngineFn 32 True (Add False False) add
