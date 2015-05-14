@@ -292,7 +292,7 @@ mkBackendState dl sc = do
 
   appendFn <- scApplyPrelude_append sc
   boolTy <- scBoolType sc
-  let appendInt m n x y = appendFn n m boolTy y x
+  let appendInt m n x y = appendFn m n boolTy x y
   sliceFn   <- scApplyLLVM_llvmIntSlice sc
   valueFn   <- scApplyLLVM_value sc
   let tg = MM.TG
@@ -360,12 +360,12 @@ mkBackendState dl sc = do
                   case vf of
                     MM.SelectLowBV m n v -> do
                       case dl^.intLayout of
-                        BigEndian    -> slice n m 0 v -- High order bits of v.
-                        LittleEndian -> slice 0 m n v -- low order bits of v.
+                        BigEndian    -> slice 0 m n v -- High order bits of v.
+                        LittleEndian -> slice n m 0 v -- low order bits of v.
                     MM.SelectHighBV m n v -> do
                       case dl^.intLayout of
-                        BigEndian    -> slice 0 n m v -- Low order bits of v.
-                        LittleEndian -> slice m n 0 v -- High order bits of v.
+                        BigEndian    -> slice m n 0 v -- Low order bits of v.
+                        LittleEndian -> slice 0 n m v -- High order bits of v.
                     MM.FloatToBV v  -> join $ scApplyLLVM_llvmFloatToInt sc ?? v
                     MM.DoubleToBV v -> join $ scApplyLLVM_llvmDoubleToInt sc ?? v
                     MM.ArrayElt n tp o v -> do
