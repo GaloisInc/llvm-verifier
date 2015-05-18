@@ -936,7 +936,8 @@ getStructElt = Conversion $
 abstract :: SAWBackendState t -> SharedTerm t -> IO (SharedTerm t)
 abstract sbs t = do
   ecs <- map (\(_, _, ec) -> ec) <$> readIORef (sbsVars sbs)
-  scAbstractExts (sbsContext sbs) ecs t
+  -- NB: reverse the list because sbs is stored with most recent variables first.
+  scAbstractExts (sbsContext sbs) (reverse ecs) t
 
 scTermSAT :: AIG.IsAIG l g =>
   AIG.Proxy l g -> SAWBackendState t -> SharedTerm t -> IO (AIG.SatResult)
@@ -957,7 +958,7 @@ scWriteAiger proxy sbs path terms = do
   t <- scTuple sc ts
   t' <- abstract sbs t
   BB.withBitBlastedTerm proxy sc t' $ \be ls -> do
-  AIG.writeAiger path (AIG.Network be (AIG.bvToList ls))
+    AIG.writeAiger path (AIG.Network be (AIG.bvToList ls))
 
 scWriteCNF :: AIG.IsAIG l g
            => AIG.Proxy l g
