@@ -23,8 +23,6 @@ import qualified Test.Tasty.HUnit as HU
 import           System.FilePath
 
 import qualified Data.ABC as ABC
-import qualified Data.ABC.AIG
-import qualified Data.ABC.GIA
 
 import           LSSImpl
 
@@ -48,6 +46,7 @@ data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving (Eq, Functor)
 type SBEPropM m = forall sbe. (Functor sbe, Ord (SBETerm sbe)) => Simulator sbe m ()
 type SBECreateFn = DataLayout -> IO SBEPair
 
+abcNetwork :: ABC.Proxy ABC.GIALit ABC.GIA
 abcNetwork = ABC.giaNetwork
 
 -- | Create buddy backend and initial memory.
