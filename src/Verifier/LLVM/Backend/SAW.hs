@@ -935,9 +935,9 @@ getStructElt = Conversion $
 -- | Lambda abstract term @t@ over all symbolic variables.
 abstract :: SAWBackendState t -> SharedTerm t -> IO (SharedTerm t)
 abstract sbs t = do
-  ecs <- map (\(_, _, ec) -> ec) <$> readIORef (sbsVars sbs)
   -- NB: reverse the list because sbs is stored with most recent variables first.
-  scAbstractExts (sbsContext sbs) (reverse ecs) t
+  ecs <- map (\(_, _, ec) -> ec) . reverse <$> readIORef (sbsVars sbs)
+  scAbstractExts (sbsContext sbs) ecs t
 
 scTermSAT :: AIG.IsAIG l g =>
   AIG.Proxy l g -> SAWBackendState t -> SharedTerm t -> IO (AIG.SatResult)
@@ -1002,7 +1002,8 @@ splitByWidths v (w:wl) = (i:) <$> splitByWidths v' wl
 
 scEvalTerm :: SAWBackendState t -> [Bool] -> SharedTerm t -> IO (SharedTerm t)
 scEvalTerm sbs inputs t = do
-  (widths,varIndices,_) <- unzip3 <$> readIORef (sbsVars sbs)
+  -- NB: reverse the list because sbs is stored with most recent variables first.
+  (widths,varIndices,_) <- unzip3 . reverse <$> readIORef (sbsVars sbs)
   case splitByWidths (V.fromList inputs) widths of
     Nothing -> fail "Incorrect number of inputs"
     Just wv -> do
