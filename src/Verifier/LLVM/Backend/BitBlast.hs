@@ -103,14 +103,6 @@ memo fn = do
        Just v -> return v
        Nothing -> fn key >>= \v -> modifyIORef ref (Map.insert key v) >> return v
 
--- | Slice a vector into `n` equal-sized subvectors.
-sliceVectorN :: Int -- ^ n
-             -> V.Vector a -- ^ vector to slice
-             -> V.Vector (V.Vector a)
-sliceVectorN n v = assert (n > 0 && r == 0) $
-    V.generate n $ \i -> V.slice (l*i) l v
-  where (l,r) = V.length v `divMod` n
-
 -- | Slice a single bitvector into a vector of bitvectors, each of length `n`.
 sliceBy :: Int -- ^ n
         -> BV l -- ^ bitvector to split.
@@ -122,11 +114,6 @@ sliceBy n v = assert (n > 0 && r == 0) $
 -- | Concatenate a vector of vectors
 joinVector :: V.Vector (V.Vector a) -> V.Vector a
 joinVector = V.concat . V.toList
-
--- | Concatenate a vector of bitvectors, with more significant
---   bits at lower indices in the outer vector.
-joinN :: V.Vector (BV l) -> BV l
-joinN = BV.concat . V.toList
 
 -- | @alignUp addr i@ returns the smallest multiple of @2^i@ that it
 -- at least @addr@.
@@ -293,83 +280,6 @@ litAsBool g x
     | x AIG.=== AIG.falseLit g = Just False
     | x AIG.=== AIG.trueLit g  = Just True
     | otherwise = Nothing
-
--- | Attempts to convert a bitvector to a term.
--- May fail if some values are symbolic, but floating point.
-bytesToTerm :: (IsAIG l g)
-            => g s
-            -> DataLayout
-            -> MemType
-            -> V.Vector (BV (l s))
-            -> Maybe (BitTerm (l s))
-bytesToTerm g dl tp0 bytes =
-  let endianBits =
-       case dl^.intLayout of
-           BigEndian    -> BV.concat $ V.toList $ bytes
-           LittleEndian -> BV.concat $ V.toList $ V.reverse bytes
-  in
-  case tp0 of
-    IntType w
-      | w <= 8 * V.length bytes -> return $ IntTerm $ BV.trunc w $ endianBits
-      | otherwise -> badVec $ "integer.\nExpected at least " ++ show w
-                              ++ "; Found " ++ show (8 * V.length bytes)
-    FloatType
-      | V.length bytes == 4 ->
-          FloatTerm  . wordToFloat . fromIntegral <$> BV.asUnsigned g endianBits
-      | otherwise -> badVec "float."
-    DoubleType
-      | V.length bytes == 8 ->
-          DoubleTerm  . wordToDouble . fromIntegral <$> BV.asUnsigned g endianBits
-      | otherwise -> badVec "double."
-    PtrType{} | ptrBitwidth dl == fromIntegral (8 * V.length bytes) ->
-          return $ PtrTerm $ endianBits
-    ArrayType n etp -> ArrayTerm <$> traverse (bytesToTerm g dl etp) (sliceVectorN n bytes)
-    VecType n etp   -> VecTerm <$> traverse (bytesToTerm g dl etp) (sliceVectorN n bytes)
-    StructType si   -> StructTerm <$> traverse go (siFields si)
-      where go fi = bytesToTerm g dl (fiType fi) (V.slice o sz bytes)
-              where o = fromIntegral (fiOffset fi)
-                    sz = fromIntegral (memTypeSize dl (fiType fi))
-    _ -> error $ unwords ["internalError: bytes to term given mismatched arguments"
-                         , show (ppMemType tp0)
-                         , BV.bvShow g endianBits
-                         ]
- where badVec nm = error $
-        "internalError: bytesToTerm given incorrect number of bits for " ++ nm
-
-
-lVectorFromFloat :: (IsAIG l g) => g s -> Float -> BV (l s)
-lVectorFromFloat g = BV.bvFromInteger g 32 . toInteger . floatToWord
-
-lVectorFromDouble :: (IsAIG l g) => g s -> Double -> BV (l s)
-lVectorFromDouble g = BV.bvFromInteger g 64 . toInteger . doubleToWord
-
--- | Convert term into a list of bytes suitable for storing in memory.
-termToBytes :: (IsAIG l g)
-            => g s
-            -> DataLayout
-            -> MemType
-            -> BitTerm (l s)
-            -> V.Vector (BV (l s))
-termToBytes g dl tp0 t0 =
-  let toBytes bits = case dl^.intLayout of
-                        BigEndian    -> sliceBy 8 bits
-                        LittleEndian -> V.reverse $ sliceBy 8 bits
-  in
-  case (tp0, t0) of
-    (IntType w, IntTerm v) -> toBytes bits
-      where bits = ext BV.++ v
-            newBits = (8 - (w .&. 0x7)) .&. 0x7
-            ext = BV.replicate (fromIntegral newBits) (dontCareLit g)
-    (FloatType,      FloatTerm v)  -> toBytes $ lVectorFromFloat g v
-    (DoubleType,     DoubleTerm v) -> toBytes $ lVectorFromDouble g v
-    (PtrType{},      PtrTerm v)
-      | ptrBitwidth dl == BV.length v -> toBytes v
-    (ArrayType _ tp, ArrayTerm v)  -> joinVector (termToBytes g dl tp <$> v)
-    (VecType _ tp,   VecTerm v)    -> joinVector (termToBytes g dl tp <$> v)
-    (StructType si,  StructTerm v) -> joinVector $ V.zipWith (termToBytes g dl) (siFieldTypes si) v
-    _ -> error $ show $ text "internalError: termToBytes given mismatched arguments:" <$$>
-           nest 2 (text "Type:" <+> ppMemType tp0 <$$>
-                   text "Term:" <+> ppBitTerm g t0)
 
 -- MemModel {{{1
 
@@ -1698,7 +1608,7 @@ evalAigerImpl :: (IsAIG l g, Eq (l s))
               => g s -> DataLayout -> [Bool] -> MemType -> BitTerm (l s) -> IO (BitTerm (l s))
 evalAigerImpl g dl inps tp t = do
       eval <- AIG.evaluator g (reverse inps)
-      return $ unflattenTerm g dl tp $ fmap eval $ flattenTerm g dl tp t
+      return $ bitsToTerm g dl tp $ fmap eval $ termToBits g dl tp t
 
 --  SBE Definition {{{1
 
@@ -1869,7 +1779,7 @@ sbeBitBlast g dl mm =
 
            , termSAT          = BitIO . AIG.checkSat g
            , writeAiger       = \f ts -> BitIO $ do
-               let outputs = BV.concat (uncurry (flattenTerm g dl) <$> ts)
+               let outputs = BV.concat (uncurry (termToBits g dl) <$> ts)
                AIG.writeAiger f (AIG.Network g (BV.bvToList outputs))
 
            , evalAiger        = \ins mt tm -> BitIO $ evalAigerImpl g dl ins mt tm
@@ -1927,22 +1837,125 @@ muxTerm g c x0 y0
        (StructTerm x, StructTerm y) -> fmap (fmap VecTerm . V.sequence) $ V.zipWithM (muxTerm g c) x y
        _ -> return $ Left "Internal error: Backend given incompatible terms"
 
--- | Converts a bit term into a single lit vector.  The bitterm is first
---   converted into a sequence of bytes (respecting the byte order given in the
---   data layout) which are then concatenated into a single bitvector.
-flattenTerm :: (IsAIG l g)
+-- | Convert term into a list of bytes suitable for storing in memory.
+termToBytes :: (IsAIG l g)
             => g s
             -> DataLayout
             -> MemType
             -> BitTerm (l s)
-            -> BV (l s)
-flattenTerm g dl ty t = joinN $ termToBytes g dl ty t
+            -> V.Vector (BV (l s))
+termToBytes g dl = flattenTerm toBytes joinVector g dl
+  where toBytes bits = case dl^.intLayout of
+                          BigEndian    -> sliceBy 8 bits
+                          LittleEndian -> V.reverse $ sliceBy 8 bits
+
+-- | Attempts to convert a bitvector to a term.
+-- May fail if some values are symbolic, but floating point.
+bytesToTerm :: (IsAIG l g)
+            => g s
+            -> DataLayout
+            -> MemType
+            -> V.Vector (BV (l s))
+            -> Maybe (BitTerm (l s))
+bytesToTerm g dl = unflattenTerm byteSize byteSlice endianBits g dl
+ where byteSize v = 8 * V.length v
+       byteSlice i x v = V.slice (i `div` 8) (x `div` 8) v
+       endianBits bytes =
+         case dl^.intLayout of
+            BigEndian    -> BV.concat $ V.toList $ bytes
+            LittleEndian -> BV.concat $ V.toList $ V.reverse bytes
+
+
+-- | Converts a bit term into a single lit vector.  The bitterm is first
+--   converted into a sequence of bytes (respecting the byte order given in the
+--   data layout) which are then concatenated into a single bitvector.
+termToBits :: (IsAIG l g)
+           => g s
+           -> DataLayout
+           -> MemType
+           -> BitTerm (l s)
+           -> BV (l s)
+termToBits = flattenTerm id (BV.concat . V.toList)
 
 -- | Converts from flat lit vector to bitterm based on type.  The vector of
 --   booleans is first sliced into bytes, which are then interpreted as
 --   a bitterm according to the byte order given in the data layout.
-unflattenTerm :: (IsAIG l g) => g s -> DataLayout -> MemType -> BV Bool -> BitTerm (l s)
-unflattenTerm g dl tp v =
-   case bytesToTerm g dl tp $ fmap (fmap (AIG.constant g)) $ sliceBy 8 v of
+bitsToTerm :: (IsAIG l g) => g s -> DataLayout -> MemType -> BV Bool -> BitTerm (l s)
+bitsToTerm g dl mt xs =
+   case unflattenTerm BV.length (\i n v -> BV.slice v i n) id g dl mt (fmap (AIG.constant g) xs) of
       Just x  -> x
-      Nothing -> error "impossible: failure in unflattenTerm"
+      Nothing -> error "impossible: failure in bitsToTerm"
+
+lVectorFromFloat :: (IsAIG l g) => g s -> Float -> BV (l s)
+lVectorFromFloat g = BV.bvFromInteger g 32 . toInteger . floatToWord
+
+lVectorFromDouble :: (IsAIG l g) => g s -> Double -> BV (l s)
+lVectorFromDouble g = BV.bvFromInteger g 64 . toInteger . doubleToWord
+
+flattenTerm :: IsAIG l g
+            => (BV (l s) -> b)
+            -> (V.Vector b -> b)
+            -> g s
+            -> DataLayout
+            -> MemType
+            -> BitTerm (l s)
+            -> b
+flattenTerm flattenBits joinVec g dl tp0 t0 =
+  case (tp0, t0) of
+    (IntType w, IntTerm v) -> flattenBits bits
+      where bits = ext BV.++ v
+            newBits = (8 - (w .&. 0x7)) .&. 0x7
+            ext = BV.replicate (fromIntegral newBits) (dontCareLit g)
+    (FloatType,      FloatTerm v)  -> flattenBits $ lVectorFromFloat g v
+    (DoubleType,     DoubleTerm v) -> flattenBits $ lVectorFromDouble g v
+    (PtrType{},      PtrTerm v)
+      | ptrBitwidth dl == BV.length v -> flattenBits v
+    (ArrayType _ tp, ArrayTerm v)  -> joinVec (flattenTerm flattenBits joinVec g dl tp <$> v)
+    (VecType _ tp,   VecTerm v)    -> joinVec (flattenTerm flattenBits joinVec g dl tp <$> v)
+    (StructType si,  StructTerm v) -> joinVec $ V.zipWith (flattenTerm flattenBits joinVec g dl) (siFieldTypes si) v
+    _ -> error $ show $ text "internalError: flattenTerm given mismatched arguments:" <$$>
+           nest 2 (text "Type:" <+> ppMemType tp0 <$$>
+                   text "Term:" <+> ppBitTerm g t0)
+
+
+unflattenTerm :: (IsAIG l g)
+              => (b -> Int)
+              -> (Int -> Int -> b -> b)
+              -> (b -> BV (l s))
+              -> g s
+              -> DataLayout
+              -> MemType
+              -> b
+              -> Maybe (BitTerm (l s))
+unflattenTerm sizeVec sliceVec getBits g dl tp0 v =
+  case tp0 of
+    IntType w
+      | w <= sizeVec v -> return $ IntTerm $ BV.trunc w $ getBits v
+      | otherwise -> badVec $ "integer.\nExpected at least " ++ show w
+                              ++ "; Found " ++ show (sizeVec v)
+    FloatType
+      | sizeVec v == 32 ->
+          FloatTerm  . wordToFloat . fromIntegral <$> BV.asUnsigned g (getBits v)
+      | otherwise -> badVec "float."
+    DoubleType
+      | sizeVec v == 64 ->
+          DoubleTerm  . wordToDouble . fromIntegral <$> BV.asUnsigned g (getBits v)
+      | otherwise -> badVec "double."
+    PtrType{} | ptrBitwidth dl == fromIntegral (sizeVec v) ->
+          return $ PtrTerm $ (getBits v)
+    ArrayType n etp -> ArrayTerm <$> traverse (unflattenTerm sizeVec sliceVec getBits g dl etp) (sliceIntoN n v)
+    VecType n etp   -> VecTerm <$> traverse (unflattenTerm sizeVec sliceVec getBits g dl etp) (sliceIntoN n v)
+    StructType si   -> StructTerm <$> traverse go (siFields si)
+      where go fi = unflattenTerm sizeVec sliceVec getBits g dl (fiType fi) (sliceVec o sz v)
+              where o  = 8 * fromIntegral (fiOffset fi)
+                    sz = 8 * fromIntegral (memTypeSize dl (fiType fi))
+    _ -> error $ unwords ["internalError: bytes to term given mismatched arguments"
+                         , show (ppMemType tp0)
+                         , BV.bvShow g (getBits v)
+                         ]
+ where badVec nm = error $
+         "internalError: unflattenTerm given incorrect number of bits for " ++ nm
+
+       sliceIntoN n v' = assert (n > 0 && r == 0) $
+           V.generate n $ \i -> sliceVec (l*i) l v'
+         where (l,r) = sizeVec v' `divMod` n
