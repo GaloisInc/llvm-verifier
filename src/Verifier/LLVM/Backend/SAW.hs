@@ -982,7 +982,7 @@ scWriteSmtLib sc isSmtLib2 path w t = do
   zero <- scBvConst sc wn 0
   wt <- scNat sc wn
   t' <- scBvEq sc wt t zero
-  (_, lit) <- SBVSim.sbvSolve sc t'
+  (_, lit) <- SBVSim.sbvSolve sc [] t'
   writeFile path =<< compileToSMTLib isSmtLib2 True lit
 
 
