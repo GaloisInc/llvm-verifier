@@ -324,17 +324,17 @@ llvmIntToDouble = bvToDouble;
 llvmDoubleToInt :: Double -> bitvector 64;
 llvmDoubleToInt = doubleToBV;
 
-ite_same :: (a :: sort 1)
+axiom ite_same :: (a :: sort 1)
          -> (b :: Bool)
          -> (x :: a)
          -> Eq a (ite a b x x) x;
 
 
-ite_false_false :: (b x :: Bool) -> Eq Bool (ite Bool b x False) (and b x);
+axiom ite_false_false :: (b x :: Bool) -> Eq Bool (ite Bool b x False) (and b x);
 
-and_true2 :: (b :: Bool) -> Eq Bool (and b True) b;
+axiom and_true2 :: (b :: Bool) -> Eq Bool (and b True) b;
 
-bvEq_commute_ite1 :: (w :: Nat)
+axiom bvEq_commute_ite1 :: (w :: Nat)
                   -> (b :: Bool)
                   -> (x y z :: bitvector w)
                   -> Eq Bool
@@ -344,19 +344,19 @@ bvEq_commute_ite1 :: (w :: Nat)
 
 -- These rules are unsound due to overflow:
 
-bvule_sameL :: (n :: Nat)
+axiom bvule_sameL :: (n :: Nat)
             -> (x z :: bitvector n) 
             -> Eq Bool
                   (bvule n x (bvAdd n x z))
                   True;
 
-bvule_sameR :: (n :: Nat)
+axiom bvule_sameR :: (n :: Nat)
             -> (x y :: bitvector n) 
             -> Eq Bool
                   (bvule n (bvAdd n x y) x)
                   (bvEq n y (bvNat n 0));
 
-bvule_same2 :: (n :: Nat)
+axiom bvule_same2 :: (n :: Nat)
             -> (x y z :: bitvector n) 
             -> Eq Bool
                   (bvule n (bvAdd n x y) (bvAdd n x z))
