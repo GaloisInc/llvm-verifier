@@ -61,7 +61,6 @@ library
     , transformers-compat
     , tuple >= 0.2
     , vector
-    , MaybeT
 
   if !os(windows)
     build-depends: unix
