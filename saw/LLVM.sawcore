@@ -79,13 +79,13 @@ llvmIntConstant = bvNat;
 bvVecZipWith :: ((w :: Nat) -> binFn (bitvector w))
              -> (n w :: Nat) 
              -> binFn (Vec n (bitvector w));
-bvVecZipWith f n w = vZipWith (bitvector w) (bitvector w) (bitvector w) (f w) n; 
+bvVecZipWith f n w = zipWith (bitvector w) (bitvector w) (bitvector w) (f w) n;
 
 sbvVecZipWith :: ((w :: Nat) -> binFn (bitvector (Succ w)))
               -> (n w :: Nat) 
               -> binFn (Vec n (bitvector (Succ w)));
 sbvVecZipWith f n w =
-  vZipWith (bitvector (Succ w)) (bitvector (Succ w)) (bitvector (Succ w)) (f w) n; 
+  zipWith (bitvector (Succ w)) (bitvector (Succ w)) (bitvector (Succ w)) (f w) n;
 
 llvmAdd  :: (w :: Nat) -> binFn (bitvector w);
 llvmAdd = bvAdd;
@@ -204,11 +204,11 @@ liftVecBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
              -> (n w :: Nat)
              -> binVRel n (bitvector w);
 liftVecBVRel f n w =
-  vZipWith (bitvector w)
-           (bitvector w)
-           (bitvector 1)
-           (liftBVRel f w)
-           n;
+  zipWith (bitvector w)
+          (bitvector w)
+          (bitvector 1)
+          (liftBVRel f w)
+          n;
 
 llvmIeqBool :: (w :: Nat) -> bitvector w -> bitvector w -> Bool;
 llvmIeqBool = bvEq;
@@ -255,7 +255,7 @@ bvMap :: (x y :: Nat)
       -> (n :: Nat)
       -> Vec n (bitvector x)
       -> Vec n (bitvector y);
-bvMap x y = vMap (bitvector x) (bitvector y);
+bvMap x y = map (bitvector x) (bitvector y);
 
 llvmTrunc :: (d r :: Nat) -> bitvector (addNat d r) -> bitvector r;
 llvmTrunc = bvTrunc;
@@ -310,7 +310,7 @@ llvmArrayElt n tp = bvAt n (value tp);
 
 -- | @llvmIntSlice i n o v@ returns an @n@-bit bitvector equal to v / 2^i.
 llvmIntSlice :: (i n o :: Nat) -> bitvector (addNat (addNat i n) o) -> bitvector n;
-llvmIntSlice i n o a = vDrop Bool i n (vTake Bool (addNat i n) o a); 
+llvmIntSlice i n o a = drop Bool i n (take Bool (addNat i n) o a);
 
 llvmIntToFloat  :: bitvector 32 -> Float;
 llvmIntToFloat = bvToFloat;
