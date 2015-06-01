@@ -107,7 +107,7 @@ bgRevWarnings = lens _bgRevWarnings (\s v -> s { _bgRevWarnings = v })
 
 --type BlockGenerator sbe a = StateT (BlockGeneratorState (SBETerm sbe)) IO a
 
-runBlockGenerator :: Monad f =>
+runBlockGenerator :: (Functor f, Monad f) =>
                      StateT (BlockGeneratorState t) f a
                   -> f ([TranslationWarning], [SymBlock t])
 runBlockGenerator m = final <$> execStateT m s0

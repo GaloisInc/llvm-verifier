@@ -30,8 +30,9 @@ module Verifier.LLVM.Debugger
 
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative hiding (empty)
-#endif
+#else
 import Control.Applicative ((<**>))
+#endif
 import Control.Monad
 import Control.Monad.Identity
 import qualified Control.Monad.State as MTL
