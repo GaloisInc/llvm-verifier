@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -O0 #-}
 module Verifier.LLVM.Codebase.DebugInfo 
   ( -- * Reader
@@ -97,9 +98,11 @@ dsScopeCache = lens _dsScopeCache (\s v -> s { _dsScopeCache = v })
 
 type DebugReader = ExceptT String (State DebugInfo)
 
+#if __GLASGOW_HASKELL__ < 710
 instance MonadState DebugInfo DebugReader where
   get = lift get
   put = lift . put
+#endif
 
 runDebugReader :: DebugInfo -> DebugReader a -> (Either String a, DebugInfo)
 runDebugReader s r = runState (runExceptT r) s
@@ -130,9 +133,11 @@ lookupMetadata i = do
 
 type FieldReader = ExceptT String (StateT [Typed Value] (State DebugInfo))
 
+#if __GLASGOW_HASKELL__ < 710
 instance MonadState [Typed Value] FieldReader where
   get = lift get
   put = lift . put
+#endif
 
 readNext' :: FieldReader (Typed Value)
 readNext' = do

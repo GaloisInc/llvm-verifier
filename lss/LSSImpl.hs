@@ -15,10 +15,13 @@ Point-of-contact : jhendrix
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 {-# LANGUAGE ExistentialQuantification  #-}
+{-# LANGUAGE CPP                        #-}
 
 module LSSImpl where
 
+#if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative ((<$>))
+#endif
 import           Control.Lens
 import           Control.Monad.State
 import           Data.Char
