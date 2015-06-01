@@ -2,6 +2,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE CPP #-}
 module Verifier.LLVM.Debugger.Grammar
   ( Grammar
   , SwitchKey
@@ -23,7 +24,9 @@ module Verifier.LLVM.Debugger.Grammar
   , parseCompletions
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+#endif
 import Control.Lens
 import Control.Monad.State as MTL
 import Data.Char
@@ -147,7 +150,7 @@ tokenSeqPos (SeqEnd p) = p
 
 tokenSeqTokens :: Traversal (TokenSeq s) (TokenSeq t) s t
 tokenSeqTokens f (SeqCons p t s) = SeqCons p <$> f t <*> tokenSeqTokens f s
-tokenSeqTokens f (SeqLast p t pe) = (\u -> SeqLast p u pe) <$> f t
+tokenSeqTokens f (SeqLast p t pe) = (\ u -> SeqLast p u pe) <$> f t
 tokenSeqTokens _ (SeqEnd p) = pure (SeqEnd p)
 
 convertToTokens :: String -> TokenSeq Token

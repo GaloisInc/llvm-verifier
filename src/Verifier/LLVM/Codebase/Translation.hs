@@ -20,6 +20,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE CPP #-}
+{-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 module Verifier.LLVM.Codebase.Translation
   ( liftDefine
   , LiftAttempt
@@ -29,7 +31,9 @@ module Verifier.LLVM.Codebase.Translation
   , liftStringValue
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+#endif
 import Control.Lens hiding (op)
 import Control.Monad.State.Strict
 import Control.Monad.Trans.Except
@@ -101,11 +105,11 @@ bgBlocks = lens _bgBlocks (\s v -> s { _bgBlocks = v })
 bgRevWarnings :: Simple Lens (BlockGeneratorState t) [TranslationWarning]
 bgRevWarnings = lens _bgRevWarnings (\s v -> s { _bgRevWarnings = v })
 
-type BlockGenerator sbe a = StateT (BlockGeneratorState (SBETerm sbe)) IO a
+--type BlockGenerator sbe a = StateT (BlockGeneratorState (SBETerm sbe)) IO a
 
-runBlockGenerator :: (?sbe :: SBE sbe)
-                  => BlockGenerator sbe ()
-                  -> IO ([TranslationWarning], [SymBlock (SBETerm sbe)])
+runBlockGenerator :: Monad f =>
+                     StateT (BlockGeneratorState t) f a
+                  -> f ([TranslationWarning], [SymBlock t])
 runBlockGenerator m = final <$> execStateT m s0
   where s0 = BlockGeneratorState { _bgBlocks = [] 
                                  , _bgRevWarnings = []
@@ -115,7 +119,8 @@ runBlockGenerator m = final <$> execStateT m s0
 mkSymBlock :: SymBlockID -> [SymStmt t] -> SymBlock t
 mkSymBlock sbid stmts = SymBlock { sbId = sbid, sbStmts = V.fromList stmts }
 
-addWarning :: (?sbe :: SBE sbe) => Doc -> BlockGenerator sbe ()
+addWarning :: MonadState (BlockGeneratorState t) m =>
+              TranslationWarning -> m ()
 addWarning d = bgRevWarnings %= (d:)
 
 -- Phi instruction parsing {{{1
@@ -158,13 +163,10 @@ newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: ExceptT String IO a }
 runLiftAttempt :: (MonadIO m) => LiftAttempt a -> m (Either String a)
 runLiftAttempt = liftIO . runExceptT . unLiftAttempt
 
-liftMaybe :: Maybe a -> LiftAttempt a
-liftMaybe = maybe (fail "") return
-
-unsupportedStmt :: (?sbe :: SBE sbe)
+unsupportedStmt :: (MonadState (BlockGeneratorState t) m)
                 => L.Stmt
                 -> String
-                -> BlockGenerator sbe (SymStmt (SBETerm sbe))
+                -> m (SymStmt t)
 unsupportedStmt stmt detailMsg = do
   let base = text "Unsupported instruction: " <+> text (show (L.ppStmt stmt))
       detail | null detailMsg = base
@@ -172,10 +174,8 @@ unsupportedStmt stmt detailMsg = do
   addWarning detail
   return (BadSymStmt stmt)
 
-trySymStmt :: (?sbe :: SBE sbe)
-           => L.Stmt
-           -> LiftAttempt (SymStmt (SBETerm sbe))
-           -> BlockGenerator sbe (SymStmt (SBETerm sbe))
+trySymStmt :: (MonadState (BlockGeneratorState t) m, MonadIO m) =>
+              L.Stmt -> LiftAttempt (SymStmt t) -> m (SymStmt t)
 trySymStmt stmt m = do
   mr <- runLiftAttempt m
   case mr of
@@ -255,11 +255,11 @@ liftValue _  L.ValMd{} = fail "Could not interpret metadata."
 liftValue _  _ = fail "Could not interpret LLVM value."
 
 -- | Lift a bitcast expression.
-liftBitcast :: (?lc :: LLVMContext)
+liftBitcast :: (Monad m, ?lc :: LLVMContext)
             => MemType -- ^ Input argument type
-            -> SymValue t -- ^ Input argument expression.
+            -> a -- ^ Input argument expression.
             -> MemType -- ^ Result argument type
-            -> LiftAttempt (SymValue t)
+            -> m a
 liftBitcast PtrType{} v PtrType{} = return v
 liftBitcast itp v rtp | itp `compatMemTypes` rtp = return v
 liftBitcast _ _ _ = fail "Symbolic simulator does not support bitcast."
@@ -300,7 +300,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
           return (tp, PtrAdd sv args)
         go args (ArrayType _ etp) r = goArray args etp r
         go args (PtrType tp) r = do
-          mtp <- liftMaybe $ asMemType tp
+          mtp <- maybe (fail "") return $ asMemType tp
           goArray args mtp r
         go args (StructType si) r = goStruct args si r
         go _ _ _ = gepFailure
@@ -324,7 +324,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
         goArray _ _ _ = gepFailure
 
         goStruct args si  ((IntType 32, L.ValInteger i) : r) = do       
-          fi <- liftMaybe $ siFieldInfo si (fromIntegral i)
+          fi <- maybe (fail "") return $ siFieldInfo si (fromIntegral i)
           val <- mkSValExpr (SValInteger aw (toInteger (fiOffset fi)))
           args' <- mergeAdd args val
           go args' (fiType fi) r
@@ -338,7 +338,7 @@ liftAlign tp _ = memTypeAlign (llvmDataLayout ?lc) tp
 liftMemType' :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => L.Type
              -> LiftAttempt MemType
-liftMemType' tp = liftMaybe $ liftMemType tp
+liftMemType' tp = maybe (fail "") return $ liftMemType tp
 
 liftStmt :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
          => L.Stmt  
@@ -436,7 +436,7 @@ liftStmt stmt =
           return $ Alloca r tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) malign -> do
           tp@(PtrType etp0) <- liftMemType' tp0
-          etp <- liftMaybe $ asMemType etp0
+          etp <- maybe (fail "") return $ asMemType etp0
           v <- liftValue tp ptr
           return $ Load r v etp (liftAlign etp malign)
         L.ICmp op (L.Typed tp0 u) v -> do
@@ -496,11 +496,12 @@ liftArgValue (Typed tp val) = do
 -- * When jumping from the current block to a new block,
 --   * The current block must ensure that the correct post-dominator merge frames are added.
 --   * The current block must set the phi value registers.
-liftBB :: forall sbe . (?lc :: LLVMContext, ?sbe :: SBE sbe)
-       => LLVMTranslationInfo -- ^ Translation information from analysis
-       -> PhiMap (SBETerm sbe) -- ^ Maps block identifiers to phi instructions for block.
-       -> CFG.BB -- ^ Basic block to generate.
-       -> BlockGenerator sbe ()
+liftBB :: (?lc::LLVMContext, ?sbe::SBE sbe,
+           MonadState (BlockGeneratorState (SBETerm sbe)) m, MonadIO m) =>
+          LLVMTranslationInfo
+       -> PhiMap (SBETerm sbe)
+       -> CFG.BB
+       -> m ()
 liftBB lti phiMap bb = do
     symBlocks <- impl (L.bbStmts bb) []
     bgBlocks %= (symBlocks ++)
@@ -511,8 +512,10 @@ liftBB lti phiMap bb = do
         blockName :: Int -> SymBlockID
         blockName = symBlockID llvmId
 
+                    {-
         emptyBlock :: L.BlockLabel
                    -> State (Seq.Seq (SymBlock (SBETerm sbe))) SymBlockID
+                   -}
         emptyBlock tgt = do
           let mkNewBlock stmts = do
                 l <- get
@@ -525,10 +528,12 @@ liftBB lti phiMap bb = do
             Just (Left stmt) -> mkNewBlock [BadSymStmt stmt]
             Just (Right pairs) -> mkNewBlock ((\(r,tp,v) -> Assign r tp v) <$> pairs)
         -- | Sequentially process statements.
+        {-
         impl :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => [L.Stmt] -- ^ Remaining statements
              -> [SymStmt (SBETerm sbe)] -- ^ Previously generated statements in reverse order.
              -> BlockGenerator sbe [SymBlock (SBETerm sbe)]
+        -}
         impl [] il = liftError $
                          text "Missing terminal instruction in block" <+>
                          text "after generating the following statements:" <$$>
@@ -601,9 +606,11 @@ liftBB lti phiMap bb = do
           impl rest (s' : il)
 
 -- Lift LLVM definition to symbolic definition {{{1
+{-
 liftDefine :: forall sbe . (?lc :: LLVMContext, ?sbe :: SBE sbe)
            => L.Define
            -> IO (Either Doc ([TranslationWarning], SymDefine (SBETerm sbe)))
+-}
 liftDefine d
     | L.defVarArgs d =
        return $ Left (text "Unsupported var args function" <+> symd <> char '.')

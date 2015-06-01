@@ -4,11 +4,14 @@
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TupleSections        #-}
+{-# LANGUAGE CPP                  #-}
 
 module Tests.Common where
 
 import qualified Numeric
+#if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative
+#endif
 import           Control.Monad
 import           Control.Monad.State (gets, MonadIO, liftIO)
 import           Control.Lens ( (^.) )

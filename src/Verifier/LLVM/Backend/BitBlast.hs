@@ -9,6 +9,7 @@ Point-of-contact : atomb, jhendrix
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 {-# LANGUAGE PatternGuards              #-}
+{-# LANGUAGE CPP                        #-}
 
 module Verifier.LLVM.Backend.BitBlast
   ( -- * Re-exports to create and interact with backend.
@@ -35,7 +36,9 @@ module Verifier.LLVM.Backend.BitBlast
   , bmDataAddr
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative (Applicative(..), (<$>), (<*>), pure)
+#endif
 import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
 import           Control.Lens hiding (ix, op)
@@ -85,7 +88,7 @@ g `c5` f = \v w x y z -> g (f v w x y z)
 
 c6 :: (r -> s) -> (a -> b -> c -> d -> e -> f -> r)
                -> (a -> b -> c -> d -> e -> f -> s)
-g `c6` f = \u v w x y z -> g (f u v w x y z)
+g `c6` f = \ u v w x y z -> g (f u v w x y z)
 
 lfp :: Ord a => (a -> [a]) -> Set a -> Set a
 lfp fn initSet = impl initSet (Set.toList initSet)

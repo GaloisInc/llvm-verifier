@@ -13,7 +13,7 @@ Point-of-contact : jstanley
 
 module Main where
 
-#if __GLASGOW_HASKELL__ < 710
+#if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative             hiding (many)
 #endif
 import           Control.Monad

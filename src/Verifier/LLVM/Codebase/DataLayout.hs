@@ -4,6 +4,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE CPP #-}
 module Verifier.LLVM.Codebase.DataLayout
   ( Size
   , Offset
@@ -60,12 +61,14 @@ module Verifier.LLVM.Codebase.DataLayout
   , ppIdent
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>))
+import Data.Monoid (Monoid(..))
+#endif
 import Control.Lens
 import Control.Monad.State.Strict
 import qualified Data.FingerTree as FT
 import Data.Maybe
-import Data.Monoid (Monoid(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import Data.Word (Word32, Word64)

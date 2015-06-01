@@ -16,6 +16,7 @@
 {-# LANGUAGE TupleSections              #-}
 {-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE ViewPatterns               #-}
+{-# LANGUAGE CPP                        #-}
 {-# OPTIONS_GHC -fno-warn-orphans       #-}
 module Verifier.LLVM.Codebase.LLVMContext
   ( -- * LLVMContext
@@ -36,7 +37,9 @@ module Verifier.LLVM.Codebase.LLVMContext
   , asMemType
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+#endif
 import Control.Lens
 import Control.Monad.State (State, runState, MonadState(..), modify)
 import Data.Map (Map)

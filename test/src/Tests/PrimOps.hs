@@ -13,11 +13,14 @@ Point-of-contact : jstanley
 {-# LANGUAGE RankNTypes       #-}
 {-# LANGUAGE DeriveFunctor        #-}
 {-# LANGUAGE DeriveDataTypeable      #-}
+{-# LANGUAGE CPP      #-}
 
 
 module Tests.PrimOps (primOpTests) where
 
+#if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative
+#endif
 import qualified Control.Exception as CE
 import           Control.Lens hiding (act, (<.>), op)
 import           Control.Monad.State (liftIO)

@@ -1,4 +1,5 @@
 {-# Language ViewPatterns #-}
+{-# Language CPP #-}
 module Verifier.LLVM.Simulator.CursorTree
   ( Orientation(..)
   , CursorTree(..)
@@ -22,7 +23,9 @@ module Verifier.LLVM.Simulator.CursorTree
   , emptyContext
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+#endif
 import Control.Lens
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq

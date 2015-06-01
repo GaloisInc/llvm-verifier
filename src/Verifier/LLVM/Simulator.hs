@@ -32,6 +32,7 @@ Point-of-contact : jstanley
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
+{-# LANGUAGE CPP                   #-}
 module Verifier.LLVM.Simulator
   ( Simulator (SM)
   , getVerbosity
@@ -76,7 +77,9 @@ module Verifier.LLVM.Simulator
   , run
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative
+#endif
 import Control.Exception ( AsyncException(..)
                          , AssertionFailed(..)
                          , assert
@@ -627,7 +630,7 @@ step (Call callee args mres) = do
                 ++ show e ++ "\n"
                 ++ show (prettyTermD sbe fp)
             Right sym -> return sym
-    argTerms <- (traverse._2) evalExpr args
+    argTerms <- (traverse . (\k (a,b) -> k b <&> \b' -> (a,b'))) evalExpr args
     return $ callDefine' False calleeSym mres argTerms 
 
 step (Ret mtv) = do

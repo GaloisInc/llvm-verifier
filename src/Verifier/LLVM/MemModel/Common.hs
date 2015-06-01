@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE CPP #-}
 module Verifier.LLVM.MemModel.Common
  ( Addr
  , Size
@@ -79,11 +80,13 @@ module Verifier.LLVM.MemModel.Common
 
  ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+import Data.Foldable (Foldable)
+#endif
 import Control.Exception (assert)
 import Control.Lens
 import Control.Monad.State
-import Data.Foldable (Foldable)
 import Data.Maybe
 import Data.Vector (Vector)
 import qualified Data.Vector as V

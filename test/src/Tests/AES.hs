@@ -9,10 +9,13 @@ Point-of-contact : jstanley
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns     #-}
+{-# LANGUAGE CPP     #-}
 
 module Tests.AES (aesTests) where
 
+#if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative
+#endif
 import           Control.Monad (forM)
 import           Control.Monad.State (gets, liftIO)
 import qualified Data.Vector as V

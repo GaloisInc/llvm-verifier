@@ -1,11 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE CPP #-}
 module Verifier.LLVM.Overrides.Libc
   ( registerLibcOverrides
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+#endif
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Data.Char

@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE CPP #-}
 -- | This module defines the main data types for the AST used directly by the symbolic
 -- simulator.  This AST data type is the interface between the symbolic execution and
 -- the LLVM lifting operating.
@@ -48,10 +49,12 @@ module Verifier.LLVM.Codebase.AST
   , module Verifier.LLVM.Codebase.DataLayout
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative (Applicative, (<$>))
 import Control.Lens hiding (op)
-import Control.Monad.IO.Class
 import Data.Foldable
+#endif
+import Control.Monad.IO.Class
 import Data.Int
 import Data.Map (Map)
 import qualified Data.Map as Map

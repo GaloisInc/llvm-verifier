@@ -15,6 +15,8 @@ Point-of-contact : jhendrix
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Verifier.LLVM.Simulator.Internals
   ( Simulator(SM, runSM)
@@ -164,7 +166,9 @@ module Verifier.LLVM.Simulator.Internals
   , ppTuple
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative hiding (empty)
+#endif
 import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens
@@ -385,7 +389,8 @@ data PathStack sbe
 
 -- | Returns return value from final path stack if any.
 pathStackReturnValue :: Simple Traversal (PathStack sbe) (SBETerm sbe)
-pathStackReturnValue f (FinStack mr) = FinStack <$> (_Just . _1) f mr 
+pathStackReturnValue f (FinStack mr) = FinStack <$> (_Just . onOne) f mr
+  where onOne k (a, b) = k a <&> \a' -> (a',b)
 pathStackReturnValue _ ps = pure ps
 
 -- | Return height of path stack.

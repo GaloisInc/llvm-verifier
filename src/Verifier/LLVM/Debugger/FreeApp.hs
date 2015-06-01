@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE CPP #-}
 module Verifier.LLVM.Debugger.FreeApp 
  ( App(..)
  , Cont
@@ -10,7 +11,9 @@ module Verifier.LLVM.Debugger.FreeApp
  , composeCont
  ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+#endif
 
 -- | App is a free instance of applicative.
 data App u a where

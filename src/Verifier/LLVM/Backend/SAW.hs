@@ -17,7 +17,9 @@ module Verifier.LLVM.Backend.SAW
   , llvmModule
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative hiding (empty)
+#endif
 import Control.Exception (assert)
 import Control.Lens hiding (op)
 import Control.Monad

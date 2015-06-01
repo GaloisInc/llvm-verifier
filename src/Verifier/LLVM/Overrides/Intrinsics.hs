@@ -1,10 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE CPP #-}
 module Verifier.LLVM.Overrides.Intrinsics 
   ( registerLLVMIntrinsicOverrides
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+#endif
 import Control.Lens hiding (from)
 import Control.Monad.IO.Class
 import Control.Monad.State.Class

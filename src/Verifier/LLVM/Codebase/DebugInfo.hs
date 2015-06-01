@@ -34,7 +34,9 @@ module Verifier.LLVM.Codebase.DebugInfo
   , Int32
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
+#endif
 import Control.Lens hiding (Context)
 import Control.Monad
 import Control.Monad.Trans.Except
