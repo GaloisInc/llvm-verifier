@@ -9,10 +9,13 @@ Point-of-contact : jstanley
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE ViewPatterns               #-}
+{-# LANGUAGE CPP                        #-}
 
 module Main where
 
+#if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative             hiding (many)
+#endif
 import           Control.Monad
 import qualified Data.ABC as ABC
 
