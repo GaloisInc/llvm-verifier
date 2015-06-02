@@ -185,8 +185,9 @@ runLssTest :: String
            -> TestTree
 runLssTest bkName v sbeCF mdlio args expectErr expectRV =
    HU.testCase bkName $ runTestSimulator v sbeCF mdlio $ do
+          sbe <- gets symBE
           execResult <- testRunMain args
-          liftIO $ checkExecResult expectRV execResult
+          liftIO $ checkExecResult sbe expectRV execResult
           liftIO $ checkErrPaths expectErr execResult
 
 testRunMain :: (Functor sbe, Functor m, MonadIO m, MonadException m)
@@ -202,8 +203,8 @@ checkErrPaths Nothing _ = return ()
 checkErrPaths (Just n) execRslt =
    HU.assertEqual "error path mismatch" n (length (execRslt^.execRsltErrorPaths))
 
-checkExecResult :: ExpectedRV Integer -> ExecRslt sbe Integer -> IO ()
-checkExecResult mexpectedRV execRslt = do
+checkExecResult :: SBE sbe -> ExpectedRV Integer -> ExecRslt sbe Integer -> IO ()
+checkExecResult sbe mexpectedRV execRslt = do
   case execRslt of
     ConcRV _ _mm r -> do
       case mexpectedRV of
@@ -215,7 +216,8 @@ checkExecResult mexpectedRV execRslt = do
         VoidRV -> return ()
         AllPathsErr -> return ()
         RV{} -> HU.assertFailure "Missing return value"
-    SymRV{} -> HU.assertFailure "Unexpected sym exec result"
+    SymRV _ _ tm -> do
+       HU.assertFailure $ "Unexpected sym exec result: "++show (prettyTermD sbe tm)
 
 constTermEq :: Maybe Integer -> Integer -> Bool
 constTermEq (Just v) = (==v)
