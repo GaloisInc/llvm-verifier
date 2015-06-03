@@ -1,16 +1,16 @@
-{- |
-Module           : $Header$
-Description      : LLVM array tests
-Stability        : provisional
-Point-of-contact : jstanley
--}
-
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns     #-}
 {-# LANGUAGE CPP     #-}
 
+{- |
+Module           : $Header$
+Description      : LLVM array tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb
+-}
 module Tests.AES (aesTests) where
 
 #if !MIN_VERSION_base(4,8,0)

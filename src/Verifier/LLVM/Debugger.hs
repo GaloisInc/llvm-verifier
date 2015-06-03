@@ -1,6 +1,7 @@
 {- |
 Module           : $Header$
 Description      : Debugger implementation for LSS
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : acfoltzer, jhendrix
 

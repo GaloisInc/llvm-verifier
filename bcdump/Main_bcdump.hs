@@ -1,8 +1,13 @@
--- Dead simple llvm-dis/parser/AST translation inspection utility
-
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
+{- |
+Module           : $Header$
+Description      : Dead simple llvm-dis/parser/AST inspection utility
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb, jhendrix
+-}
 module Main where
 
 import qualified Control.Exception as CE

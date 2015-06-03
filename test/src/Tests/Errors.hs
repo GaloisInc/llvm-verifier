@@ -1,8 +1,9 @@
 {- |
 Module           : $Header$
 Description      : Error path and error handling tests
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : atomb
 -}
 
 module Tests.Errors (errorTests) where

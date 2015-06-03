@@ -1,3 +1,22 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE CPP #-}
+{-# OPTIONS_GHC -fno-warn-missing-signatures #-}
+
+{- |
+Module           : $Header$
+Description      : Symbolic execution tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : acfoltzer
+-}
 -- | This module defines the translation from LLVM IR to Symbolic IR.
 --
 -- Translation into symbolic IR requires post-dominator information about the
@@ -11,17 +30,6 @@
 --   executed.  Since phi statements must appear at the top of the block, we can
 --   move phi statements to execute during the transition from the previous
 --   block to the new block.
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE ImplicitParams #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE CPP #-}
-{-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 module Verifier.LLVM.Codebase.Translation
   ( liftDefine
   , LiftAttempt

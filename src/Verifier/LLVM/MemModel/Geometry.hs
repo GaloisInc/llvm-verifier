@@ -4,6 +4,7 @@
 -- Copyright        : (c) Galois, Inc 2011-2013
 -- Maintainer       : Joe Hendrix <jhendrix@galois.com>
 -- Stability        : provisional
+-- License          : Free for non-commercial use. See LICENSE.
 -- 
 -- This module provides a data structure for storing memory geometry
 -- information when using concrete addresses.

@@ -1,6 +1,7 @@
 {- |
 Module           : $Header$
 Description      : Printf-style formatting for symbolic terms
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : atomb
 -}
@@ -48,4 +49,4 @@ symPrintf s args =
     Printer res -> res
   where f :: Printer -> Arg -> Printer
         f (Printer p') (Arg a') = Printer (p' a')
-        
+

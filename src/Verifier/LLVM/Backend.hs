@@ -1,6 +1,7 @@
 {- |
 Module           : $Header$
 Description      : The interface to a symbolic backend
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : jhendrix
 -}

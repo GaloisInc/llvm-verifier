@@ -1,16 +1,16 @@
-{- |
-Module           : $Header$
-Description      : LLVM array tests
-Stability        : provisional
-Point-of-contact : jstanley
--}
-
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE ImplicitParams      #-}
 {-# LANGUAGE Rank2Types          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns        #-}
 
+{- |
+Module           : $Header$
+Description      : LLVM array tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb
+-}
 module Tests.Aggregates (aggTests) where
 
 import           Control.Monad

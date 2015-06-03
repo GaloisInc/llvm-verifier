@@ -4,6 +4,14 @@
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE CPP #-}
+
+{- |
+Module           : $Header$
+Description      : The symbolic simulator for LLVM-Symbolic programs
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : jhendrix
+-}
 -- | This module defines the main data types for the AST used directly by the symbolic
 -- simulator.  This AST data type is the interface between the symbolic execution and
 -- the LLVM lifting operating.

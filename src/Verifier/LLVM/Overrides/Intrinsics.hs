@@ -1,6 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE CPP #-}
+
+{- |
+Module           : $Header$
+Description      : Symbolic execution tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb
+-}
 module Verifier.LLVM.Overrides.Intrinsics 
   ( registerLLVMIntrinsicOverrides
   ) where

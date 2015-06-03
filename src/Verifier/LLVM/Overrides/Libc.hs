@@ -2,6 +2,14 @@
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE CPP #-}
+
+{- |
+Module           : $Header$
+Description      : Symbolic execution tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb
+-}
 module Verifier.LLVM.Overrides.Libc
   ( registerLibcOverrides
   ) where

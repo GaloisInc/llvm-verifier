@@ -1,6 +1,14 @@
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE RecordWildCards #-}
+
+{- |
+Module           : $Header$
+Description      : Symbolic execution tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb
+-}
 module Tests.BitMemModel (bitMemModelTests) where
 
 import Data.Bits

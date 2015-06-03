@@ -6,6 +6,13 @@
 {-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE CPP                  #-}
 
+{- |
+Module           : $Header$
+Description      : Symbolic execution tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb
+-}
 module Tests.Common where
 
 import qualified Numeric

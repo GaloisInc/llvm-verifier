@@ -1,8 +1,9 @@
 {- |
 Module           : $Header$
 Description      : Collection of LLVM Symbolic code
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : jhendrix
 -}
 
 {-# LANGUAGE FlexibleContexts    #-}

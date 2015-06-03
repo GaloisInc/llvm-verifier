@@ -1,8 +1,9 @@
 {- |
 Module           : $Header$
 Description      : The symbolic simulator for LLVM-Symbolic programs
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : jhendrix
 -}
 
 -- Debugging output at various verbosity levels:

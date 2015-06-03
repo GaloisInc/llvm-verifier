@@ -1,8 +1,9 @@
 {- |
 Module           : $Header$
 Description      : LLVM primitive operation tests
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
-Point-of-contact : jstanley
+Point-of-contact : atomb
 -}
 
 {-# LANGUAGE ScopedTypeVariables  #-}

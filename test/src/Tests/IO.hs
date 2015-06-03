@@ -1,6 +1,7 @@
 {- |
 Module           : $Header$
 Description      : LLVM input/output tests
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : atomb
 -}

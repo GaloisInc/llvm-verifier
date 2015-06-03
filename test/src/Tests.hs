@@ -1,5 +1,13 @@
 {-# LANGUAGE Rank2Types #-}
 
+{- |
+Module           : $Header$
+Description      : Symbolic execution tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb
+-}
+
 module Main where
 
 import Test.Tasty

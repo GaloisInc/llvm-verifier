@@ -3,6 +3,14 @@
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -O0 #-}
+
+{- |
+Module           : $Header$
+Description      : The symbolic simulator for LLVM-Symbolic programs
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : jhendrix
+-}
 module Verifier.LLVM.Codebase.DebugInfo 
   ( -- * Reader
     DebugInfo

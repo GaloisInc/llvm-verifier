@@ -1,15 +1,16 @@
-{- |
-Module           : $Header$
-Description      : A symbolic backend that bitblasts
-Stability        : provisional
-Point-of-contact : atomb, jhendrix
--}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 {-# LANGUAGE PatternGuards              #-}
 {-# LANGUAGE CPP                        #-}
+{- |
+Module           : $Header$
+Description      : A symbolic backend that bitblasts
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : atomb, jhendrix
+-}
 
 module Verifier.LLVM.Backend.BitBlast
   ( -- * Re-exports to create and interact with backend.

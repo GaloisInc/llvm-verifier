@@ -1,6 +1,7 @@
 {- |
 Module           : $Header$
 Description      : Common type definitions and helper functions for LSS
+License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : jhendrix
 -}

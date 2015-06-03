@@ -1,5 +1,13 @@
 {-# Language ViewPatterns #-}
 {-# Language CPP #-}
+
+{- |
+Module           : $Header$
+Description      : Symbolic execution tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : jhendrix
+-}
 module Verifier.LLVM.Simulator.CursorTree
   ( Orientation(..)
   , CursorTree(..)

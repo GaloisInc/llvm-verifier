@@ -1,5 +1,13 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE CPP #-}
+
+{- |
+Module           : $Header$
+Description      : Symbolic execution tests
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : acfoltzer
+-}
 module Verifier.LLVM.Debugger.FreeApp 
  ( App(..)
  , Cont

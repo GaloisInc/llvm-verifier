@@ -2,6 +2,7 @@
 -- |
 -- Module           : Verifier.LLVM.LLVMContext
 -- Description      : Provides simulator type information and conversions.
+-- License          : Free for non-commercial use. See LICENSE.
 -- Copyright        : (c) Galois, Inc 2011-2013
 -- Maintainer       : Joe Hendrix <jhendrix@galois.com>
 -- Stability        : provisional

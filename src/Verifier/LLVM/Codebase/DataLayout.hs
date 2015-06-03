@@ -5,6 +5,14 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE CPP #-}
+
+{- |
+Module           : $Header$
+Description      : The symbolic simulator for LLVM-Symbolic programs
+License          : Free for non-commercial use. See LICENSE.
+Stability        : provisional
+Point-of-contact : jhendrix
+-}
 module Verifier.LLVM.Codebase.DataLayout
   ( Size
   , Offset
