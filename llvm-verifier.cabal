@@ -6,8 +6,8 @@ Build-type:    Simple
 Cabal-version: >= 1.9
 Category:      Formal Methods
 Synopsis:      Symbolic simulator for LLVM bytecode
-License:       AllRightsReserved
-License-file:   LICENSE
+License:       Other
+License-file:  LICENSE
 
 Flag abc-backend
   Description: Use the ABC backend for generating AIGs
