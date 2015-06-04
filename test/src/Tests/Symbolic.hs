@@ -39,6 +39,8 @@ symTests =
             , runLssTest "SAW model"       v createSAWModel      getmdl [] (Just 0) (RV 0)
             ]
 
+  , lssTestAll "ctests/test-switch" [] (Just 0) (RV 0)
+
   , lssTestAll "ctests/test-fresh" [] Nothing (RV 16)
     -- NB: This test writes an .aig file; we are just testing
     -- essentially that we don't crash.  At some point this really
