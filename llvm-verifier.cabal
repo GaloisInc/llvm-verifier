@@ -6,7 +6,7 @@ Build-type:    Simple
 Cabal-version: >= 1.9
 Category:      Formal Methods
 Synopsis:      Symbolic simulator for LLVM bytecode
-License:       Other
+License:       OtherLicense
 License-file:  LICENSE
 
 Flag abc-backend
