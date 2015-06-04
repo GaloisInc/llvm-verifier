@@ -733,16 +733,18 @@ mergePaths b pt pf = do
   -- Merge callStack
   (_errs, mergedStack) <- liftIO $ runErrorCollector $ do
     case biTarget b of
-      OnReturn _ Nothing -> return (pt^.pathStack)
-      OnReturn _ (Just reg) -> do
+      OnReturn _ mr -> do
         case (pt^.pathStack, pf^.pathStack) of
+          (FinStack Nothing, FinStack Nothing) -> do
+            return (pt^.pathStack)
           (FinStack (Just v1), FinStack (Just v2)) -> do
             FinStack . Just <$> mergeTyped v1 v2
           -- Update specific reg
-          (CallStack cs1, CallStack cs2) ->
-            assert (isJust (cs2^.stackRegs^.at reg)) $ do
-              let Just v1 = cs1^.stackRegs^.at reg
-              CallStack <$> (stackRegs . at reg . _Just) (mergeTyped v1) cs2
+          (CallStack cs1, CallStack cs2)
+            | Just reg <- mr -> do
+                assert (isJust (cs2^.stackRegs^.at reg)) $ do
+                 let Just v1 = cs1^.stackRegs^.at reg
+                 CallStack <$> (stackRegs . at reg . _Just) (mergeTyped v1) cs2
           (_,_) -> error "internal: Unexpected form during merging" 
       OnPostdomJump{} -> -- Merge all registers
         case (pt^.pathStack, pf^.pathStack) of
@@ -752,6 +754,7 @@ mergePaths b pt pf = do
                 mergeFn = Trav.sequence . M.intersectionWith mergeTyped r1
             CallStack <$> stackRegs mergeFn cs2
           (_,_) -> error "internal: Unexpected form during merging" 
+
   -- Merge memory
   mergedMem <- liftSBE $ memMerge sbe c (pt^.pathMem) (pf^.pathMem)
   finalMem <- abortMemBranches (b^.biAbortsAbove) mergedMem

@@ -512,6 +512,18 @@ popStackFrameMem :: Mem p c t -> Mem p c t
 popStackFrameMem m = m & memState %~ popf
   where popf (StackFrame (a,w) s) = s & memStateLastChanges %~ prependChanges c
           where c = (mapMaybe pa a, w)
+
+        -- WARNING: The following code executes a stack pop underneith a branch
+        -- frame.  This is necessary to get merges to work correctly
+        -- when they propigate all the way to function returns.
+        -- However, it is not clear that the following code is
+        -- precicely correct because it may leave in place writes to
+        -- memory locations that have just been popped off the stack.
+        -- This does not appear to be causing problems for our
+        -- examples, but may be a source of subtle errors.
+        popf (BranchFrame (a,w) s) = BranchFrame c $ popf s
+          where c = (mapMaybe pa a, w)
+
         popf _ = error "popStackFrameMem given unexpected memory"
         pa (Alloc StackAlloc _ _) = Nothing
         pa a@(Alloc HeapAlloc _ _) = Just a
