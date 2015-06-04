@@ -1069,7 +1069,6 @@ createSAWBackend' proxy dl sc0 = do
                 , "Prelude.bvAnd"
                 , "Prelude.bvOr"
                 , "Prelude.bvXor"
-                , "Prelude.bvMbit"
                 , "Prelude.bvEq"
                 , "Prelude.bvugt"
                 , "Prelude.bvuge"
