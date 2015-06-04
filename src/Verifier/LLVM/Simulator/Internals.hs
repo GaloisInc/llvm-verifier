@@ -735,16 +735,23 @@ mergePaths b pt pf = do
     case biTarget b of
       OnReturn _ mr -> do
         case (pt^.pathStack, pf^.pathStack) of
+          -- Main void return: no work to do
           (FinStack Nothing, FinStack Nothing) -> do
             return (pt^.pathStack)
+          -- Main nonvoid return: merge the final return values
           (FinStack (Just v1), FinStack (Just v2)) -> do
             FinStack . Just <$> mergeTyped v1 v2
-          -- Update specific reg
-          (CallStack cs1, CallStack cs2)
-            | Just reg <- mr -> do
+          -- Nonmain return
+          (CallStack cs1, CallStack cs2) ->
+            case mr of
+              -- Nonvoid return: merge the return values in the caller's register bank
+              Just reg ->
                 assert (isJust (cs2^.stackRegs^.at reg)) $ do
-                 let Just v1 = cs1^.stackRegs^.at reg
-                 CallStack <$> (stackRegs . at reg . _Just) (mergeTyped v1) cs2
+                  let Just v1 = cs1^.stackRegs^.at reg
+                  CallStack <$> (stackRegs . at reg . _Just) (mergeTyped v1) cs2
+              -- Void return: no work to do
+              Nothing ->
+                return (pt^.pathStack)
           (_,_) -> error "internal: Unexpected form during merging" 
       OnPostdomJump{} -> -- Merge all registers
         case (pt^.pathStack, pf^.pathStack) of
