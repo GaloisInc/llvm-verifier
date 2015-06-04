@@ -278,7 +278,7 @@ llvmSExtV :: (n d i :: Nat)
 llvmSExtV n d i = bvMap (Succ i) (addNat d (Succ i)) (bvSExt d i) n;
 
 llvmSelect  :: (tp :: LLVMType) -> bitvector 1 -> value tp -> value tp -> value tp;
-llvmSelect tp c = ite (value tp) (get 1 Bool c (FinVal 0 0));
+llvmSelect tp c = ite (value tp) (at 1 Bool c 0);
 
 llvmSelectV :: (n :: Nat)
             -> (tp :: LLVMType)
@@ -286,10 +286,10 @@ llvmSelectV :: (n :: Nat)
             -> Vec n (value tp)
             -> Vec n (value tp)
             -> Vec n (value tp);
-llvmSelectV n tp c x y = 
-  generate n (value tp) (\(i :: Fin n) -> llvmSelect tp (get n (bitvector 1) c i)
-                                                        (get n (value tp) x i)
-                                                        (get n (value tp) y i));
+llvmSelectV n tp c x y =
+  gen n (value tp) (\(i :: Nat) -> llvmSelect tp (at n (bitvector 1) c i)
+                                                 (at n (value tp) x i)
+                                                 (at n (value tp) y i));
 
 llvmStructElt :: (n :: Nat)
               -> (tps :: Vec n fieldType)
