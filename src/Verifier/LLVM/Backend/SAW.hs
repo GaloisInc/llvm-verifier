@@ -47,7 +47,6 @@ import Verifier.SAW as SAW
 import Verifier.SAW.Conversion
 import Verifier.SAW.ParserUtils as SAW
 import Verifier.SAW.Prelude
-import qualified Verifier.SAW.Prim as Prim
 import qualified Verifier.SAW.Recognizer as R
 import Verifier.SAW.Rewriter
 import qualified Verifier.SAW.Simulator.BitBlast as BB
@@ -935,29 +934,6 @@ typedExprEvalFn sbs expr0 = do
       it <- scNat sc (fromIntegral i)
       return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt mtp val it) =<< eval a
 
--- | Returns value and rest out of construct.
-asConsStruct :: (Monad m, Termlike t) => t -> m (t, t)
-asConsStruct t = do
-  ("LLVM.ConsStruct", [_, _, _, _, v, r]) <- R.asCtor t
-  return (v,r)
-
-structElt :: SharedTerm s -> Nat -> Maybe (SharedTerm s)
-structElt t 0 = fst <$> asConsStruct t
-structElt t i = assert (i > 0) $ do
-  (_,r) <- asConsStruct t
-  structElt r (i-1)
-
-getStructElt :: Conversion (SharedTerm s)
-getStructElt = Conversion $
-    thenMatcher (asGlobalDef "LLVM.llvmStructElt"
-                   <:> asAny
-                   <:> asAny       -- Types
-                   <:> asAny   -- Struct
-                   <:> asFinValLit -- Index
-                  )
-                (\(_ :*: s :*: i) ->
-                   return <$> structElt s (Prim.finVal i))
-
 -- | Lambda abstract term @t@ over all symbolic variables.
 abstract :: SAWBackendState t -> SharedTerm t -> IO (SharedTerm t)
 abstract sbs t = do
@@ -1123,8 +1099,6 @@ createSAWBackend' proxy dl sc0 = do
         ++ vecConversions
         ++ [ remove_ident_coerce
            , remove_ident_unsafeCoerce]
-        ++ [ getStructElt
-           ]
   simpSet <- scSimpset sc0 activeDefs eqs conversions
   let sc = rewritingSharedContext sc0 simpSet
   sbs <- mkBackendState dl sc
