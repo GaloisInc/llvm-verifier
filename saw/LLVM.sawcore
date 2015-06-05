@@ -1,22 +1,38 @@
-module LLVM where 
+module LLVM where
 
 import Prelude;
 
 data LLVMType :: sort 0 where {
     -- Primitive types that we support.
-    IntType :: (n :: Nat) -> LLVMType;
+    IntType :: Nat -> LLVMType;
     FloatType  :: LLVMType;
     DoubleType :: LLVMType;
     -- | Nat is the width of the pointer in bytes.
     PtrType :: Nat -> LLVMType;
     -- Type for arrays.
-    ArrayType :: (n :: Nat) -> LLVMType -> LLVMType;
+    ArrayType :: Nat -> LLVMType -> LLVMType;
     -- Type for structs.  The vector contains the type of each field, followed
     -- by the amount of padding to add after the field.
-    StructType :: (n :: Nat) -> Vec n #(LLVMType,Nat) -> LLVMType;
+    StructType :: StructFields -> LLVMType;
 
-    VectorType :: (n :: Nat) -> LLVMType -> LLVMType;
+    VectorType :: Nat -> LLVMType -> LLVMType;
   }
+
+data StructFields :: sort 0 where {
+    EmptyFields :: StructFields;
+    ConsFields :: LLVMType -> Nat -> StructFields -> StructFields;
+  }
+
+data StructIndex :: StructFields -> sort 0 where {
+    ZeroIndex :: (tp :: LLVMType) -> (pad :: Nat) -> (r :: StructFields) ->
+                 StructIndex (ConsFields tp pad r);
+    SuccIndex :: (tp :: LLVMType) -> (pad :: Nat) -> (r :: StructFields) ->
+                 StructIndex r -> StructIndex (ConsFields tp pad r);
+  }
+
+getStructField :: (tps :: StructFields) -> StructIndex tps -> LLVMType;
+getStructField _ (ZeroIndex tp _ _) = tp;
+getStructField _ (SuccIndex _ _ r i) = getStructField r i;
 
 mkIntType :: Nat -> LLVMType;
 mkIntType n = IntType n;
@@ -36,25 +52,15 @@ mkArrayType n t = ArrayType n t;
 trunc31 :: bitvector 32 -> bitvector 31;
 trunc31 x = bvTrunc 1 31 x;
 
-fieldType :: sort 0;
-fieldType = #(LLVMType,Nat); 
-
-emptyFields :: Vec 0 fieldType;
-emptyFields = EmptyVec fieldType;
-
-consFieldType :: fieldType -> (n::Nat) -> Vec n fieldType -> Vec (Succ n) fieldType;
-consFieldType tp n r = ConsVec fieldType tp n r;
-
 -- | Recuresive data struture for storing fields.
-data StructValue :: (n :: Nat) -> Vec n fieldType -> sort 0 where {
-    EmptyStruct :: StructValue 0 (EmptyVec fieldType);
-    ConsStruct :: (tp :: LLVMType) 
+data StructValue :: StructFields -> sort 0 where {
+    EmptyStruct :: StructValue EmptyFields;
+    ConsStruct :: (tp :: LLVMType)
                -> (padding :: Nat)
-               -> (n :: Nat)
-               -> (r :: Vec n fieldType)
+               -> (r :: StructFields)
                -> value tp
-               -> StructValue n r
-               -> StructValue (Succ n) (ConsVec fieldType (tp,padding) n r);
+               -> StructValue r
+               -> StructValue (ConsFields tp padding r);
   }
 
 value :: LLVMType -> sort 0;
@@ -63,7 +69,7 @@ value FloatType   = Float;
 value DoubleType  = Double;
 value (PtrType n)   = bitvector (mulNat 8 n);
 value (ArrayType n tp) = Vec n (value tp);
-value (StructType n tps) = StructValue n tps;
+value (StructType tps) = StructValue tps;
 value (VectorType n tp) = Vec n (value tp);
 
 binFn :: sort 0 -> sort 0;
@@ -77,12 +83,12 @@ llvmIntConstant :: (w :: Nat) -> Nat -> bitvector w;
 llvmIntConstant = bvNat;
 
 bvVecZipWith :: ((w :: Nat) -> binFn (bitvector w))
-             -> (n w :: Nat) 
+             -> (n w :: Nat)
              -> binFn (Vec n (bitvector w));
 bvVecZipWith f n w = zipWith (bitvector w) (bitvector w) (bitvector w) (f w) n;
 
 sbvVecZipWith :: ((w :: Nat) -> binFn (bitvector (Succ w)))
-              -> (n w :: Nat) 
+              -> (n w :: Nat)
               -> binFn (Vec n (bitvector (Succ w)));
 sbvVecZipWith f n w =
   zipWith (bitvector (Succ w)) (bitvector (Succ w)) (bitvector (Succ w)) (f w) n;
@@ -166,23 +172,23 @@ llvmXor = bvXor;
 llvmXorV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
 llvmXorV = bvVecZipWith bvXor;
 
-singleField :: LLVMType -> Nat -> Vec 1 fieldType;
-singleField tp p = consFieldType (tp,p) 0 emptyFields;
+singleField :: LLVMType -> Nat -> StructFields;
+singleField tp p = ConsFields tp p EmptyFields;
 
 arithmeticWithOverflowResult :: Nat -> Nat -> Nat -> LLVMType;
 arithmeticWithOverflowResult w p1 p2 =
-  StructType 2 (consFieldType (IntType w,p1) 1
-               (singleField (IntType 1) p2));
+  StructType (ConsFields (IntType w) p1
+             (singleField (IntType 1) p2));
 
 mkOverflowResult :: (w p1 p2 :: Nat)
                  -> #(Bool, bitvector w)
                  -> value (arithmeticWithOverflowResult w p1 p2);
-mkOverflowResult w p1 p2 (c,z) = 
-  ConsStruct (IntType w) p1 1 (singleField (IntType 1) p2) z
-    (ConsStruct (IntType 1) p2 0 emptyFields [c] EmptyStruct);            
+mkOverflowResult w p1 p2 (c,z) =
+  ConsStruct (IntType w) p1 (singleField (IntType 1) p2) z
+    (ConsStruct (IntType 1) p2 EmptyFields [c] EmptyStruct);
 
 -- Width of bitvectors, amount of padding for first and second fields.
-llvmAddWithOverflow :: (w p1 p2 :: Nat) 
+llvmAddWithOverflow :: (w p1 p2 :: Nat)
                     -> bitvector w
                     -> bitvector w
                     -> value (arithmeticWithOverflowResult w p1 p2);
@@ -291,14 +297,12 @@ llvmSelectV n tp c x y =
                                                  (at n (value tp) x i)
                                                  (at n (value tp) y i));
 
-llvmStructElt :: (n :: Nat)
-              -> (tps :: Vec n fieldType)
-              -> StructValue n tps
-              -> (i :: Fin n)
-              -> value (fst LLVMType Nat (get n fieldType tps i));
-llvmStructElt _ _ (ConsStruct _ _ _ _ v _) (FinVal Zero _) = v;
-llvmStructElt _ (ConsVec _ _ _ v) (ConsStruct _ _ _ _ _ r) (FinVal (Succ i) j) =
-  llvmStructElt (Succ (addNat i j)) v r (FinVal i j);
+llvmStructElt :: (tps :: StructFields)
+              -> StructValue tps
+              -> (i :: StructIndex tps)
+              -> value (getStructField tps i);
+llvmStructElt _ (ConsStruct _ _ _ x _) (ZeroIndex _ _ _) = x;
+llvmStructElt _ (ConsStruct _ _ _ _ v) (SuccIndex _ _ r i) = llvmStructElt r v i;
 
 llvmArrayElt :: (n :: Nat)
              -> (tp :: LLVMType)
@@ -345,19 +349,19 @@ axiom bvEq_commute_ite1 :: (w :: Nat)
 -- These rules are unsound due to overflow:
 
 axiom bvule_sameL :: (n :: Nat)
-            -> (x z :: bitvector n) 
+            -> (x z :: bitvector n)
             -> Eq Bool
                   (bvule n x (bvAdd n x z))
                   True;
 
 axiom bvule_sameR :: (n :: Nat)
-            -> (x y :: bitvector n) 
+            -> (x y :: bitvector n)
             -> Eq Bool
                   (bvule n (bvAdd n x y) x)
                   (bvEq n y (bvNat n 0));
 
 axiom bvule_same2 :: (n :: Nat)
-            -> (x y z :: bitvector n) 
+            -> (x y z :: bitvector n)
             -> Eq Bool
                   (bvule n (bvAdd n x y) (bvAdd n x z))
                   (bvule n y z);

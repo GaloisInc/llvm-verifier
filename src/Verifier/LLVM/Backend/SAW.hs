@@ -200,9 +200,7 @@ data SAWBackendState t
            -- | Creates LLVM type for vectors
          , sbsVecTypeFn :: SharedTerm t -> SharedTerm t -> IO (SharedTerm t)
            -- | Creates LLVM type for structs
-         , sbsStructTypeFn :: SharedTerm t -> SharedTerm t -> IO (SharedTerm t)
-           -- | Fieldtype constant
-         , sbsFieldType :: SharedTerm t
+         , sbsStructTypeFn :: SharedTerm t -> IO (SharedTerm t)
          , sbsAdd :: BitWidth -> IO (SharedTerm t -> SharedTerm t -> IO (SharedTerm t))
          , sbsSub :: BitWidth -> IO (SharedTerm t -> SharedTerm t -> IO (SharedTerm t))
          , smGenerator :: MM.TermGenerator IO (SharedTerm t) (SharedTerm t) (SharedTerm t)
@@ -232,7 +230,9 @@ mkBackendState dl sc = do
   arrayTypeFn  <- scApplyLLVM_ArrayType sc
   vecTypeFn    <- scApplyLLVM_VectorType sc
   structTypeFn <- scApplyLLVM_StructType sc
-  fieldType <- scApplyLLVM_fieldType sc
+  -- structFields <- scApplyLLVM_StructFields sc
+  -- structIndex <- scApplyLLVM_StructIndex sc
+  -- fieldType <- scApplyLLVM_fieldType sc
 
   trueTerm  <- scApplyPrelude_True  sc
   falseTerm <- scApplyPrelude_False sc
@@ -287,12 +287,11 @@ mkBackendState dl sc = do
           MM.Float  -> return llvmFloatType
           MM.Double -> return llvmDoubleType
           MM.Array n tp -> join $ arrayTypeFn <$> scNat sc (fromIntegral n) <*> mkTypeTerm tp
-          MM.Struct flds -> join $ structTypeFn
-                              <$> scNat sc (fromIntegral (V.length flds))
-                              <*> fieldVFn flds
+          MM.Struct flds -> join $ structTypeFn <$> fieldVFn flds
       fieldFn :: MM.Field MM.Type -> IO (SharedTerm t, Nat)
       fieldFn f = (, fromIntegral (MM.fieldPad f)) <$> mkTypeTerm (f^.MM.fieldVal)
-      fieldVFn flds = scFieldInfo sc fieldType =<< traverse fieldFn flds
+      fieldVFn :: V.Vector (MM.Field MM.Type) -> IO (SharedTerm t)
+      fieldVFn flds = scFieldInfo sc =<< traverse fieldFn (V.toList flds)
 
   intToFloat  <- scApplyLLVM_llvmIntToFloat sc
   intToDouble <- scApplyLLVM_llvmIntToDouble sc
@@ -388,12 +387,12 @@ mkBackendState dl sc = do
                              <*> pure v
                              <*> scNat sc o'
                     MM.FieldVal tps i v -> do
-                      let n = fromIntegral (V.length tps)
+                      f <- traverse fieldFn (V.toList tps)
+                      (f', i') <- scStructIndex sc f (fromIntegral i)
                       join $ scApplyLLVM_llvmStructElt sc
-                               <*> scNat sc n
-                               <*> fieldVFn tps
+                               <*> pure f'
                                <*> pure v
-                               <*> scFinConst sc (fromIntegral i) n
+                               <*> pure i'
               , MM.tgMuxTerm = \c tp x y -> do
                   tpt <- join $ scApplyLLVM_value sc <*> mkTypeTerm tp
                   scApply4 sc muxOp tpt c x y
@@ -410,7 +409,6 @@ mkBackendState dl sc = do
              , sbsArrayTypeFn  = arrayTypeFn
              , sbsVecTypeFn    = vecTypeFn
              , sbsStructTypeFn = structTypeFn
-             , sbsFieldType    = fieldType
              , sbsAdd = \w ->
                  if w == ptrBitwidth dl then
                    return ptrAdd
@@ -536,25 +534,22 @@ createStructValue :: forall s v
                   -> V.Vector ((SharedTerm s, Nat), v)
                   -> IO (ExprEvalFn v (SharedTerm s))
 createStructValue sc flds = do
-  fieldType <- scApplyLLVM_fieldType sc
+  -- fieldType <- scApplyLLVM_fieldType sc
   let foldFn :: ((SharedTerm s, Nat), v)
              -> (Nat, ExprEvalFn v (SharedTerm s), SharedTerm s)
              -> IO (Nat, ExprEvalFn v (SharedTerm s), SharedTerm s)
       foldFn ((mtp,pad),expr) (n,ExprEvalFn reval, rvtp) = do
-        nt <- scNat sc n
         padding <- scNat sc pad
         consStruct <- scApplyLLVM_ConsStruct sc
-        let cfn = consStruct mtp padding nt rvtp
+        let cfn = consStruct mtp padding rvtp
         let reval' = ExprEvalFn $ \eval ->
                       join $ ((liftIO .) . cfn) <$> eval expr <*> reval eval
-        consVecFn <- scApplyPrelude_ConsVec sc
-        entry <- scTuple sc [mtp,padding]
-        (n+1,reval',) <$> consVecFn fieldType entry nt rvtp
+        consFields <- scApplyLLVM_ConsFields sc
+        (n+1,reval',) <$> consFields mtp padding rvtp
   -- Get initial value and type.
   emptyStruct <- scApplyLLVM_EmptyStruct sc
   let eval0 = ExprEvalFn $ \_ -> return emptyStruct
-  emptyFn <- scApplyPrelude_EmptyVec sc
-  tp0 <- emptyFn fieldType
+  tp0 <- scApplyLLVM_EmptyFields sc
   view _2 <$> foldrMOf folded foldFn (0, eval0, tp0) flds
 
 scApply2 :: SharedContext s
@@ -695,7 +690,7 @@ lift6 :: (u -> v -> w -> x -> y -> z -> IO r)
       -> (u -> v -> w -> x -> y -> z -> SAWBackend s r)
 lift6 = (lift5 .)
 
--- | Returns share term representing given state.
+-- | Returns shared term of type LLVMType representing given state.
 sbsMemType :: SAWBackendState t -> MemType -> IO (SharedTerm t)
 sbsMemType sbs btp = do
   let sc = sbsContext sbs
@@ -711,28 +706,50 @@ sbsMemType sbs btp = do
       join $ sbsVecTypeFn sbs <$> scNat sc (fromIntegral n)
                               <*> sbsMemType sbs tp
     StructType si ->
-      join $ sbsStructTypeFn sbs
-               <$> scNat sc (fromIntegral (siFieldCount si))
-               <*> sbsFieldInfo sbs (siFields si)
+      join $ sbsStructTypeFn sbs <$> sbsFieldInfo sbs (siFields si)
 
--- | Returns term (tp,padding) for the given field info.
+-- | Returns shared term of type StructFields for the given field info.
 sbsFieldInfo :: SAWBackendState t
              -> V.Vector FieldInfo
              -> IO (SharedTerm t)
 sbsFieldInfo sbs flds = do
     flds' <- traverse go flds
-    scFieldInfo (sbsContext sbs) (sbsFieldType sbs) flds'
+    scFieldInfo (sbsContext sbs) (V.toList flds')
   where go fi = do (,fromIntegral (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
 
--- | Returns term (tp,padding) for the given field info.
+-- | Returns shared term of type StructFields for the given field info.
 scFieldInfo :: SharedContext s
-              -> SharedTerm s -- ^ Field type function
-              -> V.Vector (SharedTerm s, Nat)
-              -> IO (SharedTerm s)
-scFieldInfo sc ftp flds = scVecLit sc ftp =<< traverse go flds
-  where go (tp,p) = do
-          pt <- scNat sc p
-          scTuple sc [tp,pt]
+            -> [(SharedTerm s, Nat)] -- ^ terms of type LLVMType with padding amounts
+            -> IO (SharedTerm s)
+scFieldInfo sc [] = scApplyLLVM_EmptyFields sc
+scFieldInfo sc ((tp, p) : tps) = do
+  pt <- scNat sc p
+  f <- scFieldInfo sc tps
+  consFields <- scApplyLLVM_ConsFields sc
+  consFields tp pt f
+
+-- | Returns shared terms f :: StructFields and i :: StructIndex f
+scStructIndex :: SharedContext s
+              -> [(SharedTerm s, Nat)] -- ^ terms of type LLVMType with padding amounts
+              -> Int
+              -> IO (SharedTerm s, SharedTerm s)
+scStructIndex _ [] _ = error "scStructIndex: index out of bounds"
+scStructIndex sc ((tp, p) : tps) 0 = do
+  pt <- scNat sc p
+  f <- scFieldInfo sc tps
+  consFields <- scApplyLLVM_ConsFields sc
+  f' <- consFields tp pt f
+  zeroIndex <- scApplyLLVM_ZeroIndex sc
+  i' <- zeroIndex tp pt f
+  return (f', i')
+scStructIndex sc ((tp, p) : tps) n = do
+  pt <- scNat sc p
+  (f, i) <- scStructIndex sc tps (n - 1)
+  consFields <- scApplyLLVM_ConsFields sc
+  f' <- consFields tp pt f
+  succIndex <- scApplyLLVM_SuccIndex sc
+  i' <- succIndex tp pt f i
+  return (f', i')
 
 scIntType :: SharedContext s -> BitWidth -> IO (SharedTerm s)
 scIntType sc w = join $ scApplyLLVM_IntType sc <*> scBitwidth sc w
@@ -906,12 +923,11 @@ typedExprEvalFn sbs expr0 = do
       return $ ExprEvalFn $ \eval -> do
          join $ (\cv xv yv -> liftIO $ fn mtp cv xv yv) <$> eval c <*> eval x <*> eval y
     GetStructField si v i -> assert (i < siFieldCount si) $ do
-      let n = fromIntegral (siFieldCount si)
-      nt <- scNat sc n
-      tps <- sbsFieldInfo sbs (siFields si)
-      ft <- scFinConst sc (fromIntegral i) n
+      let go fi = (, fromIntegral (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
+      flds <- traverse go (V.toList (siFields si))
+      (tps, ft) <- scStructIndex sc flds (fromIntegral i)
       fn <- scApplyLLVM_llvmStructElt sc
-      return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt tps val ft) =<< eval v
+      return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn tps val ft) =<< eval v
     GetConstArrayElt n tp a i -> assert (i < n) $ do
       fn <- scApplyPrelude_at sc
       nt <- scNat sc (fromIntegral n)
@@ -1201,8 +1217,8 @@ _unused = undefined
   scApplyLLVM_arithmeticWithOverflowResult
   scApplyLLVM_binFn
   scApplyLLVM_binRel
-  scApplyLLVM_consFieldType
-  scApplyLLVM_emptyFields
+  scApplyLLVM_ConsFields
+  scApplyLLVM_EmptyFields
   scApplyLLVM_singleField
   scApplyLLVM_sbvVecZipWith
   scApplyLLVM_mkOverflowResult
@@ -1223,3 +1239,6 @@ _unused = undefined
   scApplyLLVM_mkFloatType
   scApplyLLVM_mkIntType
   scApplyLLVM_mkPtrType
+  scLLVM_StructFields
+  scLLVM_StructIndex
+  scApplyLLVM_getStructField
