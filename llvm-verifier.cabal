@@ -41,7 +41,7 @@ library
 
   build-depends:
       base >= 4 && < 5
-    , aig
+    , aig >= 0.2.3
     , ansi-wl-pprint
     , bytestring
     , containers >= 0.4.0.0
@@ -163,7 +163,7 @@ test-suite test-llvm
   main-is        : Tests.hs
   hs-source-dirs : test/src lss
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count 
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   GHC-prof-options: -auto-all -caf-all
 
   build-depends:
