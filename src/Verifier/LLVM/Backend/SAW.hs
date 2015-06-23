@@ -945,7 +945,7 @@ scTermSAT :: AIG.IsAIG l g =>
   AIG.Proxy l g -> SAWBackendState t -> SharedTerm t -> IO (AIG.SatResult)
 scTermSAT proxy sbs t = do
   t' <- abstract sbs t
-  BB.withBitBlastedPred proxy (sbsContext sbs) t' $ \be l _domTys -> do
+  BB.withBitBlastedPred proxy (sbsContext sbs) (\_ -> Map.empty) t' $ \be l _domTys -> do
   AIG.checkSat be l
 
 scWriteAiger :: AIG.IsAIG l g
@@ -959,7 +959,7 @@ scWriteAiger proxy sbs path terms = do
   let ts = map snd terms
   t <- scTuple sc ts
   t' <- abstract sbs t
-  BB.withBitBlastedTerm proxy sc t' $ \be ls -> do
+  BB.withBitBlastedTerm proxy sc (\_ -> Map.empty) t' $ \be ls -> do
     AIG.writeAiger path (AIG.Network be (AIG.bvToList ls))
 
 scWriteCNF :: AIG.IsAIG l g
@@ -970,7 +970,7 @@ scWriteCNF :: AIG.IsAIG l g
            -> IO [Int]
 scWriteCNF proxy sbs path t = do
   t' <- abstract sbs t
-  BB.withBitBlastedPred proxy (sbsContext sbs) t' $ \be l _domTys -> do
+  BB.withBitBlastedPred proxy (sbsContext sbs) (\_ -> Map.empty) t' $ \be l _domTys -> do
   AIG.writeCNF be l path
 
 scWriteSmtLib :: SharedContext t
@@ -984,7 +984,7 @@ scWriteSmtLib sc isSmtLib2 path w t = do
   zero <- scBvConst sc wn 0
   wt <- scNat sc wn
   t' <- scBvEq sc wt t zero
-  (_, lit) <- SBVSim.sbvSolve sc [] t'
+  (_, lit) <- SBVSim.sbvSolve sc Map.empty [] t'
   writeFile path =<< compileToSMTLib isSmtLib2 True lit
 
 
