@@ -53,7 +53,7 @@ import Data.Maybe
 import qualified Data.Sequence as Seq
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as L
-import Text.LLVM.AST              (Stmt'(..), Typed (..))
+import Text.LLVM.AST              (Stmt'(..), Typed (..), ppInstr)
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 import Verifier.LLVM.Backend
@@ -489,7 +489,7 @@ liftStmt stmt =
                     | otherwise = fail "Illegal index"
                   where expr = GetConstArrayElt (fromIntegral n) tp sv (fromIntegral i)
                 go _ _ _ = fail "non-composite type in extractvalue"
-        _ -> fail "Unsupported instruction"
+        _ -> fail $ "Unsupported instruction: " ++ show (ppInstr app)
 
 liftArgValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => L.Typed L.Value -> LiftAttempt (MemType, SymValue (SBETerm sbe))
