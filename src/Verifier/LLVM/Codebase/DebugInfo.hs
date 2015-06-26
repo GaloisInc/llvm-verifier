@@ -108,10 +108,12 @@ dsScopeCache = lens _dsScopeCache (\s v -> s { _dsScopeCache = v })
 
 type DebugReader = ExceptT String (State DebugInfo)
 
-#if __GLASGOW_HASKELL__ < 710
+#if !MIN_VERSION_mtl(2,2,0)
+#if !MIN_VERSION_transformers_compat(0,4,0)
 instance MonadState DebugInfo DebugReader where
   get = lift get
   put = lift . put
+#endif
 #endif
 
 runDebugReader :: DebugInfo -> DebugReader a -> (Either String a, DebugInfo)
@@ -143,10 +145,12 @@ lookupMetadata i = do
 
 type FieldReader = ExceptT String (StateT [Typed Value] (State DebugInfo))
 
-#if __GLASGOW_HASKELL__ < 710
+#if !MIN_VERSION_mtl(2,2,0)
+#if !MIN_VERSION_transformers_compat(0,4,0)
 instance MonadState [Typed Value] FieldReader where
   get = lift get
   put = lift . put
+#endif
 #endif
 
 readNext' :: FieldReader (Typed Value)
