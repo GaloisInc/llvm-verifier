@@ -316,17 +316,18 @@ llvmArrayElt n tp = bvAt n (value tp);
 llvmIntSlice :: (i n o :: Nat) -> bitvector (addNat (addNat i n) o) -> bitvector n;
 llvmIntSlice i n o a = drop Bool i n (take Bool (addNat i n) o a);
 
-llvmIntToFloat  :: bitvector 32 -> Float;
-llvmIntToFloat = bvToFloat;
+-- llvmIntToFloat  :: bitvector 32 -> Float;
+-- llvmIntToFloat = bvToFloat;
 
-llvmFloatToInt  :: Float -> bitvector 32;
-llvmFloatToInt = floatToBV;
+-- llvmFloatToInt  :: Float -> bitvector 32;
+-- llvmFloatToInt = floatToBV;
 
-llvmIntToDouble :: bitvector 64 -> Double;
-llvmIntToDouble = bvToDouble;
+-- llvmIntToDouble :: bitvector 64 -> Double;
+-- llvmIntToDouble = bvToDouble;
 
-llvmDoubleToInt :: Double -> bitvector 64;
-llvmDoubleToInt = doubleToBV;
+-- llvmDoubleToInt :: Double -> bitvector 64;
+-- llvmDoubleToInt = doubleToBV;
+
 
 axiom ite_same :: (a :: sort 1)
          -> (b :: Bool)

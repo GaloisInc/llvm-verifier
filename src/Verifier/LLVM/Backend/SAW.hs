@@ -292,8 +292,10 @@ mkBackendState dl sc = do
       fieldVFn :: V.Vector (MM.Field MM.Type) -> IO (SharedTerm t)
       fieldVFn flds = scFieldInfo sc =<< traverse fieldFn (V.toList flds)
 
-  intToFloat  <- scApplyLLVM_llvmIntToFloat sc
-  intToDouble <- scApplyLLVM_llvmIntToDouble sc
+  --intToFloat  <- scApplyLLVM_llvmIntToFloat sc
+  --intToDouble <- scApplyLLVM_llvmIntToDouble sc
+  let intToFloat _ = error "Verifier.LLVM.Backend.SAW: intToFloat not implemented"
+  let intToDouble _ = error "Verifier.LLVM.Backend.SAW: intToDouble not implemented"
 
   ptrEqOp <- scApplyLLVM_llvmIeqBool  sc
   ptrLeOp <- scApplyLLVM_llvmIuleBool sc
@@ -374,8 +376,10 @@ mkBackendState dl sc = do
                       case dl^.intLayout of
                         BigEndian    -> slice m n 0 v -- Low order bits of v.
                         LittleEndian -> slice 0 n m v -- High order bits of v.
-                    MM.FloatToBV v  -> join $ scApplyLLVM_llvmFloatToInt sc ?? v
-                    MM.DoubleToBV v -> join $ scApplyLLVM_llvmDoubleToInt sc ?? v
+                    MM.FloatToBV _v  -> error "Verifier.LLVM.Backend.SAW: floatToInt not implemented"
+                                       --join $ scApplyLLVM_llvmFloatToInt sc ?? v
+                    MM.DoubleToBV _v -> error "Verifier.LLVM.Backend.SAW: doubleToInt not implemented"
+                                       --join $ scApplyLLVM_llvmDoubleToInt sc ?? v
                     MM.ArrayElt n tp o v -> do
                       let n' = fromIntegral n
                           o' = fromIntegral o
@@ -1216,3 +1220,4 @@ _unused = undefined
   scLLVM_StructFields
   scLLVM_StructIndex
   scApplyLLVM_getStructField
+  
