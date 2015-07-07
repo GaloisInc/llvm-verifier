@@ -11,7 +11,7 @@ License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : jhendrix
 -}
-module Verifier.LLVM.Codebase.DebugInfo 
+module Verifier.LLVM.Codebase.DebugInfo
   ( -- * Reader
     DebugInfo
   , initialDebugInfo
@@ -29,14 +29,14 @@ module Verifier.LLVM.Codebase.DebugInfo
   , Scope(..)
   , LexicalBlock(..)
   , Context(..)
-  , Subprogram(..)  
+  , Subprogram(..)
     -- * Location information
   , LocationInfo(..)
   , readLocationInfo
     -- * ClassType
   , ClassType(..)
   , readClassType
-    -- * Re-exports  
+    -- * Re-exports
   , Ident
   , FilePath
   , Int32
@@ -73,7 +73,7 @@ namedMdMap mo = foldl' f Map.empty (modNamedMd mo)
 lookupNamedMd :: String -> NamedMdMap -> [Int]
 lookupNamedMd nm m = fromMaybe [] $ Map.lookup nm m
 
-type UnnamedMdMap = Map Int [Typed Value]
+type UnnamedMdMap = Map Int [Maybe ValMd]
 
 unnamedMdMap :: Module -> UnnamedMdMap
 unnamedMdMap mdl = Map.fromList
@@ -82,7 +82,7 @@ unnamedMdMap mdl = Map.fromList
 --------------------------------------------
 -- DebugReader
 
-data DebugInfo 
+data DebugInfo
    = DebugInfo { dsMdMap :: UnnamedMdMap
                 , _dsCompileUnits :: [CompileUnit]
                 , _dsFilePathCache :: Map Int FilePath
@@ -126,13 +126,13 @@ initialDebugInfo mdl = fst $ runDebugReader s0 $ do
     s <- get
     return $ s { _dsCompileUnits = cul }
   where s0 = DebugInfo { dsMdMap = unnamedMdMap mdl
-                        , _dsCompileUnits = []           
+                        , _dsCompileUnits = []
                         , _dsFilePathCache = Map.empty
                         , _dsContextCache  = Map.empty
                         , _dsScopeCache    = Map.empty
                         }
 
-lookupMetadata :: Int -> DebugReader [Typed Value]
+lookupMetadata :: Int -> DebugReader [Maybe ValMd]
 lookupMetadata i = do
   m <- gets dsMdMap
   case Map.lookup i m of
@@ -143,17 +143,17 @@ lookupMetadata i = do
 --------------------------------------------
 -- FieldReader
 
-type FieldReader = ExceptT String (StateT [Typed Value] (State DebugInfo))
+type FieldReader = ExceptT String (StateT [Maybe ValMd] (State DebugInfo))
 
 #if !MIN_VERSION_mtl(2,2,0)
 #if !MIN_VERSION_transformers_compat(0,4,0)
-instance MonadState [Typed Value] FieldReader where
+instance MonadState [Maybe ValMd] FieldReader where
   get = lift get
   put = lift . put
 #endif
 #endif
 
-readNext' :: FieldReader (Typed Value)
+readNext' :: FieldReader (Maybe ValMd)
 readNext' = do
   l <- get
   case l of
@@ -165,9 +165,12 @@ skipNext = void $ readNext'
 
 readField :: (Typed Value -> DebugReader a) -> FieldReader a
 readField f = do
-  tpv <- readNext'
-  r <- lift $ lift $ runExceptT $ f tpv
-  either fail return r
+  mv <- readNext'
+  case mv of
+    Just (ValMdValue tv) -> do
+      r <- lift $ lift $ runExceptT $ f tv
+      either fail return r
+    _ -> fail "readField: Expected nonnull metadata value"
 
 -- | @readCached lens nm r i@ reads node @i@ using the reader @r@.
 -- Reads are cached in a map that can be accessed via @lens@, to
@@ -193,13 +196,13 @@ runFieldReader nm i v = do
 
 runFieldReader' :: String
                 -> String
-                -> [Typed Value]
+                -> [Maybe ValMd]
                 -> FieldReader r
                 -> DebugReader r
 runFieldReader' loc nm l fr = do
   (mr,l') <- lift $ runStateT (runExceptT fr) l
   case mr of
-    Left msg -> do 
+    Left msg -> do
       let cnt = length l - length l'
       let field | cnt > 0 = " at field " ++ show (cnt-1)
                 | otherwise = ""
@@ -213,7 +216,7 @@ runFieldReader' loc nm l fr = do
 checkTag :: (Int32 -> Bool) -> FieldReader ()
 checkTag p = do
   tag <- readInt32
-  unless (p tag) $ 
+  unless (p tag) $
     fail $ "Unexpected tag " ++ showHex tag ""
 
 ------------------------------------------------------------------------
@@ -222,11 +225,11 @@ checkTag p = do
 uncurryTypeValue :: (Type -> Value -> a) -> Typed Value -> a
 uncurryTypeValue f tpv = f (typedType tpv) (typedValue tpv)
 
-asInt32 :: Monad m => Type -> Value -> m Int32 
+asInt32 :: Monad m => Type -> Value -> m Int32
 asInt32 (PrimType (Integer 32)) (ValInteger v) = return (fromInteger v)
 asInt32 _ _ = fail "Expected int32"
 
-asString :: Monad m => Type -> Value -> m String 
+asString :: Monad m => Type -> Value -> m String
 asString (PrimType Metadata) (ValMd (ValMdString nm)) = return nm
 asString _ _ = fail "Expected String"
 
@@ -372,7 +375,7 @@ data Subprogram
      -- | Indicates this is local to compile unit.
    , spIsLocal :: Bool
      -- | Compile unit contains subprogram definition, and not just a declaration.
-   , spIsDef :: Bool     
+   , spIsDef :: Bool
      -- | Subprogram has been compiled with optimization.
    , spIsOptimized :: Bool
    } deriving (Show)
@@ -420,12 +423,16 @@ readSubprogramFields = do
                     , spIsOptimized = isOptimized
                     }
 
+filterJustValMd :: [Maybe ValMd] -> [Typed Value]
+filterJustValMd [] = []
+filterJustValMd (Nothing:xs) = filterJustValMd xs
+filterJustValMd (Just (ValMdValue x):xs) = x : filterJustValMd xs
+filterJustValMd (x:_) = fail $ unwords ["filterJustValMd: unexpected metadata form:",show x]
+
 evalList :: MetadataValue a => Type -> Value -> DebugReader [a]
 evalList tp v = do
-  l <- lookupMetadata =<< asMdRef tp v
-  case l of
-    [ Typed (PrimType (Integer 32)) (ValInteger 0) ] -> return []
-    _ -> traverse (uncurryTypeValue evalValue) l
+  l <- filterJustValMd <$> (lookupMetadata =<< asMdRef tp v)
+  traverse (uncurryTypeValue evalValue) l
 
 instance MetadataValue v => MetadataValue [v] where
   evalValue = evalList
@@ -436,13 +443,13 @@ instance MetadataValue v => MetadataValue [v] where
 newtype Language = Language Int32
 
 instance Show Language where
-  showsPrec d (Language i) = 
+  showsPrec d (Language i) =
     case i of
       0x1 -> showString "lang_c89"
       0x2 -> showString "lang_c"
       0x4 -> showString "lang_c_plus_plus"
       _ -> showParen (d > 10) $ showString "Language" . shows i
-  
+
 
 lang_c89 :: Language
 lang_c89 = Language 0x1
@@ -503,7 +510,7 @@ readLexicalBlockFields :: FieldReader LexicalBlock
 readLexicalBlockFields = do
   file <- readFilePathField
   scope <- readNext
-  line <- readInt32 -- Line 
+  line <- readInt32 -- Line
   col <- readInt32 -- Col
   skipNext -- Unique id
   return LexicalBlock { lbScope = scope
@@ -516,7 +523,7 @@ readLexicalBlockFields = do
 -- Scope
 
 data Scope
-   = ContextScope Context 
+   = ContextScope Context
      -- | Appears within a block inside a function.
    | LexicalBlockScope LexicalBlock
   deriving (Show)

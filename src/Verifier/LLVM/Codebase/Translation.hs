@@ -83,7 +83,8 @@ blockIsDummyExit _ = False
 ltiBlocks :: LLVMTranslationInfo -> [CFG.BB]
 ltiBlocks (LTI cfg) = [ bb
                       | bb <- CFG.allBBs cfg
-                      , not (blockIsDummyExit (snd (L.bbLabel bb))) 
+                      , let Just lab = L.bbLabel bb
+                      , not (blockIsDummyExit (snd lab))
                       ]
 
 -- | @ltiImmediatePostDominator lti bb@ returns the immediate post dominator
@@ -145,8 +146,10 @@ blockPhiMap' :: (?lc::LLVMContext, ?sbe :: SBE sbe)
 blockPhiMap' blocks = execStateT (traverse go blocks) Map.empty
   where go :: (?lc::LLVMContext, ?sbe :: SBE sbe)
            => CFG.BB -> StateT (PhiMap (SBETerm sbe)) IO ()
-        go (L.BasicBlock { L.bbLabel = (_,tgt), L.bbStmts = sl }) =
-          mapM_ (parseInstr tgt) sl
+        go bb@(L.BasicBlock { L.bbLabel = Nothing }) =
+          fail $ unwords ["blockPhiMap': basic block missing label: ", show bb]
+        go (L.BasicBlock { L.bbLabel = Just (_,tgt), L.bbStmts = sl }) =
+          mapM_ (parseInstr tgt) (fmap (fmap snd) sl)
         parseInstr tgt stmt@(L.Result r (L.Phi tp vals) _) = do
           forM_ vals $ \(v,src) -> do
             mentry <- runLiftAttempt $ do
@@ -511,7 +514,7 @@ liftBB :: (?lc::LLVMContext, ?sbe::SBE sbe,
        -> CFG.BB
        -> m ()
 liftBB lti phiMap bb = do
-    symBlocks <- impl (L.bbStmts bb) []
+    symBlocks <- impl (fmap (fmap snd) (L.bbStmts bb)) []
     bgBlocks %= (symBlocks ++)
   where llvmId = CFG.blockName bb
         -- Block for post dominator

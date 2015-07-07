@@ -181,7 +181,9 @@ mkCodebase sbe dl mdl = do
       let sym = L.globalSym lg
       mg <- liftIO $ runLiftAttempt $ do
         tp <- liftMemType' (L.globalType lg)
-        Global sym tp <$> liftValue tp (L.globalValue lg)
+        case L.globalValue lg of
+          Nothing -> fail $ unwords ["mkCodebase: global has null value", show lg]
+          Just gv -> Global sym tp <$> liftValue tp gv
       case mg of
         Left{} -> warn $ text "Skipping definition of" <+> ppSymbol sym
                       <> text "; Unsupported type."
