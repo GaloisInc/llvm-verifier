@@ -17,12 +17,14 @@ module Verifier.LLVM.Overrides.Libc
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
 #endif
+import Control.Lens hiding (pre)
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Data.Char
 import Data.List (stripPrefix)
 import Data.String
 import qualified Data.Vector as V
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
 import Numeric                   (showHex, showOct)
 
 import Verifier.LLVM.Backend
@@ -311,6 +313,26 @@ memset_chk aw = do
         return dst
       _ -> wrongArguments nm
 
+memcpy_chk :: BitWidth -> StdOvdEntry sbe m
+memcpy_chk aw = do
+  let nm = "__memcpy_chk"
+  let sizeT = IntType aw
+  overrideEntry (fromString nm) i8p [i8p, i8p, sizeT, sizeT] $ \args -> do
+    case args of
+      [(_, dst), (_, src), (_, len), (_, _dstlen)] -> do
+        align <- withDL (view ptrAlign)
+        alignTm <- withSBE $ \sbe -> termInt sbe 32 (fromIntegral align)
+        Just m <- preuse currentPathMem
+        (c,m') <- withSBE $ \sbe -> memCopy sbe m dst src aw len alignTm
+        currentPathMem .= m'
+        sbe <- gets symBE
+        let pts = map (prettyTermD sbe) [dst,src,len]
+        let fr = "__memcpy_chk operation was not valid: (dst,src,len) = "
+                  ++ show (parens $ hcat $ punctuate comma $ pts)
+        processMemCond fr c
+        return dst
+      _ -> wrongArguments nm
+
 registerLibcOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
 registerLibcOverrides = do
   aw <- ptrBitwidth <$> getDL
@@ -328,5 +350,6 @@ registerLibcOverrides = do
     , calloc aw
     , free
     , memset_chk aw
+    , memcpy_chk aw
     , printf
     ]
