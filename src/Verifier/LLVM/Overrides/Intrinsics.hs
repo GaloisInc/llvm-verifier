@@ -65,7 +65,7 @@ memsetIntrinsic lw = do
 
 objectsizeIntrinsic :: BitWidth -> StdOvdEntry m sbe
 objectsizeIntrinsic w = do
-  let nm = "llvm.objectsize.i" ++ show w
+  let nm = "llvm.objectsize.i" ++ show w ++ ".p0i8"
   let itp = IntType w
   overrideEntry (fromString nm) itp [i8p, i1] $ \args ->
     case snd <$> args of
