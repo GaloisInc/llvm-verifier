@@ -978,18 +978,17 @@ scWriteCNF proxy sbs path t = do
   AIG.writeCNF be l path
 
 scWriteSmtLib :: SharedContext t
-              -> Bool
               -> FilePath
               -> BitWidth
               -> SharedTerm t
               -> IO ()
-scWriteSmtLib sc isSmtLib2 path w t = do
+scWriteSmtLib sc path w t = do
   let wn = fromIntegral w
   zero <- scBvConst sc wn 0
   wt <- scNat sc wn
   t' <- scBvEq sc wt t zero
   (_, lit) <- SBVSim.sbvSolve sc Map.empty [] t'
-  writeFile path =<< compileToSMTLib isSmtLib2 True lit
+  writeFile path =<< compileToSMTLib SMTLib2 True lit
 
 
 intFromBV :: V.Vector Bool -> Integer
@@ -1181,7 +1180,7 @@ createSAWBackend' proxy dl sc0 = do
 
                 , writeSAWCore = Just $ \nm t -> SAWBackend $ do
                     writeFile nm (scWriteExternal t)
-                , writeSmtLib = Just (lift4 (scWriteSmtLib sc))
+                , writeSmtLib = Just (lift3 (scWriteSmtLib sc))
 
                 , evalAiger  = \inputs _ t -> SAWBackend $ scEvalTerm sbs inputs t
                 , sbeRunIO   = runSAWBackend

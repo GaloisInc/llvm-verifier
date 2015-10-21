@@ -253,7 +253,7 @@ data SBE m = SBE
     -- | @writeSmtLib isSmtLib2 f t@ writes an SMT-Lib representation
     -- of @t == 0@ into file @f@. If this is UNSAT, the expression is
     -- valid.
-  , writeSmtLib :: Maybe (Bool -> FilePath -> BitWidth -> SBETerm m -> m ())
+  , writeSmtLib :: Maybe (FilePath -> BitWidth -> SBETerm m -> m ())
 
     -- | @writeSAWCore f t@ writes a SAWCore representation of @t@ into
     -- file @f@, if this backend supports SAWCore output.

@@ -85,7 +85,6 @@ void lss_eval_aiger_array_uint64 (uint64_t *sym, uint64_t *out, uint32_t size,
     NO_INL;
 
 
-void lss_write_smtlib1(uint32_t sym, const char *filename) NO_INL;
 void lss_write_smtlib2(uint32_t sym, const char *filename) NO_INL;
 void lss_write_cnf(uint32_t sym, const char *filename) NO_INL;
 void lss_write_sawcore_uint32(uint32_t sym, const char *filename) NO_INL;

@@ -142,15 +142,6 @@ input bit.  See the bit packing section above for an explanation of how bits are
 array of `size` symbolic elements to evaluate. `out` should be an allocated array of `size` elements into which the
 evaluated values will be written.
 
-lss_write_smtlib1
---------------
-<pre>
-<code>void lss_write_smtlib1(uint32_t sym, const char *filename)</code>
-</pre>
-
-Write an SMTLib version 1 file into `filename` which asserts that `sym`
-is equal to  the constant value 0.
-
 lss_write_smtlib2
 --------------
 <pre>

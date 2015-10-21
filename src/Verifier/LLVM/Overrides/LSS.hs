@@ -361,8 +361,8 @@ lss_write_cnf =
            Nothing -> error "lss_write_cnf: backend does not support writing CNF files"
       _ -> wrongArguments "lss_write_cnf"
 
-lss_write_smtlib :: Bool -> StdOvdEntry sbe m
-lss_write_smtlib isSmtLib2 =
+lss_write_smtlib :: StdOvdEntry sbe m
+lss_write_smtlib =
   voidOverrideEntry (fromString funcname) [i32, strTy] $ \args ->
     case args of
       [(IntType w, t), (PtrType{},fptr)] | w == 32 -> do
@@ -370,11 +370,11 @@ lss_write_smtlib isSmtLib2 =
         sbe <- gets symBE
         case writeSmtLib sbe of
            Just writeSmtLibFunc ->
-             void $ liftSBE $ writeSmtLibFunc isSmtLib2 file 32 t
+             void $ liftSBE $ writeSmtLibFunc file 32 t
            Nothing ->
              error $ funcname ++ ": backend does not support writing SMT-Lib files"
       _ -> wrongArguments funcname
-    where funcname = "lss_write_smtlib" ++ if isSmtLib2 then "2" else "1"
+    where funcname = "lss_write_smtlib2"
 
 
 
@@ -399,8 +399,7 @@ registerLSSOverrides = do
         [ lss_write_aiger
         , lss_write_cnf
         , lss_write_sawcore
-        , lss_write_smtlib False
-        , lss_write_smtlib True
+        , lss_write_smtlib
           -- Override support
         , lss_override_function_by_addr
         , lss_override_function_by_name
