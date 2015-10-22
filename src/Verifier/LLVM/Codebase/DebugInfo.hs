@@ -43,7 +43,7 @@ module Verifier.LLVM.Codebase.DebugInfo
   ) where
 
 import Control.Lens hiding (Context)
-import Control.Monad
+import Control.Monad.Compat
 import Control.Monad.Trans.Except
 import Control.Monad.State
 import Data.Bits (testBit)
@@ -56,7 +56,7 @@ import Numeric (showHex)
 import System.FilePath ((</>))
 import Text.LLVM
 import Prelude ()
-import Prelude.Compat
+import Prelude.Compat hiding (mapM)
 
 --------------------------------------------
 -- Metadata lookup utilities
