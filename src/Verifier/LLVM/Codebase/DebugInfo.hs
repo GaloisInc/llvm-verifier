@@ -45,7 +45,7 @@ module Verifier.LLVM.Codebase.DebugInfo
 import Control.Lens hiding (Context)
 import Control.Monad.Compat
 import Control.Monad.Trans.Except
-import Control.Monad.State
+import Control.Monad.State hiding (mapM, unless)
 import Data.Bits (testBit)
 import Data.Int (Int32)
 import Data.List (foldl')
@@ -56,7 +56,7 @@ import Numeric (showHex)
 import System.FilePath ((</>))
 import Text.LLVM
 import Prelude ()
-import Prelude.Compat hiding (mapM)
+import Prelude.Compat
 
 --------------------------------------------
 -- Metadata lookup utilities
