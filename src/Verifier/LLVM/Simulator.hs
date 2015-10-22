@@ -33,7 +33,6 @@ Point-of-contact : jhendrix
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
-{-# LANGUAGE CPP                   #-}
 module Verifier.LLVM.Simulator
   ( Simulator (SM)
   , getVerbosity
@@ -78,9 +77,6 @@ module Verifier.LLVM.Simulator
   , run
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import           Control.Applicative
-#endif
 import Control.Exception ( AsyncException(..)
                          , AssertionFailed(..)
                          , assert
@@ -97,6 +93,8 @@ import qualified Data.Map as M
 import           Data.Maybe
 import System.Console.Haskeline.MonadException (MonadException, handle, throwIO)
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
+import Prelude ()
+import Prelude.Compat
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase

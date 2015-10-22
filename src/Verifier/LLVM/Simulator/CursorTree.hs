@@ -1,5 +1,4 @@
 {-# Language ViewPatterns #-}
-{-# Language CPP #-}
 
 {- |
 Module           : $Header$
@@ -31,12 +30,11 @@ module Verifier.LLVM.Simulator.CursorTree
   , emptyContext
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 import Control.Lens
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import Prelude ()
+import Prelude.Compat
 
 class Sized a where
   size :: a -> Int

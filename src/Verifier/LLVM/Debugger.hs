@@ -11,7 +11,6 @@ semantics are loosely based on gdb.
 
 -}
 
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DoAndIfThenElse #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -21,6 +20,7 @@ semantics are loosely based on gdb.
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE CPP #-}
 module Verifier.LLVM.Debugger
   ( initializeDebugger
   , addBreakpoint

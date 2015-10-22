@@ -40,7 +40,8 @@ library
     build-depends: Aiger
 
   build-depends:
-      base >= 4 && < 5
+      base >= 4
+    , base-compat >= 0.6.0
     , aig >= 0.2.3
     , ansi-wl-pprint
     , bytestring
@@ -120,7 +121,8 @@ executable lss
     ld-options: -static -pthread
 
   build-depends:
-      base >= 4 && < 5
+      base >= 4
+    , base-compat >= 0.6.0
     , abcBridge
     , ansi-wl-pprint
     , cmdargs >= 0.8
@@ -143,7 +145,8 @@ executable bcdump
   GHC-prof-options: -auto-all -caf-all
 
   build-depends:
-      base >= 4 && < 5
+      base >= 4
+    , base-compat >= 0.6.0
     , abcBridge
     , ansi-wl-pprint
     , bytestring
@@ -167,7 +170,8 @@ test-suite test-llvm
   GHC-prof-options: -auto-all -caf-all
 
   build-depends:
-      base >= 4 && < 5
+      base >= 4
+    , base-compat >= 0.6.0
     , cmdargs >= 0.8
     , llvm-verifier
     , QuickCheck >= 2.7

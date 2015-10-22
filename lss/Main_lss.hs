@@ -10,13 +10,9 @@ Point-of-contact : atomb
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams             #-}
 {-# LANGUAGE ViewPatterns               #-}
-{-# LANGUAGE CPP                        #-}
 
 module Main where
 
-#if !MIN_VERSION_base(4,8,0)
-import           Control.Applicative             hiding (many)
-#endif
 import           Control.Monad
 import qualified Data.ABC as ABC
 
@@ -28,6 +24,8 @@ import           Text.ParserCombinators.Parsec
 import qualified System.Console.CmdArgs.Implicit as Args
 import qualified Text.LLVM                       as L
 import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
+import           Prelude ()
+import           Prelude.Compat
 
 import           LSSImpl
 

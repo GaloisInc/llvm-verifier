@@ -2,7 +2,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns     #-}
-{-# LANGUAGE CPP     #-}
 
 {- |
 Module           : $Header$
@@ -13,14 +12,13 @@ Point-of-contact : atomb
 -}
 module Tests.AES (aesTests) where
 
-#if !MIN_VERSION_base(4,8,0)
-import           Control.Applicative
-#endif
 import           Control.Monad (forM)
 import           Control.Monad.State (gets, liftIO)
 import qualified Data.Vector as V
 import           Test.Tasty
 import qualified Test.Tasty.HUnit as HU
+import Prelude ()
+import Prelude.Compat
 
 import qualified Text.LLVM               as L
 

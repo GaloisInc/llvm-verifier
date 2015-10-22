@@ -42,9 +42,6 @@ module Verifier.LLVM.Codebase.DebugInfo
   , Int32
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 import Control.Lens hiding (Context)
 import Control.Monad
 import Control.Monad.Trans.Except
@@ -58,6 +55,8 @@ import Data.Maybe (fromMaybe)
 import Numeric (showHex)
 import System.FilePath ((</>))
 import Text.LLVM
+import Prelude ()
+import Prelude.Compat
 
 --------------------------------------------
 -- Metadata lookup utilities

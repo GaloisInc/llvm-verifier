@@ -16,13 +16,9 @@ Point-of-contact : jhendrix
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 {-# LANGUAGE ExistentialQuantification  #-}
-{-# LANGUAGE CPP                        #-}
 
 module LSSImpl where
 
-#if !MIN_VERSION_base(4,8,0)
-import           Control.Applicative ((<$>))
-#endif
 import           Control.Lens
 import           Control.Monad.State
 import           Data.Char
@@ -30,6 +26,8 @@ import           Data.Int
 import qualified Data.Vector as V
 import           Numeric
 import           System.Console.CmdArgs.Implicit hiding (args, setVerbosity, verbosity)
+import           Prelude ()
+import           Prelude.Compat
 import qualified Text.LLVM                       as L
 
 import Verifier.LLVM.Backend

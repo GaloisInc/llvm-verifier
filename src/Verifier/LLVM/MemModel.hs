@@ -2,7 +2,6 @@
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE CPP #-}
 
 {- |
 Module           : $Header$
@@ -51,15 +50,14 @@ module Verifier.LLVM.MemModel
  , ppType
  ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 import Control.Lens
 import Control.Monad
 import Data.Maybe
 import Data.Monoid hiding ((<>))
 import qualified Data.Vector as V
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
+import Prelude ()
+import Prelude.Compat
 
 import Verifier.LLVM.MemModel.Common
 

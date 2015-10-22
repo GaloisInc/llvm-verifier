@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE CPP #-}
 
 {- |
 Module           : $Header$
@@ -14,9 +13,6 @@ module Verifier.LLVM.Overrides.Libc
   ( registerLibcOverrides
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 import Control.Lens hiding (pre)
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
@@ -26,6 +22,8 @@ import Data.String
 import qualified Data.Vector as V
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
 import Numeric                   (showHex, showOct)
+import Prelude ()
+import Prelude.Compat
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.AST

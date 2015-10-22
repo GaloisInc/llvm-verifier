@@ -11,7 +11,6 @@ Point-of-contact : jhendrix
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-warn-unused-do-bind #-}
 
 module Verifier.LLVM.Codebase
@@ -45,13 +44,12 @@ module Verifier.LLVM.Codebase
 
 where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 import Control.Lens
 import Control.Monad
 import Control.Monad.State
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
+import Prelude ()
+import Prelude.Compat
 
 import qualified Control.Exception              as CE
 import qualified Data.ByteString                as BS

@@ -7,7 +7,6 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 
 {- |
@@ -39,9 +38,6 @@ module Verifier.LLVM.Codebase.Translation
   , liftStringValue
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 import Control.Lens hiding (op)
 import Control.Monad.State.Strict
 import Control.Monad.Trans.Except
@@ -55,6 +51,8 @@ import qualified Data.Vector                as V
 import qualified Text.LLVM                  as L
 import Text.LLVM.AST              (Stmt'(..), Typed (..), ppInstr)
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
+import Prelude ()
+import Prelude.Compat
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.AST

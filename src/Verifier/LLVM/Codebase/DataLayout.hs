@@ -4,7 +4,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE CPP #-}
 
 {- |
 Module           : $Header$
@@ -69,10 +68,6 @@ module Verifier.LLVM.Codebase.DataLayout
   , ppIdent
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative ((<$>))
-import Data.Monoid (Monoid(..))
-#endif
 import Control.Lens
 import Control.Monad.State.Strict
 import qualified Data.FingerTree as FT
@@ -82,6 +77,8 @@ import qualified Data.Vector as V
 import Data.Word (Word32, Word64)
 import qualified Text.LLVM as L
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
+import Prelude ()
+import Prelude.Compat
 import Verifier.LLVM.Utils.Arithmetic
 import Verifier.LLVM.Utils.PrettyPrint
 

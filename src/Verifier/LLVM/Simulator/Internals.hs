@@ -17,7 +17,6 @@ Point-of-contact : jhendrix
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Verifier.LLVM.Simulator.Internals
   ( Simulator(SM, runSM)
@@ -167,9 +166,6 @@ module Verifier.LLVM.Simulator.Internals
   , ppTuple
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative hiding (empty)
-#endif
 import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens
@@ -185,6 +181,8 @@ import qualified Data.Map  as M
 import Data.Maybe
 import qualified Data.Set  as S
 import qualified Data.Vector as V
+import Prelude ()
+import Prelude.Compat
 
 import System.Console.Haskeline.MonadException (MonadException(..), RunIO(..))
 

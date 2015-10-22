@@ -4,7 +4,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE CPP #-}
 
 {- |
 Module           : $Header$
@@ -17,9 +16,6 @@ module Verifier.LLVM.Overrides.LSS
   ( registerLSSOverrides
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 import qualified Control.Exception         as CE
 import Control.Lens
 import Control.Monad
@@ -30,6 +26,8 @@ import Data.String
 import qualified Data.Vector as V
 import System.IO
 import Text.PrettyPrint.ANSI.Leijen (nest)
+import Prelude ()
+import Prelude.Compat
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase

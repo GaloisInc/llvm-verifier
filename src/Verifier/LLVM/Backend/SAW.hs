@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DoAndIfThenElse #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -25,9 +24,6 @@ module Verifier.LLVM.Backend.SAW
   , llvmModule
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative hiding (empty)
-#endif
 import Control.Exception (assert)
 import Control.Lens hiding (op)
 import Control.Monad
@@ -42,6 +38,8 @@ import Data.SBV.Dynamic
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
+import Prelude ()
+import Prelude.Compat
 
 import Verifier.SAW as SAW
 import Verifier.SAW.Conversion
@@ -56,15 +54,6 @@ import Verifier.LLVM.Backend as LLVM
 import Verifier.LLVM.Codebase.AST
 import qualified Verifier.LLVM.MemModel as MM
 
-
-#if !MIN_VERSION_base(4,6,0)
--- | Strict version of modifyIORef
--- Added for compatibility with GHC base 4.5 and 4.6
-modifyIORef' :: IORef a -> (a -> a) -> IO ()
-modifyIORef' r f = do
-  v <- readIORef r
-  writeIORef r $! f v
-#endif
 
 preludeBVNatTermF :: TermF t
 preludeBVNatTermF = FTermF $ GlobalDef (mkIdent preludeModuleName "bvNat")

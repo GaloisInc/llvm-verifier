@@ -1,5 +1,4 @@
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE CPP #-}
 
 {- |
 Module           : $Header$
@@ -19,9 +18,8 @@ module Verifier.LLVM.Debugger.FreeApp
  , composeCont
  ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
+import Prelude ()
+import Prelude.Compat
 
 -- | App is a free instance of applicative.
 data App u a where

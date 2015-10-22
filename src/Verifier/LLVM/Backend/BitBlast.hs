@@ -3,7 +3,6 @@
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ViewPatterns               #-}
 {-# LANGUAGE PatternGuards              #-}
-{-# LANGUAGE CPP                        #-}
 {- |
 Module           : $Header$
 Description      : A symbolic backend that bitblasts
@@ -37,9 +36,6 @@ module Verifier.LLVM.Backend.BitBlast
   , bmDataAddr
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import           Control.Applicative (Applicative(..), (<$>), (<*>), pure)
-#endif
 import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
 import           Control.Lens hiding (ix, op)
@@ -60,6 +56,8 @@ import qualified Data.Vector               as V
 import           Numeric                   (showHex)
 import qualified Text.LLVM.AST             as L
 import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align)
+import           Prelude ()
+import           Prelude.Compat
 
 import qualified Data.AIG as AIG
 import           Data.AIG ( IsAIG, BV )

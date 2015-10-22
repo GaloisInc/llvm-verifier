@@ -2,7 +2,6 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE CPP #-}
 
 {- |
 Module           : $Header$
@@ -32,9 +31,6 @@ module Verifier.LLVM.Debugger.Grammar
   , parseCompletions
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
 import Control.Lens
 import Control.Monad.State as MTL
 import Data.Char
@@ -48,6 +44,8 @@ import Data.String
 import System.Console.Haskeline (Completion(..))
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), (</>))
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
+import Prelude ()
+import Prelude.Compat
 
 import Verifier.LLVM.Debugger.FreeApp
 import Verifier.LLVM.Utils.PrettyPrint

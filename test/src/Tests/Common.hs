@@ -4,7 +4,6 @@
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TupleSections        #-}
-{-# LANGUAGE CPP                  #-}
 
 {- |
 Module           : $Header$
@@ -16,9 +15,6 @@ Point-of-contact : atomb
 module Tests.Common where
 
 import qualified Numeric
-#if !MIN_VERSION_base(4,8,0)
-import           Control.Applicative
-#endif
 import           Control.Monad
 import           Control.Monad.State (gets, MonadIO, liftIO)
 import           Control.Lens ( (^.) )
@@ -29,6 +25,8 @@ import           Test.Tasty
 import           Test.Tasty.Options
 import           Test.Tasty.QuickCheck
 import qualified Test.Tasty.HUnit as HU
+import Prelude ()
+import Prelude.Compat
 
 import           System.FilePath
 
