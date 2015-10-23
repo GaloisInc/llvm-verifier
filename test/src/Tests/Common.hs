@@ -15,7 +15,7 @@ Point-of-contact : atomb
 module Tests.Common where
 
 import qualified Numeric
-import           Control.Monad
+import           Control.Monad (unless, void)
 import           Control.Monad.State (gets, MonadIO, liftIO)
 import           Control.Lens ( (^.) )
 
