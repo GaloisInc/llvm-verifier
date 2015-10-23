@@ -13,7 +13,7 @@ Point-of-contact : atomb
 
 module Main where
 
-import           Control.Monad
+import           Control.Monad.Compat
 import qualified Data.ABC as ABC
 
 import           Data.Char

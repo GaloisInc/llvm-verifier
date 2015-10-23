@@ -52,7 +52,7 @@ import qualified Text.LLVM                  as L
 import Text.LLVM.AST              (Stmt'(..), Typed (..), ppInstr)
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
-import Prelude.Compat
+import Prelude.Compat hiding (mapM_)
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.AST

@@ -1,7 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE Rank2Types #-}
-{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -O0 #-}
 
 {- |
@@ -107,14 +106,6 @@ dsScopeCache = lens _dsScopeCache (\s v -> s { _dsScopeCache = v })
 
 type DebugReader = ExceptT String (State DebugInfo)
 
-#if !MIN_VERSION_mtl(2,2,0)
-#if !MIN_VERSION_transformers_compat(0,4,0)
-instance MonadState DebugInfo DebugReader where
-  get = lift get
-  put = lift . put
-#endif
-#endif
-
 runDebugReader :: DebugInfo -> DebugReader a -> (Either String a, DebugInfo)
 runDebugReader s r = runState (runExceptT r) s
 
@@ -143,14 +134,6 @@ lookupMetadata i = do
 -- FieldReader
 
 type FieldReader = ExceptT String (StateT [Maybe ValMd] (State DebugInfo))
-
-#if !MIN_VERSION_mtl(2,2,0)
-#if !MIN_VERSION_transformers_compat(0,4,0)
-instance MonadState [Maybe ValMd] FieldReader where
-  get = lift get
-  put = lift . put
-#endif
-#endif
 
 readNext' :: FieldReader (Maybe ValMd)
 readNext' = do

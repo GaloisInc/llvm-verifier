@@ -78,7 +78,7 @@ import Data.Word (Word32, Word64)
 import qualified Text.LLVM as L
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
-import Prelude.Compat
+import Prelude.Compat hiding (mapM_)
 import Verifier.LLVM.Utils.Arithmetic
 import Verifier.LLVM.Utils.PrettyPrint
 

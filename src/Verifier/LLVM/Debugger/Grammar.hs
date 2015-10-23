@@ -35,7 +35,7 @@ import Control.Lens
 import Control.Monad.State as MTL
 import Data.Char
 import qualified Data.Foldable as Fold
-import Data.List
+import Data.List.Compat
 import qualified Data.Map as Map
 import Data.Maybe
 import Data.Sequence (Seq)
@@ -45,7 +45,7 @@ import System.Console.Haskeline (Completion(..))
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), (</>))
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
 import Prelude ()
-import Prelude.Compat
+import Prelude.Compat hiding (mapM_)
 
 import Verifier.LLVM.Debugger.FreeApp
 import Verifier.LLVM.Utils.PrettyPrint
