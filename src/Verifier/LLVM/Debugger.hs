@@ -458,8 +458,8 @@ locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
                m = foldl insertName emptyNameMap (M.keys (sdBody d))
 
 
-optNatArg :: -- ^ Default value if argument is missing.
-             Integer
+optNatArg :: Integer
+             -- ^ Default value if argument is missing.
           -> DebuggerGrammar (Integer -> Debugger sbe m ())
           -> DebuggerGrammar (Debugger sbe m ())
 optNatArg def g = (fromMaybe def <$> opt nat) <**> g

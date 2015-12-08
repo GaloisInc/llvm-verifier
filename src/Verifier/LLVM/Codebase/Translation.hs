@@ -15,20 +15,21 @@ Description      : Symbolic execution tests
 License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : acfoltzer
+
+This module defines the translation from LLVM IR to Symbolic IR.
+
+Translation into symbolic IR requires post-dominator information about the
+LLVM IR.  This information is analyzed and generated during translation.
+
+In addition to branches, call and phi non-terminal instructions require
+special support:
+
+[Phi Statements]
+  The value of a Phi statement in LLVM depends on which previous block was
+  executed.  Since phi statements must appear at the top of the block, we can
+  move phi statements to execute during the transition from the previous
+  block to the new block.
 -}
--- | This module defines the translation from LLVM IR to Symbolic IR.
---
--- Translation into symbolic IR requires post-dominator information about the
--- LLVM IR.  This information is analyzed and generated during translation.
---
--- In addition to branches, call and phi non-terminal instructions require
--- special support:
---
--- [Phi Statements]
---   The value of a Phi statement in LLVM depends on which previous block was
---   executed.  Since phi statements must appear at the top of the block, we can
---   move phi statements to execute during the transition from the previous
---   block to the new block.
 module Verifier.LLVM.Codebase.Translation
   ( liftDefine
   , LiftAttempt

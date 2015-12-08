@@ -4,9 +4,10 @@ Description      : Utility functions for execution of LLVM Symbolic programs
 License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : jhendrix
+
+Arithmetic utilities
 -}
 module Verifier.LLVM.Utils.Arithmetic
- -- * Arithmetic utilities
   ( isPow2
   , lg
   , lgCeil

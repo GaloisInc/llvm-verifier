@@ -894,15 +894,15 @@ killCurrentPath rsn = do
       replaceParentWithChild ctx newAssertions (b^.biAbortsAbove) rest
 
 -- | Replace a branch with one child killed with the other sibling.
-replaceParentWithChild :: (Functor m, MonadIO m)
-                       => -- | Context for new execution tree. 
+replaceParentWithChild :: (Functor m, MonadIO m) =>
                           TreeContext (BranchInfo sbe) (Path sbe)
-                          -- | Assertions to add to new 
-                       -> SBEPred sbe 
-                          -- | Number of branches killed in parent branch.
+                          -- ^ Context for new execution tree.
+                       -> SBEPred sbe
+                          -- ^ Assertions to add to new
                        -> Int
-                          -- | New execution tree to make active.
+                          -- ^ Number of branches killed in parent branch.
                        -> CursorTree (BranchInfo sbe) (Path sbe)
+                          -- ^ New execution tree to make active.
                        -> Simulator sbe m ()
 replaceParentWithChild ctx newAssertions parentAborts rest = do
   sbe <- gets symBE

@@ -10,15 +10,17 @@ Description      : The symbolic simulator for LLVM-Symbolic programs
 License          : Free for non-commercial use. See LICENSE.
 Stability        : provisional
 Point-of-contact : jhendrix
+
+This module defines the main data types for the AST used directly by
+the symbolic simulator. This AST data type is the interface between
+the symbolic execution and the LLVM lifting operating.
+
+The Symbolic IR is similar to the LLVM IR, but includes several
+differences:
+
+  * The Symbolic IR includes explicit instructions for pushing and
+    popping frames from the merge frame stack.
 -}
--- | This module defines the main data types for the AST used directly by the symbolic
--- simulator.  This AST data type is the interface between the symbolic execution and
--- the LLVM lifting operating.
---
--- The Symbolic IR is similar to the LLVM IR, but includes several differences:
---
--- * The Symbolic IR includes explicit instructions for pushing and popping frames from
---   the merge frame stack.
 module Verifier.LLVM.Codebase.AST
   ( FuncID
   , SymBlockID
