@@ -434,6 +434,7 @@ data StructInfo = StructInfo { siDataLayout :: !DataLayout
                              , siIsPacked   :: !Bool
                              , structSize   :: !Size
                              , structAlign  :: !Alignment
+                             , structPadding :: !Size
                              , siFields     :: !(V.Vector FieldInfo)
                              }
 
@@ -468,10 +469,13 @@ mkStructInfo dl packed tps0 = go [] 0 (max a0 (nextAlign tps0)) tps0
         go flds sz maxAlign [] =
             StructInfo { siDataLayout = dl
                        , siIsPacked = packed
-                       , structSize = sz
+                       , structSize = sz'
                        , structAlign = maxAlign
+                       , structPadding = sz' - sz
                        , siFields = V.fromList (reverse flds)
                        }
+          where sz' = nextPow2Multiple sz (fromIntegral maxAlign)
+
         go flds sz maxAlign (tp:tpl) = go (fi:flds) sz' (max maxAlign fieldAlign) tpl
           where fi = FieldInfo { fiOffset = sz
                                , fiType = tp
