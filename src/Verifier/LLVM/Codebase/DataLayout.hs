@@ -246,7 +246,7 @@ defaultDataLayout = execState defaults dl
           setAt vectorInfo  64 3 -- 64-bit vector is 8 byte aligned.
           setAt vectorInfo 128 4  -- 128-bit vector is 16 byte aligned.
           -- Default aggregate alignments.
-          setAt aggInfo  0 3  -- Aggregates are 8 byte aligned.
+          setAt aggInfo  0 0  -- Aggregates have no particular alignment
 
 -- | Maximum aligment for any type (used by malloc).
 maxAlignment :: DataLayout -> Alignment
