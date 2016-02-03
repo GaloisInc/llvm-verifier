@@ -61,7 +61,7 @@ data CursorTree b a
 -- immediately about active node first, and root branch last.
 treeParents :: CursorTree b a -> [(b,Orientation,CursorTree b a)]
 treeParents = impl . fst . asPair
-  where impl Empty = []
+  where impl EmptyCtx = []
         impl (OnLeft _ c b t) = (b,RightActive,t):impl c
         impl (OnRight _ c b t) = (b,LeftActive,t):impl c
 
@@ -79,7 +79,7 @@ branch c b RightActive l r = instContext (onLeft  c b l) r
 -- | A cursor tree with one missing subtree.
 data TreeContext b a
     -- | @Empty@ denotes the empty context.
-  = Empty
+  = EmptyCtx
     -- | @OnLeft s c b l@ denotes the context @c[b(l >< [])]@.
     -- @s@ contains the size of the context.
   | OnLeft  !Int !(TreeContext b a) b (CursorTree b a)
@@ -90,7 +90,7 @@ data TreeContext b a
 
 -- | @appendTreeContext d c@ returns @d(c([]))@.
 appendContext :: TreeContext b a -> TreeContext b a -> TreeContext b a
-appendContext d Empty = d
+appendContext d EmptyCtx = d
 appendContext d (OnLeft  s c b l) = OnLeft  (s+size d) (appendContext d c) b l
 appendContext d (OnRight s c b r) = OnRight (s+size d) (appendContext d c) b r
 
@@ -98,7 +98,7 @@ appendContext d (OnRight s c b r) = OnRight (s+size d) (appendContext d c) b r
 instContext' :: TreeContext b a -> a -> CursorTree b a
 instContext' d a =
   case d of
-    Empty -> Singleton a
+    EmptyCtx -> Singleton a
     OnLeft  _ c b l -> Branch c b RightActive a l
     OnRight _ c b r -> Branch c b LeftActive  a r
 
@@ -116,7 +116,7 @@ updateActiveValue f (asPair -> (c,x)) = instContext c <$> f x
 
 -- | @asPair c[a]@ returns pair @(c,a)@.
 asPair :: CursorTree b a -> (TreeContext b a,a)
-asPair (Singleton a) = (Empty,a)
+asPair (Singleton a) = (EmptyCtx,a)
 asPair (Branch c b LeftActive  l r) = (OnRight (size c+size r) c b r, l)
 asPair (Branch c b RightActive r l) = (OnLeft  (size c+size l) c b l, r)
 
@@ -129,12 +129,12 @@ instance Sized (CursorTree b a) where
    where next (c,_) = size c + 1
 
 instance Sized (TreeContext b a) where
-  size Empty = 0
+  size EmptyCtx = 0
   size (OnLeft  s _ _ _) = s
   size (OnRight s _ _ _) = s
 
 emptyContext :: TreeContext b a 
-emptyContext = Empty
+emptyContext = EmptyCtx
 
 -- | @onRight c b r@ denotes the context @c[b([], r)]@.
 onRight  :: TreeContext b a -> b -> CursorTree b a -> TreeContext b a
@@ -159,7 +159,7 @@ inorderTraversal' f (ConsRight s b l r) =
 -- | Appends the elements in the context to the sequence in
 -- left-to-right order.
 seqCtx :: TreeContext b a -> Seq a -> Seq a
-seqCtx Empty l = l
+seqCtx EmptyCtx l = l
 seqCtx (OnLeft  _ c _ l) r = c `seqCtx` (toSeq l Seq.>< r)
 seqCtx (OnRight _ c _ r) l = c `seqCtx` (l Seq.>< toSeq r)
 
@@ -172,7 +172,7 @@ toSeq = next . asPair
 activeIndex :: CursorTree b a -> Int
 activeIndex t = contextIndex (fst (asPair t)) 0
   where contextIndex :: TreeContext b a -> Int -> Int
-        contextIndex Empty i = i
+        contextIndex EmptyCtx i = i
         contextIndex (OnLeft _ c _ l)  i = contextIndex c $! i+size l
         contextIndex (OnRight _ c _ _) i = contextIndex c i
 
@@ -199,7 +199,7 @@ instance Sized (CursorStack b a) where
 -- | Converts a cursor tree represented by a CursorStack into the
 -- equivalent cursor tree represented by a CursorTree.
 fromStack :: CursorStack b a -> CursorTree b a
-fromStack = fromStack' Empty
+fromStack = fromStack' EmptyCtx
 
 fromStack' :: TreeContext b a -> CursorStack b a -> CursorTree b a 
 fromStack' c (ConsLeft _ b l r) =
@@ -213,7 +213,7 @@ toStack = next . asPair
   where next (c,a) = toStack' c (Bottom a)
 
 toStack' :: TreeContext b a -> CursorStack b a -> CursorStack b a 
-toStack' Empty s = s
+toStack' EmptyCtx s = s
 toStack' (OnRight _ c b r) l = toStack' c (consRight b l r) -- c[s >< u]
 toStack' (OnLeft  _ c b l) r = toStack' c (consLeft b l r) -- c[l >< r]
 
@@ -237,7 +237,7 @@ moveLeft :: CursorStack b a
          -> Int 
          -> TreeContext b a
          -> Maybe (CursorTree b a)
-moveLeft _ _ Empty = Nothing                         
+moveLeft _ _ EmptyCtx = Nothing
 moveLeft r i (OnLeft _ c b l) =
   if i+size l >= 0 then
     Just $ selectWithin (onRight c b (fromStack r)) (toStack l) (i+size l)
@@ -250,7 +250,7 @@ moveRight :: CursorStack b a
           -> Int 
           -> TreeContext b a
           -> Maybe (CursorTree b a)
-moveRight _ _ Empty = Nothing                         
+moveRight _ _ EmptyCtx = Nothing
 moveRight l i (OnRight _ c b r) =
   if i < size r then
     Just $ selectWithin (onLeft c b (fromStack l)) (toStack r) i
