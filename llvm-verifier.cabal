@@ -114,6 +114,9 @@ executable lss
 
   main-is: Main_lss.hs
 
+  other-modules:
+    LSSImpl
+
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M
   GHC-prof-options: -auto-all -caf-all
 
