@@ -493,7 +493,7 @@ allocPtr :: SAWBackendState t -> IO (SharedTerm t)
 allocPtr sbs = do
   -- Create new variable for base address.
   s <- readIORef (sbsAllocations sbs)
-  let nm = "$alloc" ++ show (Set.size s)
+  let nm = "lss__alloc" ++ show (Set.size s)
   let sc = sbsContext sbs
   tp <- join $ scApplyLLVM_value sc ?? sbsPtrType sbs
   base <- scFreshGlobal sc nm tp
