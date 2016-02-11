@@ -3,7 +3,7 @@ Version:       0.2.1
 Author:        Galois Inc.
 Maintainer:    jhendrix@galois.com, atomb@galois.com
 Build-type:    Simple
-Cabal-version: >= 1.9
+Cabal-version: >= 1.8
 Category:      Formal Methods
 Synopsis:      Symbolic simulator for LLVM bytecode
 License:       OtherLicense
@@ -40,7 +40,7 @@ library
     build-depends: Aiger
 
   build-depends:
-      base >= 4
+      base >= 4 && < 5
     , base-compat >= 0.6.0
     , aig >= 0.2.3
     , ansi-wl-pprint
@@ -168,6 +168,17 @@ test-suite test-llvm
 
   main-is        : Tests.hs
   hs-source-dirs : test/src lss
+  other-modules  :
+    LSSImpl
+    Tests.AES
+    Tests.Aggregates
+    Tests.BitMemModel
+    Tests.Common
+    Tests.Errors
+    Tests.IO
+    Tests.MemModel
+    Tests.PrimOps
+    Tests.Symbolic
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   GHC-prof-options: -auto-all -caf-all
