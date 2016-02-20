@@ -221,8 +221,8 @@ defaultDataLayout :: DataLayout
 defaultDataLayout = execState defaults dl
   where dl = DL { _intLayout = BigEndian
                 , _stackAlignment = 1
-                , _ptrSize  = 8 -- 64 bit pointers
-                , _ptrAlign = 8 -- 64 bit alignment
+                , _ptrSize  = 8 -- 64 bit pointers = 8 bytes
+                , _ptrAlign = 3 -- 64 bit alignment: 2^3=8 byte boundaries
                 , _integerInfo = emptyAlignTree
                 , _floatInfo   = emptyAlignTree
                 , _vectorInfo  = emptyAlignTree
