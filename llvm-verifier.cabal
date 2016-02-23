@@ -56,6 +56,8 @@ library
     , llvm-pretty-bc-parser >= 0.1.3.1
     , mtl
     , saw-core
+    , saw-core-aig
+    , saw-core-sbv
     , sbv >= 4.0
     , split >= 0.2
     , transformers
