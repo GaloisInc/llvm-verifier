@@ -74,6 +74,7 @@ library
     Verifier.LLVM.Backend
     Verifier.LLVM.Backend.BitBlast
     Verifier.LLVM.Backend.SAW
+    Verifier.LLVM.Backend.SAWImport
 
     Verifier.LLVM.Codebase
     Verifier.LLVM.Codebase.AST
