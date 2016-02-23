@@ -62,7 +62,6 @@ library
     , split >= 0.2
     , transformers
     , transformers-compat
-    , tuple >= 0.2
     , vector
 
   if !os(windows)
