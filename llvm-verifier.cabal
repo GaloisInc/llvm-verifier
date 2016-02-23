@@ -9,10 +9,6 @@ Synopsis:      Symbolic simulator for LLVM bytecode
 License:       OtherLicense
 License-file:  LICENSE
 
-Flag abc-backend
-  Description: Use the ABC backend for generating AIGs
-  Default: True
-
 Flag build-library
   description: Build the LLVM-verifier library.
   default: True
@@ -32,12 +28,6 @@ flag static
 library
   if !flag(build-library)
     buildable: False
-
-  if flag(abc-backend)
-    cpp-options: -DUseABC
-    build-depends: abcBridge
-  else
-    build-depends: Aiger
 
   build-depends:
       base >= 4 && < 5
@@ -109,8 +99,6 @@ library
 executable lss
   if !flag(build-lss)
     buildable: False
-  if flag(abc-backend)
-    cpp-options: -DUseABC
 
   hs-source-dirs: lss
 
@@ -164,9 +152,6 @@ executable bcdump
 
 test-suite test-llvm
   type:       exitcode-stdio-1.0
-
-  if flag(abc-backend)
-    cpp-options: -DUseABC
 
   main-is        : Tests.hs
   hs-source-dirs : test/src lss
