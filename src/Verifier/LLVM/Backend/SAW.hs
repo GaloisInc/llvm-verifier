@@ -999,7 +999,7 @@ scEvalTerm sbs inputs t = do
 
 scTermMemPrettyPrinter :: MM.MemPrettyPrinter (SharedTerm s) (SharedTerm s) (SharedTerm s)
 scTermMemPrettyPrinter = pp
-  where ppt _ = scPrettyTermDoc
+  where ppt _ = scPrettyTermDoc defaultPPOpts
         pp = MM.PP { MM.ppPtr = ppt
                    , MM.ppCond = ppt
                    , MM.ppTerm = ppt
@@ -1104,7 +1104,7 @@ createSAWBackend' proxy dl sc0 = do
                     tpt <- join $ scApplyLLVM_value sc <*> sbsMemType sbs tp
                     Right <$> iteFn tpt x y z
                 , LLVM.asBool = R.asBool
-                , prettyPredD = scPrettyTermDoc
+                , prettyPredD = scPrettyTermDoc defaultPPOpts
                 , evalPred = \inputs t -> SAWBackend $ do
                     t' <- scEvalTerm sbs inputs t
                     case R.asBool t' of
@@ -1122,7 +1122,7 @@ createSAWBackend' proxy dl sc0 = do
                 , applyTypedExpr = \expr -> SAWBackend $ do
                     ExprEvalFn fn <- typedExprEvalFn sbs expr
                     fn return
-                , prettyTermD = scPrettyTermDoc
+                , prettyTermD = scPrettyTermDoc defaultPPOpts
                 , asUnsignedInteger = asUnsignedBitvector
                 , asSignedInteger   = asSignedBitvector
                 , asConcretePtr     = asUnsignedBitvector (ptrBitwidth dl)
