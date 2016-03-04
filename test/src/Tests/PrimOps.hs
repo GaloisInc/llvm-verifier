@@ -18,7 +18,7 @@ Point-of-contact : atomb
 module Tests.PrimOps (primOpTests) where
 
 import qualified Control.Exception as CE
-import           Control.Lens hiding (act, (<.>), op)
+import           Control.Lens hiding ((<.>), op)
 import           Control.Monad.State (liftIO)
 
 import           Data.Int
