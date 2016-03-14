@@ -182,6 +182,7 @@ lookupAlias i = llvmAliasMap ?lc ^. at i
 asMemType :: (?lc :: LLVMContext) => SymType -> Maybe MemType
 asMemType (MemType mt) = return mt
 asMemType (Alias i) = asMemType =<< lookupAlias i
+asMemType ty@(FunType _) = Just (PtrType ty) -- TODO: this seems weird?
 asMemType _ = Nothing
 
 -- | If argument corresponds to a @RetType@ possibly via aliases,

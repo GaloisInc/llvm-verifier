@@ -310,7 +310,8 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
           return (tp, PtrAdd sv args)
         go args (ArrayType _ etp) r = goArray args etp r
         go args (PtrType tp) r = do
-          mtp <- maybe (fail "") return $ asMemType tp
+          mtp <- maybe (fail "failed to convert pointer type") return $
+                 asMemType tp
           goArray args mtp r
         go args (StructType si) r = goStruct args si r
         go _ _ _ = gepFailure
@@ -334,7 +335,8 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
         goArray _ _ _ = gepFailure
 
         goStruct args si  ((IntType 32, L.ValInteger i) : r) = do       
-          fi <- maybe (fail "") return $ siFieldInfo si (fromIntegral i)
+          fi <- maybe (fail "failed to get struct field info") return $
+                siFieldInfo si (fromIntegral i)
           val <- mkSValExpr (SValInteger aw (toInteger (fiOffset fi)))
           args' <- mergeAdd args val
           go args' (fiType fi) r
@@ -348,7 +350,9 @@ liftAlign tp _ = memTypeAlign (llvmDataLayout ?lc) tp
 liftMemType' :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => L.Type
              -> LiftAttempt MemType
-liftMemType' tp = maybe (fail "") return $ liftMemType tp
+liftMemType' tp =
+  maybe (fail ("failed to lift MemType: " ++ show (L.ppType tp))) return $
+  liftMemType tp
 
 liftStmt :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
          => L.Stmt  
@@ -365,7 +369,8 @@ liftStmt stmt =
       tptr <- liftValue tp v
       taddr <- liftTypedValue addr 
       return $ Store tp tptr taddr (liftAlign tp a)
-    Effect{} -> fail ""
+    Effect{} ->
+      fail $ "can't translate effect: " ++ show (L.ppStmt stmt)
     Result reg (L.Call _b tp v tpvl) _ -> do
       mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType' tp
       sv <- liftValue mtp v
