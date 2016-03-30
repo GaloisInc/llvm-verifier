@@ -227,6 +227,9 @@ liftValue _ (L.ValSymbol sym) =
   return $ SValSymbol sym
 liftValue (PtrType etp) L.ValNull =
   mkSValExpr $ SValNull etp
+liftValue (IntType w) L.ValNull =
+  -- TODO: this seems odd, but it does show up in LLVM bitcode!
+  mkSValExpr $ SValInteger w 0
 liftValue (ArrayType len etp) (L.ValArray _ el0)
     | fromIntegral len == V.length el =
        mkSValExpr . SValArray etp =<< traverse (liftValue etp) el
