@@ -262,7 +262,12 @@ liftValue _  L.ValLabel{} = fail "Could not interpret label."
 liftValue tp L.ValZeroInit = zeroValue tp
 liftValue _  L.ValAsm{} = fail "Could not interpret asm."
 liftValue _  L.ValMd{} = fail "Could not interpret metadata."
-liftValue _  _ = fail "Could not interpret LLVM value."
+liftValue tp v =
+    fail $ concat [ "Could not interpret LLVM value "
+                  , show v
+                  , " of type "
+                  , show (ppMemType tp)
+                  ]
 
 -- | Lift a bitcast expression.
 liftBitcast :: (Monad m, ?lc :: LLVMContext)
