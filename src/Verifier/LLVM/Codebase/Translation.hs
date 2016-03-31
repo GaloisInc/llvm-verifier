@@ -333,7 +333,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
         goArray args etp ((IntType w, v0) : r)= do
           v1 <- liftValue (IntType w) v0
           let v2 | aw == w   = return v1
-                 | aw >  w   = mkSValExpr $ ZExt  mn w v1 aw
+                 | aw >  w   = mkSValExpr $ SExt  mn w v1 aw
                  | otherwise = mkSValExpr $ Trunc mn w v1 aw
           let sz = toInteger $ memTypeSize pdl etp
           sz' <- mkSValExpr $ SValInteger aw sz                           
