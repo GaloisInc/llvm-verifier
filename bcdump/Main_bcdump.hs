@@ -4,7 +4,7 @@
 {- |
 Module           : $Header$
 Description      : Dead simple llvm-dis/parser/AST inspection utility
-License          : Free for non-commercial use. See LICENSE.
+License          : BSD3
 Stability        : provisional
 Point-of-contact : atomb, jhendrix
 -}

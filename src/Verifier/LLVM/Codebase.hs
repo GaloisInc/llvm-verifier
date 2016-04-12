@@ -1,7 +1,7 @@
 {- |
 Module           : $Header$
 Description      : Collection of LLVM Symbolic code
-License          : Free for non-commercial use. See LICENSE.
+License          : BSD3
 Stability        : provisional
 Point-of-contact : jhendrix
 -}

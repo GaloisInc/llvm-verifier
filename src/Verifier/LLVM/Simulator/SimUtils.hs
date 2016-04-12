@@ -1,7 +1,7 @@
 {- |
 Module           : $Header$
 Description      : Utility functions for execution of LLVM Symbolic programs
-License          : Free for non-commercial use. See LICENSE.
+License          : BSD3
 Stability        : provisional
 Point-of-contact : jhendrix
 -}

@@ -1,7 +1,7 @@
 {- |
 Module           : $Header$
 Description      : Error path and error handling tests
-License          : Free for non-commercial use. See LICENSE.
+License          : BSD3
 Stability        : provisional
 Point-of-contact : atomb
 -}

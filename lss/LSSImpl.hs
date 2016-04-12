@@ -2,7 +2,7 @@
 Module           : $Header$
 Description      : Implementation details for the command line driver;
                    primarily to facilitate programmatic invocation
-License          : Free for non-commercial use. See LICENSE.
+License          : BSD3
 Stability        : provisional
 Point-of-contact : jhendrix
 -}

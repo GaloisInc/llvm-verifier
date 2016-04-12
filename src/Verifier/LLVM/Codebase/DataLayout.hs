@@ -8,7 +8,7 @@
 {- |
 Module           : $Header$
 Description      : The symbolic simulator for LLVM-Symbolic programs
-License          : Free for non-commercial use. See LICENSE.
+License          : BSD3
 Stability        : provisional
 Point-of-contact : jhendrix
 -}

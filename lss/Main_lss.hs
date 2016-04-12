@@ -1,7 +1,7 @@
 {- |
 Module           : $Header$
 Description      : The command line driver for the LLVM symbolic simulator
-License          : Free for non-commercial use. See LICENSE.
+License          : BSD3
 Stability        : provisional
 Point-of-contact : atomb
 -}
