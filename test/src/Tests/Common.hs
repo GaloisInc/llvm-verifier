@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor        #-}
 {-# LANGUAGE DeriveDataTypeable   #-}
+{-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE ImplicitParams       #-}
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
