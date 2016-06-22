@@ -58,10 +58,10 @@ import qualified Verifier.LLVM.MemModel as MM
 preludeBVNatTermF :: TermF t
 preludeBVNatTermF = FTermF $ GlobalDef (mkIdent preludeModuleName "bvNat")
 
-scBitwidth :: SharedContext s -> BitWidth -> IO (SharedTerm s)
+scBitwidth :: SharedContext -> BitWidth -> IO Term
 scBitwidth sc w = scNat sc (fromIntegral w)
 
-asUnsignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
+asUnsignedBitvector :: BitWidth -> Term -> Maybe Integer
 asUnsignedBitvector w s2 = do
   (s1, vt) <- R.asApp s2
   (s0, wt) <- R.asApp s1
@@ -69,31 +69,31 @@ asUnsignedBitvector w s2 = do
   when (R.asNatLit wt /= Just (fromIntegral w)) Nothing
   toInteger <$> R.asNatLit vt
 
-asSignedBitvector :: BitWidth -> SharedTerm s -> Maybe Integer
+asSignedBitvector :: BitWidth -> Term -> Maybe Integer
 asSignedBitvector w s2
     | w == 0 = error "Bad bitwidth"
     | otherwise = s2u <$> asUnsignedBitvector w s2
   where s2u v | v `testBit` (w-1) = v - 2^w
               | otherwise = v
 
-scFloat :: SharedContext s -> Float -> IO (SharedTerm s)
+scFloat :: SharedContext -> Float -> IO Term
 scFloat sc v = scTermF sc (FTermF (FloatLit v))
 
-scDouble :: SharedContext s -> Double -> IO (SharedTerm s)
+scDouble :: SharedContext -> Double -> IO Term
 scDouble sc v = scTermF sc (FTermF (DoubleLit v))
 
 -- | Create a vector from a term representing its element types and the element.
-scVecLit :: SharedContext s
-         -> SharedTerm s -- ^ Type of vector elements.
-         -> V.Vector (SharedTerm s) -- ^ Elements
-         -> IO (SharedTerm s)
+scVecLit :: SharedContext
+         -> Term -- ^ Type of vector elements.
+         -> V.Vector Term -- ^ Elements
+         -> IO Term
 scVecLit sc tp v = scTermF sc (FTermF (ArrayValue tp v))
 
-scResizeTerm :: SharedContext s
+scResizeTerm :: SharedContext
              -> BitWidth -- ^ Input width
-             -> (BitWidth, SharedTerm s) -- ^ Result bitwith and term representing it.
-             -> SharedTerm s
-             -> IO (SharedTerm s)
+             -> (BitWidth, Term) -- ^ Result bitwith and term representing it.
+             -> Term
+             -> IO Term
 scResizeTerm sc iw (rw,rt) v
   | iw < rw = do
       fn <- scApplyLLVM_llvmZExt sc
@@ -106,19 +106,19 @@ scResizeTerm sc iw (rw,rt) v
   | otherwise = return v
 
 -- | Create a bitvector from a constant.
-scLLVMIntConst :: SharedContext s
+scLLVMIntConst :: SharedContext
                  -> BitWidth -- ^ Result width with corresponding term.
                  -> Integer -- ^ Value of bitvector.
-                 -> IO (SharedTerm s)
+                 -> IO Term
 scLLVMIntConst sc w v = do
   wt <- scBitwidth sc w
   scLLVMIntConst' sc (w,wt) v
 
 -- | Create a bitvector from a constant.
-scLLVMIntConst' :: SharedContext s
-                -> (BitWidth, SharedTerm s) -- ^ Result width with corresponding term.
+scLLVMIntConst' :: SharedContext
+                -> (BitWidth, Term) -- ^ Result width with corresponding term.
                 -> Integer -- ^ Value of bitvector.
-                -> IO (SharedTerm s)
+                -> IO Term
 scLLVMIntConst' sc (w,wt) v = do
   cfn <- scApplyLLVM_llvmIntConstant sc
   cfn wt =<< scNat sc (fromInteger (v `mod` 2^(toInteger w)))
@@ -140,57 +140,56 @@ Operations that attempt to exploit this normalization include:
   Integer comparison operations.
 -}
 
-scFreshPtr :: SharedContext s -> DataLayout -> IO (SharedTerm s)
+scFreshPtr :: SharedContext -> DataLayout -> IO Term
 scFreshPtr sc dl = do
   valueFn <- scApplyLLVM_value sc
   let w = ptrBitwidth dl
   scFreshGlobal sc "_" =<< valueFn =<< scIntType sc w
 
 -- | Set of shared term variables that refer to allocations.
-type SharedTermSetRef s = IORef (Set (SharedTerm s))
+type SharedTermSetRef = IORef (Set Term)
 
-asApp2 :: SharedTerm s -> Maybe (SharedTerm s, SharedTerm s, SharedTerm s)
+asApp2 :: Term -> Maybe (Term, Term, Term)
 asApp2 t = do
   (t1,a2) <- R.asApp t
   (t0,a1) <- R.asApp t1
   return (t0,a1,a2)
 
-data SAWBackendState t
+data SAWBackendState
    = SBS { sbsDataLayout :: DataLayout
-         , sbsContext :: SharedContext t
+         , sbsContext :: SharedContext
            -- | Stores list of fresh variables and their associated terms with
            -- most recently allocated variables first.
-         , sbsVars :: IORef [(BitWidth,VarIndex,ExtCns (SharedTerm t))]
+         , sbsVars :: IORef [(BitWidth,VarIndex,ExtCns Term)]
            -- | Allocations added.
-         , sbsAllocations :: SharedTermSetRef t
+         , sbsAllocations :: SharedTermSetRef
            -- | Width of pointers in bits as a nat.
-         , sbsPtrWidth :: SharedTerm t
+         , sbsPtrWidth :: Term
            -- | LLVM Type of a pointer
-         , sbsPtrType    :: SharedTerm t
+         , sbsPtrType    :: Term
            -- | LLVM Type of floats.
-         , sbsFloatType  :: SharedTerm t
+         , sbsFloatType  :: Term
            -- | LLVM Type for double
-         , sbsDoubleType :: SharedTerm t
+         , sbsDoubleType :: Term
            -- | Creates LLVM type for arrays
-         , sbsArrayTypeFn :: SharedTerm t -> SharedTerm t -> IO (SharedTerm t)
+         , sbsArrayTypeFn :: Term -> Term -> IO Term
            -- | Creates LLVM type for vectors
-         , sbsVecTypeFn :: SharedTerm t -> SharedTerm t -> IO (SharedTerm t)
+         , sbsVecTypeFn :: Term -> Term -> IO Term
            -- | Creates LLVM type for structs
-         , sbsStructTypeFn :: SharedTerm t -> IO (SharedTerm t)
-         , sbsAdd :: BitWidth -> IO (SharedTerm t -> SharedTerm t -> IO (SharedTerm t))
-         , sbsSub :: BitWidth -> IO (SharedTerm t -> SharedTerm t -> IO (SharedTerm t))
-         , smGenerator :: MM.TermGenerator IO (SharedTerm t) (SharedTerm t) (SharedTerm t)
+         , sbsStructTypeFn :: Term -> IO Term
+         , sbsAdd :: BitWidth -> IO (Term -> Term -> IO Term)
+         , sbsSub :: BitWidth -> IO (Term -> Term -> IO Term)
+         , smGenerator :: MM.TermGenerator IO Term Term Term
          }
 
-data DecomposeResult s
+data DecomposeResult
    = BasePtr
-   | OffsetPtr !(SharedTerm s) !(SharedTerm s)
+   | OffsetPtr !Term !Term
    | SymbolicPtr
 
-mkBackendState :: forall t
-               .  DataLayout
-               -> SharedContext t
-               -> IO (SAWBackendState t)
+mkBackendState :: DataLayout
+               -> SharedContext
+               -> IO SAWBackendState
 mkBackendState dl sc = do
   vars <- newIORef []
   allocs <- newIORef Set.empty
@@ -256,7 +255,7 @@ mkBackendState dl sc = do
   orFn  <- scApplyPrelude_or  sc
   boolMuxOp <- join $ scApply sc muxOp <$> scPrelude_Bool sc
   intTypeFn <- scApplyLLVM_IntType sc
-  let mkTypeTerm :: MM.Type -> IO (SharedTerm t)
+  let mkTypeTerm :: MM.Type -> IO Term
       mkTypeTerm tp0 =
         case MM.typeF tp0 of
           MM.Bitvector n -> intTypeFn =<< scNat sc (8*fromIntegral n)
@@ -264,9 +263,9 @@ mkBackendState dl sc = do
           MM.Double -> return llvmDoubleType
           MM.Array n tp -> join $ arrayTypeFn <$> scNat sc (fromIntegral n) <*> mkTypeTerm tp
           MM.Struct flds -> join $ structTypeFn <$> fieldVFn flds
-      fieldFn :: MM.Field MM.Type -> IO (SharedTerm t, Nat)
+      fieldFn :: MM.Field MM.Type -> IO (Term, Nat)
       fieldFn f = (, fromIntegral (MM.fieldPad f)) <$> mkTypeTerm (f^.MM.fieldVal)
-      fieldVFn :: V.Vector (MM.Field MM.Type) -> IO (SharedTerm t)
+      fieldVFn :: V.Vector (MM.Field MM.Type) -> IO Term
       fieldVFn flds = scFieldInfo sc =<< traverse fieldFn (V.toList flds)
 
   --intToFloat  <- scApplyLLVM_llvmIntToFloat sc
@@ -406,34 +405,34 @@ mkBackendState dl sc = do
 
 -- | Attempt to parse the second term as a constant integer.
 -- The first term is the width of the term.
-scIntAsConst' :: SharedContext s -> SharedTerm s -> SharedTerm s -> IO (Maybe Nat)
+scIntAsConst' :: SharedContext -> Term -> Term -> IO (Maybe Nat)
 scIntAsConst' sc w t =
   fmap R.asNatLit $ join $
     scApplyLLVM_llvmIntValueNat sc ?? w ?? t
 
-type SAWMem s = MM.Mem (SharedTerm s) (SharedTerm s) (SharedTerm s)
+type SAWMem = MM.Mem Term Term Term
 
-data SAWMemory s = SAWMemory { _memSymbols :: Map (SharedTerm s) Symbol
-                             , _memState :: MM.Mem (SharedTerm s) (SharedTerm s) (SharedTerm s)
-                             }
+data SAWMemory = SAWMemory { _memSymbols :: Map Term Symbol
+                           , _memState :: MM.Mem Term Term Term
+                           }
 
-emptySAWMemory :: SAWMemory s
+emptySAWMemory :: SAWMemory
 emptySAWMemory = SAWMemory { _memSymbols = Map.empty
                            , _memState = MM.emptyMem
                            }
 
-memSymbols :: Simple Lens (SAWMemory s) (Map (SharedTerm s) Symbol)
+memSymbols :: Simple Lens SAWMemory (Map Term Symbol)
 memSymbols = lens _memSymbols (\s v -> s { _memSymbols = v })
 
-memState :: Simple Lens (SAWMemory s) (SAWMem s)
+memState :: Simple Lens SAWMemory SAWMem
 memState = lens _memState (\s v -> s { _memState = v })
 
 smAddDefine :: DataLayout
-            -> SharedContext s
-            -> SAWMemory s
+            -> SharedContext
+            -> SAWMemory
             -> Symbol
             -> [BlockLabel]
-            -> IO (Maybe (SharedTerm s, [SharedTerm s], SAWMemory s))
+            -> IO (Maybe (Term, [Term], SAWMemory))
 smAddDefine dl sc m sym lbls = do
   symt <- scFreshPtr sc dl
   lblst <- traverse (\_ -> scFreshPtr sc dl) lbls
@@ -441,20 +440,20 @@ smAddDefine dl sc m sym lbls = do
   return $ Just (symt, lblst, m')
 
 -- | Return symbol associated with address if any.
-smLookupSymbol :: SAWMemory s -> SharedTerm s -> LookupSymbolResult
+smLookupSymbol :: SAWMemory -> Term -> LookupSymbolResult
 smLookupSymbol m t =
   case m^.memSymbols^.at t of
     Just r -> Right r
     Nothing -> Left Indeterminate
 
-smAlloc :: SAWBackendState t
+smAlloc :: SAWBackendState
         -> MM.AllocType
-        -> SAWMemory t
+        -> SAWMemory
         -> MemType
         -> BitWidth -- ^ Width of count.
-        -> SharedTerm t -- ^ Count
+        -> Term -- ^ Count
         -> Alignment
-        -> IO (AllocResult (SAWBackend t))
+        -> IO (AllocResult SAWBackend)
 smAlloc sbs atp m mtp w cnt _ = do
   let sc = sbsContext sbs
   -- Get size of tp in bytes.
@@ -477,7 +476,7 @@ smAlloc sbs atp m mtp w cnt _ = do
   let m' = m & memState %~ MM.allocMem atp base totalSize
   return (AResult t base m')
 
-allocPtr :: SAWBackendState t -> IO (SharedTerm t)
+allocPtr :: SAWBackendState -> IO Term
 allocPtr sbs = do
   -- Create new variable for base address.
   s <- readIORef (sbsAllocations sbs)
@@ -492,32 +491,32 @@ mergeEq :: (Ord k, Eq a) => Map k a -> Map k a -> Map k a
 mergeEq mx = Map.filterWithKey p
   where p k u = Map.lookup k mx == Just u
 
-smMerge :: SharedTerm s -> SAWMemory s -> SAWMemory s -> SAWMemory s
+smMerge :: Term -> SAWMemory -> SAWMemory -> SAWMemory
 smMerge c x y =
   SAWMemory { _memSymbols = mergeEq (x^.memSymbols) (y^.memSymbols)
             , _memState = MM.mergeMem c (x^.memState) (y^.memState)
             }
 
 -- | Return term value, length of fields, and vector with the types of the fields.
-sbsStructValue :: SAWBackendState t
+sbsStructValue :: SAWBackendState
                -> V.Vector (FieldInfo, v)
-               -> IO (ExprEvalFn v (SharedTerm t))
+               -> IO (ExprEvalFn v Term)
 sbsStructValue sbs flds = do
   let fn fi = do
          (,fromIntegral (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
   createStructValue (sbsContext sbs) =<< (traverse . _1) fn flds
 
 -- | Return term value, length of fields, and vector with the types of the fields.
-createStructValue :: forall s v
-                   . SharedContext s
+createStructValue :: forall v
+                   . SharedContext
                      -- For each field, provide type, number of padding bytes, and value.
-                  -> V.Vector ((SharedTerm s, Nat), v)
-                  -> IO (ExprEvalFn v (SharedTerm s))
+                  -> V.Vector ((Term, Nat), v)
+                  -> IO (ExprEvalFn v Term)
 createStructValue sc flds = do
   -- fieldType <- scApplyLLVM_fieldType sc
-  let foldFn :: ((SharedTerm s, Nat), v)
-             -> (Nat, ExprEvalFn v (SharedTerm s), SharedTerm s)
-             -> IO (Nat, ExprEvalFn v (SharedTerm s), SharedTerm s)
+  let foldFn :: ((Term, Nat), v)
+             -> (Nat, ExprEvalFn v Term, Term)
+             -> IO (Nat, ExprEvalFn v Term, Term)
       foldFn ((mtp,pad),expr) (n,ExprEvalFn reval, rvtp) = do
         padding <- scNat sc pad
         consStruct <- scApplyLLVM_ConsStruct sc
@@ -532,32 +531,17 @@ createStructValue sc flds = do
   tp0 <- scApplyLLVM_EmptyFields sc
   view _2 <$> foldrMOf folded foldFn (0, eval0, tp0) flds
 
-scApply2 :: SharedContext s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> IO (SharedTerm s)
+scApply2 :: SharedContext -> Term -> Term -> Term -> IO Term
 scApply2 sc f x y = do
   g <- scApply sc f x
   scApply sc g y
 
-scApply3 :: SharedContext s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> IO (SharedTerm s)
+scApply3 :: SharedContext -> Term -> Term -> Term -> Term -> IO Term
 scApply3 sc f x y z = do
   g <- scApply2 sc f x y
   scApply sc g z
 
-scApply4 :: SharedContext s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> SharedTerm s
-         -> IO (SharedTerm s)
+scApply4 :: SharedContext -> Term -> Term -> Term -> Term -> Term -> IO Term
 scApply4 sc f w x y z = do
   g <- scApply3 sc f w x y
   scApply sc g z
@@ -589,12 +573,12 @@ applyMuxToLeaves mux action = go
             Nothing -> action t
             Just (_ :*: b :*: x :*: y) -> join $ mux b <$> go x <*> go y
 
-smLoad :: SAWBackendState t
-       -> SAWMemory t
+smLoad :: SAWBackendState
+       -> SAWMemory
        -> MemType
-       -> SharedTerm t
+       -> Term
        -> Alignment
-       -> IO (SharedTerm t, SharedTerm t) -- Validity predicate and result.
+       -> IO (Term, Term) -- Validity predicate and result.
 smLoad sbs m tp0 ptr0 _a0 =
   case convertMemType (sbsDataLayout sbs) tp0 of
     Just tp -> applyMuxToLeaves mux action ptr0
@@ -602,13 +586,13 @@ smLoad sbs m tp0 ptr0 _a0 =
             action ptr = MM.readMem (smGenerator sbs) ptr tp (m^.memState)
     Nothing -> fail "smLoad must be given types that are even byte size."
 
-smStore :: SAWBackendState t
-        -> SAWMemory t
-        -> SharedTerm t -- ^ Address to store value at.
+smStore :: SAWBackendState
+        -> SAWMemory
+        -> Term -- ^ Address to store value at.
         -> MemType      -- ^ Type of value
-        -> SharedTerm t -- ^ Value to store
+        -> Term -- ^ Value to store
         -> Alignment
-        -> IO (SharedTerm t, SAWMemory t) -- Predicate and new memory.
+        -> IO (Term, SAWMemory) -- Predicate and new memory.
 smStore sbs m p mtp v _ = do
   case convertMemType (sbsDataLayout sbs) mtp of
     Nothing -> fail "memtype given to smStore must be an even byte size."
@@ -626,52 +610,52 @@ smStore sbs m p mtp v _ = do
 -- | @memcpy mem dst src len align@ copies @len@ bytes from @src@ to @dst@,
 -- both of which must be aligned according to @align@ and must refer to
 -- non-overlapping regions.
-smCopy :: SAWBackendState t
-       -> SAWMemory t
-       -> SharedTerm t -- ^ Destination pointer
-       -> SharedTerm t -- ^ Source pointer
+smCopy :: SAWBackendState
+       -> SAWMemory
+       -> Term -- ^ Destination pointer
+       -> Term -- ^ Source pointer
        -> BitWidth  -- ^ Bitwidth for counting number of bits.
-       -> SharedTerm t -- ^ Number of bytes to copy.
-       -> SharedTerm t -- ^ Alignment in bytes (should have 32-bit bits)
-       -> IO (SharedTerm t, SAWMemory t)
+       -> Term -- ^ Number of bytes to copy.
+       -> Term -- ^ Alignment in bytes (should have 32-bit bits)
+       -> IO (Term, SAWMemory)
 smCopy sbs m dst src w sz0 _ = do
   sz <- scResizeTerm (sbsContext sbs) w
            (ptrBitwidth (sbsDataLayout sbs), sbsPtrWidth sbs) sz0
   (c,ms) <- MM.copyMem (smGenerator sbs) dst src sz (m^.memState)
   return (c, m & memState .~ ms)
 
-data SAWBackend t a = SAWBackend { runSAWBackend :: IO a }
+data SAWBackend a = SAWBackend { runSAWBackend :: IO a }
   deriving (Functor)
 
-type instance SBETerm (SAWBackend t) = SharedTerm t
-type instance SBEPred (SAWBackend t) = SharedTerm t
-type instance SBEMemory (SAWBackend t) = SAWMemory t
+type instance SBETerm SAWBackend = Term
+type instance SBEPred SAWBackend = Term
+type instance SBEMemory SAWBackend = SAWMemory
 
-lift1 :: (x -> IO r) -> (x -> SAWBackend s r)
+lift1 :: (x -> IO r) -> (x -> SAWBackend r)
 lift1 = (SAWBackend .)
 
 lift2 :: (x -> y -> IO r)
-      -> (x -> y -> SAWBackend s r)
+      -> (x -> y -> SAWBackend r)
 lift2 = (lift1 .)
 
 lift3 :: (x -> y -> z -> IO r)
-      -> (x -> y -> z -> SAWBackend s r)
+      -> (x -> y -> z -> SAWBackend r)
 lift3 = (lift2 .)
 
 lift4 :: (w -> x -> y -> z -> IO r)
-      -> (w -> x -> y -> z -> SAWBackend s r)
+      -> (w -> x -> y -> z -> SAWBackend r)
 lift4 = (lift3 .)
 
 lift5 :: (v -> w -> x -> y -> z -> IO r)
-      -> (v -> w -> x -> y -> z -> SAWBackend s r)
+      -> (v -> w -> x -> y -> z -> SAWBackend r)
 lift5 = (lift4 .)
 
 lift6 :: (u -> v -> w -> x -> y -> z -> IO r)
-      -> (u -> v -> w -> x -> y -> z -> SAWBackend s r)
+      -> (u -> v -> w -> x -> y -> z -> SAWBackend r)
 lift6 = (lift5 .)
 
 -- | Returns shared term of type LLVMType representing given state.
-sbsMemType :: SAWBackendState t -> MemType -> IO (SharedTerm t)
+sbsMemType :: SAWBackendState -> MemType -> IO Term
 sbsMemType sbs btp = do
   let sc = sbsContext sbs
   case btp of
@@ -689,18 +673,18 @@ sbsMemType sbs btp = do
       join $ sbsStructTypeFn sbs <$> sbsFieldInfo sbs (siFields si)
 
 -- | Returns shared term of type StructFields for the given field info.
-sbsFieldInfo :: SAWBackendState t
+sbsFieldInfo :: SAWBackendState
              -> V.Vector FieldInfo
-             -> IO (SharedTerm t)
+             -> IO Term
 sbsFieldInfo sbs flds = do
     flds' <- traverse go flds
     scFieldInfo (sbsContext sbs) (V.toList flds')
   where go fi = do (,fromIntegral (fiPadding fi)) <$> sbsMemType sbs (fiType fi)
 
 -- | Returns shared term of type StructFields for the given field info.
-scFieldInfo :: SharedContext s
-            -> [(SharedTerm s, Nat)] -- ^ terms of type LLVMType with padding amounts
-            -> IO (SharedTerm s)
+scFieldInfo :: SharedContext
+            -> [(Term, Nat)] -- ^ terms of type LLVMType with padding amounts
+            -> IO Term
 scFieldInfo sc [] = scApplyLLVM_EmptyFields sc
 scFieldInfo sc ((tp, p) : tps) = do
   pt <- scNat sc p
@@ -709,10 +693,10 @@ scFieldInfo sc ((tp, p) : tps) = do
   consFields tp pt f
 
 -- | Returns shared terms f :: StructFields and i :: StructIndex f
-scStructIndex :: SharedContext s
-              -> [(SharedTerm s, Nat)] -- ^ terms of type LLVMType with padding amounts
+scStructIndex :: SharedContext
+              -> [(Term, Nat)] -- ^ terms of type LLVMType with padding amounts
               -> Int
-              -> IO (SharedTerm s, SharedTerm s)
+              -> IO (Term, Term)
 scStructIndex _ [] _ = error "scStructIndex: index out of bounds"
 scStructIndex sc ((tp, p) : tps) 0 = do
   pt <- scNat sc p
@@ -731,19 +715,19 @@ scStructIndex sc ((tp, p) : tps) n = do
   i' <- succIndex tp pt f i
   return (f', i')
 
-scIntType :: SharedContext s -> BitWidth -> IO (SharedTerm s)
+scIntType :: SharedContext -> BitWidth -> IO Term
 scIntType sc w = join $ scApplyLLVM_IntType sc <*> scBitwidth sc w
 
-typedExprEvalFn :: forall t v
-                 . SAWBackendState t
+typedExprEvalFn :: forall v
+                 . SAWBackendState
                 -> TypedExpr v
-                -> IO (ExprEvalFn v (SharedTerm t))
+                -> IO (ExprEvalFn v Term)
 typedExprEvalFn sbs expr0 = do
   let dl = sbsDataLayout sbs
   let sc = sbsContext sbs
   let eval1 :: v
-            -> (SharedTerm t -> IO (SharedTerm t))
-            -> ExprEvalFn v (SharedTerm t)
+            -> (Term -> IO Term)
+            -> ExprEvalFn v Term
       eval1 v fn = ExprEvalFn $ \eval -> liftIO . fn =<< eval v
   let evalBin x y op = evalBin' x y (scApply2 sc op)
       evalBin' x y f = ExprEvalFn $ \eval ->
@@ -753,20 +737,13 @@ typedExprEvalFn sbs expr0 = do
         return $ ExprEvalFn $ \eval -> liftIO . scVecLit sc tp =<< traverse eval v
   let constEvalFn v = ExprEvalFn $ \_ -> return v
       -- | Apply truncation or extension ops to term.
-  let extOp :: (SharedContext t
-                    -> IO (SharedTerm t -> SharedTerm t
-                                        -> SharedTerm t
-                                        -> IO (SharedTerm t)))
-            -> (SharedContext t
-                    -> IO (SharedTerm t -> SharedTerm t
-                                        -> SharedTerm t
-                                        -> SharedTerm t
-                                        -> IO (SharedTerm t)))
+  let extOp :: (SharedContext -> IO (Term -> Term -> Term -> IO Term))
+            -> (SharedContext -> IO (Term -> Term -> Term -> Term -> IO Term))
             -> OptVectorLength
             -> BitWidth -- ^ First constant argument to op
             -> BitWidth -- ^ Second constant width argument.
             -> v
-            -> IO (ExprEvalFn v (SharedTerm t))
+            -> IO (ExprEvalFn v Term)
       extOp fn fnV mn dw rw v = do
         dt <- scBitwidth sc dw
         rt <- scBitwidth sc rw
@@ -782,7 +759,7 @@ typedExprEvalFn sbs expr0 = do
                -> BitWidth -- ^ Input width
                -> BitWidth -- ^ Result bitwith
                -> v
-               -> IO (ExprEvalFn v (SharedTerm t))
+               -> IO (ExprEvalFn v Term)
       resizeOp mn iw rw v
         | iw < rw =
           extOp scApplyLLVM_llvmZExt  scApplyLLVM_llvmZExtV mn  (rw - iw) iw v
@@ -801,9 +778,9 @@ typedExprEvalFn sbs expr0 = do
     IntArith iop mn w x y -> do
       case fromIntegral <$> mn of
         Nothing -> do
-          let defOp :: (SharedContext t -> IO (SharedTerm t -> IO (SharedTerm t)))
+          let defOp :: (SharedContext -> IO (Term -> IO Term))
                     -> BitWidth
-                    -> IO (SharedTerm t -> SharedTerm t -> IO (SharedTerm t))
+                    -> IO (Term -> Term -> IO Term)
               defOp fn w' =
                 fmap (scApply2 sc) $ join $ fn sc <*> scBitwidth sc w'
           evalBin' x y <$>
@@ -916,14 +893,14 @@ typedExprEvalFn sbs expr0 = do
       return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn nt mtp val it) =<< eval a
 
 -- | Lambda abstract term @t@ over all symbolic variables.
-abstract :: SAWBackendState t -> SharedTerm t -> IO (SharedTerm t)
+abstract :: SAWBackendState -> Term -> IO Term
 abstract sbs t = do
   -- NB: reverse the list because sbs is stored with most recent variables first.
   ecs <- map (\(_, _, ec) -> ec) . reverse <$> readIORef (sbsVars sbs)
   scAbstractExts (sbsContext sbs) ecs t
 
 scTermSAT :: AIG.IsAIG l g =>
-  AIG.Proxy l g -> SAWBackendState t -> SharedTerm t -> IO (AIG.SatResult)
+  AIG.Proxy l g -> SAWBackendState -> Term -> IO (AIG.SatResult)
 scTermSAT proxy sbs t = do
   t' <- abstract sbs t
   BB.withBitBlastedPred proxy (sbsContext sbs) (\_ -> Map.empty) t' $ \be l _domTys -> do
@@ -931,9 +908,9 @@ scTermSAT proxy sbs t = do
 
 scWriteAiger :: AIG.IsAIG l g
              => AIG.Proxy l g
-             -> SAWBackendState t
+             -> SAWBackendState
              -> FilePath
-             -> [(MemType,SharedTerm t)]
+             -> [(MemType,Term)]
              -> IO ()
 scWriteAiger proxy sbs path terms = do
   let sc = sbsContext sbs
@@ -945,19 +922,19 @@ scWriteAiger proxy sbs path terms = do
 
 scWriteCNF :: AIG.IsAIG l g
            => AIG.Proxy l g
-           -> SAWBackendState t
+           -> SAWBackendState
            -> FilePath
-           -> SharedTerm t
+           -> Term
            -> IO [Int]
 scWriteCNF proxy sbs path t = do
   t' <- abstract sbs t
   BB.withBitBlastedPred proxy (sbsContext sbs) (\_ -> Map.empty) t' $ \be l _domTys -> do
   AIG.writeCNF be l path
 
-scWriteSmtLib :: SharedContext t
+scWriteSmtLib :: SharedContext
               -> FilePath
               -> BitWidth
-              -> SharedTerm t
+              -> Term
               -> IO ()
 scWriteSmtLib sc path w t = do
   let wn = fromIntegral w
@@ -982,7 +959,7 @@ splitByWidths v (w:wl) = (i:) <$> splitByWidths v' wl
   where (i,v') = V.splitAt (fromIntegral w) v
 
 
-scEvalTerm :: SAWBackendState t -> [Bool] -> SharedTerm t -> IO (SharedTerm t)
+scEvalTerm :: SAWBackendState -> [Bool] -> Term -> IO Term
 scEvalTerm sbs inputs t = do
   -- NB: reverse the list because sbs is stored with most recent variables first.
   (widths,varIndices,_) <- unzip3 . reverse <$> readIORef (sbsVars sbs)
@@ -997,7 +974,7 @@ scEvalTerm sbs inputs t = do
       -- Return instantiated t.
       scInstantiateExt sc m t
 
-scTermMemPrettyPrinter :: MM.MemPrettyPrinter (SharedTerm s) (SharedTerm s) (SharedTerm s)
+scTermMemPrettyPrinter :: MM.MemPrettyPrinter Term Term Term
 scTermMemPrettyPrinter = pp
   where ppt _ = scPrettyTermDoc defaultPPOpts
         pp = MM.PP { MM.ppPtr = ppt
@@ -1010,7 +987,7 @@ scTermMemPrettyPrinter = pp
 createSAWBackend :: AIG.IsAIG l g
                  => AIG.Proxy l g
                  -> DataLayout
-                 -> IO (SBE (SAWBackend t), SAWMemory t)
+                 -> IO (SBE SAWBackend, SAWMemory)
 createSAWBackend proxy dl = do
   sc0 <- mkSharedContext llvmModule
   (sbe, mem, _) <- createSAWBackend' proxy dl sc0
@@ -1019,8 +996,8 @@ createSAWBackend proxy dl = do
 createSAWBackend' :: AIG.IsAIG l g
                   => AIG.Proxy l g
                   -> DataLayout
-                  -> SharedContext t
-                  -> IO (SBE (SAWBackend t), SAWMemory t, SharedContext t)
+                  -> SharedContext
+                  -> IO (SBE SAWBackend, SAWMemory, SharedContext)
 createSAWBackend' proxy dl sc0 = do
   let activeDefs = filter defPred $ allModuleDefs llvmModule
         where defPred d = defIdent d `Set.notMember` excludedDefs
