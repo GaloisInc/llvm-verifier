@@ -307,7 +307,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
      let fn (L.Typed tp v) = (,v) <$> liftMemType' tp
      expr0 <- mkSValExpr (SValInteger aw 0)
      go expr0 rtp =<< traverse fn args0
-  where gepFailure = fail "Could not parse GEP Value."
+  where gepFailure msg = fail $ "Could not parse GEP Value: " ++ msg
         pdl = llvmDataLayout ?lc
         aw :: BitWidth
         aw = ptrBitwidth pdl 
@@ -323,7 +323,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
                  asMemType tp
           goArray args mtp r
         go args (StructType si) r = goStruct args si r
-        go _ _ _ = gepFailure
+        go _ tp _ = gepFailure $ "go with weird type: " ++ show (ppMemType tp)
 
         mergeAdd (SValExpr (SValInteger _ 0) _) y = return y
         mergeAdd x (SValExpr (SValInteger _ 0) _) = return x
@@ -341,7 +341,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
           v3 <- mkSValExpr . IntArith (Mul False False)  mn aw sz' =<< v2
           args' <- mergeAdd args v3
           go args' etp r
-        goArray _ _ _ = gepFailure
+        goArray _ _ tps = gepFailure $ "goArray with weird types: " ++ show (map (ppMemType . fst) tps)
 
         goStruct args si  ((IntType 32, L.ValInteger i) : r) = do       
           fi <- maybe (fail "failed to get struct field info") return $
@@ -349,7 +349,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
           val <- mkSValExpr (SValInteger aw (toInteger (fiOffset fi)))
           args' <- mergeAdd args val
           go args' (fiType fi) r
-        goStruct _ _ _ = gepFailure
+        goStruct _ _ tps = gepFailure $ "goStruct with weird types: " ++ show (map (ppMemType . fst) tps)
 
 -- | Lift a maybe alignment constraint to the alignment for the type.
 liftAlign :: (?lc :: LLVMContext) => MemType -> Maybe L.Align -> Alignment
