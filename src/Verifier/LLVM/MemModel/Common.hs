@@ -351,7 +351,7 @@ mkType tf = Type tf $
     Float -> 4
     Double -> 8
     Array n e -> n * typeSize e
-    Struct flds -> assert (V.length flds > 0) (fieldEnd (V.last flds))
+    Struct flds -> if V.length flds == 0 then 0 else fieldEnd (V.last flds)
 
 bitvectorType :: Size -> Type
 bitvectorType w = Type (Bitvector w) w
@@ -366,8 +366,8 @@ arrayType :: Size -> Type -> Type
 arrayType n e = Type (Array n e) (n * typeSize e)
 
 structType :: V.Vector (Field Type) -> Type
-structType flds = assert (V.length flds > 0) $
-  Type (Struct flds) (fieldEnd (V.last flds))
+structType flds = Type (Struct flds) w
+  where w = if V.length flds == 0 then 0 else fieldEnd (V.last flds)
 
 mkStruct :: V.Vector (Type,Size) -> Type
 mkStruct l = structType (evalState (traverse fldFn l) 0)
@@ -387,6 +387,7 @@ typeEnd a tp = seq a $
     Float -> a + 4
     Double -> a + 8
     Array n etp -> typeEnd (a + (n-1) * typeSize etp) etp
+    Struct flds | V.null flds -> a
     Struct flds -> typeEnd (a + fieldOffset f) (f^.fieldVal)
       where f = V.last flds
 
