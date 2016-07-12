@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -165,6 +166,14 @@ convertToTokens = tokenize . charStream
         tokenize (CSNext p c r)
           | isSpace c  = tokenize r
           | c == '\"'  = stringLit p [] r
+          -- Hex literal.
+          | c == '0'
+          , CSNext p' 'x' r' <- r
+          = charSeq isHexDigit isSpace (NatToken . read) p' ['x','0'] r'
+          -- Binary literal.
+          | c == '0'
+          , CSNext p' 'b' r' <- r
+          = charSeq isBinDigit isSpace (NatToken . readBinary) p' ['b','0'] r'
           | isDigit c  = charSeq isDigit isSpace (NatToken . read) p [c] r 
           | isToken1 c = charSeq isToken isSpace Keyword p [c] r
           | isOp c     = charSeq isOp (\_ -> True) OpToken p [c] r
@@ -207,6 +216,17 @@ convertToTokens = tokenize . charStream
 
         resolve p k (CSEnd p') = SeqLast p k p'
         resolve p k r  = SeqCons p k (tokenize r)
+
+        -- Read a "0b" prefixed binary literal like "0b1010111".
+        --
+        -- This succeeds on "0b" returning zero, which is
+        -- non-standard.
+        readBinary :: String -> Integer
+        readBinary ('0':'b':bits) = foldl (\acc bit -> 2*acc + read [bit]) 0 bits
+        readBinary lit = error $ "convertToTokens: bad binary literal: " ++ lit
+
+        isBinDigit :: Char -> Bool
+        isBinDigit = (`elem` ['0','1'])
 
 ------------------------------------------------------------------------
 -- Grammar and Parser
