@@ -81,8 +81,13 @@ OPTIONS
 
 --satbranches
 :   Check the satisfiability of symbolic path assertions at branches.
-    This can sometimes prune infeasable exeuction paths in the
+    This can sometimes prune infeasible execution paths in the
     symbolic simulator.  Only supported by some backends.
+
+    Note: sometimes it's essential to prune these infeasible
+    paths. E.g., when reading or writing an array in a symbolically
+    bounded loop, symbolic simulation will fail with an out-of-bounds
+    read error without this option.
 
 -V, \--version
 :   Print out the version of the simulator.

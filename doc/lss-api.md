@@ -151,6 +151,16 @@ lss_write_smtlib2
 Write an SMTLib version 2 file into `filename` which asserts that `sym`
 is equal to  the constant value 0.
 
+<pre>
+<code>void lss_write_smtlib2_tmp(uint32_t sym)</code>
+</pre>
+
+Like `lss_write_smtlib2`, but the output file name is
+`./lss_write_smtlib2_tmp*.cnf`, for some auto generated value of
+`*`. This is useful in case the symbolic simulation overwrites the
+memory containing the file name (string) argument to
+`lss_write_smtlib2`.
+
 lss_write_cnf
 -----------
 <pre>
@@ -159,6 +169,13 @@ lss_write_cnf
 
 Write a CNF file in DIMACS format asserting that `sym` is equal to the constant
 value 0.
+
+<pre>
+<code>void lss_write_cnf_tmp(uint32_t sym, const char *filename)</code>
+</pre>
+
+Like `lss_write_cnf`, but writes to `./lss_write_cnf_tmp*.cnf`. See
+`lss_write_smtlib2_tmp`.
 
 lss_write_sawcore_unit32
 ---------------------

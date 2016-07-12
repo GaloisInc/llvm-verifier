@@ -341,10 +341,10 @@ lss_eval_aiger_array_uint n = do
 
 lss_write_cnf :: StdOvdEntry sbe m
 lss_write_cnf =
-  voidOverrideEntry "lss_write_cnf" [i32, strTy] $ \args ->
+  voidOverrideEntry (fromString funcname) [i32, strTy] $ \args ->
     case args of
       [(IntType w, t), (PtrType{},fptr)] | w == 32 -> do
-        file <- loadString "lss_write_cnf" fptr
+        file <- loadString funcname fptr
         sbe <- gets symBE
         case writeCnf sbe of
            Just writeCnfFunc -> do
@@ -356,8 +356,31 @@ lss_write_cnf =
              cEq <- liftSBE $ applyIEq sbe w t zero
              cNeq <- liftSBE $ applyBNot sbe cEq
              void $ liftSBE $ writeCnfFunc file cNeq
-           Nothing -> error "lss_write_cnf: backend does not support writing CNF files"
-      _ -> wrongArguments "lss_write_cnf"
+           Nothing -> error $ funcname ++ ": backend does not support writing CNF files"
+      _ -> wrongArguments funcname
+  where funcname = "lss_write_cnf"
+
+lss_write_cnf_tmp :: StdOvdEntry sbe m
+lss_write_cnf_tmp =
+  voidOverrideEntry (fromString funcname) [i32] $ \args ->
+    case args of
+      [(IntType w, t)] | w == 32 -> do
+        (file, handle) <- liftIO $ openTempFile "" (funcname ++ "_.cnf")
+        liftIO $ hClose handle
+        sbe <- gets symBE
+        case writeCnf sbe of
+           Just writeCnfFunc -> do
+             -- Convert term to bool, assuming a c-style "all non-zero
+             -- values are true" representation of bools. See the
+             -- 'writeCnf' JSS override in the JSS 'Overrides' module
+             -- for similar code.
+             zero <- liftSBE $ termInt sbe w 0
+             cEq <- liftSBE $ applyIEq sbe w t zero
+             cNeq <- liftSBE $ applyBNot sbe cEq
+             void $ liftSBE $ writeCnfFunc file cNeq
+           Nothing -> error $ funcname ++ ": backend does not support writing CNF files"
+      _ -> wrongArguments funcname
+  where funcname = "lss_write_cnf_tmp"
 
 lss_write_smtlib :: StdOvdEntry sbe m
 lss_write_smtlib =
@@ -374,7 +397,21 @@ lss_write_smtlib =
       _ -> wrongArguments funcname
     where funcname = "lss_write_smtlib2"
 
-
+lss_write_smtlib_tmp :: StdOvdEntry sbe m
+lss_write_smtlib_tmp =
+  voidOverrideEntry (fromString funcname) [i32] $ \args ->
+    case args of
+      [(IntType w, t)] | w == 32 -> do
+        (file, handle) <- liftIO $ openTempFile "" (funcname ++ "_.smtlib2")
+        liftIO $ hClose handle
+        sbe <- gets symBE
+        case writeSmtLib sbe of
+           Just writeSmtLibFunc ->
+             void $ liftSBE $ writeSmtLibFunc file 32 t
+           Nothing ->
+             error $ funcname ++ ": backend does not support writing SMT-Lib files"
+      _ -> wrongArguments funcname
+    where funcname = "lss_write_smtlib2_tmp"
 
 lss_write_sawcore :: StdOvdEntry sbe m
 lss_write_sawcore =
@@ -396,8 +433,10 @@ registerLSSOverrides = do
   let groundOverrides =
         [ lss_write_aiger
         , lss_write_cnf
+        , lss_write_cnf_tmp
         , lss_write_sawcore
         , lss_write_smtlib
+        , lss_write_smtlib_tmp
           -- Override support
         , lss_override_function_by_addr
         , lss_override_function_by_name
