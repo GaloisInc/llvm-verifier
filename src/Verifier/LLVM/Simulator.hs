@@ -684,22 +684,22 @@ step (Alloca reg ty msztv a) = do
 
 step (Load reg v ty a) = do
   addrTerm <- evalExprInCC "load" v
-  dumpMem 6 "lo/ad pre"
+  dumpMem 6 "lo/ad pre" Nothing
   val <- load ty addrTerm a
-  dumpMem 6 "load post"
+  dumpMem 6 "load post" Nothing
   withCurrentCallStack "load" $ do
     assignReg reg ty val
     incPC
 
 step (Store valType val addr a) = do
-  whenVerbosity (<=6) $ dumpMem 6 "store pre"
+  whenVerbosity (<=6) $ dumpMem 6 "store pre" Nothing
   join $ runEvaluator "store" $ do
     valTerm <- evalExpr val
     addrTerm <- evalExpr addr
     return $ store valType valTerm addrTerm a
   withCurrentCallStack "store" $ do
     incPC
-  whenVerbosity (<=6) $ dumpMem 6 "store post"
+  whenVerbosity (<=6) $ dumpMem 6 "store post" Nothing
 
 step Unreachable
   = error "step: Encountered 'unreachable' instruction"

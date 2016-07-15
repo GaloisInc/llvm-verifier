@@ -135,8 +135,17 @@ data SBE m = SBE
     ----------------------------------------------------------------------------
     -- Memory model interface
 
-    -- | @memDump h@ prints the contents of the memory model; the first
-    -- parameter optionally constrains address ranges.
+    -- | @memDump h@ prints the contents of the memory model; the
+    -- first parameter optionally constrains address ranges.
+    --
+    -- Each constraint @(a,b)@ stands for a closed-open range
+    -- @{a,a+1,...,b-1}@, and multiple range constraints are ORed /
+    -- memory that falls in *any* of the given ranges is printed. If
+    -- the constraint is 'Nothing', then all memory is printed.
+    --
+    -- Note that some backends ignore the range constraints. Only the
+    -- bitblast backend has been tested with range constraints at this
+    -- time.
   , memDump :: SBEMemory m -> Maybe [(Integer, Integer)] -> m ()
 
     -- | @memLoad m tp p a@ returns a pair @(c,v)@ where @v@ denotes the value at

@@ -178,7 +178,7 @@ lss_abort = voidOverrideEntry "lss_abort" [strTy] $ \args ->
 
 lss_show_mem :: StdOvdEntry sbe m
 lss_show_mem = voidOverrideEntry "lss_show_mem" [] $ \_ -> do
-  unlessQuiet $ dumpMem 1 "lss_show_mem()"
+  unlessQuiet $ dumpMem 1 "lss_show_mem()" Nothing
 
 lss_show_path :: StdOvdEntry sbe m
 lss_show_path = voidOverrideEntry "lss_show_path" [] $ \_ -> do

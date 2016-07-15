@@ -405,7 +405,7 @@ commandHelp cmds =
     PP.empty <$$> 
     vcat (ppCmdHelp <$> (help^.helpCmds)) <$$>
     PP.empty <$$>
-    text "Type \"help\" followed by command name for full documentation." <$$>
+    text "NOT IMPLEMENTED: Type \"help\" followed by command name for full documentation." <$$>
     text "Command name abbreviations are allowed if unambiguous."
   where help = matcherHelp cmds
 
@@ -456,7 +456,6 @@ locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
                end :: Grammar m (Symbol, Breakpoint)
                end = pure (sdName d, (sdEntry d, 0))
                m = foldl insertName emptyNameMap (M.keys (sdBody d))
-
 
 optNatArg :: Integer
              -- ^ Default value if argument is missing.
@@ -640,10 +639,33 @@ infoLocalsCmd =
       sbe <- gets symBE
       dbugM $ show $ ppLocals sbe $ cfLocalValues cf
 
+-- Instead writing @infoMemoryRangeCmd <*> optAddr <*> optAddr@
+-- results in no "<addr>?" in the help output?!
 infoMemoryCmd :: SimGrammar sbe m
-infoMemoryCmd =
-  cmdDef "Print memory information." $ do
-    runSim $ dumpMem 0 "memory"
+infoMemoryCmd = ((,) <$> optAddr <*> optAddr) <**> infoMemoryRangeCmd
+  where
+  infoMemoryRangeCmd = cmdDef desc $ \(mlow, mhigh) -> do
+    let mranges = case (mlow, mhigh) of
+          (Just low, Just high) -> Just [(low, high)]
+          (Just low, Nothing)   -> Just [(low, low+1)]
+          (Nothing,  Nothing)   -> Nothing
+          (Nothing,  Just _)    -> error "infoMemoryCmd: unreachable!"
+    runSim $ dumpMem 0 "memory" mranges
+  -- Putting the 'opt' outside here, and 'hide' on 'nat', results in a
+  -- '?' on the "<addr>" label in the help output. Without the 'hide'
+  -- the label "<addr>" doesn't appear at all in the help.
+  optAddr = opt (argLabel (text "<addr>") *> hide nat)
+  desc = unlines
+    [ "Print memory information."
+    , ""
+    , "    - With no arguments, prints all memory."
+    , "    - With one argument <addr>, prints memory at address <addr>."
+    , "    - With two arguments <low>, <high>, prints memory in the address range"
+    , "      [<low>,<high>)."
+    , ""
+    , "    The optional address arguments may be specified in binary (e.g. 0b110),"
+    , "    decimal, or hex (e.g. 0xabcd)."
+    ]
 
 {-
 listCmd :: Codebase sbe -> SimGrammar sbe m

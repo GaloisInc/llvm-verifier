@@ -1214,12 +1214,14 @@ memset nm dst0 val lw len = do
       a <- liftSBE $ termArray sbe i8 (V.replicate n val)
       store (ArrayType n i8) a dst0 0
 
-dumpMem :: (Functor m, MonadIO m) => Int -> String -> Simulator sbe m ()
-dumpMem v msg =
+dumpMem ::
+  (Functor m, MonadIO m) =>
+  Int -> String -> Maybe [(Integer, Integer)] -> Simulator sbe m ()
+dumpMem v msg mranges =
   whenVerbosity (>=v) $ do
     dbugM $ msg ++ ":"
     Just m <- preuse currentPathMem
-    withSBE (\s -> memDump s m Nothing)
+    withSBE (\s -> memDump s m mranges)
 
 --------------------------------------------------------------------------------
 -- Override handling

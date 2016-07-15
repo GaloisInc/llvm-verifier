@@ -405,34 +405,34 @@ ppStorageShow _ SUnallocated = text "SUnallocated"
 
 -- A "sparse" pretty printer for the Storage type; skips unallocated regions and
 -- shows addresses explicitly.
-
 ppStorage :: (IsAIG l g, Eq (l s))
           => Maybe [Range Addr]
           -> g s
           -> Storage (l s)
           -> Doc
-ppStorage mranges g = impl 0 Nothing
+ppStorage _       _ SUnallocated = text "empty memory"
+ppStorage mranges g storage      = impl 0 storage
   where
-    impl _ Nothing SUnallocated      = text "empty memory"
-    impl a Nothing s                 = impl a (Just empty) s
-    impl a mdoc (SBranch f t)        = let la = a `shiftL` 1
-                                           ra = la `setBit` 0
-                                       in impl ra (Just $ impl la mdoc f) t
-    impl a (Just doc) (SValue al il v)
-      | il AIG.=== AIG.trueLit g  = whenInRange a $ item doc a (lPrettyLV g v)
-      | il AIG.=== AIG.falseLit g = whenInRange a $ item doc a (text "uninitialized")
+    -- impl :: Addr -> Storage (l s) -> Doc
+    impl a (SBranch f t) = let la = a `shiftL` 1
+                               ra = la `setBit` 0
+                           in impl la f <> impl ra t
+    impl a (SValue al il v)
+      | il AIG.=== AIG.trueLit g  = whenInRange a $ item a (lPrettyLV g v)
+      | il AIG.=== AIG.falseLit g = whenInRange a $ item a (text "uninitialized")
       | otherwise = whenInRange a
-                  $ item doc a
+                  $ item a
                   $ (lPrettyLV g v)
                      <+> parens (text "allocated:" <+> pl al <> comma
                                  <+> text "initialized:" <+> pl il)
-    impl a (Just doc) (SDefine sym)  =
-      whenInRange a $ item doc a $ ppSymbol sym
-    impl a (Just doc) (SBlock s l)
-      = whenInRange a $ item doc a
+    impl a (SDefine sym) =
+      whenInRange a $ item a $ ppSymbol sym
+    impl a (SBlock s l)
+      = whenInRange a $ item a
       $ ppSymbol s <> char '/' <> text (show (L.ppLabel l))
-    impl _ (Just doc) SUnallocated   = doc
-    item doc addr desc               = doc <$$> text (showHex addr "") <> colon <+> desc
+    impl _ SUnallocated = empty
+
+    item addr desc = hardline <> text (showHex addr "") <> colon <+> desc
     pl = lPrettyLit g
     whenInRange a doc = case mranges of
       Nothing     -> doc
@@ -1054,11 +1054,12 @@ dmMemArgs (DMMux _ t f) = [t, f]
 
 dmDump :: (IsAIG l g)
        => g s -> Bool -> DagMemory (l s) -> Maybe [Range Addr] -> IO ()
-dmDump g _ mem _ = do
+dmDump g _ mem Nothing = do
   -- Steps: Build list of memory addresses to print out.
   let allNodes = lfp (dmMemArgs . dmNodeApp) (Set.singleton mem)
   forM_ (Set.toList allNodes) $ \m -> do
     putStrLn $ show $ prettyMemIdx m <> colon <+> dmPrintApp g (dmNodeApp m)
+dmDump _ _ _ (Just _) = illegalArgs "dmDump: does not support memory ranges"
 
 -- | @loadBytes be mem ptr size@ returns term representing all the bits with given size.
 dmLoadBytes :: (IsAIG l g, Ord (l s))
