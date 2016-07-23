@@ -182,9 +182,14 @@ data TypedExpr v
     -- be a pointer, and @i@ must be an integer with the same width as a pointer.
     -- Addition uses standard two's complement rules.
   | PtrAdd v v
-    -- | @UAddWithOverflow w x y@ adds @x@ and @y@ and returns a struct whose first element
-    -- contains a @w@-bit sum of @x@ and @y@ and second element contains the single overflow bit. 
+    -- | @UAddWithOverflow w x y@ adds @x@ and @y@ and returns a struct
+    -- whose first element contains a @w@-bit unsigned sum of @x@ and
+    -- @y@ and second element contains the single overflow bit.
   | UAddWithOverflow BitWidth v v
+    -- | @SAddWithOverflow w x y@ adds @x@ and @y@ and returns a struct
+    -- whose first element contains a @w@-bit signed sum of @x@ and @y@
+    -- and second element contains the single overflow bit.
+  | SAddWithOverflow BitWidth v v
     -- | @ICmp op mn tp x y@ performs the operation @op@ on @x@ and @y@.  If @mn@ is @Nothing@,
     -- then @x@ and @y@ are scalars, otherwise they are vectors of scalars, and @mn@ contains the
     -- number of elements. If @tp@ contains a bitwidth, then the scalars are integers with that
@@ -231,6 +236,8 @@ ppTypedExpr ppConv ppValue tpExpr =
        where tp  = maybe ppIntType ppIntVector mn w
       PtrAdd p o -> text "ptrAdd" <+> ppValue p <> comma <+> ppValue o
       UAddWithOverflow w x y -> text ("@llvm.uadd.with.overflow.i" ++ show w)
+        <> parens (ppValue x <> comma <+> ppValue y)
+      SAddWithOverflow w x y -> text ("@llvm.sadd.with.overflow.i" ++ show w)
         <> parens (ppValue x <> comma <+> ppValue y)
       ICmp op mn etp x y ->
          text "icmp" <+> text (show (L.ppICmpOp op)) <+> tp <+> ppValue x <> comma <+> ppValue y

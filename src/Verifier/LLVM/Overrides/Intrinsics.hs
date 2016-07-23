@@ -24,14 +24,18 @@ import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.DataLayout
 import Verifier.LLVM.Simulator.Internals
 
-llvm_uadd_with_overflow :: BitWidth -> StdOvd m sbe
-llvm_uadd_with_overflow w = do
+llvm_add_with_overflow :: Monad m =>
+                          String
+                       -> (t -> SBETerm sbe -> SBETerm sbe -> TypedExpr (SBETerm sbe))
+                       -> t
+                       -> Override sbe m
+llvm_add_with_overflow n f w = do
   override $ \args ->
     case args of
       [(_,x), (_,y)] -> do
         sbe <- gets symBE
-        liftSBE $ applyTypedExpr sbe (UAddWithOverflow w x y)
-      _ -> wrongArguments "llvm.uadd.with.overflow"
+        liftSBE $ applyTypedExpr sbe (f w x y)
+      _ -> wrongArguments $ "llvm." ++ n ++ ".with.overflow"
 
 memcpyIntrinsic :: BitWidth -> StdOvdEntry m sbe
 memcpyIntrinsic w = do
@@ -87,11 +91,12 @@ llvm_expect w = do
 registerLLVMIntrinsicOverrides :: (Functor sbe, Functor m, MonadIO m)
                                => Simulator sbe m ()
 registerLLVMIntrinsicOverrides = do
-  let override_uadd_with_overflow w = do
-        let nm = fromString $ "llvm.uadd.with.overflow.i" ++ show w
+  let override_add_with_overflow n f w = do
+        let nm = fromString $ "llvm." ++ n ++ ".with.overflow.i" ++ show w
         tryRegisterOverride nm $ \_ -> do
-          return $ llvm_uadd_with_overflow w
-  mapM_ override_uadd_with_overflow [16, 32, 64]
+          return $ llvm_add_with_overflow n f w
+  mapM_ (override_add_with_overflow "uadd" UAddWithOverflow) [16, 32, 64]
+  mapM_ (override_add_with_overflow "sadd" SAddWithOverflow) [16, 32, 64]
   registerOverrides 
     [ llvm_expect 32
     , llvm_expect 64

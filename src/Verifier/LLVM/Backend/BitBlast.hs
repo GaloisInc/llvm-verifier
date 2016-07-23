@@ -1697,6 +1697,9 @@ applyExpr g dl texpr = do
        (\(u,c) -> StructTerm (V.fromList [IntTerm u, IntTerm (BV.singleton c)]))
          <$> BV.addC g x y
     UAddWithOverflow{} -> illegalArgs "UAddWithOverflow"
+    SAddWithOverflow _ (IntTerm _) (IntTerm _) ->
+        error "SAddWithOverflow not yet implemented"
+    SAddWithOverflow{} -> illegalArgs "SAddWithOverflow"
     ICmp op mn _ x y -> applyICmp opFn mn x y
       where neg fn u v = AIG.not <$> fn u v
             opFn = case op of

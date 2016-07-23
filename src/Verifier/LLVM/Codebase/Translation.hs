@@ -459,10 +459,13 @@ liftStmt stmt =
                      return (Just (w,v))
           return $ Alloca r tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) malign -> do
-          tp@(PtrType etp0) <- liftMemType' tp0
-          etp <- maybe (fail "") return $ asMemType etp0
-          v <- liftValue tp ptr
-          return $ Load r v etp (liftAlign etp malign)
+          tp <- liftMemType' tp0
+          case tp of
+            PtrType etp0 -> do
+              etp <- maybe (fail "") return $ asMemType etp0
+              v <- liftValue tp ptr
+              return $ Load r v etp (liftAlign etp malign)
+            _ -> fail $ "Unsupported type to load: " ++ show (ppMemType tp)
         L.ICmp op (L.Typed tp0 u) v -> do
           tp <- liftMemType' tp0
           x <- liftValue tp u

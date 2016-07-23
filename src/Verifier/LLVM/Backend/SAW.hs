@@ -828,6 +828,14 @@ typedExprEvalFn sbs expr0 = do
               <*> scBitwidth sc w
               <*> scNat sc p0
               <*> scNat sc p1
+    SAddWithOverflow w x y -> do
+      let si = mkStructInfo dl False [IntType 1, IntType w]
+      let [p0,p1] = V.toList $ fromIntegral <$> fiPadding <$> siFields si
+      fmap (evalBin' x y) $
+        scApplyLLVM_llvmSAddWithOverflow sc
+              <*> scBitwidth sc w
+              <*> scNat sc p0
+              <*> scNat sc p1
     ICmp op mn stp x y -> do
         -- Get scalar type bitwidth.
         let w = either id (const (ptrBitwidth dl)) stp

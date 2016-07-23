@@ -195,6 +195,24 @@ llvmAddWithOverflow :: (w p1 p2 :: Nat)
 llvmAddWithOverflow w p1 p2 x y =
   mkOverflowResult w p1 p2 (bvAddWithCarry w x y);
 
+llvmSAddWithOverflow :: (w p1 p2 :: Nat)
+                     -> bitvector w
+                     -> bitvector w
+                     -> value (arithmeticWithOverflowResult w p1 p2);
+llvmSAddWithOverflow w p1 p2 x y =
+  let {
+    z :: bitvector w;
+    z = bvAdd w x y;
+    xs :: Bool;
+    xs = at w Bool x 0;
+    ys :: Bool;
+    ys = at w Bool y 0;
+    zs :: Bool;
+    zs = at w Bool z 0;
+    c :: Bool;
+    c = and (eq Bool xs ys) (not (eq Bool xs zs));
+  } in mkOverflowResult w p1 p2 (c, z);
+
 binRel :: sort 0 -> sort 0;
 binRel tp = tp -> tp -> bitvector 1;
 
