@@ -448,7 +448,7 @@ liftStmt stmt =
                 _ -> fail "Could not parse conversion types."
             L.BitCast -> do
               retExpr rtp =<< liftBitcast itp sv rtp
-            _ -> fail "Unsupported conversion operator"
+            _ -> fail $ "Unsupported conversion operator: " ++ show (L.ppConvOp op)
         L.Alloca tp0 msz a -> do
           tp <- liftMemType' tp0
           ssz <- case msz of
