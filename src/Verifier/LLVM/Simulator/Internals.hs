@@ -256,7 +256,7 @@ data CallFrame sbe
 newCallFrame :: SymDefine (SBETerm sbe)
              -> [SBETerm sbe]
              -> CallFrame sbe
-newCallFrame def args = assert (length formals == length args) $ do
+newCallFrame def args = assertLength $ do
    CallFrame { cfFunc    = def
              , _cfBlock  = sdEntry def
              , _cfPC     = 0
@@ -264,6 +264,14 @@ newCallFrame def args = assert (length formals == length args) $ do
              }
   where formals = sdArgs def
         bindArg (r,tp) v = (r, (v,tp))
+        assertLength x =
+          if length formals == length args
+          then x
+          else error $ "Error: length formals == "++show (length formals)++
+                       " != length args == "++show (length args)++" in "++
+                       show (sdName def)++".\n"++
+                       "Perhaps you forgot some 'llvm_var' statements in your spec?"
+
 
 -- | Location currently being executed.
 cfLocation :: Simple Lens (CallFrame sbe) Breakpoint
