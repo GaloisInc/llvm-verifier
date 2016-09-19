@@ -640,8 +640,6 @@ liftBB lti phiMap bb = do
         -- Skip landing pads. TODO: implement fully.
         impl (Result _ (L.LandingPad _ _ _ _) _:r) il =
           impl r il
-        impl (Effect (L.LandingPad _ _ _ _) _:r) il =
-          impl r il
 
         -- Phi statements are handled by initial blocks.
         impl (Result _ L.Phi{} _:r) il = impl r il
