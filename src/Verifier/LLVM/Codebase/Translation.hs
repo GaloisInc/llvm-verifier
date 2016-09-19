@@ -620,6 +620,10 @@ liftBB lti phiMap bb = do
           ss <- unsupportedStmt stmt ""
           return [ mkSymBlock (blockName 0) (reverse (ss : il)) ]
 
+        impl [stmt@(Effect (L.Resume _) _)] il = do
+          ss <- unsupportedStmt stmt ""
+          return [ mkSymBlock (blockName 0) (reverse (ss : il)) ]
+
         -- Treat @invoke@ like @call@ followed by @jmp@. TODO: let's
         -- support unwinding eventually.
         impl [Effect (L.Invoke fn args res next _unwind) mds] il = do
