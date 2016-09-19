@@ -638,6 +638,8 @@ liftBB lti phiMap bb = do
           = impl r il
 
         -- Skip landing pads. TODO: implement fully.
+        impl (Result _ (L.LandingPad _ _ _ _) _:r) il =
+          impl r il
         impl (Effect (L.LandingPad _ _ _ _) _:r) il =
           impl r il
 
