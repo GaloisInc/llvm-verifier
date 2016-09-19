@@ -221,6 +221,8 @@ data TypedExpr v
     -- | Return a specific element of an array.
     -- Arguments are: number of elements, element type, array, and index.
   | GetConstArrayElt Int MemType v Int
+    -- | Reverse the order of bytes in a value.
+  | BSwap Int v
 
  deriving (Functor, Foldable, Traversable)
 
@@ -239,6 +241,7 @@ ppTypedExpr ppConv ppValue tpExpr =
         <> parens (ppValue x <> comma <+> ppValue y)
       SAddWithOverflow w x y -> text ("@llvm.sadd.with.overflow.i" ++ show w)
         <> parens (ppValue x <> comma <+> ppValue y)
+      BSwap nb x -> text ("@llvm.bswap.i" ++ show (nb*8)) <> parens (ppValue x)
       ICmp op mn etp x y ->
          text "icmp" <+> text (show (L.ppICmpOp op)) <+> tp <+> ppValue x <> comma <+> ppValue y
        where tp  = maybe id ppVectorType mn scalarTp

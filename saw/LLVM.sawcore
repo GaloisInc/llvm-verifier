@@ -347,6 +347,9 @@ llvmIntSlice i n o a = drop Bool i n (take Bool (addNat i n) o a);
 -- llvmDoubleToInt = doubleToBV;
 
 
+llvmBSwap :: (n :: Nat) -> bitvector (mulNat n 8) -> bitvector (mulNat n 8);
+llvmBSwap n x = join n 8 Bool (reverse n (bitvector 8) (split n 8 Bool x));
+
 axiom ite_same :: (a :: sort 1)
          -> (b :: Bool)
          -> (x :: a)

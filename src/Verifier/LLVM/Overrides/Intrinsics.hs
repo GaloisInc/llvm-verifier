@@ -79,6 +79,17 @@ objectsizeIntrinsic w = do
             where tv = if v == 0 then -1 else 0
       _ -> wrongArguments nm
 
+bswapIntrinsic :: BitWidth -> StdOvdEntry sbe m
+bswapIntrinsic w = do
+  let nm = fromString $ "llvm.bswap.i" ++ show w
+  overrideEntry (fromString nm) (IntType w) [IntType w] $ \args ->
+    case snd <$> args of
+      [x] | w `rem` 8 == 0 -> do
+        sbe <- gets symBE
+        liftSBE $ applyTypedExpr sbe (BSwap (w `div` 8) x)
+      [_] -> errorPath $ "llvm.bswap requires argument size to be multiple of 8"
+      _ -> wrongArguments nm
+
 llvm_expect :: BitWidth -> StdOvdEntry m sbe
 llvm_expect w = do
   let nm = "llvm.expect.i" ++ show w
@@ -109,6 +120,12 @@ registerLLVMIntrinsicOverrides = do
 
     , objectsizeIntrinsic 32
     , objectsizeIntrinsic 64
+
+    , bswapIntrinsic 16
+    , bswapIntrinsic 32
+    , bswapIntrinsic 48
+    , bswapIntrinsic 64
+
     -- Do nothing.
     , voidOverrideEntry "llvm.lifetime.start" [i64, i8p] (\_ -> return ())
     , voidOverrideEntry "llvm.lifetime.end"   [i64, i8p] (\_ -> return ())

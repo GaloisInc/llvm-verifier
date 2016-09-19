@@ -1700,6 +1700,7 @@ applyExpr g dl texpr = do
     SAddWithOverflow _ (IntTerm _) (IntTerm _) ->
         error "SAddWithOverflow not yet implemented"
     SAddWithOverflow{} -> illegalArgs "SAddWithOverflow"
+    BSwap _ _ -> error "BSwap not yet implemented"
     ICmp op mn _ x y -> applyICmp opFn mn x y
       where neg fn u v = AIG.not <$> fn u v
             opFn = case op of
