@@ -637,6 +637,10 @@ liftBB lti phiMap bb = do
           | v `elem` [ "llvm.dbg.declare", "llvm.dbg.value"]
           = impl r il
 
+        -- Skip landing pads. TODO: implement fully.
+        impl (Effect (L.LandingPad _ _ _ _) _:r) il =
+          impl r il
+
         -- Phi statements are handled by initial blocks.
         impl (Result _ L.Phi{} _:r) il = impl r il
         impl (Effect (L.Comment _) _:r) il = impl r il
