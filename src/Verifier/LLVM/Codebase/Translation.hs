@@ -620,6 +620,18 @@ liftBB lti phiMap bb = do
           ss <- unsupportedStmt stmt ""
           return [ mkSymBlock (blockName 0) (reverse (ss : il)) ]
 
+        -- Treat @invoke@ like @call@ followed by @jmp@. TODO: let's
+        -- support unwinding eventually.
+        impl [Effect (L.Invoke fn args res next _unwind) mds] il = do
+          impl [ Effect (L.Call False fn args res) mds
+               , Effect (L.Jump next) []
+               ] il
+
+        impl [Result reg (L.Invoke fn args res next _unwind) mds] il = do
+          impl [ Result reg (L.Call False fn args res) mds
+               , Effect (L.Jump next) []
+               ] il
+
         -- Skip certain intrinsics
         impl (Effect (L.Call _ _ (L.ValSymbol v) _) _:r) il
           | v `elem` [ "llvm.dbg.declare", "llvm.dbg.value"]
