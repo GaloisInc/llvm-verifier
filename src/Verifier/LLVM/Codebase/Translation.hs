@@ -630,11 +630,13 @@ liftBB lti phiMap bb = do
         -- Treat @invoke@ like @call@ followed by @jmp@. TODO: let's
         -- support unwinding eventually.
         impl [Effect (L.Invoke fn args res next _unwind) mds] il = do
+          addWarning "Treating `invoke` instruction as a `call`"
           impl [ Effect (L.Call False fn args res) mds
                , Effect (L.Jump next) []
                ] il
 
         impl [Result reg (L.Invoke fn args res next _unwind) mds] il = do
+          addWarning "Treating `invoke` instruction as a `call`"
           impl [ Result reg (L.Call False fn args res) mds
                , Effect (L.Jump next) []
                ] il
@@ -645,7 +647,8 @@ liftBB lti phiMap bb = do
           = impl r il
 
         -- Skip landing pads. TODO: implement fully.
-        impl (Result _ (L.LandingPad _ _ _ _) _:r) il =
+        impl (Result _ (L.LandingPad _ _ _ _) _:r) il = do
+          addWarning "Ignoring `landingpad` instruction"
           impl r il
 
         -- Phi statements are handled by initial blocks.
