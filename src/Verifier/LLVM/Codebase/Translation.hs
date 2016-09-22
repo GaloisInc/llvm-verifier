@@ -368,6 +368,10 @@ liftStmt :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
          -> LiftAttempt (SymStmt (SBETerm sbe))
 liftStmt stmt =
   case stmt of
+    Effect (L.Call _ _ (L.ValAsm{}) _) _ ->
+      -- TODO: it would be good to emit a warning here, but we can't in
+      -- this monad
+      return (BadSymStmt stmt)
     Effect (L.Call _b tp v tpvl) _ -> do
       mtp <- liftMemType' tp
       sv <- liftValue mtp v
@@ -380,6 +384,10 @@ liftStmt stmt =
       return $ Store tp tptr taddr (liftAlign tp a)
     Effect{} ->
       fail $ "can't translate effect: " ++ show (L.ppStmt stmt)
+    Result _ (L.Call _ _ (L.ValAsm{}) _) _ ->
+      -- TODO: it would be good to emit a warning here, but we can't in
+      -- this monad
+      return (BadSymStmt stmt)
     Result reg (L.Call _b tp v tpvl) _ -> do
       mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType' tp
       sv <- liftValue mtp v
