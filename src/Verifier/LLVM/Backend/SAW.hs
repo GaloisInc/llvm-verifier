@@ -1052,6 +1052,8 @@ createSAWBackend' proxy dl sc0 = do
             , "Prelude.bveq_sameL"
             , "Prelude.bveq_sameR"
             , "Prelude.bveq_same2"
+            , "Prelude.bvAddZeroL"
+            , "Prelude.bvAddZeroR"
             , "LLVM.ite_same"
             , "LLVM.ite_false_false"
             , "LLVM.and_true2"
