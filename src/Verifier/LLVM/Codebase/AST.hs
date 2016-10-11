@@ -64,7 +64,8 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Vector (Vector)
 import qualified Data.Vector as V
-import qualified Text.LLVM.AST as L
+import qualified Text.LLVM.AST       as L
+import qualified Text.LLVM.PP        as L
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
 import Prelude.Compat
@@ -355,7 +356,7 @@ ppStmt (Store tp v addr a) =
   text "store" <+> ppMemType tp <+> ppSymValue v <> comma
                <+> ppSymValue addr <> ppAlign a
 ppStmt Unreachable = text "unreachable"
-ppStmt (BadSymStmt s) = text (show (L.ppStmt s))
+ppStmt (BadSymStmt s) = text (show (L.ppLLVM (L.ppStmt s)))
 
 data SymBlock t = SymBlock {
          sbId :: SymBlockID -- ^ Identifier for block (unique within definition).

@@ -45,6 +45,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
 import qualified Text.LLVM         as L
+import qualified Text.LLVM.PP      as L
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
 import Prelude.Compat

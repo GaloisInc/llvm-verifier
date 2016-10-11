@@ -19,6 +19,7 @@ import           System.Directory
 import           System.FilePath
 import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import qualified Text.LLVM                      as LLVM
+import qualified Text.LLVM.PP                   as LLVM
 
 import Verifier.LLVM.Backend.SAW
 import Verifier.LLVM.Codebase
@@ -51,7 +52,7 @@ main = do
   mapM_ (\m -> print $ text "Warning:" <+> m) cbWarnings
 
   banners $ "llvm-pretty module"
-  putStrLn $ show (LLVM.ppModule mdl)
+  putStrLn $ show (LLVM.ppLLVM (LLVM.ppModule mdl))
   putStrLn ""
   let sdl = fmap ppSymDefine $ cbDefs cb
   banners $ "translated module"
