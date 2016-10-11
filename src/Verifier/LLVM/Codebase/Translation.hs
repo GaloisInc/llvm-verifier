@@ -51,7 +51,8 @@ import Data.Maybe
 import qualified Data.Sequence as Seq
 import qualified Data.Vector                as V
 import qualified Text.LLVM                  as L
-import Text.LLVM.AST              (Stmt'(..), Typed (..), ppInstr)
+import qualified Text.LLVM.PP               as L
+import Text.LLVM.AST              (Stmt'(..), Typed (..))
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
 import Prelude.Compat hiding (mapM_)
@@ -179,7 +180,7 @@ unsupportedStmt :: (MonadState (BlockGeneratorState t) m)
                 -> String
                 -> m (SymStmt t)
 unsupportedStmt stmt detailMsg = do
-  let base = text "Unsupported instruction: " <+> text (show (L.ppStmt stmt))
+  let base = text "Unsupported instruction: " <+> text (show (L.ppLLVM (L.ppStmt stmt)))
       detail | null detailMsg = base
              | otherwise = base <$$> indent 2 (text detailMsg)
   addWarning detail
@@ -383,7 +384,7 @@ liftStmt stmt =
       taddr <- liftTypedValue addr 
       return $ Store tp tptr taddr (liftAlign tp a)
     Effect{} ->
-      fail $ "can't translate effect: " ++ show (L.ppStmt stmt)
+      fail $ "can't translate effect: " ++ show (L.ppLLVM (L.ppStmt stmt))
     Result _ (L.Call _ _ (L.ValAsm{}) _) _ ->
       -- TODO: it would be good to emit a warning here, but we can't in
       -- this monad
@@ -519,7 +520,7 @@ liftStmt stmt =
         -- TODO: it would be good to issue a warning in the following,
         -- but the monad doesn't currently allow it
         L.InsertValue _ _ _ -> return (BadSymStmt stmt)
-        _ -> fail $ "Unsupported instruction: " ++ show (ppInstr app)
+        _ -> fail $ "Unsupported instruction: " ++ show (L.ppLLVM (L.ppInstr app))
 
 liftArgValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => L.Typed L.Value -> LiftAttempt (MemType, SymValue (SBETerm sbe))
