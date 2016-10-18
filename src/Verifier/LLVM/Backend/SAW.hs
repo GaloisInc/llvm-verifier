@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DoAndIfThenElse #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -30,6 +31,7 @@ import Control.Monad.IO.Class (liftIO)
 import qualified Data.AIG as AIG
 import Data.Bits
 import Data.IORef
+import Data.List (foldl')
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe
@@ -910,11 +912,11 @@ abstract sbs t = do
   scAbstractExts (sbsContext sbs) ecs t
 
 scTermSAT :: AIG.IsAIG l g =>
-  AIG.Proxy l g -> SAWBackendState -> Term -> IO (AIG.SatResult)
+             AIG.Proxy l g -> SAWBackendState -> Term -> IO (AIG.SatResult)
 scTermSAT proxy sbs t = do
   t' <- abstract sbs t
-  BB.withBitBlastedPred proxy (sbsContext sbs) (\_ -> Map.empty) t' $ \be l _domTys -> do
-  AIG.checkSat be l
+  BB.withBitBlastedPred proxy (sbsContext sbs) (\_ -> Map.empty) t' $ \be l _domTys ->
+    AIG.checkSat be l
 
 scWriteAiger :: AIG.IsAIG l g
              => AIG.Proxy l g
@@ -954,6 +956,67 @@ scWriteSmtLib sc path w t = do
   (_, lit) <- SBVSim.sbvSolve sc Map.empty [] t'
   writeFile path =<< compileToSMTLib SMTLib2 True lit
 
+-- Put in saw-core package?
+getIfConds :: Term -> [Term]
+getIfConds t = snd $ go (Set.empty, []) t
+  where
+    go acc@(idxs, conds) tm@(STApp{ stAppIndex = i })
+      | Set.member i idxs = acc
+      | otherwise         = termf (Set.insert i idxs, conds) tm
+    go acc tm@(Unshared _) = termf acc tm
+
+    termf acc@(idxs, conds) tm =
+      case tm of
+        (R.asMux -> Just (_ :*: ctm :*: ttm :*: etm)) ->
+          let acc' = go (idxs, ctm : conds) ttm in go acc' etm
+        STApp { stAppTermF = tf } -> foldl' go acc tf
+        Unshared tf -> foldl' go acc tf
+
+scSimplifyConds :: AIG.IsAIG l g =>
+                   AIG.Proxy l g
+                -> SAWBackendState
+                -> SharedContext
+                -> Term
+                -> Term
+                -> IO Term
+scSimplifyConds proxy sbs sc assumptions t = do
+  let conds = getIfConds t
+  -- Allow replacements only of conditions that do not contain locally
+  -- bound variables, for simplicity.
+  let closedConds = filter ((== 0) . looseVars) conds
+      andAssms = scAnd sc assumptions
+      unsat c = (== Unsat) <$> scTermSAT proxy sbs c
+  trueConds <- filterM (unsat <=< andAssms <=< scNot sc) closedConds
+  falseConds <- filterM (unsat <=< andAssms) closedConds
+  rules <- map ruleOfTerm <$> mapM (scTypeOfGlobal sc)
+             [ "Prelude.ite_true"
+             , "Prelude.ite_false"
+             , "Prelude.ite_not"
+             , "Prelude.ite_nest1"
+             , "Prelude.ite_nest2"
+             , "Prelude.ite_eq"
+             , "Prelude.ite_bit_false_1"
+             , "Prelude.ite_bit_true_1"
+             , "Prelude.ite_bit"
+             , "Prelude.not_not"
+             , "Prelude.and_True"
+             , "Prelude.and_False"
+             , "Prelude.and_True2"
+             , "Prelude.and_False2"
+             , "Prelude.and_idem"
+             , "Prelude.or_True"
+             , "Prelude.or_False"
+             , "Prelude.or_True2"
+             , "Prelude.or_False2"
+             , "Prelude.or_idem"
+             , "Prelude.not_or"
+             , "Prelude.not_and"
+             ]
+  let ss = addRules rules emptySimpset
+  trueTerm <- scBool sc True
+  falseTerm <- scBool sc False
+  t' <- foldM (\tcur c -> replaceTerm sc ss (c, trueTerm) tcur) t trueConds
+  foldM (\tcur c -> replaceTerm sc ss (c, falseTerm) tcur) t' falseConds
 
 intFromBV :: V.Vector Bool -> Integer
 intFromBV v = go 0 0
@@ -1107,6 +1170,7 @@ createSAWBackend' proxy dl sc0 = do
                     t <- scFlatTermF sc (ExtCns ec)
                     modifyIORef' (sbsVars sbs) ((w,i,ec):)
                     return t
+                , simplifyConds = lift2 (scSimplifyConds proxy sbs sc)
                 , typedExprEval = typedExprEvalFn sbs
                 , applyTypedExpr = \expr -> SAWBackend $ do
                     ExprEvalFn fn <- typedExprEvalFn sbs expr

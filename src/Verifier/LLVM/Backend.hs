@@ -111,6 +111,9 @@ data SBE m = SBE
     -- | @freshInt w@ creates a term representing a symbolic @w@-bit value
   , freshInt :: BitWidth -> m (SBETerm m)
 
+    -- | Simplify any conditionals according to a list of assumptions.
+  , simplifyConds :: SBEPred m -> SBETerm m -> m (SBETerm m)
+
     ----------------------------------------------------------------------------
     -- Term operator application
 

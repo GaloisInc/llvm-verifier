@@ -704,6 +704,10 @@ currentPathOfState = ctrlStk . _Just . currentPath
 currentPathMem :: Simple Traversal (State sbe m) (SBEMemory sbe)
 currentPathMem = currentPathOfState . pathMem
 
+-- | Traversal for current path assertions if any.
+currentPathAssertions :: Simple Traversal (State sbe m) (SBEPred sbe)
+currentPathAssertions = currentPathOfState . pathAssertions
+
 ------------------------------------------------------------------------
 -- Simulator primitives
 
@@ -1140,6 +1144,17 @@ malloc ty szw sztm = do
       let fr =  memFailRsn sbe ("Failed malloc allocation of type " ++ show (ppMemType ty)) []
       t <$ processMemCond fr c
 
+simplifyAddr :: ( Functor m , MonadIO m , Functor sbe ) =>
+                SBETerm sbe -> Simulator sbe m (SBETerm sbe)
+simplifyAddr addr = do
+  runSat <- gets (optsSatAtBranches . lssOpts)
+  if runSat
+    then do
+      sbe <- gets symBE
+      Just assns <- preuse currentPathAssertions
+      liftSBE $ simplifyConds sbe assns addr
+    else return addr
+
 -- | Load value at addr in current path.
 load ::
   ( Functor m
@@ -1149,8 +1164,9 @@ load ::
   => MemType -> SBETerm sbe -> Alignment -> Simulator sbe m (SBETerm sbe)
 load tp addr a = do
   sbe <- gets symBE
+  addr' <- simplifyAddr addr
   Just mem <- preuse currentPathMem
-  (cond, v) <- liftSBE $ memLoad sbe mem tp addr a
+  (cond, v) <- liftSBE $ memLoad sbe mem tp addr' a
   let fr = memFailRsn sbe "Invalid load address" [addr]
   processMemCond fr cond
   return v
@@ -1199,8 +1215,9 @@ store ::
 store tp val dst a = do
   sbe <- gets symBE
   -- Update memory.
+  dst' <- simplifyAddr dst
   Just m <- preuse currentPathMem
-  (c, m') <- liftSBE $ memStore sbe m dst tp val a
+  (c, m') <- liftSBE $ memStore sbe m dst' tp val a
   currentPathMem .= m'
   -- Update symbolic condition.
   let fr = memFailRsn sbe "Invalid store address: " [dst]

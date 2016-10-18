@@ -1757,6 +1757,8 @@ sbeBitBlast g dl mm =
            , applyIte         = \_ c x y -> BitIO $ muxTerm g c x y
            , freshInt         = \w -> BitIO $
                  IntTerm <$> BV.replicateM w (AIG.newInput g)
+           -- simplifyConds is a no-op for the bitblast backend
+           , simplifyConds    = \_ t -> return t
            , typedExprEval    = \expr ->
                  return $ ExprEvalFn $ \eval -> liftIO . applyExpr g dl =<< traverse eval expr
            , applyTypedExpr   = BitIO . applyExpr g dl
