@@ -68,7 +68,7 @@ library
     Verifier.LLVM.Codebase
     Verifier.LLVM.Codebase.AST
     Verifier.LLVM.Codebase.DataLayout
-    Verifier.LLVM.Codebase.DebugInfo
+    --Verifier.LLVM.Codebase.DebugInfo
     Verifier.LLVM.Codebase.LLVMContext
     Verifier.LLVM.Codebase.Translation
 
