@@ -156,6 +156,7 @@ module Verifier.LLVM.Simulator.Internals
   , processMemCond
   , alloca
   , malloc
+  , simplifyAddr
   , load
   , loadString
   , resolveFunPtrTerm
