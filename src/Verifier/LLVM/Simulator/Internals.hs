@@ -1152,8 +1152,14 @@ simplifyAddr addr = do
   if runSat
     then do
       sbe <- gets symBE
+      dbugM' 3 $ show $ "Simplifying address:" <+> prettyTermD sbe addr
       Just assns <- preuse currentPathAssertions
-      liftSBE $ simplifyConds sbe assns addr
+      dbugM' 3 $ show $ "Current assertions:" <+> prettyPredD sbe assns
+      addr0 <- liftSBE $ simplifyConds sbe assns addr
+      addr1 <- liftSBE $ simplifyConds sbe assns addr0
+      addr2 <- liftSBE $ simplifyConds sbe assns addr1
+      dbugM' 3 $ show $ "Done simplifying address:" <+> prettyTermD sbe addr2
+      return addr2
     else return addr
 
 -- | Load value at addr in current path.

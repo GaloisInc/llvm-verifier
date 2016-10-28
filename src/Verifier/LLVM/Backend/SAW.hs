@@ -915,6 +915,7 @@ scTermSAT :: AIG.IsAIG l g =>
              AIG.Proxy l g -> SAWBackendState -> Term -> IO (AIG.SatResult)
 scTermSAT proxy sbs t = do
   t' <- abstract sbs t
+  putStrLn $ "scTermSAT: " ++ show t
   BB.withBitBlastedPred proxy (sbsContext sbs) (\_ -> Map.empty) t' $ \be l _domTys ->
     AIG.checkSat be l
 
@@ -979,8 +980,8 @@ scSimplifyConds :: AIG.IsAIG l g =>
                 -> Term
                 -> Term
                 -> IO Term
-scSimplifyConds proxy sbs sc assumptions t = do
-  let conds = getIfConds t
+scSimplifyConds proxy sbs sc assumptions t0 = do
+  let conds = getIfConds t0
   -- Allow replacements only of conditions that do not contain locally
   -- bound variables, for simplicity.
   let closedConds = filter ((== 0) . looseVars) conds
@@ -1015,6 +1016,7 @@ scSimplifyConds proxy sbs sc assumptions t = do
   let ss = addRules rules emptySimpset
   trueTerm <- scBool sc True
   falseTerm <- scBool sc False
+  t <- rewriteSharedTerm sc ss t0
   t' <- foldM (\tcur c -> replaceTerm sc ss (c, trueTerm) tcur) t trueConds
   foldM (\tcur c -> replaceTerm sc ss (c, falseTerm) tcur) t' falseConds
 
