@@ -29,7 +29,7 @@ module Verifier.LLVM.Simulator.Internals
 
   , GlobalMap
 
-  , LSSOpts(LSSOpts, optsErrorPathDetails, optsSatAtBranches)
+  , LSSOpts(..)
   , defaultLSSOpts
 
     -- * State
@@ -330,12 +330,15 @@ data LSSOpts = LSSOpts {
     optsErrorPathDetails :: Bool
   , optsSatAtBranches    :: Bool
   -- ^ use a SAT-checking backend at branches, pruning unfeasable paths
+  , optsSimplifyAddrs    :: Bool
+  -- ^ simplify address expressions before loads and stores
   }
 
 -- | Default simulator options
 defaultLSSOpts :: LSSOpts
 defaultLSSOpts = LSSOpts { optsErrorPathDetails = False
                          , optsSatAtBranches    = False
+                         , optsSimplifyAddrs    = False
                          }
 
 ------------------------------------------------------------------------
@@ -1148,8 +1151,8 @@ malloc ty szw sztm = do
 simplifyAddr :: ( Functor m , MonadIO m , Functor sbe ) =>
                 SBETerm sbe -> Simulator sbe m (SBETerm sbe)
 simplifyAddr addr = do
-  runSat <- gets (optsSatAtBranches . lssOpts)
-  if runSat
+  simplifyEnabled <- gets (optsSimplifyAddrs . lssOpts)
+  if simplifyEnabled
     then do
       sbe <- gets symBE
       dbugM' 3 $ show $ "Simplifying address:" <+> prettyTermD sbe addr

@@ -48,7 +48,7 @@ data LSS = LSS
   } deriving (Show, Data, Typeable)
 
 mkLssOpts :: LSS -> LSSOpts
-mkLssOpts lss = LSSOpts (errpaths lss) (satBranches lss)
+mkLssOpts lss = LSSOpts (errpaths lss) (satBranches lss) False
 
 newtype DbugLvl = DbugLvl { unD :: Int32 }
   deriving (Data, Enum, Eq, Integral, Num, Ord, Real, Show, Typeable)

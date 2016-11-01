@@ -915,7 +915,6 @@ scTermSAT :: AIG.IsAIG l g =>
              AIG.Proxy l g -> SAWBackendState -> Term -> IO (AIG.SatResult)
 scTermSAT proxy sbs t = do
   t' <- abstract sbs t
-  putStrLn $ "scTermSAT: " ++ show t
   BB.withBitBlastedPred proxy (sbsContext sbs) (\_ -> Map.empty) t' $ \be l _domTys ->
     AIG.checkSat be l
 
