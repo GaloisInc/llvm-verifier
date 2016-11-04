@@ -501,7 +501,9 @@ checkPathUnsat c = do
   cparents <- assumptionsForActivePath
   sbe <- gets symBE
   a <- liftSBE $ applyAnd sbe c cparents
-  fsat <- liftSBE $ termSAT sbe a
+  Just assns <- preuse currentPathAssertions
+  a' <- liftSBE $ applyAnd sbe a assns
+  fsat <- liftSBE $ termSAT sbe a'
   return (fsat == Unsat)
 
 runEvaluator ::
