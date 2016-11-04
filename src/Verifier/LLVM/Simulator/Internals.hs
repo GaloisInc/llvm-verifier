@@ -61,6 +61,7 @@ module Verifier.LLVM.Simulator.Internals
   , currentPaths
      -- ** Constrol stack combinators
   , csHasSinglePath
+  , currentPathAssertions
   , currentPathStack
   , currentPathOfState
   , currentPathMem
@@ -1156,11 +1157,14 @@ simplifyAddr addr = do
     then do
       sbe <- gets symBE
       dbugM' 3 $ show $ "Simplifying address:" <+> prettyTermD sbe addr
+      assmps <- assumptionsForActivePath
       Just assns <- preuse currentPathAssertions
+      dbugM' 3 $ show $ "Current assumptions:" <+> prettyPredD sbe assmps
       dbugM' 3 $ show $ "Current assertions:" <+> prettyPredD sbe assns
-      addr0 <- liftSBE $ simplifyConds sbe assns addr
-      addr1 <- liftSBE $ simplifyConds sbe assns addr0
-      addr2 <- liftSBE $ simplifyConds sbe assns addr1
+      context <- liftSBE $ applyAnd sbe assns assmps
+      addr0 <- liftSBE $ simplifyConds sbe context addr
+      addr1 <- liftSBE $ simplifyConds sbe context addr0
+      addr2 <- liftSBE $ simplifyConds sbe context addr1
       dbugM' 3 $ show $ "Done simplifying address:" <+> prettyTermD sbe addr2
       return addr2
     else return addr
