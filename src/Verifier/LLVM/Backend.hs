@@ -232,6 +232,11 @@ data SBE m = SBE
               -> Alignment   -- Alignment constraint.
               -> m (AllocResult m)
 
+  , isAllocated :: SBEMemory m -- Memory to look in.
+                -> SBETerm m   -- Pointer to look for.
+                -> SBETerm m   -- Size of pointer to look for.
+                -> m (SBEPred m)
+
     -- | @memBranch mem@ records that this memory is for a path that is
     -- about to branch.  This function should have no impact on the memory state,
     -- but allows the backend information about branches for optimization purposes.

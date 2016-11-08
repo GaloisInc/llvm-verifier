@@ -31,6 +31,7 @@ module Verifier.LLVM.MemModel
  , AddrDecomposeResult(..)
 
  , Mem
+ , MemAlloc(..)
  , emptyMem
  , AllocType(..)
  , allocMem
@@ -45,6 +46,7 @@ module Verifier.LLVM.MemModel
  , branchMem
  , branchAbortMem
  , mergeMem
+ , memAllocs
  , MemPrettyPrinter(..)
  , ppMem
  , ppType

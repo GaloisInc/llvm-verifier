@@ -1785,6 +1785,7 @@ sbeBitBlast g dl mm =
            , stackPopFrame    = BitIO . mmStackPop mm
            , heapAlloc        = \m eltTp _ cnt a ->
                BitIO $ mmHeapAlloc mm m (memTypeSize dl eltTp) cnt a
+           , isAllocated      = fail "isAllocated not yet implemented for bitblast backend"
            , memCopy          = BitIO `c6` mmMemCopy mm
 
            , termSAT          = BitIO . AIG.checkSat g

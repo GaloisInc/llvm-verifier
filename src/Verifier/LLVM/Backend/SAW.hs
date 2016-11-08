@@ -19,6 +19,7 @@ Point-of-contact : jhendrix
 module Verifier.LLVM.Backend.SAW
   ( SAWBackend
   , SAWMemory
+  , memState
   , createSAWBackend
   , createSAWBackend'
   , llvmModule
@@ -488,6 +489,13 @@ allocPtr sbs = do
   base <- scFreshGlobal sc nm tp
   writeIORef (sbsAllocations sbs) $! Set.insert base s
   return base
+
+smIsAllocated :: SAWBackendState
+              -> SAWMemory
+              -> Term -- ^ Pointer
+              -> Term -- ^ Size
+              -> IO Term
+smIsAllocated sbs m p sz = MM.isAllocated (smGenerator sbs) p sz (m ^. memState)
 
 mergeEq :: (Ord k, Eq a) => Map k a -> Map k a -> Map k a
 mergeEq mx = Map.filterWithKey p
@@ -1197,6 +1205,7 @@ createSAWBackend' proxy dl sc0 = do
 
                 , stackAlloc     = lift5 (smAlloc sbs MM.StackAlloc)
                 , heapAlloc      = lift5 (smAlloc sbs MM.HeapAlloc)
+                , isAllocated    = lift3 (smIsAllocated sbs)
 
                 , stackPushFrame = SAWBackend . return . (trueTerm,)
                                    . over memState MM.pushStackFrameMem
