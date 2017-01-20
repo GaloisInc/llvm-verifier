@@ -1230,7 +1230,7 @@ createSAWBackend' proxy dl sc0 = do
 _unused :: a
 _unused = undefined
   scLLVM_LLVMType
-  scLLVM_StructValue
+  scApplyLLVM_StructValue
   scApplyLLVM_arithmeticWithOverflowResult
   scApplyLLVM_binFn
   scApplyLLVM_binRel
@@ -1259,4 +1259,3 @@ _unused = undefined
   scLLVM_StructFields
   scLLVM_StructIndex
   scApplyLLVM_getStructField
-  

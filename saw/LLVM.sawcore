@@ -52,17 +52,6 @@ mkArrayType n t = ArrayType n t;
 trunc31 :: bitvector 32 -> bitvector 31;
 trunc31 x = bvTrunc 1 31 x;
 
--- | Recuresive data struture for storing fields.
-data StructValue :: StructFields -> sort 0 where {
-    EmptyStruct :: StructValue EmptyFields;
-    ConsStruct :: (tp :: LLVMType)
-               -> (padding :: Nat)
-               -> (r :: StructFields)
-               -> value tp
-               -> StructValue r
-               -> StructValue (ConsFields tp padding r);
-  }
-
 value :: LLVMType -> sort 0;
 value (IntType w) = bitvector w;
 value FloatType   = Float;
@@ -71,6 +60,21 @@ value (PtrType n)   = bitvector (mulNat 8 n);
 value (ArrayType n tp) = Vec n (value tp);
 value (StructType tps) = StructValue tps;
 value (VectorType n tp) = Vec n (value tp);
+
+StructValue :: StructFields -> sort 0;
+StructValue EmptyFields = #();
+StructValue (ConsFields tp padding r) = #(value tp | StructValue r);
+
+EmptyStruct :: StructValue EmptyFields;
+EmptyStruct = ();
+
+ConsStruct :: (tp :: LLVMType)
+           -> (padding :: Nat)
+           -> (r :: StructFields)
+           -> value tp
+           -> StructValue r
+           -> StructValue (ConsFields tp padding r);
+ConsStruct tp padding r x xs = (x | xs);
 
 binFn :: sort 0 -> sort 0;
 binFn tp = tp -> tp -> tp;
@@ -315,12 +319,25 @@ llvmSelectV n tp c x y =
                                                  (at n (value tp) x i)
                                                  (at n (value tp) y i));
 
+llvmStructHead :: (tp :: LLVMType)
+               -> (padding :: Nat)
+               -> (r :: StructFields)
+               -> StructValue (ConsFields tp padding r) -> value tp;
+llvmStructHead _ _ _ (x | _) = x;
+
+llvmStructTail :: (tp :: LLVMType)
+               -> (padding :: Nat)
+               -> (r :: StructFields)
+               -> StructValue (ConsFields tp padding r) -> StructValue r;
+llvmStructTail _ _ _ (_ | v) = v;
+
 llvmStructElt :: (tps :: StructFields)
               -> StructValue tps
               -> (i :: StructIndex tps)
               -> value (getStructField tps i);
-llvmStructElt _ (ConsStruct _ _ _ x _) (ZeroIndex _ _ _) = x;
-llvmStructElt _ (ConsStruct _ _ _ _ v) (SuccIndex _ _ r i) = llvmStructElt r v i;
+llvmStructElt (ConsFields tp pad r) x (ZeroIndex _ _ _) = llvmStructHead tp pad r x;
+llvmStructElt (ConsFields tp pad r) x (SuccIndex _ _ _ i) =
+  llvmStructElt r (llvmStructTail tp pad r x) i;
 
 llvmArrayElt :: (n :: Nat)
              -> (tp :: LLVMType)
