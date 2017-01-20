@@ -144,7 +144,7 @@ findExact w (AT t) =
 
 -- | Find match for alignment using LLVM's rules for integer types.
 findIntMatch :: Int -> AlignTree -> Maybe Alignment
-findIntMatch w (AT t) = 
+findIntMatch w (AT t) =
     case FT.viewl mge of
      e FT.:< _ -> Just (asAlign e)
      FT.EmptyL ->
@@ -162,7 +162,7 @@ updateAlign :: Int
             -> AlignTree
             -> Maybe Alignment
             -> AlignTree
-updateAlign w (AT t) ma = AT $ 
+updateAlign w (AT t) ma = AT $
     case FT.split (> fromIntegral w) t of
       (FT.viewr -> lt FT.:> ml, gt) | asBitWidth ml == w -> merge lt gt
       (mle, gt) -> merge mle gt
@@ -170,7 +170,7 @@ updateAlign w (AT t) ma = AT $
 
 type instance Index AlignTree = Int
 type instance IxValue AlignTree = Alignment
- 
+
 instance Ixed AlignTree where
   ix k = at k . traverse
 
@@ -263,14 +263,14 @@ maxAlignment dl =
 
 -- | Insert alignment into spec.
 setAtBits :: Simple Lens DataLayout AlignTree -> L.LayoutSpec -> Int -> Int -> State DataLayout ()
-setAtBits f spec sz a = 
+setAtBits f spec sz a =
   case fromBits a of
     Left{} -> layoutWarnings %= (spec:)
     Right w -> f . at sz .= Just w
 
 -- | Insert alignment into spec.
 setBits :: Simple Lens DataLayout Alignment -> L.LayoutSpec -> Int -> State DataLayout ()
-setBits f spec a = 
+setBits f spec a =
   case fromBits a of
     Left{} -> layoutWarnings %= (spec:)
     Right w -> f .= w
@@ -320,7 +320,7 @@ ppSymType (Alias i) = ppIdent i
 ppSymType (FunType d) = ppFunDecl d
 ppSymType VoidType = text "void"
 ppSymType OpaqueType = text "opaque"
-ppSymType (UnsupportedType tp) = text (show (L.ppType tp)) 
+ppSymType (UnsupportedType tp) = text (show (L.ppType tp))
 
 -- | LLVM Types supported by simulator with a defined size and alignment.
 data MemType
@@ -333,7 +333,7 @@ data MemType
   | StructType StructInfo
 
 ppMemType :: MemType -> Doc
-ppMemType mtp = 
+ppMemType mtp =
   case mtp of
     IntType w -> ppIntType w
     FloatType -> text "float"
@@ -424,7 +424,7 @@ memTypeAlign dl mtp =
       where Just a = findExact 64 (dl ^. floatInfo)
     PtrType{} -> dl ^. ptrAlign
     ArrayType _ tp -> memTypeAlign dl tp
-    VecType n tp   -> 
+    VecType n tp   ->
       case findExact (memTypeSizeInBits dl tp) (dl^.vectorInfo) of
         Just a -> a
         Nothing -> fromIntegral (lgCeil n) + memTypeAlign dl tp
