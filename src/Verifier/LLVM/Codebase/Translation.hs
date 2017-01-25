@@ -282,7 +282,9 @@ liftBitcast :: (Monad m, ?lc :: LLVMContext)
             -> m a
 liftBitcast PtrType{} v PtrType{} = return v
 liftBitcast itp v rtp | itp `compatMemTypes` rtp = return v
-liftBitcast _ _ _ = fail "Symbolic simulator does not support bitcast."
+liftBitcast itp _ rtp =
+    fail $ "Symbolic simulator does not support bitcast between types " ++
+           show (ppMemType itp) ++ " and " ++ show (ppMemType rtp)
 
 zeroValue :: (?sbe :: SBE sbe) => MemType -> LiftAttempt (SymValue (SBETerm sbe))
 zeroValue tp = mkSValExpr =<< zeroExpr tp
