@@ -6,7 +6,7 @@
 -- Copyright        : (c) Galois, Inc 2011-2013
 -- Maintainer       : Joe Hendrix <jhendrix@galois.com>
 -- Stability        : provisional
--- 
+--
 -- This module provides functionality for querying simulator type
 -- information in a module, and converting llvm-pretty types into
 -- simulator types.
@@ -58,9 +58,9 @@ data IdentStatus
   | Pending L.Type
 
 data TCState = TCS { tcsDataLayout :: DataLayout
-                   , tcsMap :: Map Ident IdentStatus 
+                   , tcsMap :: Map Ident IdentStatus
                      -- | Set of types encountered that are not supported by
-                     -- the 
+                     -- the
                    , tcsUnsupported :: Set L.Type
                    , tcsUnresolvable :: Set Ident
                    }
@@ -81,7 +81,7 @@ tcsErrors tcs = (ppUnsupported <$> Set.toList (tcsUnsupported tcs))
              ++ (ppUnresolvable <$> Set.toList (tcsUnresolvable tcs))
   where ppUnsupported tp = text "Unsupported type:" <+> text (show (L.ppType tp))
         ppUnresolvable i = text "Could not resolve identifier:" <+> text (show (L.ppIdent i))
- 
+
 -- | Type lifter contains types that could not be parsed.
 type TC = State TCState
 
@@ -168,7 +168,7 @@ data LLVMContext = LLVMContext
   }
 
 instance Show LLVMContext where
-  show = show . ppLLVMContext 
+  show = show . ppLLVMContext
 
 ppLLVMContext :: LLVMContext -> Doc
 ppLLVMContext lc =
@@ -225,7 +225,7 @@ compatStructInfo x y =
     compatMemTypeVectors (siFieldTypes x) (siFieldTypes y)
 
 -- | Returns true if types are bit-level compatible.
--- 
+--
 compatMemTypes :: (?lc :: LLVMContext) => MemType -> MemType -> Bool
 compatMemTypes x0 y0 =
   case (x0, y0) of
@@ -247,7 +247,7 @@ compatRetTypes _ _ = False
 
 compatMemTypeLists :: (?lc :: LLVMContext) => [MemType] -> [MemType] -> Bool
 compatMemTypeLists [] [] = True
-compatMemTypeLists (x:xl) (y:yl) = 
+compatMemTypeLists (x:xl) (y:yl) =
   compatMemTypes x y && compatMemTypeLists xl yl
 compatMemTypeLists _ _ = False
 
