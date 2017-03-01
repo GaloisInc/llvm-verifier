@@ -40,9 +40,9 @@ module Verifier.LLVM.Codebase.Translation
   , liftStringValue
   ) where
 
+import Control.Exception (try, catch, Exception, throwIO)
 import Control.Lens hiding (op)
 import Control.Monad.State.Strict
-import Control.Monad.Trans.Except
 import qualified Data.Foldable as F
 import qualified Data.LLVM.CFG              as CFG
 import Data.Map                   (Map)
@@ -169,11 +169,26 @@ blockPhiMap' blocks = execStateT (traverse go blocks) Map.empty
 
 -- | Computation that attempts to lift LLVM values to symbolic representation.
 -- This runs in IO, because symbolic backends may need to do IO.
-newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: ExceptT String IO a }
-  deriving (Functor, Applicative, Monad, MonadIO)
+newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: IO a }
+  deriving (Functor, Applicative, MonadIO)
 
-runLiftAttempt :: (MonadIO m) => LiftAttempt a -> m (Either String a)
-runLiftAttempt = liftIO . runExceptT . unLiftAttempt
+instance Monad LiftAttempt where
+  fail = LiftAttempt . throwIO . LiftAttemptError
+  return = LiftAttempt . return
+  LiftAttempt m >>= f = LiftAttempt (m >>= unLiftAttempt . f)
+
+newtype LiftAttemptError = LiftAttemptError { unLiftAttemptError :: String }
+  deriving Show
+
+instance Exception LiftAttemptError
+
+errorStack :: String -> LiftAttempt a -> LiftAttempt a
+errorStack prefix (LiftAttempt m) = LiftAttempt $
+  m `catch` \(LiftAttemptError e) -> throwIO (LiftAttemptError (prefix ++ e))
+
+runLiftAttempt :: MonadIO m => LiftAttempt a -> m (Either String a)
+runLiftAttempt m =
+  liftIO (either (Left . unLiftAttemptError) Right <$> try (unLiftAttempt m))
 
 unsupportedStmt :: (MonadState (BlockGeneratorState t) m)
                 => L.Stmt
@@ -366,10 +381,12 @@ liftMemType' tp =
   maybe (fail ("failed to lift MemType: " ++ show (L.ppType tp))) return $
   liftMemType tp
 
-liftStmt :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
-         => L.Stmt  
-         -> LiftAttempt (SymStmt (SBETerm sbe))
+liftStmt ::
+  (?lc :: LLVMContext, ?sbe :: SBE sbe) =>
+  L.Stmt ->
+  LiftAttempt (SymStmt (SBETerm sbe))
 liftStmt stmt =
+  errorStack (show stmt ++ " > ") $
   case stmt of
     Effect (L.Call _ _ (L.ValAsm{}) _) _ ->
       -- TODO: it would be good to emit a warning here, but we can't in
