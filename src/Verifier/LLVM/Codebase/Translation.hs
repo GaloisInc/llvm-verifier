@@ -121,7 +121,7 @@ runBlockGenerator :: (Functor f, Monad f) =>
                      StateT (BlockGeneratorState t) f a
                   -> f ([TranslationWarning], [SymBlock t])
 runBlockGenerator m = final <$> execStateT m s0
-  where s0 = BlockGeneratorState { _bgBlocks = [] 
+  where s0 = BlockGeneratorState { _bgBlocks = []
                                  , _bgRevWarnings = []
                                  }
         final s1 = (reverse (_bgRevWarnings s1), _bgBlocks s1)
@@ -138,7 +138,7 @@ addWarning d = bgRevWarnings %= (d:)
 
 -- | Maps source target pairs to either an unsupported stmt or list of
 -- assignments.
-type PhiMap t = Map (L.BlockLabel, L.BlockLabel) 
+type PhiMap t = Map (L.BlockLabel, L.BlockLabel)
                     (Either L.Stmt [(L.Ident, MemType, SymValue t)])
 
 
@@ -156,7 +156,7 @@ blockPhiMap' blocks = execStateT (traverse go blocks) Map.empty
             mentry <- runLiftAttempt $ do
               mtp <- liftMemType' tp
               val <- liftValue mtp v
-              return (r,mtp,val)        
+              return (r,mtp,val)
             modify (updateInstr stmt src tgt mentry)
         parseInstr _ _ = return ()
         updateInstr stmt src tgt mr m =
@@ -316,7 +316,7 @@ zeroExpr tp0 =
     StructType si -> SValStruct si <$> traverse zeroValue (siFieldTypes si)
 
 liftGEP :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
-        => Bool 
+        => Bool
         -> L.Typed L.Value
         -> [L.Typed L.Value]
         -> LiftAttempt (MemType, TypedExpr (SymValue (SBETerm sbe)))
@@ -328,9 +328,9 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
   where gepFailure msg = fail $ "Could not parse GEP Value: " ++ msg
         pdl = llvmDataLayout ?lc
         aw :: BitWidth
-        aw = ptrBitwidth pdl 
+        aw = ptrBitwidth pdl
         mn = Nothing
-       
+
         go args tp [] = do
           initType <- liftMemType' initType0
           sv <- liftValue initType initValue
@@ -355,13 +355,13 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
                  | aw >  w   = mkSValExpr $ SExt  mn w v1 aw
                  | otherwise = mkSValExpr $ Trunc mn w v1 aw
           let sz = toInteger $ memTypeSize pdl etp
-          sz' <- mkSValExpr $ SValInteger aw sz                           
+          sz' <- mkSValExpr $ SValInteger aw sz
           v3 <- mkSValExpr . IntArith (Mul False False)  mn aw sz' =<< v2
           args' <- mergeAdd args v3
           go args' etp r
         goArray _ _ tps = gepFailure $ "goArray with weird types: " ++ show (map (ppMemType . fst) tps)
 
-        goStruct args si  ((IntType 32, L.ValInteger i) : r) = do       
+        goStruct args si  ((IntType 32, L.ValInteger i) : r) = do
           fi <- maybe (fail "failed to get struct field info") return $
                 siFieldInfo si (fromIntegral i)
           val <- mkSValExpr (SValInteger aw (toInteger (fiOffset fi)))
@@ -400,7 +400,7 @@ liftStmt stmt =
     Effect (L.Store (L.Typed tp0 v) addr a) _ -> do
       tp <- liftMemType' tp0
       tptr <- liftValue tp v
-      taddr <- liftTypedValue addr 
+      taddr <- liftTypedValue addr
       return $ Store tp tptr taddr (liftAlign tp a)
     Effect{} ->
       fail $ "can't translate effect: " ++ show (L.ppLLVM (L.ppStmt stmt))
@@ -418,7 +418,7 @@ liftStmt stmt =
       let retExpr tp v = return $ Assign r tp v
       let retTExpr tp v = Assign r tp <$> mkSValExpr v
       let retIntArith op tp0 u v = do
-            tp <- liftMemType' tp0 
+            tp <- liftMemType' tp0
             x <- liftValue tp u
             y <- liftValue tp v
             case tp of
@@ -446,7 +446,7 @@ liftStmt stmt =
                        L.Or  -> Or
                        L.Xor -> Xor
         L.Conv op (L.Typed itp0 e) rtp0 -> do
-          itp <- liftMemType' itp0 
+          itp <- liftMemType' itp0
           rtp <- liftMemType' rtp0
           sv <- liftValue itp e
           let intConv cond fn =
@@ -614,7 +614,7 @@ liftBB lti phiMap bb = do
           return [ block ]
 
         impl [stmt@(Effect (L.Br (Typed tp c) tgt1 tgt2) _)] il = do
-          mres <- runLiftAttempt $ do 
+          mres <- runLiftAttempt $ do
             IntType 1 <- liftMemType' tp
             liftValue (IntType 1) c
           case mres of
@@ -622,7 +622,7 @@ liftBB lti phiMap bb = do
               ss <- unsupportedStmt stmt "Unparsable condition."
               return [ mkSymBlock (blockName 0) (reverse (ss:il)) ]
             Right tc -> do
-              let ((b1,b2), rest) = 
+              let ((b1,b2), rest) =
                     runState (both emptyBlock (tgt1, tgt2)) Seq.empty
               let branchStmt = Br tc b1 b2 pd
               return $ mkSymBlock (blockName 0) (reverse (branchStmt:il))
@@ -641,7 +641,7 @@ liftBB lti phiMap bb = do
                     ((caseBlockIds,defBlock), caseBlocks) = flip runState Seq.empty $ do
                       (,) <$> traverse emptyBlock targets <*> emptyBlock def
                     symCases = Map.fromList $ zip consts caseBlockIds
-                    switchStmt = Switch w tsv defBlock symCases pd 
+                    switchStmt = Switch w tsv defBlock symCases pd
                     initBlock  = mkSymBlock (blockName 0) (reverse (switchStmt:il))
 
         impl [Effect L.Unreachable _] il = do
@@ -716,5 +716,5 @@ liftDefine d
          Nothing -> return $ Left (text "Unsupported type for function" <+> symd <> char '.')
   where mfd = FunDecl <$> liftRetType (L.defRetType d)
                       <*> traverse liftMemType (L.typedType <$> L.defArgs d)
-                      <*> pure False 
+                      <*> pure False
         symd = ppSymbol (L.defName d)
