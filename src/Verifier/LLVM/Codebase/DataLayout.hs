@@ -106,7 +106,7 @@ type Size = Word64
 
 type Offset = Word64
 
--- | Alignments must be a power of two, so we just store the exponent.
+-- | Alignment's must be a power of two, so we just store the exponent.
 -- e.g., alignment value of 3 indicates the pointer must align on 2^3-byte boundaries.
 type Alignment = Word32
 
@@ -192,7 +192,7 @@ data DataLayout
         , _vectorInfo  :: !AlignTree
         , _floatInfo   :: !AlignTree
            -- | Information about aggregate size.
-        , _aggInfo     :: !Alignment
+        , _aggInfo     :: !AlignTree
            -- | Layout constraints on a stack object with the given size.
         , _stackInfo   :: !AlignTree
           -- | Layout specs that could not be parsed.
@@ -227,7 +227,7 @@ defaultDataLayout = execState defaults dl
                 , _integerInfo = emptyAlignTree
                 , _floatInfo   = emptyAlignTree
                 , _vectorInfo  = emptyAlignTree
-                , _aggInfo     = 0 -- Aggregates have no particular alignment
+                , _aggInfo     = emptyAlignTree
                 , _stackInfo   = emptyAlignTree
                 , _layoutWarnings = []
                 }
@@ -246,16 +246,18 @@ defaultDataLayout = execState defaults dl
           -- Default vector alignments.
           setAt vectorInfo  64 3 -- 64-bit vector is 8 byte aligned.
           setAt vectorInfo 128 4  -- 128-bit vector is 16 byte aligned.
+          -- Default aggregate alignments.
+          setAt aggInfo  0 0  -- Aggregates have no particular alignment
 
 -- | Maximum aligment for any type (used by malloc).
 maxAlignment :: DataLayout -> Alignment
 maxAlignment dl =
   maximum [ dl^.stackAlignment
           , dl^.ptrAlign
-          , dl^.aggInfo
           , maxAlignmentInTree (dl^.integerInfo)
           , maxAlignmentInTree (dl^.vectorInfo)
           , maxAlignmentInTree (dl^.floatInfo)
+          , maxAlignmentInTree (dl^.aggInfo)
           , maxAlignmentInTree (dl^.stackInfo)
           ]
 
@@ -280,7 +282,7 @@ addLayoutSpec ls =
     case ls of
       L.BigEndian    -> intLayout .= BigEndian
       L.LittleEndian -> intLayout .= LittleEndian
-      L.PointerSize _n sz a _ ->
+      L.PointerSize     sz a _ ->
          case fromBits a of
            Right a' | r == 0 -> do ptrSize .= w
                                    ptrAlign .= a'
@@ -289,7 +291,7 @@ addLayoutSpec ls =
       L.IntegerSize    sz a _ -> setAtBits integerInfo ls sz a
       L.VectorSize     sz a _ -> setAtBits vectorInfo  ls sz a
       L.FloatSize      sz a _ -> setAtBits floatInfo   ls sz a
-      L.AggregateSize     a _ -> setBits aggInfo ls a
+      L.AggregateSize  sz a _ -> setAtBits aggInfo     ls sz a
       L.StackObjSize   sz a _ -> setAtBits stackInfo   ls sz a
       L.NativeIntSize _ -> return ()
       L.StackAlign a    -> setBits stackAlignment ls a
@@ -314,11 +316,11 @@ data SymType
 
 ppSymType :: SymType -> Doc
 ppSymType (MemType tp) = ppMemType tp
-ppSymType (Alias i) = text "alias:" <> ppIdent i
+ppSymType (Alias i) = ppIdent i
 ppSymType (FunType d) = ppFunDecl d
 ppSymType VoidType = text "void"
 ppSymType OpaqueType = text "opaque"
-ppSymType (UnsupportedType tp) = text ("unsupported:" ++ show (L.ppType tp))
+ppSymType (UnsupportedType tp) = text (show (L.ppType tp))
 
 -- | LLVM Types supported by simulator with a defined size and alignment.
 data MemType
@@ -449,7 +451,7 @@ data FieldInfo = FieldInfo { fiOffset    :: !Offset
 mkStructInfo :: DataLayout -> Bool -> [MemType] -> StructInfo
 mkStructInfo dl packed tps0 = go [] 0 (max a0 (nextAlign tps0)) tps0
   where a0 | packed = 0
-           | otherwise = dl^.aggInfo
+           | otherwise = fromMaybe 0 (findExact 0 (dl^.aggInfo))
         -- Aligment of next type if any. Alignment value of n means to
         -- align on 2^n byte boundaries.
         nextAlign :: [MemType] -> Alignment
