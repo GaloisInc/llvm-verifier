@@ -102,7 +102,7 @@ main = do
     let via s f = mapM_ (putStrLn . show  . f) (s mdl)
     ((:[]) . L.modDataLayout) `via` L.ppDataLayout
     L.modTypes                `via` L.ppTypeDecl
-    L.modGlobals              `via` L.ppGlobal
+    L.modGlobals              `via` L.ppLLVM L.ppGlobal
     L.modDeclares             `via` L.ppDeclare
     mapM_ (print . ppSymDefine) (cbDefs cb)
     exitWith ExitSuccess
