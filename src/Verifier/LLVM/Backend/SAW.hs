@@ -962,7 +962,7 @@ scWriteSmtLib sc path w t = do
   wt <- scNat sc wn
   t' <- scBvEq sc wt t zero
   (_, lit) <- SBVSim.sbvSolve sc Map.empty [] t'
-  writeFile path =<< compileToSMTLib SMTLib2 True lit
+  writeFile path =<< generateSMTBenchmark True lit
 
 -- Put in saw-core package?
 getIfConds :: Term -> [Term]
