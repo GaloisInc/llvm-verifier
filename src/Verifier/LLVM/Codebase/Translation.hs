@@ -487,7 +487,7 @@ liftStmt stmt =
                      v <- liftValue (IntType w) sz
                      return (Just (w,v))
           return $ Alloca r tp ssz (liftAlign tp a)
-        L.Load (L.Typed tp0 ptr) malign -> do
+        L.Load (L.Typed tp0 ptr) _ malign -> do
           tp <- liftMemType' tp0
           case tp of
             PtrType etp0 -> do
