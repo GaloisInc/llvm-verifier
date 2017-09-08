@@ -572,10 +572,10 @@ convertMemType dl tp0 =
       where fldFn f = (,fiPadding f) <$> convertMemType dl (fiType f)
 
 -- | Apply an operation to leaves of a mux.
-applyMuxToLeaves :: (Applicative m, Monad m, Termlike t)
-                 => (t -> a -> a -> m a) -- ^ Mux operation on result
-                 -> (t -> m a) -- ^ Action on leaves.
-                 -> t -- ^ Term to act on
+applyMuxToLeaves :: (Applicative m, Monad m)
+                 => (Term -> a -> a -> m a) -- ^ Mux operation on result
+                 -> (Term -> m a) -- ^ Action on leaves.
+                 -> Term -- ^ Term to act on
                  -> m a
 applyMuxToLeaves mux action = go
   where go t =
