@@ -1171,7 +1171,7 @@ createSAWBackend' proxy dl sc0 = do
                     case R.asBool t' of
                       Just b -> return b
                       Nothing ->
-                        fail $ "Could not evaluate predicate as Boolean:\n" ++ show t'
+                        fail $ "Could not evaluate predicate as Boolean:\n" ++ scPrettyTerm defaultPPOpts t'
                 , freshInt = \w -> SAWBackend $ do
                     vtp <- valueFn =<< intTypeFn =<< scBitwidth sc w
                     i <- scFreshGlobalVar sc
