@@ -40,6 +40,7 @@ import qualified Control.Monad.State as MTL
 import Control.Monad.State( MonadIO(..), lift )
 import Control.Monad.State.Class
 import Control.Lens
+import qualified Data.ByteString.UTF8 as UTF8
 import Data.Char
 import Data.IORef
 import Data.List
@@ -447,7 +448,7 @@ locSeq :: forall sbe m . Codebase sbe -> Grammar m (Symbol, Breakpoint)
 locSeq cb = argLabel (text "<loc>") *> hide (switch $ fmap matchDef (cbDefs cb))
   where matchDef :: SymDefine (SBETerm sbe)
                  -> (SwitchKey, Grammar m (Symbol, Breakpoint))
-        matchDef d = ( fromString nm
+        matchDef d = ( fromString (UTF8.toString nm)
                      , switch [ (,) ":" (nameBlocks d m)
                               , (,) "" $ end
                               ]
@@ -614,7 +615,7 @@ infoBreakpointsCmd =
     bps <- concatBreakpoints <$> use breakpoints
     let ppRow :: Integer -> (Symbol,Breakpoint) -> [String]
         ppRow i (Symbol sym,bp) =
-          [show i, sym ++ ":" ++ show (ppBreakpoint bp)]
+          [show i, UTF8.toString sym ++ ":" ++ show (ppBreakpoint bp)]
     dbugM $ show $
       case bps of
         [] -> text "No breakpoints."

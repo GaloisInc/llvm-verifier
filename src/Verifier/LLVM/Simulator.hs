@@ -87,7 +87,8 @@ import qualified Control.Monad.State as MTL
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Except
 import           Control.Monad.Trans.State.Strict (evalStateT)
-import           Data.List                 (isPrefixOf, nub)
+import qualified Data.ByteString as B
+import           Data.List (nub)
 import qualified Data.Graph as G
 import qualified Data.Map as M
 import           Data.Maybe
@@ -269,7 +270,7 @@ callDefine' isRedirected calleeSym@(Symbol calleeName) mreg args = do
         incPC
   where
     normal
-      | isPrefixOf "llvm." calleeName = do
+      | B.isPrefixOf "llvm." calleeName = do
           whenVerbosity (>= 1) $ do
             --TODO: Give option of stopping on warnings like this.
             tellUser $ "Warning: skipping unsupported LLVM intrinsic "

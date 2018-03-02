@@ -30,7 +30,7 @@ module Verifier.LLVM.Codebase
   , lookupSym
   , lookupFunctionType
     -- * Translation utilities.
-  , liftStringValue
+  , liftByteStringValue
     -- * Loading utilities.
   , loadModule
   , loadCodebase

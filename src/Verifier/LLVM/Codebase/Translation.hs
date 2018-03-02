@@ -38,12 +38,13 @@ module Verifier.LLVM.Codebase.Translation
   , runLiftAttempt
   , liftMemType'
   , liftValue
-  , liftStringValue
+  , liftByteStringValue
   ) where
 
 import Control.Exception (try, catch, Exception, throwIO)
 import Control.Lens hiding (op)
 import Control.Monad.State.Strict
+import qualified Data.ByteString as B
 import qualified Data.Foldable as F
 import qualified Data.LLVM.CFG              as CFG
 import Data.Map                   (Map)
@@ -222,10 +223,10 @@ mkSValExpr :: (?sbe :: SBE sbe, MonadIO m)
            -> m (SymValue (SBETerm sbe))
 mkSValExpr expr = liftIO $ SValExpr expr <$> typedExprEval ?sbe expr
 
-liftStringValue :: (?sbe :: SBE sbe) => String -> IO (SymValue (SBETerm sbe))
-liftStringValue s = mkSValExpr . SValArray tp =<< traverse toChar (V.fromList s)
+liftByteStringValue :: (?sbe :: SBE sbe) => B.ByteString -> IO (SymValue (SBETerm sbe))
+liftByteStringValue s = mkSValExpr . SValArray tp =<< traverse toChar (V.fromList (B.unpack s))
  where tp = IntType 8
-       toChar c = mkSValExpr (SValInteger 8 (toInteger (fromEnum c)))
+       toChar c = mkSValExpr (SValInteger 8 (toInteger c))
 
 liftValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
           => MemType -- ^ Expected type of value.
@@ -261,8 +262,8 @@ liftValue (StructType si) (L.ValStruct fldvs) =
 liftValue (StructType si) (L.ValPackedStruct fldvs) =
     mkSValExpr . SValStruct si =<< traverse liftTypedValue (V.fromList fldvs)
 liftValue (ArrayType len (IntType 8)) (L.ValString str) = do
-  unless (fromIntegral len == length str) $ fail "Incompatible types"
-  liftIO $ liftStringValue str
+  unless (fromIntegral len == B.length str) $ fail "Incompatible types"
+  liftIO $ liftByteStringValue str
 liftValue rtp (L.ValConstExpr ce)  =
   case ce of
     L.ConstGEP _ (Just _) _ _ ->

@@ -11,6 +11,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams             #-}
+{-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE Rank2Types                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TypeFamilies               #-}
@@ -21,7 +22,8 @@ module LSSImpl where
 
 import           Control.Lens
 import           Control.Monad.State
-import           Data.Char
+import qualified Data.ByteString as B
+import qualified Data.ByteString.UTF8 as UTF8
 import           Data.Int
 import qualified Data.Vector as V
 import           Numeric
@@ -146,10 +148,11 @@ buildArgv [IntType argcw, ptype@PtrType{}] argv'
   aw <- withDL ptrBitwidth
   one <- liftSBE $ termInt sbe aw 1
   strPtrs  <- V.forM (V.fromList argv') $ \str -> do
-     let len = length str + 1
+     let bs = UTF8.fromString str
+     let len = B.length bs + 1
      let tp = ArrayType len (IntType 8)
      let ?sbe = sbe
-     sv <- liftIO $ liftStringValue (str ++ [chr 0])
+     sv <- liftIO $ liftByteStringValue (B.snoc bs 0)
      v <- evalExprInCC "buildArgv" sv
      p <- alloca tp aw one 0
      store tp v p 0
