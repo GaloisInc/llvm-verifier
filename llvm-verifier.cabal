@@ -170,7 +170,6 @@ test-suite test-llvm
     Tests.Symbolic
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
-  GHC-prof-options: -auto-all -caf-all
 
   build-depends:
       base >= 4
