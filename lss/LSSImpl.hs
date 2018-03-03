@@ -19,6 +19,7 @@ Point-of-contact : jhendrix
 
 module LSSImpl where
 
+import qualified Codec.Binary.UTF8.String as UTF8 (encode)
 import           Control.Lens
 import           Control.Monad.State
 import           Data.Char
@@ -146,10 +147,11 @@ buildArgv [IntType argcw, ptype@PtrType{}] argv'
   aw <- withDL ptrBitwidth
   one <- liftSBE $ termInt sbe aw 1
   strPtrs  <- V.forM (V.fromList argv') $ \str -> do
-     let len = length str + 1
+     let bytes = UTF8.encode str
+     let len = length bytes + 1
      let tp = ArrayType len (IntType 8)
      let ?sbe = sbe
-     sv <- liftIO $ liftStringValue (str ++ [chr 0])
+     sv <- liftIO $ liftStringValue (bytes ++ [0])
      v <- evalExprInCC "buildArgv" sv
      p <- alloca tp aw one 0
      store tp v p 0

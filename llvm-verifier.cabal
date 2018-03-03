@@ -125,6 +125,7 @@ executable lss
     , llvm-verifier
     , mtl
     , parsec >= 2.1.0.1
+    , utf8-string
     , vector
 
 executable bcdump
