@@ -193,6 +193,7 @@ test-suite test-llvm
     , llvm-pretty >= 0.5
     , llvm-pretty-bc-parser >= 0.1.2.2
     , tagged
+    , utf8-string
 
 
   if !os(windows)
