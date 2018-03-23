@@ -72,12 +72,14 @@ import Control.Lens
 import Control.Monad.State.Strict
 import qualified Data.FingerTree as FT
 import Data.Maybe
+import Data.Semigroup
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import Data.Word (Word32, Word64)
 import qualified Text.LLVM      as L
 import qualified Text.LLVM.PP   as L
-import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), (<>))
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 import Prelude ()
 import Prelude.Compat hiding (mapM_)
 import Verifier.LLVM.Utils.Arithmetic
@@ -114,9 +116,12 @@ type Alignment = Word32
 newtype BW = BW Word64
   deriving (Eq, Ord, Num)
 
+instance Semigroup BW where
+  BW a <> BW b = BW (max a b)
+
 instance Monoid BW where
-  mempty                = BW 0
-  mappend (BW a) (BW b) = BW (max a b)
+  mempty  = BW 0
+  mappend = (<>)
 
 data AlignSpec =
   AlignSpec { -- Size in bits
