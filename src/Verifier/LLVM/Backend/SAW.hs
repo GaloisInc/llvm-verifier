@@ -22,7 +22,7 @@ module Verifier.LLVM.Backend.SAW
   , memState
   , createSAWBackend
   , createSAWBackend'
-  , llvmModule
+  , scLoadLLVMModule
   ) where
 
 import Control.Exception (assert)
