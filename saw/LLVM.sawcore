@@ -2,27 +2,96 @@ module LLVM where
 
 import Prelude;
 
-data LLVMType :: sort 0 where {
-    -- Primitive types that we support.
-    IntType :: Nat -> LLVMType;
-    FloatType  :: LLVMType;
-    DoubleType :: LLVMType;
-    -- | Nat is the width of the pointer in bytes.
-    PtrType :: Nat -> LLVMType;
-    -- Type for arrays.
-    ArrayType :: Nat -> LLVMType -> LLVMType;
-    -- Type for structs.  The vector contains the type of each field, followed
-    -- by the amount of padding to add after the field.
-    StructType :: StructFields -> LLVMType;
+-- The LLVM types are mutually defined with the LLVM structure types, which are
+-- lists of LLVM types along with padding information. SAW does not directly
+-- support mutually inductive types, so we are defining this mutually inductive
+-- type indirectly, with the use of a Boolean flag: True means it is a single
+-- type, while False means it is a list of types.
+data LLVMTypeOrTypes :: Bool -> sort 0 where {
 
-    VectorType :: Nat -> LLVMType -> LLVMType;
+    -- Primitive types that we support
+    IntType :: Nat -> LLVMTypeOrTypes True;
+    FloatType  :: LLVMTypeOrTypes True;
+    DoubleType :: LLVMTypeOrTypes True;
+
+    -- A pointer type, where w is the width of the pointer in bytes
+    PtrType (w::Nat) :: LLVMTypeOrTypes True;
+
+    -- A fixed-length array type, where n is the number of elements of type tp
+    ArrayType (n::Nat) (tp::LLVMTypeOrTypes True) :: LLVMTypeOrTypes True;
+
+    -- The type of structs, which contain lists of LLVM types
+    StructType :: LLVMTypeOrTypes False -> LLVMTypeOrTypes True;
+
+    -- A fixed-length vector type, where n is the number of elements of type
+    -- tp (Question: how is this different from ArrayType?)
+    VectorType :: Nat -> LLVMTypeOrTypes True -> LLVMTypeOrTypes True;
+
+    -- The empty list of types
+    EmptyFields :: LLVMTypeOrTypes False;
+
+    -- A cons list of types, containing a type, a padding value (???), and the
+    -- rest of the list of types
+    ConsFields (tp::LLVMTypeOrTypes True) (pad::Nat)
+               (tail::LLVMTypeOrTypes False) :: LLVMTypeOrTypes False;
   }
 
-data StructFields :: sort 0 where {
-    EmptyFields :: StructFields;
-    ConsFields :: LLVMType -> Nat -> StructFields -> StructFields;
-  }
+-- Short-hand for a single LLVM type
+LLVMType :: sort 0;
+LLVMType = LLVMTypeTypes True;
 
+-- Short-hand for a list of LLVM types
+StructFields :: sort 0;
+StructFields = LLVMTypeTypes False;
+
+-- Compute the SAW type corresponding to an LLVM type or list of types
+typeOfLLVMTypeOrTypes :: (b::Bool) -> LLVMTypeOrTypes b -> sort 0;
+typeOfLLVMTypeOrTypes b tp =
+  LLVMTypeOrTypes#rec
+    (\ (b::Bool) (_::LLVMTypeOrTypes b) -> sort 0)
+
+    -- IntType
+    (\ (w::Nat) -> bitvector w)
+
+    -- FloatType
+    Float
+
+    -- DoubleType
+    Double
+
+    -- PtrType
+    (\ (n::Nat) -> bitvector (mulNat 8 n))
+
+    -- ArrayType
+    (\ (n::Nat) (tp::LLVMType) (recTp::sort 0) -> Vec n recTp)
+
+    -- StructType
+    (\ (tps::StructFields) (recTp::sort 0) -> recTp)
+
+    -- VectorType
+    (\ (n::Nat) (tp::LLVMType) (recTp::sort 0) -> Vec n recTp)
+
+    -- EmptyFields
+    #()
+
+    -- ConsFields
+    (\ (tp::LLVMTypeOrTypes True) (recTp::sort 0) (pad::Nat)
+       (tail::LLVMTypeOrTypes False) (recTps::sort 0) ->
+     #(recTp | recTps))
+
+    -- Input arguments
+    b tp;
+
+-- Short-hand for typeOfLLVMTypeOrTypes applied to a single type
+value :: LLVMType -> sort 0;
+value = typeOfLLVMTypeOrTypes True;
+
+-- Short-hand for typeOfLLVMTypeOrTypes applied to a list of types
+StructValue :: StructFields -> sort 0;
+StructValue = typeOfLLVMTypeOrTypes False;
+
+
+-- An index into a list of types
 data StructIndex :: StructFields -> sort 0 where {
     ZeroIndex :: (tp :: LLVMType) -> (pad :: Nat) -> (r :: StructFields) ->
                  StructIndex (ConsFields tp pad r);
@@ -30,9 +99,15 @@ data StructIndex :: StructFields -> sort 0 where {
                  StructIndex r -> StructIndex (ConsFields tp pad r);
   }
 
+-- Get the type at a particular index
 getStructField :: (tps :: StructFields) -> StructIndex tps -> LLVMType;
-getStructField _ (ZeroIndex tp _ _) = tp;
-getStructField _ (SuccIndex _ _ r i) = getStructField r i;
+getStructField tps ix =
+  StructIndex#rec
+    (\ (tps::StructFields) (ix::StructIndex tps) -> LLVMType)
+    (\ (tp::LLVMType) (pad::Nat) (r::StructFields) -> tp)
+    (\ (tp::LLVMType) (pad::Nat) (r::StructFields) (ix::StructIndex r)
+       (recResult :: LLVMType) -> recResult)
+    tps ix;
 
 mkIntType :: Nat -> LLVMType;
 mkIntType n = IntType n;
@@ -51,19 +126,6 @@ mkArrayType n t = ArrayType n t;
 
 trunc31 :: bitvector 32 -> bitvector 31;
 trunc31 x = bvTrunc 1 31 x;
-
-value :: LLVMType -> sort 0;
-value (IntType w) = bitvector w;
-value FloatType   = Float;
-value DoubleType  = Double;
-value (PtrType n)   = bitvector (mulNat 8 n);
-value (ArrayType n tp) = Vec n (value tp);
-value (StructType tps) = StructValue tps;
-value (VectorType n tp) = Vec n (value tp);
-
-StructValue :: StructFields -> sort 0;
-StructValue EmptyFields = #();
-StructValue (ConsFields tp padding r) = #(value tp | StructValue r);
 
 EmptyStruct :: StructValue EmptyFields;
 EmptyStruct = ();
@@ -187,9 +249,9 @@ arithmeticWithOverflowResult w p1 p2 =
 mkOverflowResult :: (w p1 p2 :: Nat)
                  -> #(Bool, bitvector w)
                  -> value (arithmeticWithOverflowResult w p1 p2);
-mkOverflowResult w p1 p2 (c,z) =
-  ConsStruct (IntType w) p1 (singleField (IntType 1) p2) z
-    (ConsStruct (IntType 1) p2 EmptyFields [c] EmptyStruct);
+mkOverflowResult w p1 p2 c_z =
+  ConsStruct (IntType w) p1 (singleField (IntType 1) p2) c_z.2
+    (ConsStruct (IntType 1) p2 EmptyFields [c_z.1] EmptyStruct);
 
 -- Width of bitvectors, amount of padding for first and second fields.
 llvmAddWithOverflow :: (w p1 p2 :: Nat)
@@ -204,9 +266,9 @@ llvmSAddWithOverflow :: (w p1 p2 :: Nat)
                      -> bitvector w
                      -> value (arithmeticWithOverflowResult w p1 p2);
 llvmSAddWithOverflow w p1 p2 x y =
-  (\(z::bitvector w) ->
-    (\(xs :: Bool) -> \(ys :: Bool) -> \(zs :: Bool) ->
-      (\(c :: Bool) -> mkOverflowResult w p1 p2 (c, z))
+  (\ (z::bitvector w) ->
+    (\ (xs :: Bool) (ys :: Bool) (zs :: Bool) ->
+      (\ (c :: Bool) -> mkOverflowResult w p1 p2 (c, z))
       (and (eq Bool xs ys) (not (eq Bool xs zs))))
     (at w Bool x 0) (at w Bool y 0) (at w Bool z 0))
   (bvAdd w x y);
@@ -238,33 +300,47 @@ llvmIeqBool = bvEq;
 llvmIuleBool :: (w :: Nat) -> bitvector w -> bitvector w -> Bool;
 llvmIuleBool = bvule;
 
-llvmIeq llvmIne :: (w :: Nat)   -> binRel (bitvector w);
+llvmIeq :: (w :: Nat)   -> binRel (bitvector w);
+llvmIne :: (w :: Nat)   -> binRel (bitvector w);
 llvmIeq = liftBVRel bvEq;
 llvmIne = liftBVRel bvNe;
 
-llvmIeqV llvmIneV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIeqV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIneV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIeqV = liftVecBVRel bvEq;
 llvmIneV = liftVecBVRel bvNe;
 
-llvmIugt llvmIuge llvmIult llvmIule :: (w :: Nat)   -> binRel (bitvector w);
+llvmIugt :: (w :: Nat)   -> binRel (bitvector w);
+llvmIuge :: (w :: Nat)   -> binRel (bitvector w);
+llvmIult :: (w :: Nat)   -> binRel (bitvector w);
+llvmIule :: (w :: Nat)   -> binRel (bitvector w);
 llvmIugt = liftBVRel bvugt;
 llvmIuge = liftBVRel bvuge;
 llvmIult = liftBVRel bvult;
 llvmIule = liftBVRel bvule;
 
-llvmIugtV llvmIugeV llvmIultV llvmIuleV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIugtV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIugeV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIultV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIuleV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIugtV = liftVecBVRel bvugt;
 llvmIugeV = liftVecBVRel bvuge;
 llvmIultV = liftVecBVRel bvult;
 llvmIuleV = liftVecBVRel bvule;
 
-llvmIsgt  llvmIsge  llvmIslt  llvmIsle  :: (w :: Nat)   -> binRel (bitvector w);
+llvmIsgt :: (w :: Nat) -> binRel (bitvector w);
+llvmIsge :: (w :: Nat) -> binRel (bitvector w);
+llvmIslt :: (w :: Nat) -> binRel (bitvector w);
+llvmIsle :: (w :: Nat) -> binRel (bitvector w);
 llvmIsgt = liftBVRel bvsgt;
 llvmIsge = liftBVRel bvsge;
 llvmIslt = liftBVRel bvslt;
 llvmIsle = liftBVRel bvsle;
 
-llvmIsgtV llvmIsgeV llvmIsltV llvmIsleV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsgtV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsgeV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsltV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsleV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIsgtV = liftVecBVRel bvsgt;
 llvmIsgeV = liftVecBVRel bvsge;
 llvmIsltV = liftVecBVRel bvslt;
@@ -317,21 +393,29 @@ llvmStructHead :: (tp :: LLVMType)
                -> (padding :: Nat)
                -> (r :: StructFields)
                -> StructValue (ConsFields tp padding r) -> value tp;
-llvmStructHead _ _ _ (x | _) = x;
+llvmStructHead _ _ _ xy = xy.1;
 
 llvmStructTail :: (tp :: LLVMType)
                -> (padding :: Nat)
                -> (r :: StructFields)
                -> StructValue (ConsFields tp padding r) -> StructValue r;
-llvmStructTail _ _ _ (_ | v) = v;
+llvmStructTail _ _ _ xy = xy.2;
 
 llvmStructElt :: (tps :: StructFields)
               -> StructValue tps
               -> (i :: StructIndex tps)
               -> value (getStructField tps i);
-llvmStructElt (ConsFields tp pad r) x (ZeroIndex _ _ _) = llvmStructHead tp pad r x;
-llvmStructElt (ConsFields tp pad r) x (SuccIndex _ _ _ i) =
-  llvmStructElt r (llvmStructTail tp pad r x) i;
+llvmStructElt tps x i =
+  StructIndex#rec
+    (\ (tps'::StructFields) (i'::StructIndex tps) ->
+       StructValue tps' -> value (getStructField tps' i'))
+    (\ (tp :: LLVMType) (pad :: Nat) (r :: StructFields)
+       (v::StructValue (ConsFields tp pad r)) ->
+     llvmStructHead tp pad r v)
+    (\ (tp :: LLVMType) (pad :: Nat) (r :: StructFields) (i'::StructIndex r)
+       (recElt :: StructValue r -> value (getStructField r i')) ->
+     recElt (llvmStructTail tp pad r x))
+    tps i x;
 
 llvmArrayElt :: (n :: Nat)
              -> (tp :: LLVMType)
