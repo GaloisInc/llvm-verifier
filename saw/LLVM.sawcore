@@ -38,11 +38,11 @@ data LLVMTypeOrTypes :: Bool -> sort 0 where {
 
 -- Short-hand for a single LLVM type
 LLVMType :: sort 0;
-LLVMType = LLVMTypeTypes True;
+LLVMType = LLVMTypeOrTypes True;
 
 -- Short-hand for a list of LLVM types
 StructFields :: sort 0;
-StructFields = LLVMTypeTypes False;
+StructFields = LLVMTypeOrTypes False;
 
 -- Compute the SAW type corresponding to an LLVM type or list of types
 typeOfLLVMTypeOrTypes :: (b::Bool) -> LLVMTypeOrTypes b -> sort 0;
@@ -301,49 +301,63 @@ llvmIuleBool :: (w :: Nat) -> bitvector w -> bitvector w -> Bool;
 llvmIuleBool = bvule;
 
 llvmIeq :: (w :: Nat)   -> binRel (bitvector w);
-llvmIne :: (w :: Nat)   -> binRel (bitvector w);
 llvmIeq = liftBVRel bvEq;
+
+llvmIne :: (w :: Nat)   -> binRel (bitvector w);
 llvmIne = liftBVRel bvNe;
 
 llvmIeqV :: (n w :: Nat) -> binVRel n (bitvector w);
-llvmIneV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIeqV = liftVecBVRel bvEq;
+
+llvmIneV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIneV = liftVecBVRel bvNe;
 
 llvmIugt :: (w :: Nat)   -> binRel (bitvector w);
-llvmIuge :: (w :: Nat)   -> binRel (bitvector w);
-llvmIult :: (w :: Nat)   -> binRel (bitvector w);
-llvmIule :: (w :: Nat)   -> binRel (bitvector w);
 llvmIugt = liftBVRel bvugt;
+
+llvmIuge :: (w :: Nat)   -> binRel (bitvector w);
 llvmIuge = liftBVRel bvuge;
+
+llvmIult :: (w :: Nat)   -> binRel (bitvector w);
 llvmIult = liftBVRel bvult;
+
+llvmIule :: (w :: Nat)   -> binRel (bitvector w);
 llvmIule = liftBVRel bvule;
 
 llvmIugtV :: (n w :: Nat) -> binVRel n (bitvector w);
-llvmIugeV :: (n w :: Nat) -> binVRel n (bitvector w);
-llvmIultV :: (n w :: Nat) -> binVRel n (bitvector w);
-llvmIuleV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIugtV = liftVecBVRel bvugt;
+
+llvmIugeV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIugeV = liftVecBVRel bvuge;
+
+llvmIultV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIultV = liftVecBVRel bvult;
+
+llvmIuleV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIuleV = liftVecBVRel bvule;
 
 llvmIsgt :: (w :: Nat) -> binRel (bitvector w);
-llvmIsge :: (w :: Nat) -> binRel (bitvector w);
-llvmIslt :: (w :: Nat) -> binRel (bitvector w);
-llvmIsle :: (w :: Nat) -> binRel (bitvector w);
 llvmIsgt = liftBVRel bvsgt;
+
+llvmIsge :: (w :: Nat) -> binRel (bitvector w);
 llvmIsge = liftBVRel bvsge;
+
+llvmIslt :: (w :: Nat) -> binRel (bitvector w);
 llvmIslt = liftBVRel bvslt;
+
+llvmIsle :: (w :: Nat) -> binRel (bitvector w);
 llvmIsle = liftBVRel bvsle;
 
 llvmIsgtV :: (n w :: Nat) -> binVRel n (bitvector w);
-llvmIsgeV :: (n w :: Nat) -> binVRel n (bitvector w);
-llvmIsltV :: (n w :: Nat) -> binVRel n (bitvector w);
-llvmIsleV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIsgtV = liftVecBVRel bvsgt;
+
+llvmIsgeV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIsgeV = liftVecBVRel bvsge;
+
+llvmIsltV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIsltV = liftVecBVRel bvslt;
+
+llvmIsleV :: (n w :: Nat) -> binVRel n (bitvector w);
 llvmIsleV = liftVecBVRel bvsle;
 --TODO
 
