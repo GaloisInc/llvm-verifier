@@ -77,7 +77,7 @@ typeOfLLVMTypeOrTypes b tp =
     -- ConsFields
     (\ (tp::LLVMTypeOrTypes True) (recTp::sort 0) (pad::Nat)
        (tail::LLVMTypeOrTypes False) (recTps::sort 0) ->
-     #(recTp | recTps))
+     #(recTp , recTps))
 
     -- Input arguments
     b tp;
@@ -136,7 +136,7 @@ ConsStruct :: (tp :: LLVMType)
            -> value tp
            -> StructValue r
            -> StructValue (ConsFields tp padding r);
-ConsStruct tp padding r x xs = (x | xs);
+ConsStruct tp padding r x xs = (x, xs);
 
 binFn :: sort 0 -> sort 0;
 binFn tp = tp -> tp -> tp;
@@ -421,14 +421,15 @@ llvmStructElt :: (tps :: StructFields)
               -> value (getStructField tps i);
 llvmStructElt tps x i =
   StructIndex#rec
-    (\ (tps'::StructFields) (i'::StructIndex tps) ->
+    (\ (tps'::StructFields) (i'::StructIndex tps') ->
        StructValue tps' -> value (getStructField tps' i'))
     (\ (tp :: LLVMType) (pad :: Nat) (r :: StructFields)
        (v::StructValue (ConsFields tp pad r)) ->
      llvmStructHead tp pad r v)
     (\ (tp :: LLVMType) (pad :: Nat) (r :: StructFields) (i'::StructIndex r)
-       (recElt :: StructValue r -> value (getStructField r i')) ->
-     recElt (llvmStructTail tp pad r x))
+       (recElt :: StructValue r -> value (getStructField r i'))
+       (v::StructValue (ConsFields tp pad r)) ->
+     recElt (llvmStructTail tp pad r v))
     tps i x;
 
 llvmArrayElt :: (n :: Nat)
