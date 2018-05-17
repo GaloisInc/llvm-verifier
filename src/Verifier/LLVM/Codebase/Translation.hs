@@ -51,6 +51,7 @@ import qualified Data.Map                   as Map
 import Data.Maybe
 import qualified Data.Sequence as Seq
 import qualified Data.Vector                as V
+import Data.Word (Word8)
 import qualified Text.LLVM                  as L
 import qualified Text.LLVM.PP               as L
 import Text.LLVM.AST              (Stmt'(..), Typed (..))
@@ -222,10 +223,10 @@ mkSValExpr :: (?sbe :: SBE sbe, MonadIO m)
            -> m (SymValue (SBETerm sbe))
 mkSValExpr expr = liftIO $ SValExpr expr <$> typedExprEval ?sbe expr
 
-liftStringValue :: (?sbe :: SBE sbe) => String -> IO (SymValue (SBETerm sbe))
+liftStringValue :: (?sbe :: SBE sbe) => [Word8] -> IO (SymValue (SBETerm sbe))
 liftStringValue s = mkSValExpr . SValArray tp =<< traverse toChar (V.fromList s)
  where tp = IntType 8
-       toChar c = mkSValExpr (SValInteger 8 (toInteger (fromEnum c)))
+       toChar c = mkSValExpr (SValInteger 8 (toInteger c))
 
 liftValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
           => MemType -- ^ Expected type of value.
@@ -265,7 +266,9 @@ liftValue (ArrayType len (IntType 8)) (L.ValString str) = do
   liftIO $ liftStringValue str
 liftValue rtp (L.ValConstExpr ce)  =
   case ce of
-    L.ConstGEP inbounds _ (base:il) -> do
+    L.ConstGEP _ (Just _) _ _ ->
+      fail "NYI: Constant GEP with `inrange`"
+    L.ConstGEP inbounds Nothing _ (base:il) -> do
       mkSValExpr . snd =<< liftGEP inbounds base il
     L.ConstConv op (L.Typed itp0 t) _tp1 -> do
       itp <- liftMemType' itp0

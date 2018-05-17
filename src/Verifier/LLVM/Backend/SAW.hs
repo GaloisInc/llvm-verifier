@@ -80,10 +80,18 @@ asSignedBitvector w s2
               | otherwise = v
 
 scFloat :: SharedContext -> Float -> IO Term
-scFloat sc v = scTermF sc (FTermF (FloatLit v))
+scFloat sc x =
+  do let (m, e) = decodeFloat x
+     m' <- scIntegerConst sc m
+     e' <- scIntegerConst sc (toInteger e)
+     scGlobalApply sc "Prelude.mkFloat" [m', e']
 
 scDouble :: SharedContext -> Double -> IO Term
-scDouble sc v = scTermF sc (FTermF (DoubleLit v))
+scDouble sc x =
+  do let (m, e) = decodeFloat x
+     m' <- scIntegerConst sc m
+     e' <- scIntegerConst sc (toInteger e)
+     scGlobalApply sc "Prelude.mkDouble" [m', e']
 
 -- | Create a vector from a term representing its element types and the element.
 scVecLit :: SharedContext

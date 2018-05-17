@@ -93,10 +93,9 @@ library
     Verifier.LLVM.Utils.Arithmetic
     Verifier.LLVM.Utils.PrettyPrint
 
-  GHC-options: -O2 -Wall -Werror -fno-ignore-asserts -fno-spec-constr-count
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
   if impl(ghc == 8.0.1)
     ghc-options: -Wno-redundant-constraints
-  GHC-prof-options: -auto-all -caf-all
 
 executable lss
   if !flag(build-lss)
@@ -110,7 +109,6 @@ executable lss
     LSSImpl
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M
-  GHC-prof-options: -auto-all -caf-all
 
   if flag(static)
     ld-options: -static -pthread
@@ -127,6 +125,7 @@ executable lss
     , llvm-verifier
     , mtl
     , parsec >= 2.1.0.1
+    , utf8-string
     , vector
 
 executable bcdump
@@ -137,7 +136,6 @@ executable bcdump
   hs-source-dirs : bcdump
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
-  GHC-prof-options: -auto-all -caf-all
 
   build-depends:
       base >= 4
@@ -170,7 +168,6 @@ test-suite test-llvm
     Tests.Symbolic
 
   GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
-  GHC-prof-options: -auto-all -caf-all
 
   build-depends:
       base >= 4
@@ -196,6 +193,7 @@ test-suite test-llvm
     , llvm-pretty >= 0.5
     , llvm-pretty-bc-parser >= 0.1.2.2
     , tagged
+    , utf8-string
 
 
   if !os(windows)
