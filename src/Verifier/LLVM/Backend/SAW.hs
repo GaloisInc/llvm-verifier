@@ -47,6 +47,7 @@ import Verifier.SAW as SAW
 import Verifier.SAW.Conversion
 import Verifier.SAW.ParserUtils as SAW
 import Verifier.SAW.Prelude
+import Verifier.SAW.Cryptol.Prelude (scLoadCryptolModule)
 import qualified Verifier.SAW.Recognizer as R
 import Verifier.SAW.Rewriter
 import qualified Verifier.SAW.Simulator.BitBlast as BB
@@ -1067,6 +1068,7 @@ createSAWBackend :: AIG.IsAIG l g
 createSAWBackend proxy dl = do
   sc0 <- mkSharedContext
   scLoadPreludeModule sc0
+  scLoadCryptolModule sc0
   scLoadLLVMModule sc0
   (sbe, mem, _) <- createSAWBackend' proxy dl sc0
   return (sbe, mem)

@@ -53,6 +53,7 @@ library
     , transformers
     , transformers-compat
     , vector
+    , cryptol-verifier
 
   if !os(windows)
     build-depends: unix
