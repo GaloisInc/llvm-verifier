@@ -70,8 +70,8 @@ asUnsignedBitvector w s2 = do
   (s1, vt) <- R.asApp s2
   (s0, wt) <- R.asApp s1
   when (unwrapTermF  s0 /= preludeBVNatTermF) Nothing
-  when (R.asNatLit wt /= Just (fromIntegral w)) Nothing
-  toInteger <$> R.asNatLit vt
+  when (R.asNat wt /= Just (fromIntegral w)) Nothing
+  toInteger <$> R.asNat vt
 
 asSignedBitvector :: BitWidth -> Term -> Maybe Integer
 asSignedBitvector w s2
@@ -419,7 +419,7 @@ mkBackendState dl sc = do
 -- The first term is the width of the term.
 scIntAsConst' :: SharedContext -> Term -> Term -> IO (Maybe Nat)
 scIntAsConst' sc w t =
-  fmap R.asNatLit $ scApplyLLVM_llvmIntValueNat sc w t
+  fmap R.asNat $ scApplyLLVM_llvmIntValueNat sc w t
 
 type SAWMem = MM.Mem Term Term Term
 
