@@ -1205,7 +1205,8 @@ loadString nm ptr = do
           case asUnsignedInteger sbe 8 t of
             Nothing -> do
               errorPath $
-                 "Encountered a symbolic byte in " ++ nm ++ "."
+                 "Encountered a symbolic byte in " ++ nm
+                 ++ " in term:\n" ++ show (prettyTermD sbe t)
             Just 0 -> return []
             Just v -> (v:) <$> go addr'
 
