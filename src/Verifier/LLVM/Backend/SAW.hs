@@ -1113,11 +1113,28 @@ createSAWBackend' proxy dl sc0 = do
                 , "Prelude.bvSExt"
                 , "Prelude.take"
                 , "Prelude.drop"
+                , "Prelude.ite"
+                , "Prelude.and"
+                , "Prelude.or"
+                , "Prelude.not"
                 ]
-  let eqs = [ "Prelude.ite_not"
+  let eqs = [ "Prelude.ite_true"
+            , "Prelude.ite_false"
+            , "Prelude.ite_not"
             , "Prelude.ite_fold_not"
             , "Prelude.ite_nest1"
             , "Prelude.ite_nest2"
+            , "Prelude.not_True"
+            , "Prelude.not_False"
+            , "Prelude.not_not"
+            , "Prelude.and_True1"
+            , "Prelude.and_False1"
+            , "Prelude.and_True2"
+            , "Prelude.and_False2"
+            , "Prelude.or_True1"
+            , "Prelude.or_False1"
+            , "Prelude.or_True2"
+            , "Prelude.or_False2"
             , "Prelude.take0"
             , "Prelude.drop0"
             , "Prelude.bveq_sameL"
@@ -1143,7 +1160,7 @@ createSAWBackend' proxy dl sc0 = do
   let sc = rewritingSharedContext sc0 simpSet
   sbs <- mkBackendState dl sc
 
-  boolType <- scPrelude_Bool sc
+  boolType <- scApplyPrelude_Bool sc
   trueTerm <- scApplyPrelude_True sc
   let pNot = scApplyPrelude_not sc
   let pAnd = scApplyPrelude_and sc
