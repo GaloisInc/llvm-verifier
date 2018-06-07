@@ -264,7 +264,7 @@ mkBackendState dl sc = do
 
   andFn <- scApplyPrelude_and sc
   orFn  <- scApplyPrelude_or  sc
-  boolMuxOp <- join $ scApply sc muxOp <$> scPrelude_Bool sc
+  boolMuxOp <- join $ scApply sc muxOp <$> scApplyPrelude_Bool sc
   intTypeFn <- scApplyLLVM_IntType sc
   let mkTypeTerm :: MM.Type -> IO Term
       mkTypeTerm tp0 =
@@ -1169,7 +1169,7 @@ createSAWBackend' proxy dl sc0 = do
   let sc = rewritingSharedContext sc0 simpSet
   sbs <- mkBackendState dl sc
 
-  boolType <- scPrelude_Bool sc
+  boolType <- scApplyPrelude_Bool sc
   trueTerm <- scApplyPrelude_True sc
   pNot <- scApplyPrelude_not sc
   pAnd <- scApplyPrelude_and sc
