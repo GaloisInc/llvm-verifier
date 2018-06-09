@@ -77,4 +77,4 @@ trivBranchImpl symName (e0,e1) = do
                   liftIO $ HU.assertFailure $ "Could not evaluate return value:\n"
                                                  ++ show (prettyTermD sbe mr)
                 Just r ->
-                  liftIO $ HU.assertEqual "Unexpected return value" e r 
+                  liftIO $ HU.assertEqual "Unexpected return value" e r
