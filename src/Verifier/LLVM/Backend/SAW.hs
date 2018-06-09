@@ -1117,6 +1117,8 @@ createSAWBackend' proxy dl sc0 = do
                 , "Prelude.and"
                 , "Prelude.or"
                 , "Prelude.not"
+                , "Prelude.addNat"
+                , "Prelude.mulNat"
                 ]
   let eqs = [ "Prelude.ite_true"
             , "Prelude.ite_false"
