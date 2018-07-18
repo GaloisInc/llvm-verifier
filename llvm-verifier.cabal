@@ -110,7 +110,8 @@ executable lss
   other-modules:
     LSSImpl
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M -pgmlg++
+  extra-libraries:      stdc++
 
   if flag(static)
     ld-options: -static -pthread
@@ -169,7 +170,8 @@ test-suite test-llvm
     Tests.PrimOps
     Tests.Symbolic
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++
+  extra-libraries:      stdc++
 
   build-depends:
       base >= 4
