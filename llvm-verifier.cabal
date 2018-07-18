@@ -138,7 +138,8 @@ executable bcdump
   main-is        : Main_bcdump.hs
   hs-source-dirs : bcdump
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++
+  extra-libraries:      stdc++
 
   build-depends:
       base >= 4
