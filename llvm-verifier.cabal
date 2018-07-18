@@ -94,7 +94,8 @@ library
     Verifier.LLVM.Utils.Arithmetic
     Verifier.LLVM.Utils.PrettyPrint
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count
+  ghc-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++
+  extra-libraries:      stdc++
   if impl(ghc == 8.0.1)
     ghc-options: -Wno-redundant-constraints
 
