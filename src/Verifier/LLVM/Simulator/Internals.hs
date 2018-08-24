@@ -184,7 +184,7 @@ import Data.Maybe
 import qualified Data.Set  as S
 import qualified Data.Vector as V
 import Prelude ()
-import Prelude.Compat hiding (mapM, mapM_)
+import Prelude.Compat hiding ( mapM, mapM_, (<>) )
 
 import System.Console.Haskeline.MonadException (MonadException(..), RunIO(..))
 

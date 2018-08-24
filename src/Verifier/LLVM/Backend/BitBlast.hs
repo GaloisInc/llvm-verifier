@@ -58,7 +58,7 @@ import qualified Text.LLVM.AST             as L
 import qualified Text.LLVM.PP              as L
 import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align)
 import           Prelude ()
-import           Prelude.Compat
+import           Prelude.Compat hiding ( (<>) )
 
 import qualified Data.AIG as AIG
 import           Data.AIG ( IsAIG, BV )

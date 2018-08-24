@@ -68,7 +68,7 @@ import qualified Text.LLVM.AST       as L
 import qualified Text.LLVM.PP        as L
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
-import Prelude.Compat
+import Prelude.Compat hiding ( (<>) )
 
 import Verifier.LLVM.Codebase.DataLayout
 import Verifier.LLVM.Utils.PrettyPrint

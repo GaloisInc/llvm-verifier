@@ -94,7 +94,7 @@ import           Data.Maybe
 import System.Console.Haskeline.MonadException (MonadException, handle, throwIO)
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
 import Prelude ()
-import Prelude.Compat hiding (mapM_)
+import Prelude.Compat hiding ( mapM_, (<>) )
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase

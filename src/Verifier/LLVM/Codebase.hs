@@ -49,7 +49,7 @@ import Control.Monad
 import Control.Monad.State
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
-import Prelude.Compat hiding (mapM, mapM_)
+import Prelude.Compat hiding ( mapM, mapM_, (<>) )
 
 import qualified Control.Exception              as CE
 import qualified Data.ByteString                as BS

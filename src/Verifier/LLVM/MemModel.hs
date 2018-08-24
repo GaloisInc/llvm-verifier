@@ -59,7 +59,7 @@ import Data.Monoid hiding ((<>))
 import qualified Data.Vector as V
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
-import Prelude.Compat
+import Prelude.Compat hiding ( (<>) )
 
 import Verifier.LLVM.MemModel.Common
 
