@@ -7,51 +7,51 @@ import Prelude;
 -- support mutually inductive types, so we are defining this mutually inductive
 -- type indirectly, with the use of a Boolean flag: True means it is a single
 -- type, while False means it is a list of types.
-data LLVMTypeOrTypes :: Bool -> sort 0 where {
+data LLVMTypeOrTypes : Bool -> sort 0 where {
 
     -- Primitive types that we support
-    IntType :: Nat -> LLVMTypeOrTypes True;
-    FloatType  :: LLVMTypeOrTypes True;
-    DoubleType :: LLVMTypeOrTypes True;
+    IntType : Nat -> LLVMTypeOrTypes True;
+    FloatType  : LLVMTypeOrTypes True;
+    DoubleType : LLVMTypeOrTypes True;
 
     -- A pointer type, where w is the width of the pointer in bytes
-    PtrType (w::Nat) :: LLVMTypeOrTypes True;
+    PtrType (w : Nat) : LLVMTypeOrTypes True;
 
     -- A fixed-length array type, where n is the number of elements of type tp
-    ArrayType (n::Nat) (tp::LLVMTypeOrTypes True) :: LLVMTypeOrTypes True;
+    ArrayType (n : Nat) (tp : LLVMTypeOrTypes True) : LLVMTypeOrTypes True;
 
     -- The type of structs, which contain lists of LLVM types
-    StructType :: LLVMTypeOrTypes False -> LLVMTypeOrTypes True;
+    StructType : LLVMTypeOrTypes False -> LLVMTypeOrTypes True;
 
     -- A fixed-length vector type, where n is the number of elements of type
     -- tp (Question: how is this different from ArrayType?)
-    VectorType :: Nat -> LLVMTypeOrTypes True -> LLVMTypeOrTypes True;
+    VectorType : Nat -> LLVMTypeOrTypes True -> LLVMTypeOrTypes True;
 
     -- The empty list of types
-    EmptyFields :: LLVMTypeOrTypes False;
+    EmptyFields : LLVMTypeOrTypes False;
 
     -- A cons list of types, containing a type, a padding value (???), and the
     -- rest of the list of types
-    ConsFields (tp::LLVMTypeOrTypes True) (pad::Nat)
-               (tail::LLVMTypeOrTypes False) :: LLVMTypeOrTypes False;
+    ConsFields (tp : LLVMTypeOrTypes True) (pad : Nat)
+               (tail : LLVMTypeOrTypes False) : LLVMTypeOrTypes False;
   }
 
 -- Short-hand for a single LLVM type
-LLVMType :: sort 0;
+LLVMType : sort 0;
 LLVMType = LLVMTypeOrTypes True;
 
 -- Short-hand for a list of LLVM types
-StructFields :: sort 0;
+StructFields : sort 0;
 StructFields = LLVMTypeOrTypes False;
 
 -- Compute the SAW type corresponding to an LLVM type or list of types
-typeOfLLVMTypeOrTypes :: (b::Bool) -> LLVMTypeOrTypes b -> sort 0;
+typeOfLLVMTypeOrTypes : (b : Bool) -> LLVMTypeOrTypes b -> sort 0;
 typeOfLLVMTypeOrTypes b tp =
   LLVMTypeOrTypes#rec
-    (\ (b::Bool) (_::LLVMTypeOrTypes b) -> sort 0)
+    (\ (b : Bool) (_ : LLVMTypeOrTypes b) -> sort 0)
 
     -- IntType
-    (\ (w::Nat) -> bitvector w)
+    (\ (w : Nat) -> bitvector w)
 
     -- FloatType
     Float
@@ -60,193 +60,193 @@ typeOfLLVMTypeOrTypes b tp =
     Double
 
     -- PtrType
-    (\ (n::Nat) -> bitvector (mulNat 8 n))
+    (\ (n : Nat) -> bitvector (mulNat 8 n))
 
     -- ArrayType
-    (\ (n::Nat) (tp::LLVMType) (recTp::sort 0) -> Vec n recTp)
+    (\ (n : Nat) (tp : LLVMType) (recTp : sort 0) -> Vec n recTp)
 
     -- StructType
-    (\ (tps::StructFields) (recTp::sort 0) -> recTp)
+    (\ (tps : StructFields) (recTp : sort 0) -> recTp)
 
     -- VectorType
-    (\ (n::Nat) (tp::LLVMType) (recTp::sort 0) -> Vec n recTp)
+    (\ (n : Nat) (tp : LLVMType) (recTp : sort 0) -> Vec n recTp)
 
     -- EmptyFields
     #()
 
     -- ConsFields
-    (\ (tp::LLVMTypeOrTypes True) (recTp::sort 0) (pad::Nat)
-       (tail::LLVMTypeOrTypes False) (recTps::sort 0) ->
-     #(recTp , recTps))
+    (\ (tp : LLVMTypeOrTypes True) (recTp : sort 0) (pad : Nat)
+       (tail : LLVMTypeOrTypes False) (recTps : sort 0) ->
+     #(recTp, recTps))
 
     -- Input arguments
     b tp;
 
 -- Short-hand for typeOfLLVMTypeOrTypes applied to a single type
-value :: LLVMType -> sort 0;
+value : LLVMType -> sort 0;
 value = typeOfLLVMTypeOrTypes True;
 
 -- Short-hand for typeOfLLVMTypeOrTypes applied to a list of types
-StructValue :: StructFields -> sort 0;
+StructValue : StructFields -> sort 0;
 StructValue = typeOfLLVMTypeOrTypes False;
 
 
 -- An index into a list of types
-data StructIndex :: StructFields -> sort 0 where {
-    ZeroIndex :: (tp :: LLVMType) -> (pad :: Nat) -> (r :: StructFields) ->
+data StructIndex : StructFields -> sort 0 where {
+    ZeroIndex : (tp : LLVMType) -> (pad : Nat) -> (r : StructFields) ->
                  StructIndex (ConsFields tp pad r);
-    SuccIndex :: (tp :: LLVMType) -> (pad :: Nat) -> (r :: StructFields) ->
+    SuccIndex : (tp : LLVMType) -> (pad : Nat) -> (r : StructFields) ->
                  StructIndex r -> StructIndex (ConsFields tp pad r);
   }
 
 -- Get the type at a particular index
-getStructField :: (tps :: StructFields) -> StructIndex tps -> LLVMType;
+getStructField : (tps : StructFields) -> StructIndex tps -> LLVMType;
 getStructField tps ix =
   StructIndex#rec
-    (\ (tps::StructFields) (ix::StructIndex tps) -> LLVMType)
-    (\ (tp::LLVMType) (pad::Nat) (r::StructFields) -> tp)
-    (\ (tp::LLVMType) (pad::Nat) (r::StructFields) (ix::StructIndex r)
-       (recResult :: LLVMType) -> recResult)
+    (\ (tps : StructFields) (ix : StructIndex tps) -> LLVMType)
+    (\ (tp : LLVMType) (pad : Nat) (r : StructFields) -> tp)
+    (\ (tp : LLVMType) (pad : Nat) (r : StructFields) (ix : StructIndex r)
+       (recResult : LLVMType) -> recResult)
     tps ix;
 
-mkIntType :: Nat -> LLVMType;
+mkIntType : Nat -> LLVMType;
 mkIntType n = IntType n;
 
-mkFloatType :: LLVMType;
+mkFloatType : LLVMType;
 mkFloatType = FloatType;
 
-mkDoubleType :: LLVMType;
+mkDoubleType : LLVMType;
 mkDoubleType = FloatType;
 
-mkPtrType :: Nat -> LLVMType;
+mkPtrType : Nat -> LLVMType;
 mkPtrType n = PtrType n;
 
-mkArrayType :: Nat -> LLVMType -> LLVMType;
+mkArrayType : Nat -> LLVMType -> LLVMType;
 mkArrayType n t = ArrayType n t;
 
-trunc31 :: bitvector 32 -> bitvector 31;
+trunc31 : bitvector 32 -> bitvector 31;
 trunc31 x = bvTrunc 1 31 x;
 
-EmptyStruct :: StructValue EmptyFields;
+EmptyStruct : StructValue EmptyFields;
 EmptyStruct = ();
 
-ConsStruct :: (tp :: LLVMType)
-           -> (padding :: Nat)
-           -> (r :: StructFields)
+ConsStruct : (tp : LLVMType)
+           -> (padding : Nat)
+           -> (r : StructFields)
            -> value tp
            -> StructValue r
            -> StructValue (ConsFields tp padding r);
 ConsStruct tp padding r x xs = (x, xs);
 
-binFn :: sort 0 -> sort 0;
+binFn : sort 0 -> sort 0;
 binFn tp = tp -> tp -> tp;
 
 -- | Returns value in integer value as a natural number less than 2^w.
-llvmIntValueNat :: (w :: Nat) -> bitvector w -> Nat;
+llvmIntValueNat : (w : Nat) -> bitvector w -> Nat;
 llvmIntValueNat = bvToNat;
 
-llvmIntConstant :: (w :: Nat) -> Nat -> bitvector w;
+llvmIntConstant : (w : Nat) -> Nat -> bitvector w;
 llvmIntConstant = bvNat;
 
-bvVecZipWith :: ((w :: Nat) -> binFn (bitvector w))
-             -> (n w :: Nat)
+bvVecZipWith : ((w : Nat) -> binFn (bitvector w))
+             -> (n w : Nat)
              -> binFn (Vec n (bitvector w));
 bvVecZipWith f n w = zipWith (bitvector w) (bitvector w) (bitvector w) (f w) n;
 
-sbvVecZipWith :: ((w :: Nat) -> binFn (bitvector (Succ w)))
-              -> (n w :: Nat)
+sbvVecZipWith : ((w : Nat) -> binFn (bitvector (Succ w)))
+              -> (n w : Nat)
               -> binFn (Vec n (bitvector (Succ w)));
 sbvVecZipWith f n w =
   zipWith (bitvector (Succ w)) (bitvector (Succ w)) (bitvector (Succ w)) (f w) n;
 
-llvmAdd  :: (w :: Nat) -> binFn (bitvector w);
+llvmAdd  : (w : Nat) -> binFn (bitvector w);
 llvmAdd = bvAdd;
 
-llvmAddV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmAddV : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmAddV = bvVecZipWith bvAdd;
 
-llvmSub  :: (w :: Nat) -> binFn (bitvector w);
+llvmSub  : (w : Nat) -> binFn (bitvector w);
 llvmSub = bvSub;
 
-llvmSubV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmSubV : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmSubV = bvVecZipWith bvSub;
 
-llvmMul  :: (w :: Nat) -> binFn (bitvector w);
+llvmMul  : (w : Nat) -> binFn (bitvector w);
 llvmMul = bvMul;
 
-llvmMulV :: (n w :: Nat) -> binFn (value (VectorType n (IntType w)));
+llvmMulV : (n w : Nat) -> binFn (value (VectorType n (IntType w)));
 llvmMulV = bvVecZipWith bvMul;
 
-llvmUDiv  :: (w :: Nat) -> binFn (bitvector w);
+llvmUDiv  : (w : Nat) -> binFn (bitvector w);
 llvmUDiv = bvUDiv;
 
-llvmUDivV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmUDivV : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmUDivV = bvVecZipWith bvUDiv;
 
-llvmURem  :: (w :: Nat) -> binFn (bitvector w);
+llvmURem  : (w : Nat) -> binFn (bitvector w);
 llvmURem = bvURem;
 
-llvmURemV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmURemV : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmURemV = bvVecZipWith bvURem;
 
-llvmSDiv  :: (w :: Nat) -> binFn (bitvector (Succ w));
+llvmSDiv  : (w : Nat) -> binFn (bitvector (Succ w));
 llvmSDiv = bvSDiv;
 
-llvmSDivV :: (n w :: Nat) -> binFn (Vec n (bitvector (Succ w)));
+llvmSDivV : (n w : Nat) -> binFn (Vec n (bitvector (Succ w)));
 llvmSDivV = sbvVecZipWith bvSDiv;
 
-llvmSRem  :: (w :: Nat)   -> binFn (bitvector (Succ w));
+llvmSRem  : (w : Nat)   -> binFn (bitvector (Succ w));
 llvmSRem = bvSRem;
 
-llvmSRemV :: (n w :: Nat) -> binFn (Vec n (bitvector (Succ w)));
+llvmSRemV : (n w : Nat) -> binFn (Vec n (bitvector (Succ w)));
 llvmSRemV = sbvVecZipWith bvSRem;
 
 
-llvmShl  :: (w :: Nat) -> binFn (bitvector w);
+llvmShl  : (w : Nat) -> binFn (bitvector w);
 llvmShl w x y = bvShl w x (bvToNat w y);
 
-llvmShlV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmShlV : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmShlV = bvVecZipWith llvmShl;
 
-llvmLShr  :: (w :: Nat)   -> binFn (bitvector w);
+llvmLShr  : (w : Nat)   -> binFn (bitvector w);
 llvmLShr w x y = bvShr w x (bvToNat w y);
 
-llvmLShrV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmLShrV : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmLShrV = bvVecZipWith llvmLShr;
 
-llvmAShr  :: (w :: Nat) -> binFn (bitvector (Succ w));
+llvmAShr  : (w : Nat) -> binFn (bitvector (Succ w));
 llvmAShr w x y = bvSShr w x (bvToNat (Succ w) y);
 
-llvmAShrV :: (n w :: Nat) -> binFn (Vec n (bitvector (Succ w)));
+llvmAShrV : (n w : Nat) -> binFn (Vec n (bitvector (Succ w)));
 llvmAShrV = sbvVecZipWith llvmAShr;
 
-llvmAnd  :: (w :: Nat)   -> binFn (bitvector w);
+llvmAnd  : (w : Nat)   -> binFn (bitvector w);
 llvmAnd = bvAnd;
 
-llvmAndV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmAndV : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmAndV = bvVecZipWith bvAnd;
 
-llvmOr   :: (w :: Nat)   -> binFn (bitvector w);
+llvmOr   : (w : Nat)   -> binFn (bitvector w);
 llvmOr = bvOr;
 
-llvmOrV  :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmOrV  : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmOrV = bvVecZipWith bvOr;
 
-llvmXor  :: (w :: Nat)   -> binFn (bitvector w);
+llvmXor  : (w : Nat)   -> binFn (bitvector w);
 llvmXor = bvXor;
 
-llvmXorV :: (n w :: Nat) -> binFn (Vec n (bitvector w));
+llvmXorV : (n w : Nat) -> binFn (Vec n (bitvector w));
 llvmXorV = bvVecZipWith bvXor;
 
-singleField :: LLVMType -> Nat -> StructFields;
+singleField : LLVMType -> Nat -> StructFields;
 singleField tp p = ConsFields tp p EmptyFields;
 
-arithmeticWithOverflowResult :: Nat -> Nat -> Nat -> LLVMType;
+arithmeticWithOverflowResult : Nat -> Nat -> Nat -> LLVMType;
 arithmeticWithOverflowResult w p1 p2 =
   StructType (ConsFields (IntType w) p1
              (singleField (IntType 1) p2));
 
-mkOverflowResult :: (w p1 p2 :: Nat)
+mkOverflowResult : (w p1 p2 : Nat)
                  -> #(Bool, bitvector w)
                  -> value (arithmeticWithOverflowResult w p1 p2);
 mkOverflowResult w p1 p2 c_z =
@@ -254,38 +254,38 @@ mkOverflowResult w p1 p2 c_z =
     (ConsStruct (IntType 1) p2 EmptyFields [c_z.1] EmptyStruct);
 
 -- Width of bitvectors, amount of padding for first and second fields.
-llvmAddWithOverflow :: (w p1 p2 :: Nat)
+llvmAddWithOverflow : (w p1 p2 : Nat)
                     -> bitvector w
                     -> bitvector w
                     -> value (arithmeticWithOverflowResult w p1 p2);
 llvmAddWithOverflow w p1 p2 x y =
   mkOverflowResult w p1 p2 (bvAddWithCarry w x y);
 
-llvmSAddWithOverflow :: (w p1 p2 :: Nat)
+llvmSAddWithOverflow : (w p1 p2 : Nat)
                      -> bitvector w
                      -> bitvector w
                      -> value (arithmeticWithOverflowResult w p1 p2);
 llvmSAddWithOverflow w p1 p2 x y =
-  (\ (z::bitvector w) ->
-    (\ (xs :: Bool) (ys :: Bool) (zs :: Bool) ->
-      (\ (c :: Bool) -> mkOverflowResult w p1 p2 (c, z))
+  (\ (z : bitvector w) ->
+    (\ (xs : Bool) (ys : Bool) (zs : Bool) ->
+      (\ (c : Bool) -> mkOverflowResult w p1 p2 (c, z))
       (and (eq Bool xs ys) (not (eq Bool xs zs))))
     (at w Bool x 0) (at w Bool y 0) (at w Bool z 0))
   (bvAdd w x y);
 
-binRel :: sort 0 -> sort 0;
+binRel : sort 0 -> sort 0;
 binRel tp = tp -> tp -> bitvector 1;
 
-binVRel :: Nat -> sort 0 -> sort 0;
+binVRel : Nat -> sort 0 -> sort 0;
 binVRel n tp = Vec n tp -> Vec n tp -> Vec n (bitvector 1);
 
-liftBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
-          -> (w :: Nat) -> binRel (bitvector w);
+liftBVRel : ((w : Nat) -> bitvector w -> bitvector w -> Bool)
+          -> (w : Nat) -> binRel (bitvector w);
 liftBVRel f w x y = ite (bitvector 1) (f w x y) (bvNat 1 1) (bvNat 1 0);
 
 
-liftVecBVRel :: ((w :: Nat) -> bitvector w -> bitvector w -> Bool)
-             -> (n w :: Nat)
+liftVecBVRel : ((w : Nat) -> bitvector w -> bitvector w -> Bool)
+             -> (n w : Nat)
              -> binVRel n (bitvector w);
 liftVecBVRel f n w =
   zipWith (bitvector w)
@@ -294,185 +294,185 @@ liftVecBVRel f n w =
           (liftBVRel f w)
           n;
 
-llvmIeqBool :: (w :: Nat) -> bitvector w -> bitvector w -> Bool;
+llvmIeqBool : (w : Nat) -> bitvector w -> bitvector w -> Bool;
 llvmIeqBool = bvEq;
 
-llvmIuleBool :: (w :: Nat) -> bitvector w -> bitvector w -> Bool;
+llvmIuleBool : (w : Nat) -> bitvector w -> bitvector w -> Bool;
 llvmIuleBool = bvule;
 
-llvmIeq :: (w :: Nat)   -> binRel (bitvector w);
+llvmIeq : (w : Nat)   -> binRel (bitvector w);
 llvmIeq = liftBVRel bvEq;
 
-llvmIne :: (w :: Nat)   -> binRel (bitvector w);
+llvmIne : (w : Nat)   -> binRel (bitvector w);
 llvmIne = liftBVRel bvNe;
 
-llvmIeqV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIeqV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIeqV = liftVecBVRel bvEq;
 
-llvmIneV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIneV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIneV = liftVecBVRel bvNe;
 
-llvmIugt :: (w :: Nat)   -> binRel (bitvector w);
+llvmIugt : (w : Nat)   -> binRel (bitvector w);
 llvmIugt = liftBVRel bvugt;
 
-llvmIuge :: (w :: Nat)   -> binRel (bitvector w);
+llvmIuge : (w : Nat)   -> binRel (bitvector w);
 llvmIuge = liftBVRel bvuge;
 
-llvmIult :: (w :: Nat)   -> binRel (bitvector w);
+llvmIult : (w : Nat)   -> binRel (bitvector w);
 llvmIult = liftBVRel bvult;
 
-llvmIule :: (w :: Nat)   -> binRel (bitvector w);
+llvmIule : (w : Nat)   -> binRel (bitvector w);
 llvmIule = liftBVRel bvule;
 
-llvmIugtV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIugtV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIugtV = liftVecBVRel bvugt;
 
-llvmIugeV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIugeV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIugeV = liftVecBVRel bvuge;
 
-llvmIultV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIultV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIultV = liftVecBVRel bvult;
 
-llvmIuleV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIuleV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIuleV = liftVecBVRel bvule;
 
-llvmIsgt :: (w :: Nat) -> binRel (bitvector w);
+llvmIsgt : (w : Nat) -> binRel (bitvector w);
 llvmIsgt = liftBVRel bvsgt;
 
-llvmIsge :: (w :: Nat) -> binRel (bitvector w);
+llvmIsge : (w : Nat) -> binRel (bitvector w);
 llvmIsge = liftBVRel bvsge;
 
-llvmIslt :: (w :: Nat) -> binRel (bitvector w);
+llvmIslt : (w : Nat) -> binRel (bitvector w);
 llvmIslt = liftBVRel bvslt;
 
-llvmIsle :: (w :: Nat) -> binRel (bitvector w);
+llvmIsle : (w : Nat) -> binRel (bitvector w);
 llvmIsle = liftBVRel bvsle;
 
-llvmIsgtV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsgtV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIsgtV = liftVecBVRel bvsgt;
 
-llvmIsgeV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsgeV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIsgeV = liftVecBVRel bvsge;
 
-llvmIsltV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsltV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIsltV = liftVecBVRel bvslt;
 
-llvmIsleV :: (n w :: Nat) -> binVRel n (bitvector w);
+llvmIsleV : (n w : Nat) -> binVRel n (bitvector w);
 llvmIsleV = liftVecBVRel bvsle;
 --TODO
 
 -- | Defines a function that maps array elements from one range to another.
-bvMap :: (x y :: Nat)
+bvMap : (x y : Nat)
       -> (bitvector x -> bitvector y)
-      -> (n :: Nat)
+      -> (n : Nat)
       -> Vec n (bitvector x)
       -> Vec n (bitvector y);
 bvMap x y = map (bitvector x) (bitvector y);
 
-llvmTrunc :: (d r :: Nat) -> bitvector (addNat d r) -> bitvector r;
+llvmTrunc : (d r : Nat) -> bitvector (addNat d r) -> bitvector r;
 llvmTrunc = bvTrunc;
 
-llvmTruncV :: (n d r :: Nat) -> Vec n (bitvector (addNat d r)) -> Vec n (bitvector r);
+llvmTruncV : (n d r : Nat) -> Vec n (bitvector (addNat d r)) -> Vec n (bitvector r);
 llvmTruncV n d r = bvMap (addNat d r) r (bvTrunc d r) n;
 
-llvmZExt  :: (d i :: Nat) -> bitvector i -> bitvector (addNat d i);
+llvmZExt  : (d i : Nat) -> bitvector i -> bitvector (addNat d i);
 llvmZExt = bvUExt;
 
-llvmZExtV :: (n d i :: Nat) -> Vec n (bitvector i) -> Vec n (bitvector (addNat d i));
+llvmZExtV : (n d i : Nat) -> Vec n (bitvector i) -> Vec n (bitvector (addNat d i));
 llvmZExtV n d i = bvMap i (addNat d i) (bvUExt d i) n;
 
-llvmSExt  :: (d i :: Nat) -> bitvector (Succ i) -> bitvector (addNat d (Succ i));
+llvmSExt  : (d i : Nat) -> bitvector (Succ i) -> bitvector (addNat d (Succ i));
 llvmSExt = bvSExt;
 
-llvmSExtV :: (n d i :: Nat)
+llvmSExtV : (n d i : Nat)
           -> Vec n (bitvector (Succ i))
           -> Vec n (bitvector (addNat d (Succ i)));
 llvmSExtV n d i = bvMap (Succ i) (addNat d (Succ i)) (bvSExt d i) n;
 
-llvmSelect  :: (tp :: LLVMType) -> bitvector 1 -> value tp -> value tp -> value tp;
+llvmSelect  : (tp : LLVMType) -> bitvector 1 -> value tp -> value tp -> value tp;
 llvmSelect tp c = ite (value tp) (at 1 Bool c 0);
 
-llvmSelectV :: (n :: Nat)
-            -> (tp :: LLVMType)
+llvmSelectV : (n : Nat)
+            -> (tp : LLVMType)
             -> Vec n (bitvector 1)
             -> Vec n (value tp)
             -> Vec n (value tp)
             -> Vec n (value tp);
 llvmSelectV n tp c x y =
-  gen n (value tp) (\(i :: Nat) -> llvmSelect tp (at n (bitvector 1) c i)
+  gen n (value tp) (\(i : Nat) -> llvmSelect tp (at n (bitvector 1) c i)
                                                  (at n (value tp) x i)
                                                  (at n (value tp) y i));
 
-llvmStructHead :: (tp :: LLVMType)
-               -> (padding :: Nat)
-               -> (r :: StructFields)
+llvmStructHead : (tp : LLVMType)
+               -> (padding : Nat)
+               -> (r : StructFields)
                -> StructValue (ConsFields tp padding r) -> value tp;
 llvmStructHead _ _ _ xy = xy.1;
 
-llvmStructTail :: (tp :: LLVMType)
-               -> (padding :: Nat)
-               -> (r :: StructFields)
+llvmStructTail : (tp : LLVMType)
+               -> (padding : Nat)
+               -> (r : StructFields)
                -> StructValue (ConsFields tp padding r) -> StructValue r;
 llvmStructTail _ _ _ xy = xy.2;
 
-llvmStructElt :: (tps :: StructFields)
+llvmStructElt : (tps : StructFields)
               -> StructValue tps
-              -> (i :: StructIndex tps)
+              -> (i : StructIndex tps)
               -> value (getStructField tps i);
 llvmStructElt tps x i =
   StructIndex#rec
-    (\ (tps'::StructFields) (i'::StructIndex tps') ->
+    (\ (tps' : StructFields) (i' : StructIndex tps') ->
        StructValue tps' -> value (getStructField tps' i'))
-    (\ (tp :: LLVMType) (pad :: Nat) (r :: StructFields)
-       (v::StructValue (ConsFields tp pad r)) ->
+    (\ (tp : LLVMType) (pad : Nat) (r : StructFields)
+       (v : StructValue (ConsFields tp pad r)) ->
      llvmStructHead tp pad r v)
-    (\ (tp :: LLVMType) (pad :: Nat) (r :: StructFields) (i'::StructIndex r)
-       (recElt :: StructValue r -> value (getStructField r i'))
-       (v::StructValue (ConsFields tp pad r)) ->
+    (\ (tp : LLVMType) (pad : Nat) (r : StructFields) (i' : StructIndex r)
+       (recElt : StructValue r -> value (getStructField r i'))
+       (v : StructValue (ConsFields tp pad r)) ->
      recElt (llvmStructTail tp pad r v))
     tps i x;
 
-llvmArrayElt :: (n :: Nat)
-             -> (tp :: LLVMType)
-             -> (w :: Nat)
+llvmArrayElt : (n : Nat)
+             -> (tp : LLVMType)
+             -> (w : Nat)
              -> Vec n (value tp)
              -> bitvector w
              -> value tp;
 llvmArrayElt n tp = bvAt n (value tp);
 
 -- | @llvmIntSlice i n o v@ returns an @n@-bit bitvector equal to v / 2^i.
-llvmIntSlice :: (i n o :: Nat) -> bitvector (addNat (addNat i n) o) -> bitvector n;
+llvmIntSlice : (i n o : Nat) -> bitvector (addNat (addNat i n) o) -> bitvector n;
 llvmIntSlice i n o a = drop Bool i n (take Bool (addNat i n) o a);
 
--- llvmIntToFloat  :: bitvector 32 -> Float;
+-- llvmIntToFloat  : bitvector 32 -> Float;
 -- llvmIntToFloat = bvToFloat;
 
--- llvmFloatToInt  :: Float -> bitvector 32;
+-- llvmFloatToInt  : Float -> bitvector 32;
 -- llvmFloatToInt = floatToBV;
 
--- llvmIntToDouble :: bitvector 64 -> Double;
+-- llvmIntToDouble : bitvector 64 -> Double;
 -- llvmIntToDouble = bvToDouble;
 
--- llvmDoubleToInt :: Double -> bitvector 64;
+-- llvmDoubleToInt : Double -> bitvector 64;
 -- llvmDoubleToInt = doubleToBV;
 
 
-llvmBSwap :: (n :: Nat) -> bitvector (mulNat n 8) -> bitvector (mulNat n 8);
+llvmBSwap : (n : Nat) -> bitvector (mulNat n 8) -> bitvector (mulNat n 8);
 llvmBSwap n x = join n 8 Bool (reverse n (bitvector 8) (split n 8 Bool x));
 
-axiom ite_same :: (a :: sort 1)
-         -> (b :: Bool)
-         -> (x :: a)
+axiom ite_same : (a : sort 1)
+         -> (b : Bool)
+         -> (x : a)
          -> Eq a (ite a b x x) x;
 
 
-axiom ite_false_false :: (b x :: Bool) -> Eq Bool (ite Bool b x False) (and b x);
+axiom ite_false_false : (b x : Bool) -> Eq Bool (ite Bool b x False) (and b x);
 
-axiom and_true2 :: (b :: Bool) -> Eq Bool (and b True) b;
+axiom and_true2 : (b : Bool) -> Eq Bool (and b True) b;
 
-axiom bvEq_commute_ite1 :: (w :: Nat)
-                  -> (b :: Bool)
-                  -> (x y z :: bitvector w)
+axiom bvEq_commute_ite1 : (w : Nat)
+                  -> (b : Bool)
+                  -> (x y z : bitvector w)
                   -> Eq Bool
                         (bvEq w (ite (bitvector w) b x y) z)
                         (ite Bool b (bvEq w x z) (bvEq w y z));
@@ -480,20 +480,20 @@ axiom bvEq_commute_ite1 :: (w :: Nat)
 
 -- These rules are unsound due to overflow:
 
-axiom bvule_sameL :: (n :: Nat)
-            -> (x z :: bitvector n)
+axiom bvule_sameL : (n : Nat)
+            -> (x z : bitvector n)
             -> Eq Bool
                   (bvule n x (bvAdd n x z))
                   True;
 
-axiom bvule_sameR :: (n :: Nat)
-            -> (x y :: bitvector n)
+axiom bvule_sameR : (n : Nat)
+            -> (x y : bitvector n)
             -> Eq Bool
                   (bvule n (bvAdd n x y) x)
                   (bvEq n y (bvNat n 0));
 
-axiom bvule_same2 :: (n :: Nat)
-            -> (x y z :: bitvector n)
+axiom bvule_same2 : (n : Nat)
+            -> (x y z : bitvector n)
             -> Eq Bool
                   (bvule n (bvAdd n x y) (bvAdd n x z))
                   (bvule n y z);
