@@ -77,7 +77,7 @@ typeOfLLVMTypeOrTypes b tp =
     -- ConsFields
     (\ (tp : LLVMTypeOrTypes True) (recTp : sort 0) (pad : Nat)
        (tail : LLVMTypeOrTypes False) (recTps : sort 0) ->
-     #(recTp, recTps))
+     (recTp * recTps))
 
     -- Input arguments
     b tp;
@@ -247,11 +247,11 @@ arithmeticWithOverflowResult w p1 p2 =
              (singleField (IntType 1) p2));
 
 mkOverflowResult : (w p1 p2 : Nat)
-                 -> #(Bool, bitvector w)
+                 -> Bool * bitvector w
                  -> value (arithmeticWithOverflowResult w p1 p2);
 mkOverflowResult w p1 p2 c_z =
-  ConsStruct (IntType w) p1 (singleField (IntType 1) p2) c_z.2
-    (ConsStruct (IntType 1) p2 EmptyFields [c_z.1] EmptyStruct);
+  ConsStruct (IntType w) p1 (singleField (IntType 1) p2) c_z.(2)
+    (ConsStruct (IntType 1) p2 EmptyFields [c_z.(1)] EmptyStruct);
 
 -- Width of bitvectors, amount of padding for first and second fields.
 llvmAddWithOverflow : (w p1 p2 : Nat)
@@ -407,13 +407,13 @@ llvmStructHead : (tp : LLVMType)
                -> (padding : Nat)
                -> (r : StructFields)
                -> StructValue (ConsFields tp padding r) -> value tp;
-llvmStructHead _ _ _ xy = xy.1;
+llvmStructHead _ _ _ xy = xy.(1);
 
 llvmStructTail : (tp : LLVMType)
                -> (padding : Nat)
                -> (r : StructFields)
                -> StructValue (ConsFields tp padding r) -> StructValue r;
-llvmStructTail _ _ _ xy = xy.2;
+llvmStructTail _ _ _ xy = xy.(2);
 
 llvmStructElt : (tps : StructFields)
               -> StructValue tps
