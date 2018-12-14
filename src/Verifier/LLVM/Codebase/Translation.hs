@@ -401,7 +401,9 @@ liftStmt stmt =
       sv <- liftValue mtp v
       svl <- traverse liftArgValue tpvl
       return $ Call sv svl Nothing
-    Effect (L.Store (L.Typed tp0 v) addr a) _ -> do
+    -- We don't care if it's atomic, since the symbolic simulator is
+    -- effectively single-threaded
+    Effect (L.Store (L.Typed tp0 v) addr _ a) _ -> do
       tp <- liftMemType' tp0
       tptr <- liftValue tp v
       taddr <- liftTypedValue addr
