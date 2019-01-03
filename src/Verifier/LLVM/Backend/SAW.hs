@@ -40,6 +40,7 @@ import Data.SBV.Dynamic
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
+import Numeric.Natural (Natural)
 import Prelude ()
 import Prelude.Compat
 
@@ -275,7 +276,7 @@ mkBackendState dl sc = do
           MM.Double -> return llvmDoubleType
           MM.Array n tp -> join $ arrayTypeFn <$> scNat sc (fromIntegral n) <*> mkTypeTerm tp
           MM.Struct flds -> join $ structTypeFn <$> fieldVFn flds
-      fieldFn :: MM.Field MM.Type -> IO (Term, Nat)
+      fieldFn :: MM.Field MM.Type -> IO (Term, Natural)
       fieldFn f = (, fromIntegral (MM.fieldPad f)) <$> mkTypeTerm (f^.MM.fieldVal)
       fieldVFn :: V.Vector (MM.Field MM.Type) -> IO Term
       fieldVFn flds = scFieldInfo sc =<< traverse fieldFn (V.toList flds)
@@ -417,7 +418,7 @@ mkBackendState dl sc = do
 
 -- | Attempt to parse the second term as a constant integer.
 -- The first term is the width of the term.
-scIntAsConst' :: SharedContext -> Term -> Term -> IO (Maybe Nat)
+scIntAsConst' :: SharedContext -> Term -> Term -> IO (Maybe Natural)
 scIntAsConst' sc w t =
   fmap R.asNat $ scApplyLLVM_llvmIntValueNat sc w t
 
@@ -528,13 +529,13 @@ sbsStructValue sbs flds = do
 createStructValue :: forall v
                    . SharedContext
                      -- For each field, provide type, number of padding bytes, and value.
-                  -> V.Vector ((Term, Nat), v)
+                  -> V.Vector ((Term, Natural), v)
                   -> IO (ExprEvalFn v Term)
 createStructValue sc flds = do
   -- fieldType <- scApplyLLVM_fieldType sc
-  let foldFn :: ((Term, Nat), v)
-             -> (Nat, ExprEvalFn v Term, Term)
-             -> IO (Nat, ExprEvalFn v Term, Term)
+  let foldFn :: ((Term, Natural), v)
+             -> (Natural, ExprEvalFn v Term, Term)
+             -> IO (Natural, ExprEvalFn v Term, Term)
       foldFn ((mtp,pad),expr) (n,ExprEvalFn reval, rvtp) = do
         padding <- scNat sc pad
         let consStruct = scApplyLLVM_ConsStruct sc
@@ -691,7 +692,7 @@ sbsFieldInfo sbs flds = do
 
 -- | Returns shared term of type StructFields for the given field info.
 scFieldInfo :: SharedContext
-            -> [(Term, Nat)] -- ^ terms of type LLVMType with padding amounts
+            -> [(Term, Natural)] -- ^ terms of type LLVMType with padding amounts
             -> IO Term
 scFieldInfo sc [] = scApplyLLVM_EmptyFields sc
 scFieldInfo sc ((tp, p) : tps) = do
@@ -701,7 +702,7 @@ scFieldInfo sc ((tp, p) : tps) = do
 
 -- | Returns shared terms f :: StructFields and i :: StructIndex f
 scStructIndex :: SharedContext
-              -> [(Term, Nat)] -- ^ terms of type LLVMType with padding amounts
+              -> [(Term, Natural)] -- ^ terms of type LLVMType with padding amounts
               -> Int
               -> IO (Term, Term)
 scStructIndex _ [] _ = error "scStructIndex: index out of bounds"
