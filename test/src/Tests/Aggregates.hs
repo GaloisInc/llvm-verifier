@@ -30,13 +30,14 @@ import Tests.Common
 
 aggTests :: [TestTree]
 aggTests =
-  [ testArrays "test-array-index-base"     "test-arrays.bc" "arr1" (RV 42)
-  , testArrays "test-array-index-offset"   "test-arrays.bc" "arr2" (RV 141)
-  , testArrays "test-array-1d-initializer" "test-arrays.bc" "onedim_init" (RV 3)
-  , testArrays "test-array-2d-initializer" "test-arrays.bc" "twodim_init" (RV 21)
-  , testArrays "test-array-mat4x4-mult"    "test-mat4x4.bc" "matrix_mul_4x4" (RV 304)
+  [
+  --   testArrays "test-array-index-base"     "test-arrays.bc" "arr1" (RV 42)
+  -- , testArrays "test-array-index-offset"   "test-arrays.bc" "arr2" (RV 141)
+  -- , testArrays "test-array-1d-initializer" "test-arrays.bc" "onedim_init" (RV 3)
+  -- , testArrays "test-array-2d-initializer" "test-arrays.bc" "twodim_init" (RV 21)
+  -- , testArrays "test-array-mat4x4-mult"    "test-mat4x4.bc" "matrix_mul_4x4" (RV 304)
 
-  , runStruct "test-struct-init-and-access" "test-structs.bc" structInitAccessImpl
+    runStruct "test-struct-init-and-access" "test-structs.bc" structInitAccessImpl
   , runStruct "test-array-of-structs"       "test-structs.bc" structArrayImpl
 
 -- We appear to be missing the C source for this test....
@@ -89,6 +90,9 @@ structInitAccessImpl = do
     Just rv -> do
       sbe <- gets symBE
       bx <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 0)
+      liftIO $ putStrLn "************vvvvvvv"
+      liftIO $ putStrLn $ "bx= " <> show (prettyTermD sbe bx)
+      liftIO $ putStrLn "************^^^^^^^"
       by <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 1)
       let bxc = asSignedInteger sbe 32 bx :: Probably Integer
           byc = asSignedInteger sbe  8 by :: Probably Integer
@@ -102,6 +106,9 @@ structArrayImpl :: Functor sbe => Simulator sbe IO ()
 structArrayImpl = do
   void $ callDefine (Symbol "struct_test_two") (Just i32) []
   mrv <- getProgramReturnValue
+  liftIO $ putStrLn "************vvvvvvv"
+  withSBE' (\s -> putStrLn $ "ProgramReturnValue= " <> show (prettyTermD s <$> mrv))
+  liftIO $ putStrLn "************^^^^^^^"
   case mrv of
     Nothing -> liftIO $ HU.assertFailure "No return value (fail)"
     -- Just rv -> liftIO . HU.assertBool "Expected 1" . (`constTermEq` 1)

@@ -41,12 +41,13 @@ ingrs =
 tests :: TestTree
 tests =
    testGroup "LLVM"
-   [ testGroup "PrimOps"     primOpTests
-   , testGroup "Aggregates"  aggTests
-   , testGroup "Symbolic"    symTests
-   , testGroup "I/O"         ioTests
-   , testGroup "AES"         aesTests
-   , testGroup "BitMemModel" bitMemModelTests
-   , testGroup "MemModel"    memModelTests
-   , testGroup "Errors"      errorTests
+   [
+     -- testGroup "PrimOps"     primOpTests
+    testGroup "Aggregates"  aggTests
+   -- , testGroup "Symbolic"    symTests
+   -- , testGroup "I/O"         ioTests
+   -- , testGroup "AES"         aesTests
+   -- , testGroup "BitMemModel" bitMemModelTests
+   -- , testGroup "MemModel"    memModelTests
+   -- , testGroup "Errors"      errorTests
    ]

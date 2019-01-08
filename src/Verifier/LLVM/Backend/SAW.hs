@@ -61,6 +61,8 @@ import Verifier.LLVM.Backend.SAWImport
 import Verifier.LLVM.Codebase.AST
 import qualified Verifier.LLVM.MemModel as MM
 
+import Debug.Trace
+
 
 preludeBVNatTermF :: TermF t
 preludeBVNatTermF = FTermF $ GlobalDef (mkIdent preludeModuleName "bvNat")
@@ -70,11 +72,12 @@ scBitwidth sc w = scNat sc (fromIntegral w)
 
 asUnsignedBitvector :: (MonadFail m, HasCallStack) => BitWidth -> Term -> m Integer
 asUnsignedBitvector w s2 = do
-  (s1, vt) <- R.asApp s2
-  (s0, wt) <- R.asApp s1
-  when (unwrapTermF  s0 /= preludeBVNatTermF) Nothing
-  when (R.asNat wt /= Just (fromIntegral w)) Nothing
-  toInteger <$> R.asNat vt
+  (s1, vt) <- let x = R.asApp $ trace ("aUBv.s2 = " <> show (ppTerm defaultPPOpts s2)) s2
+              in x
+  (s0, wt) <- R.asApp $ trace ("aUBv.s1 = " <> show (ppTerm defaultPPOpts s1)) s1
+  when (unwrapTermF  s0 /= preludeBVNatTermF) $ trace "aUBv.1" $ fail "type size is not a bvNat for asUnsignedBitvector"
+  when (R.asNat wt /= Just (fromIntegral w))  $ trace "aUBv.2" $ fail "type size mismatch for asUnsignedBitvector"
+  toInteger <$> (trace "aUBv.3" $ R.asNat vt)
 
 asSignedBitvector :: (MonadFail m, HasCallStack) => BitWidth -> Term -> m Integer
 asSignedBitvector w s2
@@ -902,7 +905,13 @@ typedExprEvalFn sbs expr0 = do
       flds <- traverse go (V.toList (siFields si))
       (tps, ft) <- scStructIndex sc flds (fromIntegral i)
       let fn = scApplyLLVM_llvmStructElt sc
-      return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn tps val ft) =<< eval v
+      return $ ExprEvalFn $ \eval -> do
+        v' <- eval v
+        liftIO $ putStrLn $ "v' = " <> show v'
+        r <- (\val -> liftIO $ fn tps val ft) v'
+        liftIO $ putStrLn $ " -- r = " <> show r
+        return r
+      -- return $ ExprEvalFn $ \eval -> (\val -> liftIO $ fn tps val ft) =<< eval v
     GetConstArrayElt n tp a i -> assert (i < n) $ do
       let fn = scApplyPrelude_at sc
       nt <- scNat sc (fromIntegral n)
