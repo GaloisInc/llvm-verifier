@@ -28,6 +28,7 @@ module Verifier.LLVM.Backend.SAW
 import Control.Exception (assert)
 import Control.Lens hiding (op)
 import Control.Monad
+import Control.Monad.Fail ( MonadFail )
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.AIG as AIG
 import Data.Bits
@@ -40,6 +41,7 @@ import Data.SBV.Dynamic
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Vector as V
+import GHC.Stack ( HasCallStack )
 import Numeric.Natural (Natural)
 import Prelude ()
 import Prelude.Compat
@@ -66,7 +68,7 @@ preludeBVNatTermF = FTermF $ GlobalDef (mkIdent preludeModuleName "bvNat")
 scBitwidth :: SharedContext -> BitWidth -> IO Term
 scBitwidth sc w = scNat sc (fromIntegral w)
 
-asUnsignedBitvector :: BitWidth -> Term -> Maybe Integer
+asUnsignedBitvector :: (MonadFail m, HasCallStack) => BitWidth -> Term -> m Integer
 asUnsignedBitvector w s2 = do
   (s1, vt) <- R.asApp s2
   (s0, wt) <- R.asApp s1
@@ -74,7 +76,7 @@ asUnsignedBitvector w s2 = do
   when (R.asNat wt /= Just (fromIntegral w)) Nothing
   toInteger <$> R.asNat vt
 
-asSignedBitvector :: BitWidth -> Term -> Maybe Integer
+asSignedBitvector :: (MonadFail m, HasCallStack) => BitWidth -> Term -> m Integer
 asSignedBitvector w s2
     | w == 0 = error "Bad bitwidth"
     | otherwise = s2u <$> asUnsignedBitvector w s2

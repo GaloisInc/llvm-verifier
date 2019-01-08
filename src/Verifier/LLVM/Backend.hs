@@ -31,6 +31,7 @@ module Verifier.LLVM.Backend
   , AIG.SatResult(..)
   ) where
 
+import Control.Monad.Fail ( MonadFail )
 import qualified Data.Vector as V
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
@@ -122,15 +123,15 @@ data SBE m = SBE
     -- | Evaluate a typed expression.
   , applyTypedExpr :: TypedExpr (SBETerm m) -> m (SBETerm m)
 
-  , asUnsignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
     -- | Interpret the term as a concrete unsigned integer if it can
     -- be.  The first int is the bitwidth.  The term should be
     -- normalized to be properly identified as a concrete value.
+  , asUnsignedInteger :: forall r. MonadFail r => BitWidth -> SBETerm m -> r Integer
 
     -- | Interpret the term as a concrete signed integer if it can be.
-  , asSignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
     -- The first int is the bitwidth.  The term should be normalized
     -- to be properly identified as a concrete value.
+  , asSignedInteger :: forall r. MonadFail r => BitWidth -> SBETerm m -> r Integer
 
     -- | Interpret a pointer as an unsigned integer.
   , asConcretePtr :: SBETerm m -> Maybe Integer

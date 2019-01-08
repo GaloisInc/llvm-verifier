@@ -1766,8 +1766,12 @@ sbeBitBlast g dl mm =
            , prettyTermD      = ppBitTerm g
            , asBool           = litAsBool g
            , evalPred = \inps p -> BitIO $ fmap ($ p) $ AIG.evaluator g inps
-           , asUnsignedInteger = \_ -> BV.asUnsigned g . asIntTerm
-           , asSignedInteger   = \_ -> BV.asSigned g . asIntTerm
+           , asUnsignedInteger = \_ v -> case BV.asUnsigned g $ asIntTerm v of
+                                           Just r -> return r
+                                           Nothing -> fail "AIG asUnsigned asIntTerm failed"
+           , asSignedInteger   = \_ v -> case BV.asSigned g $ asIntTerm v of
+                                           Just r -> return r
+                                           Nothing -> fail "AIG asSigned asIntTerm failed"
            , asConcretePtr     = BV.asUnsigned g . asPtrTerm
            , memDump          = BitIO `c2` mmDump mm True
            , memLoad          = BitIO `c4` loadTerm g dl mm

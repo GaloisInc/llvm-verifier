@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams      #-}
 {-# LANGUAGE Rank2Types          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -14,6 +15,7 @@ Point-of-contact : atomb
 module Tests.Aggregates (aggTests) where
 
 import           Control.Monad
+import           Control.Monad.Fail
 import           Control.Monad.State (liftIO, gets)
 
 import           Test.Tasty
@@ -51,6 +53,31 @@ aggTests =
           forAllMemModels gnm bc $ \bkName v sbeCF mdlio ->
                 HU.testCase bkName $ runTestSimulator v sbeCF mdlio m
 
+-- | Probably is similar to Either, except a 'fail' doesn't throw an exception.
+data Probably a where
+  Actually :: a -> Probably a
+  Failing  :: String -> Probably a
+  deriving (Eq, Show)
+
+instance Functor Probably where
+  fmap _ (Failing  s) = Failing s
+  fmap f (Actually a) = Actually $ f a
+
+instance Applicative Probably where
+  pure = Actually
+  (Failing  s) <*> _            = Failing s
+  _            <*> (Failing  s) = Failing s
+  (Actually f) <*> (Actually a) = Actually (f a)
+
+instance Monad Probably where
+  return a           = Actually a
+  (Failing  s) >>= _ = Failing s
+  (Actually a) >>= f = f a
+  fail s             = Failing s
+
+instance MonadFail Probably where
+  fail s = Failing s
+
 structInitAccessImpl :: Functor sbe => Simulator sbe IO ()
 structInitAccessImpl = do
   dl <- withDL id
@@ -63,12 +90,13 @@ structInitAccessImpl = do
       sbe <- gets symBE
       bx <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 0)
       by <- liftSBE $ applyTypedExpr sbe (GetStructField si rv 1)
-      let bxc = asSignedInteger sbe 32 bx
-          byc = asSignedInteger sbe  8 by
-          res = bxc == Just 42
+      let bxc = asSignedInteger sbe 32 bx :: Probably Integer
+          byc = asSignedInteger sbe  8 by :: Probably Integer
+          res = bxc == Actually 42
                 &&
-                byc == Just (fromIntegral (fromEnum 'z'))
-      liftIO $ HU.assertBool "incorrect value returned" res
+                byc == Actually (fromIntegral (fromEnum 'z'))
+      liftIO $ HU.assertBool ("incorrect value returned (" <>
+                              show bxc <> ", " <> show byc <> ")") res
 
 structArrayImpl :: Functor sbe => Simulator sbe IO ()
 structArrayImpl = do
@@ -76,4 +104,9 @@ structArrayImpl = do
   mrv <- getProgramReturnValue
   case mrv of
     Nothing -> liftIO $ HU.assertFailure "No return value (fail)"
-    Just rv -> liftIO . HU.assertBool "Expected 1" . (`constTermEq` 1) =<< withSBE' (\s -> asSignedInteger s 32 rv)
+    -- Just rv -> liftIO . HU.assertBool "Expected 1" . (`constTermEq` 1)
+    --            =<< withSBE' (\s -> asSignedInteger s 32 rv)
+    Just rv -> liftIO . (\v -> case v of
+                                 Actually v' -> HU.assertBool ("Expected 1 from " <> show v') $ 1 == v'
+                                 Failing s -> HU.assertBool ("got '" <> s <> "' instead of 1") False)
+               =<< withSBE' (\s -> asSignedInteger s 32 rv)
