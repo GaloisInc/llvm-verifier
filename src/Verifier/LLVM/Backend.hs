@@ -38,8 +38,8 @@ import qualified Data.AIG as AIG
 
 import Verifier.LLVM.Codebase.AST
 
--- | SBEPred yields the type used to represent predicates in particular SBE interface
--- implementation.
+-- | SBETerm yields the type used to represent terms in particular SBE
+-- interface implementation.
 type family SBETerm (sbe :: * -> *)
 
 -- | SBEPred yields the type used to represent a Boolean predicate associated to
@@ -122,13 +122,15 @@ data SBE m = SBE
     -- | Evaluate a typed expression.
   , applyTypedExpr :: TypedExpr (SBETerm m) -> m (SBETerm m)
 
-    -- | Interpret the term as a concrete unsigned integer if it can be.
-    -- The first int is the bitwidth.
   , asUnsignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
+    -- | Interpret the term as a concrete unsigned integer if it can
+    -- be.  The first int is the bitwidth.  The term should be
+    -- normalized to be properly identified as a concrete value.
 
     -- | Interpret the term as a concrete signed integer if it can be.
-    -- The first int is the bitwidth.
   , asSignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
+    -- The first int is the bitwidth.  The term should be normalized
+    -- to be properly identified as a concrete value.
 
     -- | Interpret a pointer as an unsigned integer.
   , asConcretePtr :: SBETerm m -> Maybe Integer
