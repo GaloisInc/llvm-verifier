@@ -128,9 +128,9 @@ data SBE m = SBE
     -- normalized to be properly identified as a concrete value.
 
     -- | Interpret the term as a concrete signed integer if it can be.
-  , asSignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
     -- The first int is the bitwidth.  The term should be normalized
     -- to be properly identified as a concrete value.
+  , asSignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
 
     -- | Interpret a pointer as an unsigned integer.
   , asConcretePtr :: SBETerm m -> Maybe Integer
