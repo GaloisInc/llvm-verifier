@@ -122,10 +122,10 @@ data SBE m = SBE
     -- | Evaluate a typed expression.
   , applyTypedExpr :: TypedExpr (SBETerm m) -> m (SBETerm m)
 
-  , asUnsignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
     -- | Interpret the term as a concrete unsigned integer if it can
     -- be.  The first int is the bitwidth.  The term should be
     -- normalized to be properly identified as a concrete value.
+  , asUnsignedInteger :: BitWidth -> SBETerm m -> Maybe Integer
 
     -- | Interpret the term as a concrete signed integer if it can be.
     -- The first int is the bitwidth.  The term should be normalized
