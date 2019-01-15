@@ -74,7 +74,7 @@ module Verifier.LLVM.Simulator.Internals
   , pathAssertions
 
     -- ** Path combinators.
-  , pathCallFrames  
+  , pathCallFrames
   , pathStackHt
   , pathIsActive
 
@@ -123,11 +123,11 @@ module Verifier.LLVM.Simulator.Internals
   , withDL
   , unlessQuiet
   , tellUser
-    
+
     -- * Term helpers
   , ptrInc
   , strTy
-   
+
   , FailRsn(FailRsn)
   , ppFailRsn
 
@@ -151,7 +151,7 @@ module Verifier.LLVM.Simulator.Internals
   , ErrorPath(EP, epRsn, epPath)
   , errorPath
   , wrongArguments
- 
+
     -- * Memory primitives
   , memFailRsn
   , processMemCond
@@ -172,6 +172,7 @@ import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens
 import Control.Monad
+import Control.Monad.Fail
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Control.Monad.Trans
@@ -310,7 +311,7 @@ cfLocalValues cf = [ (sym, v) | (sym, (v,_)) <- M.toList (cf^.cfRegs)
 ------------------------------------------------------------------------
 -- ErrorCollector
 
-type ErrorCollector m e = StateT [e] m 
+type ErrorCollector m e = StateT [e] m
 
 runErrorCollector :: Functor m => ErrorCollector m e a -> m ([e],a)
 runErrorCollector m = finish <$> runStateT m []
@@ -346,7 +347,7 @@ defaultLSSOpts = LSSOpts { optsErrorPathDetails = False
 -- CallStack
 
 -- | Call stack contains top frame, total stack height, and return frames.
-data CallStack sbe 
+data CallStack sbe
    = StopReturn (CallFrame sbe) (Maybe MemType)
    | CallReturn (CallFrame sbe) (Maybe (MemType, Ident)) Int (CallStack sbe)
 
@@ -395,7 +396,7 @@ stackRegs = topCallFrame . cfRegs
 ------------------------------------------------------------------------
 -- PathStack
 
-data PathStack sbe 
+data PathStack sbe
    = CallStack (CallStack sbe)
    | FinStack (Maybe (SBETerm sbe, MemType))
 
@@ -484,7 +485,7 @@ data MergeTarget
     -- frame is @mr@ (which may be Nothing if this is a void function).
   = OnReturn Int (Maybe Ident)
     -- | @OnPostdomJump i b@ denotes the merge should occur when
-    -- jumping to block @b@ with a stack height of @i@. 
+    -- jumping to block @b@ with a stack height of @i@.
   | OnPostdomJump Int SymBlockID
 
 -- | Return true if path is at target.
@@ -500,9 +501,9 @@ atTarget p (OnReturn n _) = pathStackHt p < n
 
 -- | Condition, target, previous assertions
 data BranchInfo sbe = BI { biCond :: SBEPred sbe
-                         , biTarget :: MergeTarget 
+                         , biTarget :: MergeTarget
                          , _biAssertions :: SBEPred sbe
-                         , _biAbortsAbove :: Int 
+                         , _biAbortsAbove :: Int
                          }
 
 -- | Assertions on path prior to branch.
@@ -638,6 +639,9 @@ instance Monad m => MonadState (State sbe m) (Simulator sbe m) where
   get = SM (lift Strict.get)
   put = SM . lift . Strict.put
 
+instance MonadFail m => MonadFail (Simulator sbe m) where
+  fail = errorPath
+
 -- | Symbolic simulator state
 data State sbe m = State
   { codebase     :: Codebase sbe    -- ^ LLVM code, post-transformation to sym ast
@@ -767,7 +771,7 @@ mergePaths b pt pf = do
               -- Void return: no work to do
               Nothing ->
                 return (pt^.pathStack)
-          (_,_) -> error "internal: Unexpected form during merging" 
+          (_,_) -> error "internal: Unexpected form during merging"
       OnPostdomJump{} -> -- Merge all registers
         case (pt^.pathStack, pf^.pathStack) of
           -- Update specific reg
@@ -775,7 +779,7 @@ mergePaths b pt pf = do
             let r1 = cs1^.topCallFrame^.cfRegs
                 mergeFn = Trav.sequence . M.intersectionWith mergeTyped r1
             CallStack <$> stackRegs mergeFn cs2
-          (_,_) -> error "internal: Unexpected form during merging" 
+          (_,_) -> error "internal: Unexpected form during merging"
 
   -- Merge memory
   mergedMem <- liftSBE $ memMerge sbe c (pt^.pathMem) (pf^.pathMem)
@@ -819,7 +823,7 @@ addCtrlBranch c nb nm ml = do
              & pathMem .~ mem
              & pathAssertions .~ sbeTruePred sbe
   ctrlStk ?= CS (Branch h info RightActive pf (Singleton pt))
- 
+
 -- | Merge path and path handler.  Note that the new state may
 -- have infeasible path assertions.
 checkForMerge :: MonadIO m => CS sbe -> Simulator sbe m ()
@@ -924,7 +928,7 @@ replaceParentWithChild :: (Functor m, MonadIO m) =>
 replaceParentWithChild ctx newAssertions parentAborts rest = do
   sbe <- gets symBE
   case topView rest of
-    
+
     -- If tree is a single path, then we make a leaf active.
     Left p -> do
       -- Set assertions
@@ -1023,7 +1027,7 @@ ppTuple = parens . hcat . punctuate comma
 liftSBE :: Monad m => sbe a -> Simulator sbe m a
 liftSBE sa = SM $ lift $ do
   liftFn <- gets liftSymBE
-  lift $ liftFn sa 
+  lift $ liftFn sa
 
 withSBE :: (Monad m) => (SBE sbe -> sbe a) -> Simulator sbe m a
 withSBE f = liftSBE . f =<< gets symBE
@@ -1239,7 +1243,7 @@ store tp val dst a = do
   processMemCond fr c
 
 memset :: (Functor sbe, Functor m, MonadIO m)
-       => String -- ^ Name of function for error purposes. 
+       => String -- ^ Name of function for error purposes.
        -> SBETerm sbe -- ^ Destination
        -> SBETerm sbe -- ^ Value (must be an i8)
        -> BitWidth    -- ^ Width of length
@@ -1278,7 +1282,7 @@ checkTypeCompat :: Monad m
                 -> FunDecl -- ^ Declaration of function to be overriden.
                 -> String -- ^ Name of override function
                 -> FunDecl -- ^ Type of override function
-                -> Simulator sbe m ()      
+                -> Simulator sbe m ()
 checkTypeCompat fnm (FunDecl frtn fargs fva) tnm (FunDecl trtn targs tva) = do
   lc <- gets (cbLLVMContext . codebase)
   let ?lc = lc
@@ -1288,7 +1292,7 @@ checkTypeCompat fnm (FunDecl frtn fargs fva) tnm (FunDecl trtn targs tva) = do
   let ppTypes :: [MemType] -> String
       ppTypes tys = show (parens (commas (ppMemType <$> tys)))
   unless (compatMemTypeLists fargs targs) $
-    e $ "has different argument types.\n" 
+    e $ "has different argument types.\n"
       ++ "  Argument types of " ++ nm fnm ++ ": " ++ ppTypes fargs ++ "\n"
       ++ "  Argument types of " ++ tnm ++ ": " ++ ppTypes targs ++ "\n"
   unless (compatRetTypes frtn trtn) $ e $ "has a different return type.\n"
