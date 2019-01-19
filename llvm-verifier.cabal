@@ -94,7 +94,7 @@ library
     Verifier.LLVM.Utils.Arithmetic
     Verifier.LLVM.Utils.PrettyPrint
 
-  ghc-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++
+  ghc-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++ -Wcompat
   extra-libraries:      stdc++
   if impl(ghc == 8.0.1)
     ghc-options: -Wno-redundant-constraints
@@ -110,7 +110,7 @@ executable lss
   other-modules:
     LSSImpl
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M -pgmlg++
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -with-rtsopts=-K32M -pgmlg++ -Wcompat
   extra-libraries:      stdc++
 
   if flag(static)
@@ -138,7 +138,7 @@ executable bcdump
   main-is        : Main_bcdump.hs
   hs-source-dirs : bcdump
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++ -Wcompat
   extra-libraries:      stdc++
 
   build-depends:
@@ -171,7 +171,7 @@ test-suite test-llvm
     Tests.PrimOps
     Tests.Symbolic
 
-  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++
+  GHC-options: -O2 -Wall -fno-ignore-asserts -fno-spec-constr-count -pgmlg++ -Wcompat
   extra-libraries:      stdc++
 
   build-depends:
