@@ -13,7 +13,6 @@ module Verifier.LLVM.Overrides.Intrinsics
   ) where
 
 import Control.Lens hiding (from)
-import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Data.String
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
@@ -99,7 +98,7 @@ llvm_expect w = do
       [val, _] -> return val
       _ -> wrongArguments nm
 
-registerLLVMIntrinsicOverrides :: (Functor sbe, Functor m, MonadIO m)
+registerLLVMIntrinsicOverrides :: SimulatorContext sbe m
                                => Simulator sbe m ()
 registerLLVMIntrinsicOverrides = do
   let override_add_with_overflow n f w = do

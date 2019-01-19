@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {- |
 Module           : $Header$
 Description      : Common type definitions and helper functions for LSS
@@ -20,6 +21,7 @@ Point-of-contact : jhendrix
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Verifier.LLVM.Simulator.Internals
   ( Simulator(SM, runSM)
+  , SimulatorContext
   , throwSM, catchSM
   , getVerbosity
   , setVerbosity
@@ -627,6 +629,8 @@ newtype Simulator sbe m a =
     , MonadException
     )
 
+type SimulatorContext sbe m = (Functor sbe, Functor m, MonadIO m, MonadFail m)
+
 throwSM :: Monad m => FailRsn -> Simulator sbe m a
 throwSM = SM . throwE
 
@@ -792,7 +796,7 @@ mergePaths b pt pf = do
               }
 
 -- | Add a control branch
-addCtrlBranch :: Monad m
+addCtrlBranch :: (Monad m, MonadFail m)
               => SBEPred sbe -- ^ Condition to branch on.
                  -- | Location for true branch to start at.
               -> SymBlockID
@@ -842,7 +846,7 @@ checkForMerge (CS cs) = do
 
 -- | Move current path to target block, and check for potential merge.
 -- Note that the new path may have infeasible assertions.
-setCurrentBlock :: MonadIO m => SymBlockID -> Simulator sbe m ()
+setCurrentBlock :: (MonadIO m, MonadFail m) => SymBlockID -> Simulator sbe m ()
 setCurrentBlock b = do
   Just cs <- use ctrlStk
   let CallStack stk = cs^.currentPathStack
@@ -850,7 +854,7 @@ setCurrentBlock b = do
 
 -- | Return from current path.
 -- The current path may be infeasible.
-returnCurrentPath :: (Functor m, MonadIO m)
+returnCurrentPath :: (Functor m, MonadIO m, MonadFail m)
                   => Maybe (SBETerm sbe)
                   -> Simulator sbe m ()
 returnCurrentPath rt = do
@@ -875,7 +879,7 @@ applyNotWhen True  p = withSBE $ \sbe -> applyBNot sbe p
 applyNotWhen False p = return p
 
 -- | Return assumptions along active path.
-assumptionsForActivePath :: Monad m => Simulator sbe m (SBEPred sbe)
+assumptionsForActivePath :: (Monad m, MonadFail m) => Simulator sbe m (SBEPred sbe)
 assumptionsForActivePath = do
   Just (CS t) <- use ctrlStk
   let branchCond (b,o,_) = applyNotWhen (o == RightActive) (biCond b)
@@ -894,7 +898,7 @@ abortMemBranches n m0 = do
 
 -- | Kill the current path and add it to the list of errorPaths.
 -- This function assumes the simulator has an active path.
-killCurrentPath :: (Functor m, MonadIO m) => FailRsn -> Simulator sbe m ()
+killCurrentPath :: (Functor m, MonadIO m, MonadFail m) => FailRsn -> Simulator sbe m ()
 killCurrentPath rsn = do
   Just cs0 <- use ctrlStk
   -- Add path to list of error paths.
@@ -1086,6 +1090,7 @@ memFailRsn sbe desc terms = show $ text desc <+> ppTuple pts
 processMemCond ::
   ( Functor m
   , MonadIO m
+  , MonadFail m
   , Functor sbe
   )
   => String -> SBEPred sbe -> Simulator sbe m ()
@@ -1111,6 +1116,7 @@ processMemCond rsn cond = do
 
 alloca ::
   ( MonadIO m
+  , MonadFail m
   , Functor m
   , Functor sbe
   )
@@ -1133,6 +1139,7 @@ alloca ty szw sztm a = do
 
 malloc ::
   ( MonadIO m
+  , MonadFail m
   , Functor m
   , Functor sbe
   )
@@ -1151,7 +1158,10 @@ malloc ty szw sztm = do
       let fr =  memFailRsn sbe ("Failed malloc allocation of type " ++ show (ppMemType ty)) []
       t <$ processMemCond fr c
 
-simplifyAddr :: ( Functor m , MonadIO m , Functor sbe ) =>
+simplifyAddr :: ( Functor m
+                , MonadIO m
+                , MonadFail m
+                , Functor sbe ) =>
                 SBETerm sbe -> Simulator sbe m (SBETerm sbe)
 simplifyAddr addr = do
   simplifyEnabled <- gets (optsSimplifyAddrs . lssOpts)
@@ -1175,6 +1185,7 @@ simplifyAddr addr = do
 load ::
   ( Functor m
   , MonadIO m
+  , MonadFail m
   , Functor sbe
   )
   => MemType -> SBETerm sbe -> Alignment -> Simulator sbe m (SBETerm sbe)
@@ -1192,6 +1203,7 @@ load tp addr a = do
 loadString ::
   ( Functor m
   , MonadIO m
+  , MonadFail m
   , Functor sbe
   )
   => String -> SBETerm sbe -> Simulator sbe m String
@@ -1214,6 +1226,7 @@ loadString nm ptr = do
 
 resolveFunPtrTerm ::
   ( MonadIO m
+  , MonadFail m
   , Functor m
   , Functor sbe
   )
@@ -1226,6 +1239,7 @@ resolveFunPtrTerm fp = do
 store ::
   ( Functor m
   , MonadIO m
+  , MonadFail m
   , Functor sbe
   )
   => MemType -> SBETerm sbe -> SBETerm sbe -> Alignment -> Simulator sbe m ()
@@ -1240,7 +1254,7 @@ store tp val dst a = do
   let fr = memFailRsn sbe "Invalid store address: " [dst]
   processMemCond fr c
 
-memset :: (Functor sbe, Functor m, MonadIO m)
+memset :: (Functor sbe, Functor m, MonadIO m, MonadFail m)
        => String -- ^ Name of function for error purposes.
        -> SBETerm sbe -- ^ Destination
        -> SBETerm sbe -- ^ Value (must be an i8)
@@ -1257,7 +1271,7 @@ memset nm dst0 val lw len = do
       store (ArrayType n i8) a dst0 0
 
 dumpMem ::
-  (Functor m, MonadIO m) =>
+  (Functor m, MonadIO m, MonadFail m) =>
   Int -> String -> Maybe [(Integer, Integer)] -> Simulator sbe m ()
 dumpMem v msg mranges =
   whenVerbosity (>=v) $ do
@@ -1339,6 +1353,7 @@ type StdOvdEntry sbe m =
   ( Functor sbe
   , Functor m
   , MonadIO m
+  , MonadFail m
   )
   => OverrideEntry sbe m
 

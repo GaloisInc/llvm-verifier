@@ -105,7 +105,7 @@ lssImpl sbe mem cb argv0 args = do
     runMainFn mainDef ("lss" : argv0)
 
 -- | Runs a function whose signature matches main.
-runMainFn :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+runMainFn :: (SimulatorContext sbe m, MonadException m)
         => SymDefine (SBETerm sbe)
         -> [String] -- ^ argv
         -> Simulator sbe m (ExecRslt sbe Integer)
@@ -127,14 +127,10 @@ runMainFn mainDef argv' = do
           where mval = asUnsignedInteger sbe w rv
     Just _ -> error "internal: Unsupported return type of main()"
 
-buildArgv ::
-  ( MonadIO m
-  , Functor sbe
-  , Functor m
-  )
-  => [MemType] -- ^ Types of arguments expected by main.
-  -> [String] -- ^ Arguments
-  -> Simulator sbe m [(MemType,SBETerm sbe)]
+buildArgv :: SimulatorContext sbe m =>
+             [MemType] -- ^ Types of arguments expected by main.
+          -> [String] -- ^ Arguments
+          -> Simulator sbe m [(MemType,SBETerm sbe)]
 buildArgv [] argv' = do
   liftIO $ when (length argv' > 1) $ do
     putStrLn $ "WARNING: main() takes no argv; ignoring provided arguments:\n" ++ show argv'

@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {- |
 Module           : $Header$
 Description      : Debugger implementation for LSS
@@ -36,6 +37,7 @@ import Control.Applicative ((<**>))
 #endif
 import Control.Monad
 import Control.Monad.Identity
+import Control.Monad.Fail
 import qualified Control.Monad.State as MTL
 import Control.Monad.State( MonadIO(..), lift )
 import Control.Monad.State.Class
@@ -128,7 +130,7 @@ resetInterrupt = do
   return ()
 #endif
 
-checkForBreakpoint :: (Functor sbe, Functor m, MonadException m)
+checkForBreakpoint :: DebuggerContext sbe m
                    => DebuggerRef sbe m -> Simulator sbe m ()
 checkForBreakpoint r = do
   mcf <- preuse $ currentPathOfState . pathCallFrames
@@ -145,7 +147,7 @@ setPrevCommand :: MonadIO m
                -> m ()
 setPrevCommand dr cmd = withIORef dr $ onNoInput .= cmd
 
-runNextCommand :: (Functor sbe, Functor m, MonadException m)
+runNextCommand :: DebuggerContext sbe m
                => DebuggerCont sbe m
 runNextCommand dr = do
   mline <- getInputLine "(lss) "
@@ -174,7 +176,7 @@ data DebuggerState sbe m
                    }
 
 -- | Create initial debugger state.
-initialState :: (Functor sbe, Functor m, MonadException m)
+initialState :: DebuggerContext sbe m
              => Codebase sbe
              -> DebuggerState sbe m
 initialState cb = 
@@ -217,7 +219,7 @@ instance Applicative (Debugger sbe m) where
   mf <*> mv = Debugger $ \c -> do
     runDebugger mf (\f -> runDebugger mv (c.f))
 
-instance (Functor sbe, Functor m, MonadException m) => Monad (Debugger sbe m) where
+instance DebuggerContext sbe m => Monad (Debugger sbe m) where
   m >>= h = Debugger $ \c -> runDebugger m (\v -> runDebugger (h v) c)
   return v = Debugger ($v)
   fail m = Debugger $ \_c dr -> do
@@ -225,12 +227,12 @@ instance (Functor sbe, Functor m, MonadException m) => Monad (Debugger sbe m) wh
     setPrevCommand dr $ return ()
     runNextCommand dr
 
-instance (Functor sbe, Functor m, MonadException m)
+instance DebuggerContext sbe m
       => MTL.MonadState (DebuggerState sbe m) (Debugger sbe m) where
   get   = Debugger $ \c r -> liftIO (readIORef r) >>= flip c r
   put v = Debugger $ \c r -> liftIO (writeIORef r v) >> c () r
 
-instance (Functor sbe, Functor m, MonadException m) => MonadIO (Debugger sbe m) where
+instance DebuggerContext sbe m => MonadIO (Debugger sbe m) where
   liftIO m = Debugger (\c r -> liftIO m >>= flip c r)
 
 getDebuggerRef :: Debugger sbe m (DebuggerRef sbe m)
@@ -243,8 +245,10 @@ runSim m = Debugger (\c r -> lift m >>= flip c r)
 resume :: Monad m => Debugger sbe m a
 resume = Debugger (\_ _ -> return ())
 
+type DebuggerContext sbe m = (Functor sbe, Functor m, MonadException m, MonadFail m)
+
 -- | Setup simulator to run debugger when needed.
-initializeDebugger :: (Functor sbe, Functor m, MonadException m)
+initializeDebugger :: DebuggerContext sbe m
                    => Simulator sbe m (DebuggerRef sbe m)
 initializeDebugger = do
   cb <- gets codebase
@@ -255,7 +259,7 @@ initializeDebugger = do
   return r
 
 -- | Enter debugger repl.
-enterDebugger :: (Functor sbe, Functor m, MonadException m)
+enterDebugger :: DebuggerContext sbe m
               => DebuggerRef sbe m
               -> Bool -- ^ Indicates if debugger was entered due to error in current path.
               -> Simulator sbe m ()
@@ -278,7 +282,7 @@ enterDebugger r eoe = do
                $ defaultSettings { historyFile = historyPath }
   runInputT settings (runNextCommand r)
 
-enterDebuggerOnError :: (Functor sbe, Functor m, MonadException m)
+enterDebuggerOnError :: DebuggerContext sbe m
                      => DebuggerRef sbe m
                      -> ErrorHandler sbe m
 enterDebuggerOnError r cs rsn = do
@@ -290,7 +294,7 @@ enterDebuggerOnError r cs rsn = do
   -- Debugger state
   enterDebugger r True
 
-enterDebuggerOnInterrupt :: (Functor sbe, Functor m, MonadException m)
+enterDebuggerOnInterrupt :: DebuggerContext sbe m
                          => DebuggerRef sbe m
                          -> Simulator sbe m ()
 enterDebuggerOnInterrupt r = do
@@ -300,7 +304,7 @@ enterDebuggerOnInterrupt r = do
   dbugM $ "Resuming simulation"
   liftIO $ resetInterrupt
 
-enterDebuggerAtBreakpoint :: (Functor sbe, Functor m, MonadException m)
+enterDebuggerAtBreakpoint :: DebuggerContext sbe m
                           => DebuggerRef sbe m
                           -> Simulator sbe m ()
 enterDebuggerAtBreakpoint dr = do
@@ -352,7 +356,7 @@ promptYesNo = promptChoice prompt choices
 
 -- | Check to see if we should warn user before resuming.  Return True
 -- if resume should continue
-warnIfResumeThrowsError :: (Functor sbe, Functor m, MonadException m)
+warnIfResumeThrowsError :: DebuggerContext sbe m
                         => Debugger sbe m Bool
 warnIfResumeThrowsError = do
   rte <- use resumeThrowsError
@@ -384,7 +388,7 @@ warnIfResumeThrowsError = do
 -- | @resumeActivePath m@ runs @m@ with the current path,
 -- and resumes execution if there is a current path and @m@
 -- returns true.
-resumeActivePath :: (Functor sbe, Functor m, MonadException m)
+resumeActivePath :: DebuggerContext sbe m
                  => (Path sbe -> Simulator sbe m ())
                  -> Debugger sbe m ()
 resumeActivePath action = do
@@ -396,7 +400,7 @@ resumeActivePath action = do
 
 type DebuggerGrammar a = Grammar Identity a
 
-type SimGrammar sbe m = (Functor sbe, Functor m, MonadException m)
+type SimGrammar sbe m = DebuggerContext sbe m
                      => DebuggerGrammar (Debugger sbe m ())
 
 commandHelp :: Grammar m a -> Doc
@@ -540,7 +544,7 @@ pathSatCmd =
 
 -- | Kills the current path with the debugger.
 -- Assumes that there is an active path.
-killPathByDebugger :: (Functor sbe, Functor m, MonadException m)
+killPathByDebugger :: DebuggerContext sbe m
                    => Debugger sbe m ()
 killPathByDebugger = do
   runSim $ killCurrentPath (FailRsn "Terminated by debugger.")
@@ -698,7 +702,7 @@ ppBreakpoint (sbid,0) = ppSymBlockID sbid
 ppBreakpoint (sbid,i) = ppSymBlockID sbid PP.<> char ':' PP.<> int i
 
 -- | Run a computation if there is an active 
-withActiveCS :: (Functor sbe, Functor m, MonadException m)
+withActiveCS :: DebuggerContext sbe m
              => a -- ^ Result to return if there is no execution path.
              -> Debugger sbe m a -- ^ Action to run if there is an active path.
              -> Debugger sbe m a
@@ -709,7 +713,7 @@ withActiveCS v action = do
     _ -> dbugM "No active execution path." >> return v
 
 -- | @withActivePath v act@ runs @act@ with the active path
-withActivePath :: (Functor sbe, Functor m, MonadException m)
+withActivePath :: DebuggerContext sbe m
                => a
                -> (Path sbe -> Debugger sbe m a)
                -> Debugger sbe m a
@@ -720,7 +724,7 @@ withActivePath v action = do
     _ -> dbugM "No active execution path." >> return v
 
 -- | @withActiveCallFrame v act@ runs @act@ with the active call frame.
-withActiveCallFrame :: (Functor sbe, Functor m, MonadException m)
+withActiveCallFrame :: DebuggerContext sbe m
                     => a
                     -> (CallFrame sbe -> Simulator sbe m a)
                     -> Debugger sbe m a
@@ -740,7 +744,7 @@ continueCmd = cmdDef "Continue execution." $ do
   resumeActivePath $ \_ -> do
     onPathPosChange .= checkForBreakpoint dr
 
-onReturnFrom :: (Functor sbe, Functor m, MonadException m)
+onReturnFrom :: DebuggerContext sbe m
              => DebuggerRef sbe m -> Int -> Simulator sbe m ()
 onReturnFrom dr ht = do
   Just p <- preuse currentPathOfState
@@ -757,7 +761,7 @@ finishCmd = cmdDef desc $ do
   where desc = "Execute until the current stack frame returns."
 
 enterDebuggerAfterNSteps
-  :: (Functor sbe, Functor m, MonadException m) 
+  :: DebuggerContext sbe m
   => DebuggerRef sbe m -> Integer -> Simulator sbe m ()
 enterDebuggerAfterNSteps dr n
   | n <= 1 = enterDebugger dr False
@@ -786,7 +790,7 @@ ppFrameLoc sbe i cf =
           ppIdent nm <> char '=' <+> prettyTermD sbe v
 
 -- | Run action with call frame list if path is active.
-withActiveStack :: (Functor sbe, Functor m, MonadException m)
+withActiveStack :: DebuggerContext sbe m
                 => ([CallFrame sbe] -> Debugger sbe m ())
                 -> Debugger sbe m ()
 withActiveStack action = do
@@ -797,7 +801,7 @@ withActiveStack action = do
 
 -- | @selectFrame i action@ checks that @i@ is a valid frame,
 -- and is so, selects the frame and runs @action@ with the frame.
-selectFrame :: (Functor sbe, Functor m, MonadException m)
+selectFrame :: DebuggerContext sbe m
             => Int -> (CallFrame sbe -> Debugger sbe m ()) -> Debugger sbe m ()
 selectFrame i action =
   withActiveStack $ \cfl -> do

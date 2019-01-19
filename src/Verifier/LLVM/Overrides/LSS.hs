@@ -36,7 +36,7 @@ import Verifier.LLVM.Simulator.SimUtils
 
 -- | Attempts to read an array of boolean values from a pointer with the given number
 -- of elements.
-getEvalInputs :: (Functor m, MonadIO m, Functor sbe)
+getEvalInputs :: SimulatorContext sbe m
                => String -- ^ Name of function calling this for error purposes.
               -> SBETerm sbe -- ^ Pointer to input values (should be an i8p).
               -> SBETerm sbe -- ^ Size of array of inputs (should be an int32).
@@ -427,7 +427,7 @@ lss_write_sawcore =
       _ -> wrongArguments "lss_write_sawcore_uint32"
 
 
-registerLSSOverrides :: (Functor m, MonadIO m, Functor sbe, Ord (SBETerm sbe))
+registerLSSOverrides :: (SimulatorContext sbe m, Ord (SBETerm sbe))
                      => Simulator sbe m ()
 registerLSSOverrides = do
   let groundOverrides =

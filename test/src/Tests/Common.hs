@@ -17,6 +17,7 @@ module Tests.Common where
 
 import qualified Numeric
 import           Control.Monad (unless, void)
+import           Control.Monad.Fail ( MonadFail )
 import           Control.Monad.State (gets, MonadIO, liftIO)
 import           Control.Lens ( (^.) )
 
@@ -115,7 +116,7 @@ forAllMemModels groupName bcFile mkTest =
         , mkTest "SAW model"       v createSAWModel      getmdl
         ]
 
-runTestSimulator :: (MonadIO m, MonadException m, Functor m)
+runTestSimulator :: (MonadIO m, MonadException m, Functor m, MonadFail m)
                  => Int
                  -> SBECreateFn
                  -> IO L.Module -- ^ Code to run in.
@@ -130,7 +131,7 @@ runTestSimulator v createFn mdlio action = do
     setVerbosity v
     action
 
-runCInt32Fn :: (Functor sbe, MonadIO m, MonadException m, Functor m)
+runCInt32Fn :: (SimulatorContext sbe m, MonadException m)
             => L.Symbol
             -> [Int32]
             -> ExpectedRV Integer
@@ -143,7 +144,7 @@ runCInt32Fn sym cargs erv = do
     mrv <- getProgramReturnValue
     checkReturnValue sbe erv mrv
 
-runVoidFn :: (Functor sbe, MonadIO m, MonadException m, Functor m)
+runVoidFn :: (SimulatorContext sbe m, MonadException m)
             => L.Symbol
             -> ExpectedRV Integer
             -> Simulator sbe m ()
@@ -196,7 +197,7 @@ runLssTest bkName v sbeCF mdlio args expectErr expectRV =
           liftIO $ checkExecResult sbe expectRV execResult
           liftIO $ checkErrPaths expectErr execResult
 
-testRunMain :: (Functor sbe, Functor m, MonadIO m, MonadException m)
+testRunMain :: (SimulatorContext sbe m, MonadException m)
             => [String] -> Simulator sbe m (ExecRslt sbe Integer)
 testRunMain args = do
   cb <- gets codebase

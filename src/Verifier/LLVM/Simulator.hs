@@ -35,6 +35,7 @@ Point-of-contact : jhendrix
 {-# LANGUAGE ViewPatterns          #-}
 module Verifier.LLVM.Simulator
   ( Simulator (SM)
+  , SimulatorContext
   , getVerbosity
   , setVerbosity
   , whenVerbosity
@@ -112,7 +113,7 @@ getPath :: (Functor m, Monad m)
         => Simulator sbe m (Maybe (Path sbe))
 getPath = preuse currentPathOfState
 
-withCurrentCallStack :: Monad m
+withCurrentCallStack :: SimulatorContext sbe m
                      => String
                      -> MTL.State (CallStack sbe) a
                      -> Simulator sbe m a
@@ -132,10 +133,8 @@ getMem = preuse currentPathMem
 
 -- | Run simulator in given context.
 runSimulator :: forall sbe a m.
-  ( Functor sbe
+  ( SimulatorContext sbe m
   , Ord (SBETerm sbe)
-  , Functor m
-  , MonadIO m
   , MonadException m
   )
   => Codebase sbe          -- ^ Post-transform LLVM code, memory alignment, and
@@ -176,12 +175,7 @@ runSimulator cb sbe mem mopts m = do
     Right x -> return x
 
 -- | Initialize all global data and register all defines.
-initGlobals ::
-  ( MonadIO m
-  , Functor sbe
-  , Functor m
-  )
-  => Simulator sbe m ()
+initGlobals :: SimulatorContext sbe m => Simulator sbe m ()
 initGlobals = do
   cb <- gets codebase
   let nms = cb^.cbGlobalNameMap
@@ -216,16 +210,11 @@ entryRsltReg = Ident "__galois_final_rslt"
 
 -- | External entry point for a function call.  This will push a callFrame
 -- for the function to the stack, and run the function until termination.
-callDefine ::
-  ( MonadIO m
-  , Functor m
-  , MonadException m
-  , Functor sbe
-  )
-  => Symbol     -- ^ Callee symbol
-  -> RetType       -- ^ Callee return type
-  -> [(MemType,SBETerm sbe)] -- ^ Callee argument generator
-  -> Simulator sbe m ()
+callDefine :: (SimulatorContext sbe m, MonadException m) =>
+              Symbol     -- ^ Callee symbol
+           -> RetType       -- ^ Callee return type
+           -> [(MemType,SBETerm sbe)] -- ^ Callee argument generator
+           -> Simulator sbe m ()
 callDefine calleeSym t args = do
   def <- lookupSymbolDef calleeSym
   let retReg = (,entryRsltReg) <$> sdRetType def
@@ -241,16 +230,12 @@ callDefine calleeSym t args = do
   signalPathPosChangeEvent
   run
 
-callDefine' ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  )
-  => Bool                    -- ^ Is this a redirected call?
-  -> Symbol                  -- ^ Callee symbol
-  -> Maybe (MemType, Ident)  -- ^ Callee return type and result register
-  -> [(MemType,SBETerm sbe)]           -- ^ Callee arguments
-  -> Simulator sbe m ()
+callDefine' :: SimulatorContext sbe m =>
+               Bool                    -- ^ Is this a redirected call?
+            -> Symbol                  -- ^ Callee symbol
+            -> Maybe (MemType, Ident)  -- ^ Callee return type and result register
+            -> [(MemType,SBETerm sbe)]           -- ^ Callee arguments
+            -> Simulator sbe m ()
 callDefine' isRedirected calleeSym@(Symbol calleeName) mreg args = do
   -- NB: Check overrides before anything else so we catch overriden intrinsics
   symOver <- use (fnOverrides . at calleeSym)
@@ -289,15 +274,11 @@ lookupSymbolDef sym = do
     Nothing  -> do
       errorPath $ "Could not find definition for symbol " ++ show (ppSymbol sym) ++ "."
 
-runNormalSymbol ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  )
-  => Symbol                 -- ^ Callee symbol
-  -> Maybe (MemType, Ident) -- ^ Callee return type and result register
-  -> [SBETerm sbe]          -- ^ Callee arguments
-  -> Simulator sbe m ()
+runNormalSymbol :: SimulatorContext sbe m =>
+                   Symbol                 -- ^ Callee symbol
+                -> Maybe (MemType, Ident) -- ^ Callee return type and result register
+                -> [SBETerm sbe]          -- ^ Callee arguments
+                -> Simulator sbe m ()
 runNormalSymbol calleeSym mreg args = do
   def <- lookupSymbolDef calleeSym
   dbugM' 5 $ "callDefine': callee " ++ show (ppSymbol calleeSym)
@@ -331,7 +312,7 @@ signalPathPosChangeEvent = do
     Just{} -> join (use onPathPosChange)
 
 
-killPathOnError :: (Functor sbe, Functor m, MonadException m)
+killPathOnError :: (SimulatorContext sbe m, MonadException m)
                 => ErrorHandler sbe m
 killPathOnError cs rsn = do
   -- Reset state
@@ -357,12 +338,8 @@ killPathOnError cs rsn = do
   run
   
 -- | Run execution until completion or a breakpoint is encountered.
-run :: forall sbe m .
-  ( Functor sbe
-  , Functor m
-  , MonadException m
-  )
-  => Simulator sbe m ()
+run :: forall sbe m . (SimulatorContext sbe m, MonadException m) =>
+       Simulator sbe m ()
 run = do
   mcs <- use ctrlStk
   case mcs of
@@ -473,7 +450,7 @@ getCurrentEvalContext nm =do
                      , evalMemory = mmem
                      }
 
-evalExprInCC :: (Functor m, MonadIO m, Functor sbe) 
+evalExprInCC :: SimulatorContext sbe m
          => String -> SymValue (SBETerm sbe) -> Simulator sbe m (SBETerm sbe)
 evalExprInCC nm sv = runEvaluator nm $ evalExpr sv
 
@@ -496,7 +473,7 @@ andAll (h:l) = do
   sbe <- gets symBE
   foldM (\x y -> liftSBE (applyAnd sbe x y)) h l
 
-checkPathUnsat :: Monad m => SBEPred sbe -> Simulator sbe m Bool
+checkPathUnsat :: SimulatorContext sbe m => SBEPred sbe -> Simulator sbe m Bool
 checkPathUnsat c = do
   cparents <- assumptionsForActivePath
   sbe <- gets symBE
@@ -506,13 +483,10 @@ checkPathUnsat c = do
   fsat <- liftSBE $ termSAT sbe a'
   return (fsat == Unsat)
 
-runEvaluator ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  )
-  => String
-  -> Evaluator sbe a -> Simulator sbe m a
+runEvaluator :: SimulatorContext sbe m =>
+                String
+             -> Evaluator sbe a
+             -> Simulator sbe m a
 runEvaluator nm m = do
   ec <- getCurrentEvalContext nm
   mr <- liftIO $ runReaderT (runExceptT m) ec
@@ -541,14 +515,10 @@ evalExpr sv = do
           error $ "evalExp' called with missing global symbol: " ++ show sym
     SValExpr _ (ExprEvalFn fn) -> fn evalExpr
 
-insertGlobalFn ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  )
-  => Symbol
-  -> [BlockLabel]
-  -> Simulator sbe m ()
+insertGlobalFn :: SimulatorContext sbe m =>
+                  Symbol
+               -> [BlockLabel]
+               -> Simulator sbe m ()
 insertGlobalFn sym blocks = do
   let errMsg = "Insufficient space for new function"
   Just m <- preuse currentPathMem
@@ -561,16 +531,12 @@ insertGlobalFn sym blocks = do
       forOf_ folded (blocks `zip` bptrs) $ \(l,p) -> do
         blockPtrs . at (sym,l) ?= p
 
-insertGlobalTerm ::
-  ( Functor m
-  , MonadIO m
-  , Functor sbe
-  )
-  => String
-  -> Symbol
-  -> SymType
-  -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
-  -> Simulator sbe m ()
+insertGlobalTerm :: SimulatorContext sbe m =>
+                    String
+                 -> Symbol
+                 -> SymType
+                 -> (SBE sbe -> SBEMemory sbe -> sbe (Maybe (SBETerm sbe, SBEMemory sbe)))
+                 -> Simulator sbe m ()
 insertGlobalTerm errMsg sym _ f = do
   Just m <- preuse currentPathMem
   mr <- withSBE $ \s -> f s m
@@ -584,8 +550,8 @@ insertGlobalTerm errMsg sym _ f = do
 -- Instruction stepper and related functions
 
 
-splitBranches :: (Functor m, MonadIO m)
-              => [(SBEPred sbe, SymBlockID)] -> MergeLocation -> Simulator sbe m ()
+splitBranches :: SimulatorContext sbe m =>
+                 [(SBEPred sbe, SymBlockID)] -> MergeLocation -> Simulator sbe m ()
 splitBranches allPairs ml = do
   runSat <- gets (optsSatAtBranches . lssOpts)
   branches <-
@@ -607,12 +573,7 @@ splitBranches allPairs ml = do
 -- | Execute a single LLVM-Sym AST instruction
 -- Returns true if execution should continue, and false if
 -- we should enter the debugger.
-step ::
-  ( MonadIO m
-  , Functor m
-  , Functor sbe
-  )
-  => SymStmt (SBETerm sbe) -> Simulator sbe m ()
+step :: SimulatorContext sbe m => SymStmt (SBETerm sbe) -> Simulator sbe m ()
 step (Call callee args mres) = do
   sbe <- gets symBE
   join $ runEvaluator "PushCallFrame" $ do

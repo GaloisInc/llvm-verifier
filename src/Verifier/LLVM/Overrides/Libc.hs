@@ -108,7 +108,7 @@ readInt r = (read digits, r')
   where (digits,r') = span isDigit r
  
 
-printfToString :: forall sbe m . (Functor sbe, Functor m, MonadIO m)
+printfToString :: forall sbe m . SimulatorContext sbe m
                => String -> [(MemType,SBETerm sbe)] -> Simulator sbe m String
 printfToString fmt args = do
     let vargs = V.fromList args
@@ -331,7 +331,7 @@ memcpy_chk aw = do
         return dst
       _ -> wrongArguments nm
 
-registerLibcOverrides :: (Functor m, MonadIO m, Functor sbe) => Simulator sbe m ()
+registerLibcOverrides :: SimulatorContext sbe m => Simulator sbe m ()
 registerLibcOverrides = do
   aw <- ptrBitwidth <$> getDL
   -- Register malloc
