@@ -2,11 +2,12 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -fno-warn-missing-signatures #-}
@@ -417,10 +418,12 @@ liftStmt stmt =
       -- this monad
       return (BadSymStmt stmt)
     Result reg (L.Call _b tp v tpvl) _ -> do
-      mtp@(PtrType (FunType (fdRetType -> Just rty))) <- liftMemType' tp
-      sv <- liftValue mtp v
-      svl <- traverse liftArgValue tpvl
-      return $ Call sv svl (Just (rty, reg))
+      liftMemType' tp >>= \case
+        mtp@(PtrType (FunType (fdRetType -> Just rty))) -> do
+          sv <- liftValue mtp v
+          svl <- traverse liftArgValue tpvl
+          return $ Call sv svl (Just (rty, reg))
+        _ -> failAttempt $ "Call not to PtrType: " <> show (L.ppType tp)
     Result r app _ -> do
       -- Return an assignemnt statement for the value.
       let retExpr tp v = return $ Assign r tp v
@@ -489,10 +492,11 @@ liftStmt stmt =
           tp <- liftMemType' tp0
           ssz <- case msz of
                    Nothing -> return Nothing
-                   Just (L.Typed szTp0 sz) -> do
-                     IntType w <- liftMemType' szTp0
-                     v <- liftValue (IntType w) sz
-                     return (Just (w,v))
+                   Just (L.Typed szTp0 sz) ->
+                     liftMemType' szTp0 >>= \case
+                       IntType w -> do v <- liftValue (IntType w) sz
+                                       return (Just (w,v))
+                       badTy -> failAttempt $ "Allocation size is not IntType: " <> show (ppMemType badTy)
           return $ Alloca r tp ssz (liftAlign tp a)
         L.Load (L.Typed tp0 ptr) _ malign -> do
           tp <- liftMemType' tp0
@@ -621,10 +625,10 @@ liftBB lti phiMap bb = do
               block = mkSymBlock (blockName 0) (reverse (jumpStmt : (il' ++ il)))
           return [ block ]
 
-        impl [stmt@(Effect (L.Br (Typed tp c) tgt1 tgt2) _)] il = do
-          mres <- runLiftAttempt $ do
-            IntType 1 <- liftMemType' tp
-            liftValue (IntType 1) c
+        impl [stmt@(Effect (L.Br (L.Typed tp v) tgt1 tgt2) _)] il = do
+          mres <- runLiftAttempt $ liftMemType' tp >>= \case
+            IntType 1 -> liftValue (IntType 1) v
+            badTy -> failAttempt $ "Branch cond is not IntType 1: " <> show (ppMemType badTy)
           case mres of
             Left{} -> do
               ss <- unsupportedStmt stmt "Unparsable condition."
@@ -636,10 +640,11 @@ liftBB lti phiMap bb = do
               return $ mkSymBlock (blockName 0) (reverse (branchStmt:il))
                          : F.toList rest
         impl [stmt@(Effect (L.Switch (Typed tp v) def cases) _)] il = do
-          mr <- runLiftAttempt $ do
-            IntType w <- liftMemType' tp
-            tsv <- liftValue (IntType w) v
-            return (w, tsv)
+          mr <- runLiftAttempt $
+                liftMemType' tp >>= \case
+                  IntType w -> do tsv <- liftValue (IntType w) v
+                                  return (w, tsv)
+                  badTy -> failAttempt $ "Switch value is not IntType: " <> show (ppMemType badTy)
           case mr of
             Left{} -> do
               symStmt <- unsupportedStmt stmt "Unparsable switch statement."
