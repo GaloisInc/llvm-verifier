@@ -245,8 +245,8 @@ liftValue DoubleType (L.ValDouble d) =
   mkSValExpr $ SValDouble d
 liftValue _ (L.ValIdent i) =
   return $ SValIdent i
-liftValue _ (L.ValSymbol sym) =
-  return $ SValSymbol sym
+liftValue _ (L.ValSymbol symval) =
+  return $ SValSymbol symval
 liftValue (PtrType etp) L.ValNull =
   mkSValExpr $ SValNull etp
 liftValue (IntType w) L.ValNull =
