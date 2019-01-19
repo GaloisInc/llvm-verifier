@@ -43,7 +43,7 @@ module Verifier.LLVM.Codebase.Translation
 
 import Control.Exception (try, catch, Exception, throwIO)
 import Control.Lens hiding (op)
-import Control.Monad.State.Strict
+import Control.Monad.State.Strict hiding ( fail )
 import qualified Data.Foldable as F
 import qualified Data.LLVM.CFG              as CFG
 import Data.Map                   (Map)
@@ -57,7 +57,7 @@ import qualified Text.LLVM.PP               as L
 import Text.LLVM.AST              (Stmt'(..), Typed (..))
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Prelude ()
-import Prelude.Compat hiding ( mapM_, (<>) )
+import Prelude.Compat hiding ( mapM_, (<>), fail )
 
 import Verifier.LLVM.Backend
 import Verifier.LLVM.Codebase.AST
@@ -150,7 +150,7 @@ blockPhiMap' blocks = execStateT (traverse go blocks) Map.empty
   where go :: (?lc::LLVMContext, ?sbe :: SBE sbe)
            => CFG.BB -> StateT (PhiMap (SBETerm sbe)) IO ()
         go bb@(L.BasicBlock { L.bbLabel = Nothing }) =
-          fail $ unwords ["blockPhiMap': basic block missing label: ", show bb]
+          error $ unwords ["blockPhiMap': basic block missing label: ", show bb]
         go (L.BasicBlock { L.bbLabel = Just (_,tgt), L.bbStmts = sl }) =
           mapM_ (parseInstr tgt) (fmap (fmap snd) sl)
         parseInstr tgt stmt@(L.Result r (L.Phi tp vals) _) = do
@@ -175,9 +175,11 @@ newtype LiftAttempt a = LiftAttempt { unLiftAttempt :: IO a }
   deriving (Functor, Applicative, MonadIO)
 
 instance Monad LiftAttempt where
-  fail = LiftAttempt . throwIO . LiftAttemptError
   return = LiftAttempt . return
   LiftAttempt m >>= f = LiftAttempt (m >>= unLiftAttempt . f)
+
+failAttempt :: forall a. String -> LiftAttempt a
+failAttempt = LiftAttempt . throwIO . LiftAttemptError
 
 newtype LiftAttemptError = LiftAttemptError { unLiftAttemptError :: String }
   deriving Show
@@ -262,12 +264,12 @@ liftValue (StructType si) (L.ValStruct fldvs) =
 liftValue (StructType si) (L.ValPackedStruct fldvs) =
     mkSValExpr . SValStruct si =<< traverse liftTypedValue (V.fromList fldvs)
 liftValue (ArrayType len (IntType 8)) (L.ValString str) = do
-  unless (fromIntegral len == length str) $ fail "Incompatible types"
+  unless (fromIntegral len == length str) $ failAttempt "Incompatible types"
   liftIO $ liftStringValue str
 liftValue rtp (L.ValConstExpr ce)  =
   case ce of
     L.ConstGEP _ (Just _) _ _ ->
-      fail "NYI: Constant GEP with `inrange`"
+      failAttempt "NYI: Constant GEP with `inrange`"
     L.ConstGEP inbounds Nothing _ (base:il) -> do
       mkSValExpr . snd =<< liftGEP inbounds base il
     L.ConstConv op (L.Typed itp0 t) _tp1 -> do
@@ -279,19 +281,19 @@ liftValue rtp (L.ValConstExpr ce)  =
         (L.IntToPtr, IntType w, PtrType ptrType) -> do
           mkSValExpr (IntToPtr Nothing w v ptrType)
         (L.BitCast,_,_) -> liftBitcast itp v rtp
-        _ -> fail "Could not interpret constant expression."
-    _ -> fail "Could not interpret constant expression."
+        _ -> failAttempt "Could not interpret constant expression."
+    _ -> failAttempt "Could not interpret constant expression."
 liftValue tp L.ValUndef = zeroValue tp
-liftValue _  L.ValLabel{} = fail "Could not interpret label."
+liftValue _  L.ValLabel{} = failAttempt "Could not interpret label."
 liftValue tp L.ValZeroInit = zeroValue tp
-liftValue _  L.ValAsm{} = fail "Could not interpret asm."
-liftValue _  L.ValMd{} = fail "Could not interpret metadata."
+liftValue _  L.ValAsm{} = failAttempt "Could not interpret asm."
+liftValue _  L.ValMd{} = failAttempt "Could not interpret metadata."
 liftValue tp v =
-    fail $ concat [ "Could not interpret LLVM value "
-                  , show v
-                  , " of type "
-                  , show (ppMemType tp)
-                  ]
+    failAttempt $ concat [ "Could not interpret LLVM value "
+                         , show v
+                         , " of type "
+                         , show (ppMemType tp)
+                         ]
 
 -- | Lift a bitcast expression.
 liftBitcast :: (Monad m, ?lc :: LLVMContext)
@@ -302,7 +304,7 @@ liftBitcast :: (Monad m, ?lc :: LLVMContext)
 liftBitcast PtrType{} v PtrType{} = return v
 liftBitcast itp v rtp | itp `compatMemTypes` rtp = return v
 liftBitcast itp _ rtp =
-    fail $ "Symbolic simulator does not support bitcast between types " ++
+    error $ "Symbolic simulator does not support bitcast between types " ++
            show (ppMemType itp) ++ " and " ++ show (ppMemType rtp)
 
 zeroValue :: (?sbe :: SBE sbe) => MemType -> LiftAttempt (SymValue (SBETerm sbe))
@@ -329,7 +331,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
      let fn (L.Typed tp v) = (,v) <$> liftMemType' tp
      expr0 <- mkSValExpr (SValInteger aw 0)
      go expr0 rtp =<< traverse fn args0
-  where gepFailure msg = fail $ "Could not parse GEP Value: " ++ msg
+  where gepFailure msg = failAttempt $ "Could not parse GEP Value: " ++ msg
         pdl = llvmDataLayout ?lc
         aw :: BitWidth
         aw = ptrBitwidth pdl
@@ -341,7 +343,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
           return (tp, PtrAdd sv args)
         go args (ArrayType _ etp) r = goArray args etp r
         go args (PtrType tp) r = do
-          mtp <- maybe (fail "failed to convert pointer type") return $
+          mtp <- maybe (failAttempt "failed to convert pointer type") return $
                  asMemType tp
           goArray args mtp r
         go args (StructType si) r = goStruct args si r
@@ -366,7 +368,7 @@ liftGEP _inbounds (Typed initType0 initValue) args0 = do
         goArray _ _ tps = gepFailure $ "goArray with weird types: " ++ show (map (ppMemType . fst) tps)
 
         goStruct args si  ((IntType 32, L.ValInteger i) : r) = do
-          fi <- maybe (fail "failed to get struct field info") return $
+          fi <- maybe (failAttempt "failed to get struct field info") return $
                 siFieldInfo si (fromIntegral i)
           val <- mkSValExpr (SValInteger aw (toInteger (fiOffset fi)))
           args' <- mergeAdd args val
@@ -382,7 +384,7 @@ liftMemType' :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => L.Type
              -> LiftAttempt MemType
 liftMemType' tp =
-  maybe (fail ("failed to lift MemType: " ++ show (L.ppType tp))) return $
+  maybe (failAttempt ("failed to lift MemType: " ++ show (L.ppType tp))) return $
   liftMemType tp
 
 liftStmt ::
@@ -409,7 +411,7 @@ liftStmt stmt =
       taddr <- liftTypedValue addr
       return $ Store tp tptr taddr (liftAlign tp a)
     Effect{} ->
-      fail $ "can't translate effect: " ++ show (L.ppLLVM (L.ppStmt stmt))
+      failAttempt $ "can't translate effect: " ++ show (L.ppLLVM (L.ppStmt stmt))
     Result _ (L.Call _ _ (L.ValAsm{}) _) _ ->
       -- TODO: it would be good to emit a warning here, but we can't in
       -- this monad
@@ -430,7 +432,7 @@ liftStmt stmt =
             case tp of
               IntType w -> retTExpr tp (IntArith op Nothing w x y)
               VecType n (IntType w) -> retTExpr tp (IntArith op (Just n) w x y)
-              _ -> fail "Could not parse argument type."
+              _ -> failAttempt "Could not parse argument type."
       case app of
         L.Arith llvmOp (L.Typed tp u) v -> do
            op <- case llvmOp of
@@ -441,7 +443,7 @@ liftStmt stmt =
                    L.SDiv exact  -> return (SDiv exact)
                    L.URem        -> return URem
                    L.SRem        -> return SRem
-                   _ -> fail "Floating point operations not supported."
+                   _ -> failAttempt "Floating point operations not supported."
            retIntArith op tp u v
         L.Bit llvmOp (L.Typed tp u) v   -> retIntArith op tp u v
           where op = case llvmOp of
@@ -461,7 +463,7 @@ liftStmt stmt =
                     retTExpr rtp (fn Nothing iw sv rw)
                   (VecType n (IntType iw), VecType nr (IntType rw)) | n == nr && cond iw rw ->
                     retTExpr rtp (fn (Just n) iw sv rw)
-                  _ -> fail "Could not parse conversion types."
+                  _ -> failAttempt "Could not parse conversion types."
           case op of
             L.Trunc -> intConv (\iw rw -> iw > rw) Trunc
             L.ZExt -> intConv (\iw rw -> iw < rw) ZExt
@@ -472,17 +474,17 @@ liftStmt stmt =
                   retTExpr rtp (PtrToInt Nothing ptr sv w)
                 ( VecType n (PtrType ptr), VecType nr (IntType w)) | n == nr ->
                   retTExpr rtp (PtrToInt (Just n) ptr sv w)
-                _ -> fail "Could not parse conversion types."
+                _ -> failAttempt "Could not parse conversion types."
             L.IntToPtr ->
               case (itp, rtp) of
                 ( IntType w, PtrType ptr) ->
                   retTExpr rtp (IntToPtr Nothing w sv ptr)
                 ( VecType n (IntType w), VecType nr (PtrType ptr)) | n == nr ->
                   retTExpr rtp (IntToPtr (Just n) w sv ptr)
-                _ -> fail "Could not parse conversion types."
+                _ -> failAttempt "Could not parse conversion types."
             L.BitCast -> do
               retExpr rtp =<< liftBitcast itp sv rtp
-            _ -> fail $ "Unsupported conversion operator: " ++ show (L.ppConvOp op)
+            _ -> failAttempt $ "Unsupported conversion operator: " ++ show (L.ppConvOp op)
         L.Alloca tp0 msz a -> do
           tp <- liftMemType' tp0
           ssz <- case msz of
@@ -496,10 +498,10 @@ liftStmt stmt =
           tp <- liftMemType' tp0
           case tp of
             PtrType etp0 -> do
-              etp <- maybe (fail "") return $ asMemType etp0
+              etp <- maybe (failAttempt "") return $ asMemType etp0
               v <- liftValue tp ptr
               return $ Load r v etp (liftAlign etp malign)
-            _ -> fail $ "Unsupported type to load: " ++ show (ppMemType tp)
+            _ -> failAttempt $ "Unsupported type to load: " ++ show (ppMemType tp)
         L.ICmp op (L.Typed tp0 u) v -> do
           tp <- liftMemType' tp0
           x <- liftValue tp u
@@ -514,7 +516,7 @@ liftStmt stmt =
             VecType n (PtrType ptp) ->
               retTExpr (VecType n (IntType 1)) (ICmp op (Just n) (Right ptp) x y)
 
-            _ -> fail "Could not parse icmp argument type."
+            _ -> failAttempt "Could not parse icmp argument type."
         L.GEP ib tp tpvl     -> uncurry retTExpr =<< liftGEP ib tp tpvl
         L.Select (L.Typed tpc0 c') (L.Typed tpv0 v1') v2' -> do
           tpc <- liftMemType' tpc0
@@ -527,25 +529,25 @@ liftStmt stmt =
               retTExpr tpv $ Select Nothing c tpv v1 v2
             (VecType n (IntType w), VecType nr tpe) | w == 1 && n == nr ->
               retTExpr tpv $ Select (Just n) c tpe v1 v2
-            _  -> fail "Could not parse select intruction."
+            _  -> failAttempt "Could not parse select intruction."
         L.ExtractValue (L.Typed vtp v) il -> do
             vmtp <- liftMemType' vtp
             go vmtp il =<< liftValue vmtp v
           where go tp [] sv = retExpr tp sv
                 go (StructType si) (i0 : is) sv =
                     case fiType <$> siFieldInfo si i of
-                      Nothing -> fail "Illegal index"
+                      Nothing -> failAttempt "Illegal index"
                       Just tp -> go tp is =<< mkSValExpr (GetStructField si sv i)
                   where i = fromIntegral i0
                 go (ArrayType n tp) (i : is) sv
                     | 0 <= i && i < fromIntegral n = go tp is =<< mkSValExpr expr
-                    | otherwise = fail "Illegal index"
+                    | otherwise = failAttempt "Illegal index"
                   where expr = GetConstArrayElt (fromIntegral n) tp sv (fromIntegral i)
-                go _ _ _ = fail "non-composite type in extractvalue"
+                go _ _ _ = failAttempt "non-composite type in extractvalue"
         -- TODO: it would be good to issue a warning in the following,
         -- but the monad doesn't currently allow it
         L.InsertValue _ _ _ -> return (BadSymStmt stmt)
-        _ -> fail $ "Unsupported instruction: " ++ show (L.ppLLVM (L.ppInstr app))
+        _ -> failAttempt $ "Unsupported instruction: " ++ show (L.ppLLVM (L.ppInstr app))
 
 liftArgValue :: (?lc :: LLVMContext, ?sbe :: SBE sbe)
              => L.Typed L.Value -> LiftAttempt (MemType, SymValue (SBETerm sbe))
