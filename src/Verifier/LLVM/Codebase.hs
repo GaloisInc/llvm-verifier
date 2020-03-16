@@ -180,7 +180,7 @@ mkCodebase sbe dl mdl = do
       mg <- liftIO $ runLiftAttempt $ do
         tp <- liftMemType' (L.globalType lg)
         case L.globalValue lg of
-          Nothing -> fail $ unwords ["mkCodebase: global has null value", show lg]
+          Nothing -> failAttempt $ unwords ["mkCodebase: global has null value", show lg]
           Just gv -> Global sym tp <$> liftValue tp gv
       case mg of
         Left{} -> warn $ text "Skipping definition of" <+> ppSymbol sym
