@@ -40,6 +40,7 @@ import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
 import           Control.Lens hiding (ix, op)
 import           Control.Monad (zipWithM)
+import           Control.Monad.Fail ()
 import           Control.Monad.IO.Class
 import           Control.Monad.State hiding (zipWithM, replicateM, mapM, forM_)
 
@@ -54,6 +55,7 @@ import qualified Data.Set                  as Set
 import qualified Data.Vector               as V
 -- import qualified Data.Vector.Storable      as LV
 import           Numeric                   (showHex)
+import qualified Panic
 import qualified Text.LLVM.AST             as L
 import qualified Text.LLVM.PP              as L
 import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align)
@@ -73,6 +75,16 @@ import Verifier.LLVM.Simulator.SimUtils
 import Verifier.LLVM.Utils.Arithmetic
 
 -- -- Utility functions and declarations {{{1
+
+data BitBlastComponent = BitBlastComponent
+instance Panic.PanicComponent BitBlastComponent where
+  panicComponentName _ = "llvm-verify BitBlast"
+  panicComponentIssues _ = "https://github.com/GaloisInc/llvm-verifier/issues"
+  panicComponentRevision _ = ("unk", "unk")
+
+panic :: String -> [String] -> b
+panic = Panic.panic BitBlastComponent
+
 
 c2 :: (r -> s) -> (a -> b -> r) -> a -> b -> s
 g `c2` f = \x y -> g (f x y)
@@ -1785,7 +1797,7 @@ sbeBitBlast g dl mm =
            , stackPopFrame    = BitIO . mmStackPop mm
            , heapAlloc        = \m eltTp _ cnt a ->
                BitIO $ mmHeapAlloc mm m (memTypeSize dl eltTp) cnt a
-           , isAllocated      = fail "isAllocated not yet implemented for bitblast backend"
+           , isAllocated      = panic "sbeBitBlast" ["isAllocated not yet implemented for bitblast backend"]
            , memCopy          = BitIO `c6` mmMemCopy mm
 
            , termSAT          = BitIO . AIG.checkSat g
