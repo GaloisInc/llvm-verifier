@@ -157,21 +157,21 @@ runVoidFn sym erv = do
 checkReturnValue :: Monad m => SBE sbe -> ExpectedRV Integer -> Maybe (SBETerm sbe) -> m ()
 checkReturnValue sbe erv mrv =
     case (erv,mrv) of
-      (RV{}, Nothing) -> fail "Missing return value"
+      (RV{}, Nothing) -> error "Missing return value"
       (RV chk, Just rv) ->
         case asSignedInteger sbe 32 rv of
-          Nothing -> fail $ "Symbolic return value when constant expected.\n"
+          Nothing -> error $ "Symbolic return value when constant expected.\n"
                               ++ show (prettyTermD sbe rv)
           Just val ->
             unless (val == chk) $
-              fail $ "Expected " ++ show chk ++ ", got " ++ show val
+              error $ "Expected " ++ show chk ++ ", got " ++ show val
 
       (VoidRV,Nothing) -> return ()
-      (VoidRV, Just{}) -> fail $ "Received return value when none expected."
+      (VoidRV, Just{}) -> error $ "Received return value when none expected."
 
       (AllPathsErr, Nothing) -> return ()
       (AllPathsErr, Just{}) ->
-        fail "Received return value when all paths were expected to error."
+        error "Received return value when all paths were expected to error."
 
 lssTestAll :: String
            -> [String]    -- arguments to main
