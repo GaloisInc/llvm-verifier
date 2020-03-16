@@ -174,7 +174,7 @@ import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens
 import Control.Monad
-import Control.Monad.Fail (MonadFail)
+import Control.Monad.Fail ()
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Control.Monad.Trans

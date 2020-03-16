@@ -37,7 +37,7 @@ import Control.Applicative ((<**>))
 #endif
 import Control.Monad
 import Control.Monad.Identity
-import Control.Monad.Fail
+import Control.Monad.Fail ()
 import qualified Control.Monad.State as MTL
 import Control.Monad.State( MonadIO(..), lift )
 import Control.Monad.State.Class

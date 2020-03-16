@@ -17,7 +17,7 @@ module Tests.Common where
 
 import qualified Numeric
 import           Control.Monad (unless, void)
-import           Control.Monad.Fail ( MonadFail )
+import           Control.Monad.Fail ()
 import           Control.Monad.State (gets, MonadIO, liftIO)
 import           Control.Lens ( (^.) )
 
