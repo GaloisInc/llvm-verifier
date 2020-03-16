@@ -92,7 +92,7 @@ cbFunctionTypes :: Simple Lens (Codebase sbe) (M.Map L.Symbol FunDecl)
 cbFunctionTypes = lens _cbFunctionTypes sfn
   where sfn v m = v { _cbFunctionTypes = m }
 
-cbFunctionType :: L.Symbol -> Simple Lens (Codebase sbe) (Maybe FunDecl)
+cbFunctionType :: L.Symbol -> Lens' (Codebase sbe) (Maybe FunDecl)
 cbFunctionType sym = cbFunctionTypes . at sym
 
 lookupFunctionType :: L.Symbol -> Codebase sbe -> Maybe FunDecl
@@ -111,7 +111,7 @@ cbUndefinedFns cb =
 type EitherGlobal sbe = Either (Global (SBETerm sbe)) (SymDefine (SBETerm sbe))
 
 cbGlobalName :: L.Symbol
-             -> Simple Lens (Codebase sbe) (Maybe (EitherGlobal sbe))
+             -> Lens' (Codebase sbe) (Maybe (EitherGlobal sbe))
 cbGlobalName sym = cbGlobalNameMap . at sym
 
 cbGlobalDeps :: Codebase sbe -> Global (SBETerm sbe) -> [L.Symbol]

@@ -639,7 +639,7 @@ data CmdHelp = CmdHelp { _cmdHelpArgs :: ArgsI
                        }
   deriving (Show)
 
-cmdHelpArgs :: Simple Lens CmdHelp ArgsI
+cmdHelpArgs :: Lens' CmdHelp ArgsI
 cmdHelpArgs = lens _cmdHelpArgs (\s v -> s { _cmdHelpArgs = v })
 
 ppCmdHelp :: CmdHelp -> PP.Doc
@@ -654,7 +654,7 @@ data HelpResult = HelpResult { _helpArgs :: ArgsI
                              }
   deriving (Show)
 
-helpCmds :: Simple Lens HelpResult [CmdHelp]
+helpCmds :: Lens' HelpResult [CmdHelp]
 helpCmds = lens _helpCmds (\s v -> s { _helpCmds = v })
 
 emptyHelp :: HelpResult

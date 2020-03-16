@@ -433,10 +433,10 @@ emptySAWMemory = SAWMemory { _memSymbols = Map.empty
                            , _memState = MM.emptyMem
                            }
 
-memSymbols :: Simple Lens SAWMemory (Map Term Symbol)
+memSymbols :: Lens' SAWMemory (Map Term Symbol)
 memSymbols = lens _memSymbols (\s v -> s { _memSymbols = v })
 
-memState :: Simple Lens SAWMemory SAWMem
+memState :: Lens' SAWMemory SAWMem
 memState = lens _memState (\s v -> s { _memState = v })
 
 smAddDefine :: DataLayout
