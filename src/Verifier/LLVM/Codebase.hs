@@ -199,7 +199,7 @@ loadModule bcFile = do
     Right mdl -> return mdl
  where
     parse = BS.readFile >=> BC.parseBitCode
-    err msg = fail $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
+    err msg = error $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
               ++ show (nest 2 (vcat $ map text $ lines msg))
 
 -- | Load module and return codebase with given backend.
