@@ -31,6 +31,7 @@ module Verifier.LLVM.Backend
   , AIG.SatResult(..)
   ) where
 
+import Data.Kind (Type)
 import qualified Data.Vector as V
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
@@ -40,15 +41,15 @@ import Verifier.LLVM.Codebase.AST
 
 -- | SBETerm yields the type used to represent terms in particular SBE
 -- interface implementation.
-type family SBETerm (sbe :: * -> *)
+type family SBETerm (sbe :: Type -> Type)
 
 -- | SBEPred yields the type used to represent a Boolean predicate associated to
 -- a particular SBE interface implementation.
-type family SBEPred (sbe :: * -> *)
+type family SBEPred (sbe :: Type -> Type)
 
 -- | SBEMemory yields the type used to represent the memory in a particular SBE
 -- interface implementation.
-type family SBEMemory (sbe :: * -> *)
+type family SBEMemory (sbe :: Type -> Type)
 
 -- | A result returned by an operation that is partial on symbolic operations.
 -- The first element is the verification condition needed to show the result

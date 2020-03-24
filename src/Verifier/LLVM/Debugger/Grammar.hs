@@ -36,6 +36,7 @@ import Control.Lens
 import Control.Monad.State as MTL
 import Data.Char
 import qualified Data.Foldable as Fold
+import Data.Kind ( Type )
 import Data.List.Compat
 import qualified Data.Map as Map
 import Data.Maybe
@@ -233,7 +234,7 @@ convertToTokens = tokenize . charStream
 
 type Grammar m a = App (Parser m) a
 
-data Parser (m :: * -> *) (a :: *) where
+data Parser (m :: Type -> Type) (a :: Type) where
   
   -- Label an argument to a command.
   ArgumentLabel :: PP.Doc -> Parser m ()
