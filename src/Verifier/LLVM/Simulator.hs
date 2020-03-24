@@ -85,7 +85,7 @@ import Control.Exception ( AsyncException(..)
 import           Control.Lens hiding (from)
 import           Control.Monad.State.Class
 import qualified Control.Monad.State as MTL
-import           Control.Monad.Reader
+import           Control.Monad.Reader hiding (fail)
 import           Control.Monad.Trans.Except
 import           Control.Monad.Trans.State.Strict (evalStateT)
 import           Data.List                 (isPrefixOf, nub)

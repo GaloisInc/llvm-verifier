@@ -40,9 +40,9 @@ import qualified Control.Arrow as Arrow
 import           Control.Exception         (assert)
 import           Control.Lens hiding (ix, op)
 import           Control.Monad (zipWithM)
-import           Control.Monad.Fail ()
+import           Control.Monad.Fail
 import           Control.Monad.IO.Class
-import           Control.Monad.State hiding (zipWithM, replicateM, mapM, forM_)
+import           Control.Monad.State hiding (zipWithM, replicateM, mapM, forM_, fail)
 
 import           Data.Binary.IEEE754
 import           Data.Bits

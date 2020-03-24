@@ -27,7 +27,7 @@ module Verifier.LLVM.Backend.SAW
 
 import Control.Exception (assert)
 import Control.Lens hiding (op)
-import Control.Monad
+import Control.Monad hiding (fail)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.AIG as AIG
 import Data.Bits
