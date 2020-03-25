@@ -60,7 +60,7 @@ import qualified Text.LLVM.AST             as L
 import qualified Text.LLVM.PP              as L
 import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align)
 import           Prelude ()
-import           Prelude.Compat hiding ( (<>) )
+import           Prelude.Compat hiding ( (<>), fail )
 
 import qualified Data.AIG as AIG
 import           Data.AIG ( IsAIG, BV )
