@@ -37,6 +37,7 @@ module Verifier.LLVM.Codebase.Translation
   ( liftDefine
   , LiftAttempt
   , runLiftAttempt
+  , failAttempt
   , liftMemType'
   , liftValue
   , liftStringValue

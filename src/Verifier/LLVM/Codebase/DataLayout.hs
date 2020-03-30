@@ -218,7 +218,7 @@ fromBits a | w <= 0 = Left $ "Alignment must be a positive number."
   where (w,r) = toInteger a `divMod` 8
 
 -- | Insert alignment into spec.
-setAt :: Simple Lens DataLayout AlignTree -> Int -> Alignment -> State DataLayout ()
+setAt :: Lens' DataLayout AlignTree -> Int -> Alignment -> State DataLayout ()
 setAt f sz a = f . at sz ?= a
 
 -- | Get default data layout if no spec is defined.
@@ -266,14 +266,14 @@ maxAlignment dl =
           ]
 
 -- | Insert alignment into spec.
-setAtBits :: Simple Lens DataLayout AlignTree -> L.LayoutSpec -> Int -> Int -> State DataLayout ()
+setAtBits :: Lens' DataLayout AlignTree -> L.LayoutSpec -> Int -> Int -> State DataLayout ()
 setAtBits f spec sz a =
   case fromBits a of
     Left{} -> layoutWarnings %= (spec:)
     Right w -> f . at sz .= Just w
 
 -- | Insert alignment into spec.
-setBits :: Simple Lens DataLayout Alignment -> L.LayoutSpec -> Int -> State DataLayout ()
+setBits :: Lens' DataLayout Alignment -> L.LayoutSpec -> Int -> State DataLayout ()
 setBits f spec a =
   case fromBits a of
     Left{} -> layoutWarnings %= (spec:)

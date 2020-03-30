@@ -34,6 +34,7 @@ module Verifier.LLVM.Codebase
     -- * Loading utilities.
   , loadModule
   , loadCodebase
+  , LLVMLoadException(..)
     -- * LLVMContext re-exports.
   , LLVMContext
   , compatMemTypeLists
@@ -52,7 +53,6 @@ import Prelude ()
 import Prelude.Compat hiding ( mapM, mapM_, (<>) )
 
 import qualified Control.Exception              as CE
-import qualified Data.ByteString                as BS
 import qualified Data.Foldable                  as F
 import qualified Data.LLVM.BitCode              as BC
 import qualified Data.Map                       as M
@@ -92,7 +92,7 @@ cbFunctionTypes :: Simple Lens (Codebase sbe) (M.Map L.Symbol FunDecl)
 cbFunctionTypes = lens _cbFunctionTypes sfn
   where sfn v m = v { _cbFunctionTypes = m }
 
-cbFunctionType :: L.Symbol -> Simple Lens (Codebase sbe) (Maybe FunDecl)
+cbFunctionType :: L.Symbol -> Lens' (Codebase sbe) (Maybe FunDecl)
 cbFunctionType sym = cbFunctionTypes . at sym
 
 lookupFunctionType :: L.Symbol -> Codebase sbe -> Maybe FunDecl
@@ -111,7 +111,7 @@ cbUndefinedFns cb =
 type EitherGlobal sbe = Either (Global (SBETerm sbe)) (SymDefine (SBETerm sbe))
 
 cbGlobalName :: L.Symbol
-             -> Simple Lens (Codebase sbe) (Maybe (EitherGlobal sbe))
+             -> Lens' (Codebase sbe) (Maybe (EitherGlobal sbe))
 cbGlobalName sym = cbGlobalNameMap . at sym
 
 cbGlobalDeps :: Codebase sbe -> Global (SBETerm sbe) -> [L.Symbol]
@@ -180,7 +180,7 @@ mkCodebase sbe dl mdl = do
       mg <- liftIO $ runLiftAttempt $ do
         tp <- liftMemType' (L.globalType lg)
         case L.globalValue lg of
-          Nothing -> fail $ unwords ["mkCodebase: global has null value", show lg]
+          Nothing -> failAttempt $ unwords ["mkCodebase: global has null value", show lg]
           Just gv -> Global sym tp <$> liftValue tp gv
       case mg of
         Left{} -> warn $ text "Skipping definition of" <+> ppSymbol sym
@@ -190,17 +190,29 @@ mkCodebase sbe dl mdl = do
 ------------------------------------------------------------------------
 -- LLVM helper utilities.
 
+data LLVMLoadException = LLVMLoadParseFailure String BC.Error  -- ^ filename parse_error
+                         | LLVMLoadMiscException String CE.SomeException
+
+instance Show LLVMLoadException where
+  show (LLVMLoadParseFailure filename err) =
+    "Bitcode parsing of " ++ filename ++ " failed:\n"
+    ++ show (nest 2 (vcat $ map text $ lines (BC.formatError err)))
+  show (LLVMLoadMiscException filename exc) =
+    "Bitcode parsing of " ++ filename ++ " exception:\n"
+    ++ show (nest 2 (vcat $ map text $ lines (show exc)))
+
+instance CE.Exception LLVMLoadException
+
+
 -- | Load a module, calling fail if parsing or loading fails.
 loadModule :: FilePath -> IO L.Module
 loadModule bcFile = do
-  eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
+  eab <- CE.mapException (LLVMLoadMiscException bcFile) $
+         BC.parseBitCodeFromFile bcFile
   case eab of
-    Left msg  -> err (BC.formatError msg)
+    Left msg  -> CE.throw (LLVMLoadParseFailure bcFile msg)
     Right mdl -> return mdl
- where
-    parse = BS.readFile >=> BC.parseBitCode
-    err msg = fail $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
-              ++ show (nest 2 (vcat $ map text $ lines msg))
+
 
 -- | Load module and return codebase with given backend.
 loadCodebase :: SBE sbe -> FilePath -> IO (Codebase sbe)

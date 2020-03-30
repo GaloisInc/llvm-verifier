@@ -27,7 +27,7 @@ module Verifier.LLVM.Backend.SAW
 
 import Control.Exception (assert)
 import Control.Lens hiding (op)
-import Control.Monad
+import Control.Monad hiding (fail)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.AIG as AIG
 import Data.Bits
@@ -433,10 +433,10 @@ emptySAWMemory = SAWMemory { _memSymbols = Map.empty
                            , _memState = MM.emptyMem
                            }
 
-memSymbols :: Simple Lens SAWMemory (Map Term Symbol)
+memSymbols :: Lens' SAWMemory (Map Term Symbol)
 memSymbols = lens _memSymbols (\s v -> s { _memSymbols = v })
 
-memState :: Simple Lens SAWMemory SAWMem
+memState :: Lens' SAWMemory SAWMem
 memState = lens _memState (\s v -> s { _memState = v })
 
 smAddDefine :: DataLayout

@@ -45,6 +45,7 @@ library
     , llvm-pretty >= 0.10
     , llvm-pretty-bc-parser >= 0.4
     , mtl
+    , panic
     , saw-core
     , saw-core-aig
     , saw-core-sbv

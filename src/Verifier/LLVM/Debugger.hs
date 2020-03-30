@@ -222,6 +222,8 @@ instance Applicative (Debugger sbe m) where
 instance DebuggerContext sbe m => Monad (Debugger sbe m) where
   m >>= h = Debugger $ \c -> runDebugger m (\v -> runDebugger (h v) c)
   return v = Debugger ($v)
+
+instance DebuggerContext sbe m => MonadFail (Debugger sbe m) where
   fail m = Debugger $ \_c dr -> do
     dbugM $ "Unexpected error: " ++ show m
     setPrevCommand dr $ return ()

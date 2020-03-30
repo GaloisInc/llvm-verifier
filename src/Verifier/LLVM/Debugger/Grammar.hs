@@ -36,6 +36,7 @@ import Control.Lens
 import Control.Monad.State as MTL
 import Data.Char
 import qualified Data.Foldable as Fold
+import Data.Kind ( Type )
 import Data.List.Compat
 import qualified Data.Map as Map
 import Data.Maybe
@@ -233,7 +234,7 @@ convertToTokens = tokenize . charStream
 
 type Grammar m a = App (Parser m) a
 
-data Parser (m :: * -> *) (a :: *) where
+data Parser (m :: Type -> Type) (a :: Type) where
   
   -- Label an argument to a command.
   ArgumentLabel :: PP.Doc -> Parser m ()
@@ -639,7 +640,7 @@ data CmdHelp = CmdHelp { _cmdHelpArgs :: ArgsI
                        }
   deriving (Show)
 
-cmdHelpArgs :: Simple Lens CmdHelp ArgsI
+cmdHelpArgs :: Lens' CmdHelp ArgsI
 cmdHelpArgs = lens _cmdHelpArgs (\s v -> s { _cmdHelpArgs = v })
 
 ppCmdHelp :: CmdHelp -> PP.Doc
@@ -654,7 +655,7 @@ data HelpResult = HelpResult { _helpArgs :: ArgsI
                              }
   deriving (Show)
 
-helpCmds :: Simple Lens HelpResult [CmdHelp]
+helpCmds :: Lens' HelpResult [CmdHelp]
 helpCmds = lens _helpCmds (\s v -> s { _helpCmds = v })
 
 emptyHelp :: HelpResult

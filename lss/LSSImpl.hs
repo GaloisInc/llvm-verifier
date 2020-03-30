@@ -21,7 +21,7 @@ module LSSImpl where
 
 import qualified Codec.Binary.UTF8.String as UTF8 (encode)
 import           Control.Lens
-import           Control.Monad.State
+import           Control.Monad.State hiding (fail)
 import           Data.Int
 import qualified Data.Vector as V
 import           Numeric
