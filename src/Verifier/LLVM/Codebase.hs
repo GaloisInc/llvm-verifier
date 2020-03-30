@@ -34,6 +34,7 @@ module Verifier.LLVM.Codebase
     -- * Loading utilities.
   , loadModule
   , loadCodebase
+  , LLVMLoadException(..)
     -- * LLVMContext re-exports.
   , LLVMContext
   , compatMemTypeLists
@@ -52,7 +53,6 @@ import Prelude ()
 import Prelude.Compat hiding ( mapM, mapM_, (<>) )
 
 import qualified Control.Exception              as CE
-import qualified Data.ByteString                as BS
 import qualified Data.Foldable                  as F
 import qualified Data.LLVM.BitCode              as BC
 import qualified Data.Map                       as M
@@ -190,17 +190,29 @@ mkCodebase sbe dl mdl = do
 ------------------------------------------------------------------------
 -- LLVM helper utilities.
 
+data LLVMLoadException = LLVMLoadParseFailure String BC.Error  -- ^ filename parse_error
+                         | LLVMLoadMiscException String CE.SomeException
+
+instance Show LLVMLoadException where
+  show (LLVMLoadParseFailure filename err) =
+    "Bitcode parsing of " ++ filename ++ " failed:\n"
+    ++ show (nest 2 (vcat $ map text $ lines (BC.formatError err)))
+  show (LLVMLoadMiscException filename exc) =
+    "Bitcode parsing of " ++ filename ++ " exception:\n"
+    ++ show (nest 2 (vcat $ map text $ lines (show exc)))
+
+instance CE.Exception LLVMLoadException
+
+
 -- | Load a module, calling fail if parsing or loading fails.
 loadModule :: FilePath -> IO L.Module
 loadModule bcFile = do
-  eab <- parse bcFile `CE.catch` \(e :: CE.SomeException) -> err (show e)
+  eab <- CE.mapException (LLVMLoadMiscException bcFile) $
+         BC.parseBitCodeFromFile bcFile
   case eab of
-    Left msg  -> err (BC.formatError msg)
+    Left msg  -> CE.throw (LLVMLoadParseFailure bcFile msg)
     Right mdl -> return mdl
- where
-    parse = BS.readFile >=> BC.parseBitCode
-    err msg = error $ "Bitcode parsing of " ++ bcFile ++ " failed:\n"
-              ++ show (nest 2 (vcat $ map text $ lines msg))
+
 
 -- | Load module and return codebase with given backend.
 loadCodebase :: SBE sbe -> FilePath -> IO (Codebase sbe)
