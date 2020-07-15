@@ -176,7 +176,9 @@ import qualified Control.Arrow as A
 import Control.Exception (assert)
 import Control.Lens
 import Control.Monad
+#if !MIN_VERSION_base(4,13,0)
 import Control.Monad.Fail
+#endif
 import Control.Monad.IO.Class
 import Control.Monad.State.Class
 import Control.Monad.Trans

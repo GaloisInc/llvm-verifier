@@ -30,15 +30,13 @@ module Verifier.LLVM.Debugger
   , checkForBreakpoint
   ) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative hiding (empty)
-#else
 import Control.Applicative ((<**>))
-#endif
 import Control.Monad
 import qualified Control.Monad.Catch as E
 import Control.Exception ( throwIO, throwTo )
+#if !MIN_VERSION_base(4,13,0)
 import Control.Monad.Fail
+#endif
 import Control.Monad.Identity
 import qualified Control.Monad.State as MTL
 import Control.Monad.State( MonadIO(..), lift )
@@ -46,7 +44,7 @@ import Control.Monad.State.Class
 import Control.Lens
 import Data.Char
 import Data.IORef
-import Data.List
+import qualified Data.List as L
 import qualified Data.Map as M
 import Data.Maybe
 import qualified Data.Set as S
@@ -348,7 +346,7 @@ promptChoice prompt choices =
     liftIO $ putAndFlush prompt >> loop
   where loop = do
           l <- dropWhile isSpace . fmap toLower <$> getLine
-          let resl = [ r | (c,r) <- choices, l `isPrefixOf` c ] 
+          let resl = [ r | (c,r) <- choices, l `L.isPrefixOf` c ]
           case (l,resl) of
             ("",_) -> putAndFlush prompt >> loop
             (_,r:_)  -> return r
