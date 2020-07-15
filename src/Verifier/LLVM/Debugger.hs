@@ -1,4 +1,3 @@
-{-# LANGUAGE ConstraintKinds #-}
 {- |
 Module           : $Header$
 Description      : Debugger implementation for LSS
@@ -12,6 +11,7 @@ semantics are loosely based on gdb.
 
 -}
 
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DoAndIfThenElse #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -36,8 +36,10 @@ import Control.Applicative hiding (empty)
 import Control.Applicative ((<**>))
 #endif
 import Control.Monad
-import Control.Monad.Identity
+import qualified Control.Monad.Catch as E
+import Control.Exception ( throwIO, throwTo )
 import Control.Monad.Fail
+import Control.Monad.Identity
 import qualified Control.Monad.State as MTL
 import Control.Monad.State( MonadIO(..), lift )
 import Control.Monad.State.Class
@@ -49,7 +51,7 @@ import qualified Data.Map as M
 import Data.Maybe
 import qualified Data.Set as S
 import Data.String
-import System.Console.Haskeline
+import qualified System.Console.Haskeline as HL
 import System.Directory
 import System.Exit
 import System.FilePath
@@ -90,7 +92,7 @@ breakOnEntry def = addBreakpoint (sdName def) (sdEntry def, 0)
 
 safeGetAppUserDataDirectory :: String -> IO (Maybe FilePath)
 safeGetAppUserDataDirectory nm = 
-    System.Console.Haskeline.catch (Just <$> getAppUserDataDirectory nm)
+    E.catch (Just <$> getAppUserDataDirectory nm)
           catchErrors
   where -- Catch the UnsupportedOperation and DoesNotExist
         -- exceptions that may be thrown.
@@ -150,7 +152,7 @@ setPrevCommand dr cmd = withIORef dr $ onNoInput .= cmd
 runNextCommand :: DebuggerContext sbe m
                => DebuggerCont sbe m
 runNextCommand dr = do
-  mline <- getInputLine "(lss) "
+  mline <- HL.getInputLine "(lss) "
   ds <- liftIO $ readIORef dr   
   case dropWhile isSpace <$> mline of
     Nothing -> return ()
@@ -160,7 +162,7 @@ runNextCommand dr = do
       let pr = runIdentity $ parseString (dsGrammar ds) cmdStr
       case resolveParse pr of
         Left d -> do
-          outputStrLn (show d)
+          HL.outputStrLn (show d)
           setPrevCommand dr $ return ()
           runNextCommand dr
         Right cmd -> do
@@ -204,7 +206,7 @@ type DebuggerRef sbe m = IORef (DebuggerState sbe m)
 
 type DebuggerCont sbe m
    = DebuggerRef sbe m
-   -> InputT (Simulator sbe m) ()
+   -> HL.InputT (Simulator sbe m) ()
 
 newtype Debugger sbe m a
       = Debugger { runDebugger :: (a -> DebuggerCont sbe m)
@@ -247,7 +249,14 @@ runSim m = Debugger (\c r -> lift m >>= flip c r)
 resume :: Monad m => Debugger sbe m a
 resume = Debugger (\_ _ -> return ())
 
-type DebuggerContext sbe m = (Functor sbe, Functor m, MonadException m, MonadFail m)
+type DebuggerContext sbe m = (Functor sbe, Functor m
+#if !MIN_VERSION_haskeline(0,8,0)
+                             , HL.MonadException m
+#else
+                             , E.MonadMask m
+#endif
+                             , MonadIO m
+                             , MonadFail m)
 
 -- | Setup simulator to run debugger when needed.
 initializeDebugger :: DebuggerContext sbe m
@@ -280,9 +289,9 @@ enterDebugger r eoe = do
   -- Run command.
   grammar <- liftIO $ dsGrammar <$> readIORef r
   historyPath <- liftIO getLSSHistoryPath
-  let settings = setComplete (matcherCompletions grammar)
-               $ defaultSettings { historyFile = historyPath }
-  runInputT settings (runNextCommand r)
+  let settings = HL.setComplete (matcherCompletions grammar)
+               $ HL.defaultSettings { HL.historyFile = historyPath }
+  HL.runInputT settings (runNextCommand r)
 
 enterDebuggerOnError :: DebuggerContext sbe m
                      => DebuggerRef sbe m
@@ -319,7 +328,7 @@ enterDebuggerAtBreakpoint dr = do
 matcherCompletions :: (Functor m, Monad m)
                    => Grammar Identity a
                    -> (String, String)
-                   -> Simulator sbe m (String, [Completion])
+                   -> Simulator sbe m (String, [HL.Completion])
 matcherCompletions m (l,_r) = pure (finalize a)
   where rl = reverse l        
         a = runIdentity $ parseString m rl

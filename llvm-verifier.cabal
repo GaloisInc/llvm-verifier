@@ -38,6 +38,7 @@ library
     , containers >= 0.4.0.0
     , data-binary-ieee754 >= 0.4.2
     , directory
+    , exceptions
     , filepath
     , fingertree
     , haskeline >= 0.7
@@ -123,6 +124,7 @@ executable lss
     , abcBridge
     , ansi-wl-pprint
     , cmdargs >= 0.8
+    , exceptions
     , lens >= 3.9
     , llvm-pretty >= 0.10
     , llvm-pretty-bc-parser >= 0.4
@@ -192,6 +194,7 @@ test-suite test-llvm
     , aig
     , mtl
     , vector
+    , exceptions
     , filepath
     , random
     , haskeline >= 0.7

@@ -1,4 +1,3 @@
-{-# LANGUAGE ConstraintKinds #-}
 {- |
 Module           : $Header$
 Description      : Common type definitions and helper functions for LSS
@@ -7,6 +6,8 @@ Stability        : provisional
 Point-of-contact : jhendrix
 -}
 
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
@@ -190,7 +191,11 @@ import qualified Data.Vector as V
 import Prelude ()
 import Prelude.Compat hiding ( mapM, mapM_, (<>) )
 
+#if !MIN_VERSION_haskeline(0,8,0)
 import System.Console.Haskeline.MonadException (MonadException(..), RunIO(..))
+#else
+import qualified Control.Monad.Catch as E
+#endif
 
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
@@ -599,10 +604,12 @@ override f = Override (\_ _ a -> Just <$> f a)
 
 newtype FailRsn = FailRsn String deriving (Show)
 
+#if !MIN_VERSION_haskeline(0,8,0)
 instance (MonadException m) => MonadException (ExceptT e m) where
     controlIO f = ExceptT $ controlIO $ \(RunIO run) -> let
                     run' = RunIO (fmap ExceptT . run . runExceptT)
                     in fmap runExceptT $ f run'
+#endif
 
 -- | Action to perform when a simulation error is encountered.
 -- Parameters include simulator control stack prior to error, and
@@ -627,11 +634,21 @@ newtype Simulator sbe m a =
     , Applicative
     , MonadFail
     , MonadIO
+#if !MIN_VERSION_haskeline(0,8,0)
     , MonadException
+#else
+    , E.MonadThrow
+    , E.MonadCatch
+    , E.MonadMask
+#endif
     )
 
 type SimulatorContext sbe m = (Functor sbe, Functor m, MonadIO m, MonadFail m)
+#if !MIN_VERSION_haskeline(0,8,0)
 type SimulatorExceptionContext sbe m = (SimulatorContext sbe m, MonadException m)
+#else
+type SimulatorExceptionContext sbe m = (SimulatorContext sbe m)
+#endif
 
 throwSM :: Monad m => FailRsn -> Simulator sbe m a
 throwSM = SM . throwE

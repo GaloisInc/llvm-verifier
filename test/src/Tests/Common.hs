@@ -1,5 +1,6 @@
-{-# LANGUAGE DeriveFunctor        #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable   #-}
+{-# LANGUAGE DeriveFunctor        #-}
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE ImplicitParams       #-}
 {-# LANGUAGE RankNTypes           #-}
@@ -31,7 +32,11 @@ import Prelude ()
 import Prelude.Compat
 
 import           System.FilePath
+#if !MIN_VERSION_haskeline(0,8,0)
 import           System.Console.Haskeline.MonadException ( MonadException )
+#else
+import qualified Control.Monad.Catch as E
+#endif
 
 import qualified Data.ABC as ABC
 
@@ -117,7 +122,13 @@ forAllMemModels groupName bcFile mkTest =
         , mkTest "SAW model"       v createSAWModel      getmdl
         ]
 
-runTestSimulator :: (MonadIO m, MonadException m, Functor m, MonadFail m)
+runTestSimulator :: ( MonadIO m
+#if !MIN_VERSION_haskeline(0,8,0)
+                    , MonadException m
+#else
+                    , E.MonadCatch m
+#endif
+                    , Functor m, MonadFail m)
                  => Int
                  -> SBECreateFn
                  -> IO L.Module -- ^ Code to run in.
@@ -132,7 +143,11 @@ runTestSimulator v createFn mdlio action = do
     setVerbosity v
     action
 
-runCInt32Fn :: SimulatorExceptionContext sbe m
+runCInt32Fn :: (SimulatorExceptionContext sbe m
+#if MIN_VERSION_haskeline(0,8,0)
+               , E.MonadCatch m
+#endif
+               )
             => L.Symbol
             -> [Int32]
             -> ExpectedRV Integer
@@ -145,7 +160,11 @@ runCInt32Fn sym cargs erv = do
     mrv <- getProgramReturnValue
     checkReturnValue sbe erv mrv
 
-runVoidFn :: SimulatorExceptionContext sbe m
+runVoidFn :: ( SimulatorExceptionContext sbe m
+#if MIN_VERSION_haskeline(0,8,0)
+             , E.MonadCatch m
+#endif
+             )
             => L.Symbol
             -> ExpectedRV Integer
             -> Simulator sbe m ()
@@ -198,7 +217,11 @@ runLssTest bkName v sbeCF mdlio args expectErr expectRV =
           liftIO $ checkExecResult sbe expectRV execResult
           liftIO $ checkErrPaths expectErr execResult
 
-testRunMain :: SimulatorExceptionContext sbe m
+testRunMain :: ( SimulatorExceptionContext sbe m
+#if MIN_VERSION_haskeline(0,8,0)
+               , E.MonadCatch m
+#endif
+               )
             => [String] -> Simulator sbe m (ExecRslt sbe Integer)
 testRunMain args = do
   cb <- gets codebase

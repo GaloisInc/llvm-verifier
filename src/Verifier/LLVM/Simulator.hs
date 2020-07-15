@@ -21,6 +21,7 @@ Point-of-contact : jhendrix
 --    merges.  Warnings on symbolic validity results from memory model
 -- 7: Memory model dump pre/post every operation (for nontrivial codes, this
 --    generates a /lot/ of output -- now with more output than level 6!)
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DoAndIfThenElse       #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -92,7 +93,11 @@ import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Graph as G
 import qualified Data.Map as M
 import           Data.Maybe
-import System.Console.Haskeline.MonadException (MonadException, handle)
+#if !MIN_VERSION_haskeline(0,8,0)
+import System.Console.Haskeline.MonadException (handle)
+#else
+import Control.Monad.Catch ( MonadCatch, handle )
+#endif
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
 import Prelude ()
 import Prelude.Compat hiding ( mapM_, (<>) )
@@ -134,6 +139,9 @@ getMem = preuse currentPathMem
 -- | Run simulator in given context.
 runSimulator :: forall sbe a m.
   ( SimulatorExceptionContext sbe m
+#if MIN_VERSION_haskeline(0,8,0)
+  , MonadCatch m
+#endif
   , Ord (SBETerm sbe)
   )
   => Codebase sbe          -- ^ Post-transform LLVM code, memory alignment, and
@@ -209,7 +217,11 @@ entryRsltReg = Ident "__galois_final_rslt"
 
 -- | External entry point for a function call.  This will push a callFrame
 -- for the function to the stack, and run the function until termination.
-callDefine :: (SimulatorContext sbe m, MonadException m) =>
+callDefine :: (SimulatorExceptionContext sbe m
+#if MIN_VERSION_haskeline(0,8,0)
+              , MonadCatch m
+#endif
+              ) =>
               Symbol     -- ^ Callee symbol
            -> RetType       -- ^ Callee return type
            -> [(MemType,SBETerm sbe)] -- ^ Callee argument generator
@@ -311,8 +323,11 @@ signalPathPosChangeEvent = do
     Just{} -> join (use onPathPosChange)
 
 
-killPathOnError :: SimulatorExceptionContext sbe m
-                => ErrorHandler sbe m
+killPathOnError :: ( SimulatorExceptionContext sbe m
+#if MIN_VERSION_haskeline(0,8,0)
+                   , MonadCatch m
+#endif
+                   ) => ErrorHandler sbe m
 killPathOnError cs rsn = do
   -- Reset state
   ctrlStk ?= cs
@@ -337,7 +352,11 @@ killPathOnError cs rsn = do
   run
   
 -- | Run execution until completion or a breakpoint is encountered.
-run :: forall sbe m . SimulatorExceptionContext sbe m =>
+run :: forall sbe m . (SimulatorExceptionContext sbe m
+#if MIN_VERSION_haskeline(0,8,0)
+                      , MonadCatch m
+#endif
+                      ) =>
        Simulator sbe m ()
 run = do
   mcs <- use ctrlStk
