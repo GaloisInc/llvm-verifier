@@ -80,7 +80,7 @@ module Verifier.LLVM.Simulator
 
 import Control.Exception ( AsyncException(..)
                          , AssertionFailed(..)
-                         , assert
+                         , assert, throwIO
                          )
 import           Control.Lens hiding (from)
 import           Control.Monad.State.Class
@@ -92,7 +92,7 @@ import           Data.List                 (isPrefixOf, nub)
 import qualified Data.Graph as G
 import qualified Data.Map as M
 import           Data.Maybe
-import System.Console.Haskeline.MonadException (MonadException, handle, throwIO)
+import System.Console.Haskeline.MonadException (MonadException, handle)
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>), align, line)
 import Prelude ()
 import Prelude.Compat hiding ( mapM_, (<>) )
@@ -159,7 +159,7 @@ runSimulator cb sbe mem mopts m = do
                     , _breakpoints = M.empty
                     , _onPathPosChange = return ()
                     , _onSimError = killPathOnError
-                    , _onUserInterrupt = throwIO UserInterrupt
+                    , _onUserInterrupt = liftIO $ throwIO UserInterrupt
                     }
   ea <- flip evalStateT newSt $ runExceptT $ runSM $ do
     initGlobals
@@ -365,7 +365,7 @@ run = do
                   ctrlStk ?= cs -- Reset control stack.
                   join $ use onUserInterrupt
                   run
-                userIntHandler e = throwIO e
+                userIntHandler e = liftIO $ throwIO e
             handle userIntHandler $ do
               flip catchSM onError $ do
                let cf =  stk^.topCallFrame 
