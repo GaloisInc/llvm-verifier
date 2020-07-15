@@ -22,6 +22,7 @@ Point-of-contact : jhendrix
 module Verifier.LLVM.Simulator.Internals
   ( Simulator(SM, runSM)
   , SimulatorContext
+  , SimulatorExceptionContext
   , throwSM, catchSM
   , getVerbosity
   , setVerbosity
@@ -630,6 +631,7 @@ newtype Simulator sbe m a =
     )
 
 type SimulatorContext sbe m = (Functor sbe, Functor m, MonadIO m, MonadFail m)
+type SimulatorExceptionContext sbe m = (SimulatorContext sbe m, MonadException m)
 
 throwSM :: Monad m => FailRsn -> Simulator sbe m a
 throwSM = SM . throwE

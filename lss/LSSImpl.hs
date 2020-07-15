@@ -105,7 +105,7 @@ lssImpl sbe mem cb argv0 args = do
     runMainFn mainDef ("lss" : argv0)
 
 -- | Runs a function whose signature matches main.
-runMainFn :: (SimulatorContext sbe m, MonadException m)
+runMainFn :: SimulatorExceptionContext sbe m
         => SymDefine (SBETerm sbe)
         -> [String] -- ^ argv
         -> Simulator sbe m (ExecRslt sbe Integer)

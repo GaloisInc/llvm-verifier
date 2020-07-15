@@ -31,6 +31,7 @@ import Prelude ()
 import Prelude.Compat
 
 import           System.FilePath
+import           System.Console.Haskeline.MonadException ( MonadException )
 
 import qualified Data.ABC as ABC
 
@@ -53,7 +54,7 @@ qctest shouldFail desc propM = testProperty desc (handleNeg $ QC.monadicIO $ pro
 
 data ExpectedRV a = AllPathsErr | VoidRV | RV a deriving (Eq, Functor)
 
-type SBEPropM m = forall sbe. (Functor sbe, Ord (SBETerm sbe)) => Simulator sbe m ()
+type SBEPropM m = forall sbe. (SimulatorExceptionContext sbe m, Ord (SBETerm sbe)) => Simulator sbe m ()
 type SBECreateFn = DataLayout -> IO SBEPair
 
 abcNetwork :: ABC.Proxy ABC.GIALit ABC.GIA
@@ -131,7 +132,7 @@ runTestSimulator v createFn mdlio action = do
     setVerbosity v
     action
 
-runCInt32Fn :: (SimulatorContext sbe m, MonadException m)
+runCInt32Fn :: SimulatorExceptionContext sbe m
             => L.Symbol
             -> [Int32]
             -> ExpectedRV Integer
@@ -144,7 +145,7 @@ runCInt32Fn sym cargs erv = do
     mrv <- getProgramReturnValue
     checkReturnValue sbe erv mrv
 
-runVoidFn :: (SimulatorContext sbe m, MonadException m)
+runVoidFn :: SimulatorExceptionContext sbe m
             => L.Symbol
             -> ExpectedRV Integer
             -> Simulator sbe m ()
@@ -197,7 +198,7 @@ runLssTest bkName v sbeCF mdlio args expectErr expectRV =
           liftIO $ checkExecResult sbe expectRV execResult
           liftIO $ checkErrPaths expectErr execResult
 
-testRunMain :: (SimulatorContext sbe m, MonadException m)
+testRunMain :: SimulatorExceptionContext sbe m
             => [String] -> Simulator sbe m (ExecRslt sbe Integer)
 testRunMain args = do
   cb <- gets codebase

@@ -36,6 +36,7 @@ Point-of-contact : jhendrix
 module Verifier.LLVM.Simulator
   ( Simulator (SM)
   , SimulatorContext
+  , SimulatorExceptionContext
   , getVerbosity
   , setVerbosity
   , whenVerbosity
@@ -72,7 +73,6 @@ module Verifier.LLVM.Simulator
   , ErrorPath
   , errorPaths
   , LSSOpts(..)
-  , MonadException
   , lookupSymbolDef
   , getPath
   , run
@@ -133,9 +133,8 @@ getMem = preuse currentPathMem
 
 -- | Run simulator in given context.
 runSimulator :: forall sbe a m.
-  ( SimulatorContext sbe m
+  ( SimulatorExceptionContext sbe m
   , Ord (SBETerm sbe)
-  , MonadException m
   )
   => Codebase sbe          -- ^ Post-transform LLVM code, memory alignment, and
                            -- type aliasing info
@@ -312,7 +311,7 @@ signalPathPosChangeEvent = do
     Just{} -> join (use onPathPosChange)
 
 
-killPathOnError :: (SimulatorContext sbe m, MonadException m)
+killPathOnError :: SimulatorExceptionContext sbe m
                 => ErrorHandler sbe m
 killPathOnError cs rsn = do
   -- Reset state
@@ -338,7 +337,7 @@ killPathOnError cs rsn = do
   run
   
 -- | Run execution until completion or a breakpoint is encountered.
-run :: forall sbe m . (SimulatorContext sbe m, MonadException m) =>
+run :: forall sbe m . SimulatorExceptionContext sbe m =>
        Simulator sbe m ()
 run = do
   mcs <- use ctrlStk
