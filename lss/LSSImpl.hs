@@ -7,6 +7,7 @@ Stability        : provisional
 Point-of-contact : jhendrix
 -}
 
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -21,6 +22,9 @@ module LSSImpl where
 
 import qualified Codec.Binary.UTF8.String as UTF8 (encode)
 import           Control.Lens
+#if MIN_VERSION_base(4,14,0)
+import qualified Control.Monad.Catch as E
+#endif
 import           Control.Monad.State hiding (fail)
 import           Data.Int
 import qualified Data.Vector as V
@@ -105,7 +109,11 @@ lssImpl sbe mem cb argv0 args = do
     runMainFn mainDef ("lss" : argv0)
 
 -- | Runs a function whose signature matches main.
-runMainFn :: (SimulatorContext sbe m, MonadException m)
+runMainFn :: ( SimulatorExceptionContext sbe m
+#if MIN_VERSION_base(4,14,0)
+             , E.MonadCatch m
+#endif
+             )
         => SymDefine (SBETerm sbe)
         -> [String] -- ^ argv
         -> Simulator sbe m (ExecRslt sbe Integer)
